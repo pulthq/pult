@@ -730,6 +730,59 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await until(lambda: not self.p.tabs)                       # the tab was closed — it can no longer be written to
         self.assertEqual(await self.p.api_send(SID, "снова"), {"ok": False, "need": "fork"})
 
+    async def test_topic_focus(self):
+        # text in a project topic: the only open tab — no question; then the topic remembers its session; two open
+        # tabs after 2 h of quiet — the question, once; a closed tab is forgotten; the pinned card shows 🎯
+        SID2 = "22222222-3333-4444-5555-666666666666"
+        self.p.env.update(PULT_APP_LINK="https://t.me/b/pult", PULT_RELAY_URL="wss://h.example/pult/agent")
+        self.store.set_topic(PKEY, "/Users/x/proj", "proj", 77)
+        for sid, title in ((SID, "Отчёт"), (SID2, "Тесты")):
+            self.store.touch_session(sid, PKEY, path="/Users/x/proj", title=title)
+        base = {"from": {"id": OWNER}, "chat": {"id": CHAT}, "message_thread_id": 77, "is_topic_message": True}
+
+        async def tab(pid, sid):
+            r, w = await asyncio.open_unix_connection(os.environ["PULT_SOCK"])
+            w.write(('{"op": "hello", "pid": %d, "cwd": "/Users/x/proj", "sid": "%s", "version": "2.1.301"}\n'
+                     % (pid, sid)).encode())
+            await w.drain()
+            await until(lambda: self.p.tab_for(sid))
+            return r, w
+        r1, w1 = await tab(4001, SID)
+        await self.p.on_message(dict(base, message_id=10, text="Проверь логи"))
+        self.assertEqual(json.loads(await asyncio.wait_for(r1.readline(), 3))["text"], "Проверь логи")
+        self.assertFalse(self.fake.buttons("t:"))                                   # no "where to"
+        self.assertTrue(any("→ «Отчёт». Текст в этой теме дальше идёт туда же" in t for t in self.texts()))
+        await until(lambda: any("🎯 Сейчас: «Отчёт»" in t for t in self.sent()))      # the card says it
+        r2, w2 = await tab(4002, SID2)                                              # a second tab opens
+        await self.p.on_message(dict(base, message_id=11, text="И ошибки"))
+        self.assertEqual(json.loads(await asyncio.wait_for(r1.readline(), 3))["text"], "И ошибки")
+        await until(lambda: "→ «Отчёт»" in self.texts())
+        # two hours of quiet: two open tabs — ask, once
+        focus = self.store.get("focus")
+        focus[PKEY][1] -= pultd.FOCUS_IDLE + 1
+        self.store.put("focus", focus)
+        await self.p.on_message(dict(base, message_id=12, text="Теперь тесты"))
+        await until(lambda: any("Выбор запомню" in t for t in self.texts()))
+        choice = next(b for b in self.fake.buttons("t:") if self.p.offers[b[2:]][0] == "sess"
+                      and self.p.offers[b[2:]][1] == SID2)
+        await self.p.on_offer(choice, 77)
+        self.assertEqual(json.loads(await asyncio.wait_for(r2.readline(), 3))["text"], "Теперь тесты")
+        await self.p.on_message(dict(base, message_id=13, text="И покрытие"))
+        self.assertEqual(json.loads(await asyncio.wait_for(r2.readline(), 3))["text"], "И покрытие")
+        # the chosen tab closes: forgotten; the only open tab left takes the text again
+        w2.close()
+        await until(lambda: not self.p.tab_for(SID2))
+        self.assertIsNone(self.p.focus_of(PKEY))
+        await self.p.on_message(dict(base, message_id=14, text="Вернёмся к логам"))
+        self.assertEqual(json.loads(await asyncio.wait_for(r1.readline(), 3))["text"], "Вернёмся к логам")
+        # a reply to another session's message switches the topic to it
+        self.store.map_msg(500, SID2, "msg")
+        self.p._agents = (time.monotonic() + 1e6, [])
+        with mock.patch.object(self.p, "drive", mock.AsyncMock()):
+            await self.p.on_message(dict(base, message_id=15, text="продолжи", reply_to_message={"message_id": 500}))
+        self.assertEqual(self.p.focus_of(PKEY), SID2)
+        w1.close()
+
     async def test_tab_version(self):
         # a new extension is out — the owner is told once that writing into tabs on it awaits verification
         ext = TMP / "ext"

@@ -21,6 +21,7 @@ import sqlite3
 import sys
 import time
 import uuid
+import zlib
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -48,6 +49,7 @@ MAX_RUNNING = 3          # turns from Telegram at once: Claude Code takes 250–
 MAX_DRIVEN = 5           # sessions from Telegram that hold a process
 DRIVEN_IDLE = 20 * 60    # an idle session from Telegram is closed; it continues via resume
 ASK_TIMEOUT = 6 * 3600   # how long to wait for a permission answer in a session from Telegram
+FOCUS_IDLE = 2 * 3600   # a topic forgets its current session after this long without the owner's text there
 VEHI = (10 * 60, 30 * 60, 60 * 60)   # long-turn milestones; with sound if the owner is away (decision 2026-10-16)
 TICK = 60                # s; refresh "working N min" this often, even without events
 NOW_LEN = 300            # characters of Claude's reply in the "now" line
@@ -57,7 +59,7 @@ USAGE_EVERY = 15 * 60    # usage check for warnings, if there was work on the Ma
 USAGE_NEAR_EVERY = 5 * 60   # …and near the threshold (from 70 %), more often
 WARN_AT = (80, 95)       # % of a limit: a warning with sound in General (decision 2026-10-16)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.9.2"
+VERSION = "0.9.3"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -752,6 +754,11 @@ class Pult:
         text = self.t("topic.intro", name=R.esc(name), path=R.esc(path or "?"))
         buttons = self.card_buttons(pkey)
         sig = "%s|%s" % (self.lang(), buttons[0][0]["url"] if buttons else "")
+        focus = self.focus_of(pkey)
+        if focus:
+            title = R.short(self.session_label(focus), 60)
+            text = self.t("card.focus", name=I.q(R.esc(title))) + "\n" + text
+            sig += "|%s:%08x" % (focus[:8], zlib.crc32(title.encode()))
         cards = self.store.get("cards") or {}
         entry = cards.get(str(thread))
         mid, old, pinned = entry or (None, None, False)
@@ -1136,6 +1143,8 @@ class Pult:
             self.resolve_all(lv, self.t("req.session_closed"))
             self.finish_turn(lv, "⏹")
             self.live.pop(sid, None)
+            if not lv.driven:                  # a session from Telegram only rests: Pult closes its idle process
+                self.clear_focus(sid)
         elif name == "PermissionRequest":
             return await self.on_permission(lv, ev, reader)
         return None
@@ -1584,11 +1593,89 @@ class Pult:
             elif topic and topic["path"] and cmd == "/new":
                 await self.drive(str(uuid.uuid4()), topic["path"], body, mid, pkey=topic["pkey"])
             elif topic and topic["path"]:
-                await self.ask_target(topic, body, mid, here)
+                await self.to_topic(topic, body, mid, here)
             elif thread:
                 await self.cmd_projects(here, "bind", (body, mid, thread), reply_to=mid)
             else:
                 await self.cmd_projects(here, "new", (body, mid), reply_to=mid)
+
+    async def to_topic(self, topic, body, origin, here):
+        """Text in a project topic that is not a reply and not /new. It goes without a question to the topic's current
+        session (the owner chose it: a button, a reply, /new — remembered until it closes or FOCUS_IDLE passes), or
+        to the only session of the project that can be written into right now (a tab with Pult's wrapper, a session
+        from Telegram). Otherwise — ask (decision 2026-10-17: both rules; "do it" of 10-16 went to a new session, these
+        go to the one the owner is watching). Pult says where it went."""
+        pkey = topic["pkey"]
+        target, first = self.focus_of(pkey), False
+        if not target:
+            open_ = self.open_writable(pkey)
+            target, first = (open_[0], True) if len(open_) == 1 else (None, False)
+        if not target:
+            await self.ask_target(topic, body, origin, here)
+            return
+        name = I.q(R.esc(R.short(self.session_label(target), 50)))
+        await self.continue_session(target, body, origin, here)
+        await self.send(None, self.t("focus.first" if first else "focus.sent", name=name), reply_to=origin, here=here)
+
+    def open_writable(self, pkey):
+        """Sessions of the project that a message reaches right now: tabs with Pult's wrapper, sessions from Telegram."""
+        out = []
+        for t in self.tabs.values():
+            if t.sid and (self.session_pkey(t.sid) or sanitize(t.cwd or "")) == pkey and t.sid not in out:
+                out.append(t.sid)
+        for sid in self.driven:
+            if self.session_pkey(sid) == pkey and sid not in out:
+                out.append(sid)
+        return out
+
+    def session_label(self, sid):
+        """Which session of the topic it is: its name or first prompt (as on the "where to" buttons) — not the
+        project's name, which all sessions of a topic share."""
+        lv = self.live.get(sid) or self.stub(sid)
+        return lv.title or self.t("session.default")
+
+    def session_pkey(self, sid):
+        row = self.store.session(sid)
+        return row["pkey"] if row else None
+
+    def focus_of(self, pkey):
+        f = (self.store.get("focus") or {}).get(pkey)
+        return f[0] if f and time.time() - f[1] < FOCUS_IDLE else None
+
+    def set_focus(self, pkey, sid):
+        """The topic's current session: plain text in the topic goes there. Shown in the topic's card."""
+        if not pkey or not sid:
+            return
+        focus = self.store.get("focus") or {}
+        changed = (focus.get(pkey) or [None])[0] != sid
+        focus[pkey] = [sid, time.time()]
+        self.store.put("focus", focus)
+        if changed:
+            self.card_refresh(pkey)
+
+    def clear_focus(self, sid):
+        """The session closed: its topics have no current session any more."""
+        focus = self.store.get("focus") or {}
+        gone = [k for k, v in focus.items() if v[0] == sid]
+        if not gone:
+            return
+        for k in gone:
+            del focus[k]
+        self.store.put("focus", focus)
+        for k in gone:
+            self.card_refresh(k)
+
+    def card_refresh(self, pkey):
+        row = self.store.topic(pkey)
+        if not (row and row["thread"]):
+            return
+
+        async def go():
+            try:
+                await self.topic_card(pkey, row["thread"])
+            except Exception as e:
+                log("topic card:", repr(e))
+        asyncio.create_task(go())
 
     async def ask_target(self, topic, body, origin, here):
         """Text in a project topic that is not a reply: which session is it for? Don't start a new one right away —
@@ -1640,6 +1727,7 @@ class Pult:
         if not path:
             await self.send(None, self.t("err.no_folder"), reply_to=origin, here=here)
             return
+        self.set_focus(pkey, sid)
         trow = self.store.topic(pkey)
         quote = bool(trow and trow["thread"] == here)    # a reply in the same topic the session lives in
         if sid in self.driven:
@@ -1678,6 +1766,7 @@ class Pult:
                 return
             idle[0].task.cancel()
         self.store.touch_session(sid, pkey, path=path, driven=True)
+        self.set_focus(pkey, sid)
         if origin:
             self.store.map_msg(origin, sid, "owner")
         lv = self.live_of(sid, pkey)
@@ -1709,6 +1798,8 @@ class Pult:
         finally:
             if self.tabs.get(t.pid) is t:
                 del self.tabs[t.pid]
+            if t.sid:
+                self.clear_focus(t.sid)
             log("tab with the wrapper closed: pid %s" % t.pid)
 
     async def tab_version_watch(self):

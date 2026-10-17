@@ -35,6 +35,12 @@ S = {
     },
     "panel.open": {"en": "Open Pult", "ru": "Открыть Пульт"},
     "card.app": {"en": "📱 Pult", "ru": "📱 Пульт"},       # the button of a project topic's pinned card
+    "card.focus": {"en": "🎯 Now: {name}", "ru": "🎯 Сейчас: {name}"},   # the topic's current session, first line
+    "focus.first": {"en": "→ {name}. Text in this topic goes there from now on; to switch — reply to another "
+                          "session's message, or <code>/new text</code>.",
+                    "ru": "→ {name}. Текст в этой теме дальше идёт туда же; сменить — ответ на сообщение другой "
+                          "сессии или <code>/new текст</code>."},
+    "focus.sent": {"en": "→ {name}", "ru": "→ {name}"},
     "menu.app": {"en": "Pult", "ru": "Пульт"},            # the app button next to the message field, private chat
 
     # ----- help -----
@@ -99,7 +105,9 @@ S = {
     "help.write": {
         "en": "<b>✍️ Writing to Claude</b>\n\n"
               "• Reply to any message of a session — continues that session.\n"
-              "• Text in a project topic — I'll ask where: one of the recent sessions or a new one. "
+              "• Text in a project topic goes to the topic's current session (🎯 in the pinned card): the one you chose "
+              "last — by a reply, a button or <code>/new</code>. None yet — to the only open session, or I'll ask once. "
+              "The choice lasts until the session closes or 2 hours of quiet in the topic. "
               "<code>/new text</code> — a new session right away.\n"
               "• 💻 The session is open in a VS Code tab with Pult's wrapper — your message appears right in the tab. "
               "🖥 Without the wrapper — I continue as a copy: same history, a separate session from there on.\n"
@@ -107,8 +115,9 @@ S = {
               "• /stop as a reply to a session started from here — interrupts the turn.",
         "ru": "<b>✍️ Писать Claude</b>\n\n"
               "• Ответ на любое сообщение сессии — продолжение этой сессии.\n"
-              "• Текст в теме проекта — спрошу, куда: в одну из последних сессий или в новую. "
-              "<code>/new текст</code> — сразу новая.\n"
+              "• Текст в теме проекта идёт в текущую сессию темы (🎯 в закрепе): ту, что ты выбрал последней — ответом, "
+              "кнопкой или <code>/new</code>. Её ещё нет — в единственную открытую сессию, иначе спрошу один раз. Выбор "
+              "держится, пока сессия не закроется или 2 часа тишины в теме. <code>/new текст</code> — сразу новая.\n"
               "• 💻 Сессия открыта во вкладке VS Code с обёрткой Пульта — сообщение появится прямо во вкладке. "
               "🖥 Без обёртки — продолжу копией: история та же, дальше отдельная сессия.\n"
               "• Фото или файл с подписью — Claude получит путь к файлу.\n"
@@ -315,11 +324,12 @@ S = {
                           "ru": "Этот личный чат я не читаю: работаю в группе Пульта, тема на проект, — пиши туда."},
     "q.already": {"en": "This question is already decided.", "ru": "Этот вопрос уже решён."},
     "cmd.unknown": {"en": "I don't know this command. /help", "ru": "Не знаю такой команды. /help"},
-    "where.ask": {"en": "Where should I send it? (💻 — open in a VS Code tab, I'll write right into it; 🖥 — open on "
-                        "the computer, it'll go as a copy; reply to a session's message or <code>/new text</code> — no "
-                        "question)",
-                  "ru": "Куда отправить? (💻 — открыта во вкладке, напишу прямо в неё; 🖥 — открыта на компьютере, "
-                        "пойдёт копией; ответ на сообщение сессии или <code>/new текст</code> — без этого вопроса)"},
+    "where.ask": {"en": "Where should I send it? I'll remember the choice for this topic. (💻 — open in a VS Code tab, "
+                        "I'll write right into it; 🖥 — open on the computer, it'll go as a copy; reply to a session's "
+                        "message or <code>/new text</code> — no question)",
+                  "ru": "Куда отправить? Выбор запомню для этой темы. (💻 — открыта во вкладке, напишу прямо в неё; "
+                        "🖥 — открыта на компьютере, пойдёт копией; ответ на сообщение сессии или <code>/new текст</code> "
+                        "— без этого вопроса)"},
     "err.no_folder": {"en": "I don't know which folder this session is in.", "ru": "Не знаю, в какой папке эта сессия."},
     "fork.offer": {"en": "This session is open on the computer (a VS Code tab or the terminal). Writing to it from here "
                          "would mix up the conversation. I can continue as a <b>copy</b>: the same history, a separate "

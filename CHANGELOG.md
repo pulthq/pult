@@ -2,6 +2,17 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.9.3 — 2026-10-17
+
+Text in a project topic no longer asks "where to?" every time.
+
+- Each topic has a current session: the one you chose last — with a button, a reply to its message or `/new`.
+  Plain text in the topic goes there until the session closes or after 2 hours of quiet in the topic.
+- With no current session, text goes to the project's only session that can be written into right now (a VS Code
+  tab with Pult's wrapper, or a session started from Telegram). With several, Pult asks once and remembers.
+- Pult answers "→ «session»" so you see where the text went, and the topic's pinned card starts with
+  "🎯 Now: «session»".
+
 ## 0.9.2 — 2026-10-17
 
 - Every project topic gets its pinned 📱 Pult card when Pult starts, not only once Pult writes there. A topic
