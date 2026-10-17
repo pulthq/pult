@@ -63,7 +63,7 @@ WARN_AT = (80, 95)       # % of a limit: a warning with sound in General (decisi
 UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the app shrinks them to ~200 KB first)
 UPLOADS_MAX = 3                 # pictures per message
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.9.7"
+VERSION = "0.9.8"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -73,6 +73,8 @@ TAB_CHECK_EVERY = 3600   # s; check whether a new Claude Code extension version 
 PREFS = {"vehi": True, "mode": "auto", "lang": None}   # owner prefs: milestones, location (auto/mac/phone), language
 MODES = ("auto", "mac", "phone")
 REPO_URL = os.environ.get("PULT_REPO_URL") or "https://github.com/pulthq/pult"   # where /feedback sends bugs and ideas
+MODEL_RE = re.compile(r"[A-Za-z0-9][\w.\-\[\]]{0,63}")        # a model alias or id for a session from Telegram
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 
 def log(*a):
@@ -223,6 +225,35 @@ def image_kind(blob):
         return "gif"
     if blob[:4] == b"RIFF" and blob[8:12] == b"WEBP":
         return "webp"
+    return None
+
+
+def prompt_started(path, tail=512 * 1024):
+    """When the turn in progress began: the time of the owner's last prompt in the transcript. For a turn Pult
+    learns about from its steps (Pult restarted mid-turn, a tab opened before Pult) — otherwise "working 14 s"
+    after a restart. Messages absorbed mid-turn (queued_command) and tool results don't count."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - tail))
+            data = f.read()
+    except OSError:
+        return None
+    for line in reversed(data.split(b"\n")):
+        if b'"user"' not in line:
+            continue
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if e.get("type") != "user" or e.get("isSidechain") or e.get("isMeta"):
+            continue
+        content = (e.get("message") or {}).get("content")
+        blocks = content if isinstance(content, list) else [{"type": "text", "text": content or ""}]
+        if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in blocks):
+            continue
+        if any(isinstance(b, dict) and b.get("type") == "text" and b.get("text", "").strip() for b in blocks):
+            return _ts(e.get("timestamp")) or None
     return None
 
 
@@ -527,12 +558,14 @@ def same_input(a, b):
 class Driven:
     """A session Pult drives through the Agent SDK: new, continued or a copy (fork)."""
 
-    def __init__(self, d, sid, path, resume=None, fork=False):
+    def __init__(self, d, sid, path, resume=None, fork=False, model=None, effort=None):
         self.d = d
         self.sid = sid
         self.path = path
         self.resume = resume
         self.fork = fork
+        self.want_model = model       # the owner's choice for this session (None — Claude Code's settings)
+        self.want_effort = effort
         self.q = asyncio.Queue()
         self.client = None
         self.asking = False       # the query is sent, no result in the SDK stream yet
@@ -566,6 +599,10 @@ class Driven:
                   # claude-vscode is kept: the session shows up in the Claude tab and can be continued on the Mac
                   env={"PULT_DRIVEN": "1", "PULT_SOCK": SOCK, "CLAUDE_CODE_ENTRYPOINT": "claude-vscode"},
                   stderr=lambda s: None)
+        if getattr(self, "want_model", None):
+            kw["model"] = self.want_model
+        if getattr(self, "want_effort", None):
+            kw["effort"] = self.want_effort
         if self.resume:
             kw["resume"] = self.resume
         if self.fork:
@@ -673,6 +710,7 @@ class Pult:
         self.new_next = set()          # topics where a bare /new was sent: the next text there starts a new session
         self.ctx = store.get("ctx") or {}   # sid → [context window, max output tokens], from each turn's result
         self.ctx_model = store.get("ctx_model") or {}   # model → the same: a session that hasn't reported yet borrows it
+        self.choice = store.get("choice") or {}         # sid → {"model", "effort"} the owner picked for a session from Telegram
 
     # ----- this computer's environment -----
 
@@ -1105,6 +1143,8 @@ class Pult:
         """A long turn: at milestones, a short message with sound if the owner is away from the Mac or the
         session is from Telegram. At the Mac the owner sees the tab anyway, so stay quiet."""
         for mark in vehi_marks():
+            if t.started + mark < time.time() - 5:
+                continue                           # already passed when Pult learned of the turn: no burst of reminders
             await asyncio.sleep(max(0.0, t.started + mark - time.time()))
             if t.done or t.muted:
                 return
@@ -1192,7 +1232,11 @@ class Pult:
             if lv.turn is None:
                 if lv.title is None:
                     await self.refresh_title(lv)
-                self.start_turn(lv)
+                began = await asyncio.to_thread(prompt_started, lv.transcript) if lv.transcript else None
+                t = self.start_turn(lv)
+                if began and began < t.started:
+                    t.started = began              # the turn began before Pult saw it (a restart mid-turn)
+                    t.changed.set()
             t = lv.turn
             t.n += 1
             t.last = time.time()
@@ -1886,12 +1930,34 @@ class Pult:
             return
         await self.drive(sid, path, text, origin, resume=sid, pkey=pkey, quote=quote, here=here)
 
-    async def drive(self, sid, path, text, origin, resume=None, fork=False, pkey=None, quote=True, here=None):
+    def set_choice(self, sid, model=None, effort=None):
+        """The owner's model and effort for a session from Telegram; kept, so a resume starts the same way."""
+        cur = dict(self.choice.get(sid) or {})
+        if model is not None:
+            cur["model"] = model or None
+        if effort is not None:
+            cur["effort"] = effort or None
+        cur = {k: v for k, v in cur.items() if v}
+        if cur:
+            self.choice[sid] = cur
+        else:
+            self.choice.pop(sid, None)
+        if len(self.choice) > 300:
+            for k in list(self.choice)[:100]:
+                del self.choice[k]
+        self.store.put("choice", self.choice)
+
+    async def drive(self, sid, path, text, origin, resume=None, fork=False, pkey=None, quote=True, here=None,
+                    model=None, effort=None):
         """quote=False — the owner's message is in another topic (General): the turn doesn't reply to it
-        but shows the prompt itself. here — where the owner wrote (for a refusal); the project topic by default."""
+        but shows the prompt itself. here — where the owner wrote (for a refusal); the project topic by default.
+        model, effort — the owner's choice for a new session; a resumed one keeps what was chosen for it."""
         pkey = pkey or sanitize(path)
         if fork:
             resume, sid = sid, str(uuid.uuid4())
+        if model or effort:
+            self.set_choice(sid, model, effort)
+        choice = self.choice.get(sid) or {}
         if len(self.driven) >= MAX_DRIVEN:
             idle = [d for d in self.driven.values() if not d.busy and d.q.empty() and not d.bg]
             if not idle:
@@ -1906,7 +1972,8 @@ class Pult:
         lv = self.live_of(sid, pkey)
         lv.driven, lv.cwd = True, path
         lv.title = lv.title or R.short(R.attachments(text)[0], 60) or None
-        dr = self.driven[sid] = Driven(self, sid, path, resume=resume, fork=fork)
+        dr = self.driven[sid] = Driven(self, sid, path, resume=resume, fork=fork,
+                                       model=choice.get("model"), effort=choice.get("effort"))
         dr.q.put_nowait((text, origin if quote else None))
         await self.react(origin, "👀")
         log("Telegram session:", sid[:8], "fork" if fork else "resume" if resume else "new", path)
@@ -1917,7 +1984,8 @@ class Pult:
         """The tab wrapper (pult_tab.py) keeps a connection open while the tab is alive: it reports the session id
         and accepts messages for it. If the connection drops, the tab works as usual but can't be written into."""
         t = SimpleNamespace(pid=hello.get("pid"), cwd=hello.get("cwd"), sid=hello.get("sid"),
-                            version=hello.get("version"), writer=writer)
+                            version=hello.get("version"), writer=writer,
+                            caps=set(hello.get("caps") or []))      # an older wrapper (before 0.9.8) sends none
         self.tabs[t.pid] = t
         log("tab with the wrapper: pid %s, %s, Claude Code %s" % (t.pid, t.cwd, t.version))
         try:
@@ -2320,8 +2388,12 @@ class Pult:
         live["open"] = (seen or any(a.get("sessionId") == sid for a in await self.agents())) \
             and not live["tab"] and sid not in self.driven
         ctx = self.ctx_of(sid, (stats or {}).get("model"))
+        # the model can be picked from here: a session Pult runs, a tab with Pult's wrapper, or a closed session that
+        # Pult would resume; only a session open on the computer without the wrapper keeps its own
+        tab = self.tab_for(sid)
+        switch = sid in self.driven or (tab is not None and "model" in tab.caps) or not (live["open"] or live["tab"])
         return {"sid": sid, "title": self.title(lv), "project": self.project_label(lv.pkey), "pkey": lv.pkey,
-                "live": live, "page": page, "stats": stats,
+                "live": live, "page": page, "stats": stats, "choice": self.choice.get(sid) or {}, "switch": switch,
                 "ctx": {"window": ctx[0], "max_out": ctx[1], "usable": ctx_usable(ctx[0], ctx[1])} if ctx else None,
                 "pending": [self.req_item(r) for r in lv.pending.values() if not r.fut.done()]}
 
@@ -2367,14 +2439,49 @@ class Pult:
         await self.drive(sid, cwd, self.with_uploads(text, files), None, resume=sid, pkey=pkey)
         return {"ok": True, "how": "resume"}
 
-    async def api_new(self, pkey, text, files=None):
+    @staticmethod
+    def check_choice(model, effort):
+        model = (model or "").strip() or None
+        effort = (effort or "").strip() or None
+        if model and not MODEL_RE.fullmatch(model) or effort and effort not in EFFORTS:
+            raise ValueError("bad model or effort")
+        return model, effort
+
+    async def api_new(self, pkey, text, files=None, model=None, effort=None):
         text = (text or "").strip()
         path = self.project_path(pkey)
         if not (text or files) or not path or not os.path.isdir(path):
             raise ValueError(self.t("err.need_project_text"))
+        model, effort = self.check_choice(model, effort)
         sid = str(uuid.uuid4())
-        await self.drive(sid, path, self.with_uploads(text, files), None, pkey=pkey)
+        await self.drive(sid, path, self.with_uploads(text, files), None, pkey=pkey, model=model, effort=effort)
         return {"ok": True, "sid": sid}
+
+    async def api_model(self, sid, model=None, effort=None):
+        """The model (and effort) of a session from Telegram: a running one switches at once (SDK set_model), a
+        resting or closed one starts with the choice next time. A VS Code tab keeps its own model."""
+        if not SID_RE.fullmatch(sid or ""):
+            raise ValueError(self.t("err.bad_sid"))
+        model, effort = self.check_choice(model, effort)
+        self.set_choice(sid, model if model is not None else "", effort if effort is not None else "")
+        dr = self.driven.get(sid)
+        tab = self.tab_for(sid)
+        live = False
+        if dr and dr.client:
+            await dr.client.set_model(model)
+            dr.want_model = model
+            live = True
+        elif tab:
+            # a VS Code tab with Pult's wrapper: the wrapper sends the same set_model request the tab's own picker
+            # ends in (probe tests/probe_model.py, 2.1.301); "default" means the model from the settings
+            if "model" not in tab.caps:
+                raise ValueError(self.t("err.old_wrapper"))
+            tab.writer.write((json.dumps({"op": "model", "model": model}) + "\n").encode())
+            await tab.writer.drain()
+            live = True
+        log("model for %s: %s%s (%s)" % (sid[:8], model or "default", " · " + effort if effort else "", "live" if live else "next start"))
+        self.changed(sid)
+        return {"ok": True, "live": live, "choice": self.choice.get(sid) or {}}
 
     async def usage(self, force=False):
         """Subscription usage: the get_usage control request to Claude Code — no model request, ~1.5 s.

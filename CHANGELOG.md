@@ -2,6 +2,25 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.9.8 — 2026-10-18
+
+- The status under the message field wraps instead of being cut off on a narrow phone, and a tap on it explains
+  in plain words where the message goes, which model this is and what the context number means.
+- “↓” and the auto-scroll land at the very bottom, with the last message fully above the composer.
+- The model of a session from Telegram can be picked from the phone: in the new-task form (with the effort level)
+  and, for a session Pult runs, by a tap on the model name under the message field — a running session switches
+  at once, a resting one starts with the choice next time. A VS Code tab with Pult's wrapper switches too: the
+  wrapper sends the process the same request the tab's own picker ends in (checked with a probe on 2.1.301). Open
+  tabs pick the wrapper change up after Reload Window.
+- The explanation of the status line opens as a sheet of the app's own, whatever its length: Telegram's alert
+  box shows nothing beyond 256 characters.
+- "Working 14 s" ticks every second on Home and in a session, and the working chip pulses green. In Russian,
+  seconds read "сек" instead of "с".
+- The model menu closes with a tap outside, its ×, the system back gesture or Telegram's Back — like a picture
+  opened full screen.
+- After Pult restarts in the middle of a turn, the turn's time counts from your prompt, not from the first step
+  Pult happened to see; milestones already past don't fire in a burst.
+
 ## 0.9.7 — 2026-10-18
 
 - The context gauge sits by the message field on the session screen, always in view, next to the model name — as

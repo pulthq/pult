@@ -106,6 +106,7 @@ class Tab:
         self.slock = threading.Lock()
         self.child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
         self.cin, self.cout = self.child.stdin.fileno(), self.child.stdout.fileno()
+        self.drop = set()                      # ids of our own control requests: their responses don't reach the extension
 
     def to_claude(self, line):
         with self.lock:
@@ -125,8 +126,10 @@ class Tab:
                 pass
 
     def down(self):
-        """Claude Code → extension, byte for byte; along the way, pick up the session ID from system/init and the
-        context window from each turn's result (the same line the tab's own gauge reads)."""
+        """Claude Code → extension, line by line and unchanged; along the way, pick up the session ID from
+        system/init and the context window from each turn's result (the same line the tab's own gauge reads). The
+        only lines held back are the answers to the wrapper's own control requests (set_model): the extension never
+        asked, so it must not see them. A line longer than TAP_MAX is passed through without a look."""
         buf = b""
         while True:
             try:
@@ -135,23 +138,51 @@ class Tab:
                 break
             if not chunk:
                 break
-            try:
-                write_all(1, chunk)
-            except OSError:
-                break
-            try:
-                buf += chunk
-                while b"\n" in buf:
-                    line, buf = buf.split(b"\n", 1)
+            buf += chunk
+            out = b""
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                try:
+                    if self.drop and b'"control_response"' in line and self.is_ours(line):
+                        continue
                     if b'"init"' in line and b'"system"' in line:
                         self.on_init(line)
                     elif b'"result"' in line and b'"modelUsage"' in line:
                         self.on_result(line)
-                if len(buf) > TAP_MAX:
-                    buf = b""
-            except Exception as e:                 # parsing is a side job: its errors never affect the tab
-                log("output parsing:", type(e).__name__)
+                except Exception as e:             # parsing is a side job: its errors never affect the tab
+                    log("output parsing:", type(e).__name__)
+                out += line + b"\n"
+            if len(buf) > TAP_MAX:
+                out += buf
                 buf = b""
+            try:
+                if out:
+                    write_all(1, out)
+            except OSError:
+                break
+        if buf:                                    # the last line without a newline
+            try:
+                write_all(1, buf)
+            except OSError:
+                pass
+
+    def is_ours(self, line):
+        obj = json.loads(line)
+        rid = (obj.get("response") or {}).get("request_id") if obj.get("type") == "control_response" else None
+        if rid in self.drop:
+            self.drop.discard(rid)
+            log("model switched" if (obj.get("response") or {}).get("subtype") == "success" else
+                "model switch refused: %s" % str(obj.get("response"))[:200])
+            return True
+        return False
+
+    def set_model(self, model):
+        """A control request like the one the extension's own model picker sends (extension 2.1.301: set_model)."""
+        rid = "pult-" + uuid.uuid4().hex[:12]
+        self.drop.add(rid)
+        req = {"type": "control_request", "request_id": rid, "request": {"subtype": "set_model", "model": model or None}}
+        self.to_claude(json.dumps(req, ensure_ascii=False).encode() + b"\n")
+        log("model for the tab:", model or "default")
 
     def on_init(self, line):
         obj = json.loads(line)
@@ -189,13 +220,15 @@ class Tab:
                 with self.slock:
                     self.sock = s
                 self.tell({"op": "hello", "pid": os.getpid(), "cwd": self.cwd, "sid": self.sid,
-                           "version": version_of(self.argv[0])})
+                           "version": version_of(self.argv[0]), "caps": ["model", "ctx"]})   # what this wrapper can do
                 for line in s.makefile("rb"):
                     m = json.loads(line)
                     if m.get("op") == "send" and m.get("text"):
                         self.send_user(m["text"], m.get("uuid"))
                         log("message from Pult into the tab", (self.sid or "?")[:8])
                         self.tell({"op": "sent", "uuid": m.get("uuid")})
+                    elif m.get("op") == "model":
+                        self.set_model(m.get("model"))
             except Exception as e:
                 if not isinstance(e, (FileNotFoundError, ConnectionRefusedError)):
                     log("daemon link:", type(e).__name__)

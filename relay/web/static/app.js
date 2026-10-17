@@ -178,22 +178,39 @@ function Thumbs({ a }) {
 function Pic({ a }) {
   const [src, setSrc] = useState(null);
   const [big, setBig] = useState(false);
-  // full screen is a history entry: the system back gesture, Telegram's Back and a tap all go through history.back()
-  const open = () => { lightboxes++; history.pushState({ lightbox: true }, ""); setBig(true); };
-  useEffect(() => {
-    if (!big) return;
-    const onPop = () => { lightboxes = Math.max(0, lightboxes - 1); setBig(false); };
-    addEventListener("popstate", onPop);
-    return () => removeEventListener("popstate", onPop);
-  }, [big]);
+  const [open, close] = useOverlay(big, setBig);
   useEffect(() => {
     if (!a.image || !a.inbox) return;
     let alive = true;
     api("inbox", { name: a.name }).then((d) => alive && setSrc("data:image/" + (d.kind === "jpg" ? "jpeg" : d.kind) + ";base64," + d.data)).catch(() => {});
     return () => { alive = false; };
   }, [a.name]);
-  if (src) return html`<img class="att" src=${src} alt="" onClick=${open}/>${big && html`<div class="lightbox" onClick=${() => history.back()}><img src=${src} alt=""/></div>`}`;
+  if (src) return html`<img class="att" src=${src} alt="" onClick=${open}/>${big && html`<div class="lightbox" onClick=${close}><img src=${src} alt=""/></div>`}`;
   return html`<span class="att-chip">${a.image ? "🖼 " + a.name.split("/").pop() : t("att.file")}</span>`;
+}
+
+// the model of a session from Telegram: aliases Claude Code accepts, plus whatever the settings say
+const MODELS = [["", "model.default"], ["opus", "Opus"], ["sonnet", "Sonnet"], ["haiku", "Haiku"]];
+const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
+// a note over the composer: Telegram's own alert box is capped at 256 characters and shows nothing beyond that
+function Sheet({ title, lines, onClose }) {
+  return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick"><div class="q-t pick-h">${title}<button class="x" aria-label=${t("close")} onClick=${onClose}>×</button></div>
+    ${lines.map((l, i) => html`<p class="sheet-p" key=${i}>${l}</p>`)}</div>`;
+}
+
+function ModelPick({ sid, choice, driven, tab, onDone, onClose }) {
+  const [busy, setBusy] = useState(false);
+  const cur = (choice && choice.model) || "";
+  const pick = async (m) => {
+    setBusy(true);
+    try { const r = await api("model", { sid, model: m }); haptic("success"); onDone(r); }
+    catch (e) { alertBox(e.message); }
+    setBusy(false);
+  };
+  return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick"><div class="q-t pick-h">${t("model.pick")}<button class="x" aria-label=${t("close")} onClick=${onClose}>×</button></div>
+    ${MODELS.map(([m, label]) => html`<button key=${m} class=${"opt" + (m === cur ? " on" : "")} disabled=${busy} onClick=${() => pick(m)}>
+      <b>${m ? label : t(label)}</b></button>`)}
+    <div class="dim small">${driven ? t("model.next") : tab ? t("model.next") + " " + t("model.tab") : t("model.later")}</div></div>`;
 }
 
 function useNow(every = 15000) {
@@ -218,9 +235,20 @@ const stack = [location.hash];
 addEventListener("hashchange", () => {
   if (stack.length > 1 && stack[stack.length - 2] === location.hash) stack.pop(); else stack.push(location.hash);
 });
-let lightboxes = 0;    // a picture open full screen is a step in the history: Back closes it, not the screen
+let overlays = 0;      // a picture full screen, the model menu: steps in the history, so Back closes them, not the screen
 function back() {
-  if (lightboxes > 0 || stack.length > 1) history.back(); else { history.replaceState(null, "", "#/"); stack[0] = "#/"; dispatchEvent(new HashChangeEvent("hashchange")); }
+  if (overlays > 0 || stack.length > 1) history.back(); else { history.replaceState(null, "", "#/"); stack[0] = "#/"; dispatchEvent(new HashChangeEvent("hashchange")); }
+}
+// an overlay's open/close go through the history: the system back gesture, Telegram's Back, a tap outside — all the same
+function useOverlay(open, setOpen) {
+  useEffect(() => {
+    if (!open) return;
+    const onPop = () => { overlays = Math.max(0, overlays - 1); setOpen(false); };
+    addEventListener("popstate", onPop);
+    return () => removeEventListener("popstate", onPop);
+  }, [open]);
+  return [() => { if (!open) { overlays++; history.pushState({ overlay: true }, ""); setOpen(true); } },
+          () => { if (open) history.back(); }];
 }
 function useRoute() {
   const [r, set] = useState(parse());
@@ -333,7 +361,7 @@ function Where({ mac, onSet }) {
 }
 
 function Home() {
-  const now = useNow();
+  const now = useNow(1000);            // "working 14 s" ticks every second: a turn in progress should look alive
   const [d, err, set] = useLive(() => api("overview"), []);
   const [showOpen, setShowOpen] = useState(false);
   if (!d) return html`<${Loading} err=${err}/>`;
@@ -469,13 +497,20 @@ function group(items) {
 const At = ({ ts, mid }) => (ts ? html`<span class="t">${mid ? t("mid.turn") : ""}${hhmm(toDate(ts))}</span>` : "");
 
 function Session({ sid }) {
-  const now = useNow(10000);
+  const now = useNow(1000);
   const [s, setS] = useState({ items: [], before: null, end: null, info: null, err: null });
   const ref = useRef(s);
   ref.current = s;
   const bottom = useRef(null);
+  // the very bottom of the page, past the padding that keeps the last message above the composer (the end marker
+  // sits before that padding, so scrollIntoView stopped short)
+  const toBottom = () => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" });
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [pick, setPick] = useState(false);
+  const [openPick, closePick] = useOverlay(pick, setPick);
+  const [note, setNote] = useState(null);
+  const [openNote, closeNote] = useOverlay(!!note, (v) => { if (!v) setNote(null); });
   const [unread, setUnread] = useState(false);
   const [far, setFar] = useState(false);          // scrolled up more than a screen: a way straight to the bottom
   const a = useAttach();
@@ -516,7 +551,7 @@ function Session({ sid }) {
       const stick = mode !== "before" && (!cur.info || window.innerHeight + window.scrollY > document.body.scrollHeight - 120);
       setS({ items, before: mode === "after" ? cur.before : p.before, end: mode === "before" ? cur.end : p.end,
              info: d, err: null });
-      if (stick) setTimeout(() => bottom.current && bottom.current.scrollIntoView({ block: "end" }), 30);
+      if (stick) setTimeout(toBottom, 30);
       else if (mode === "after" && p.items.some((i) => i.k !== "result")) setUnread(true);
     } catch (e) { setS(Object.assign({}, ref.current, { err: e.message })); }
   };
@@ -564,7 +599,17 @@ function Session({ sid }) {
   // the status under the message field: where the text goes (a tab, a copy), the model, the context gauge
   const dest = lv.tab ? t("dest.tab") : lv.open ? t("dest.copy") : "";
   const ctxText = info.stats && info.stats.model ? (pct !== null ? t("ctx.pct", { pct, win: kilo(info.ctx.window) }) : t("context", { n: kilo(info.stats.context) })) : "";
-  const status = html`${dest}${dest && info.stats && info.stats.model ? " · " : ""}${info.stats && info.stats.model ? modelName(info.stats.model) + " · " : ""}<span class=${pct >= 90 ? "bad" : pct >= 70 ? "warn" : ""}>${ctxText}</span>`;
+  // three pieces that wrap whole, never inside: where it goes · the model · the context
+  // the model piece: the session's model, or the one picked for it; a tap picks when Pult runs the session
+  const chosen = info.choice && info.choice.model;
+  const modelText = chosen ? chosen.charAt(0).toUpperCase() + chosen.slice(1) + (info.stats && info.stats.model && !modelName(info.stats.model).toLowerCase().startsWith(chosen) ? " ▸" : "")
+    : info.stats && info.stats.model ? modelName(info.stats.model) : "";
+  const status = html`${dest && html`<span class="u">${dest}</span>`}${modelText && html`<span class=${"u" + (info.switch ? " link" : "")} onClick=${info.switch ? (e) => { e.stopPropagation(); pick ? closePick() : openPick(); } : null}>${modelText}${info.switch ? " ▾" : ""}</span>`}${ctxText && html`<span class=${"u " + (pct >= 90 ? "bad" : pct >= 70 ? "warn" : "")}>${ctxText}</span>`}`;
+  // a tap on the status explains it in plain words, in a sheet of our own
+  const explain = () => { setNote([lv.tab ? t("ex.tab") : lv.open ? t("ex.copy") : t("ex.session"),
+    info.stats && info.stats.model ? t("ex.model", { m: modelName(info.stats.model) }) + (info.switch ? "" : " " + (lv.tab ? t("model.reload") : t("model.fixed"))) : "",
+    info.stats && info.stats.model ? t("ex.ctx", { n: kilo(info.stats.context), win: pct !== null ? t("ex.ctx.win", { w: kilo(info.ctx.window), pct }) : "" }) : ""
+  ].filter(Boolean)); openNote(); };
   return html`<div class="session">
     <div class="sess-h"><h2>${info.title}</h2><div class="dim">${info.project !== info.title ? html`<a class="crumb" href=${"#/p/" + encodeURIComponent(info.pkey)}>${info.project}</a>` : ""} ${st}</div>
       ${info.stats && info.stats.model && html`<div class="stats">${[modelName(info.stats.model), info.stats.effort].filter(Boolean).join(" · ")} · <span class=${pct >= 90 ? "bad" : pct >= 70 ? "warn" : ""}>${t("context", { n: kilo(info.stats.context) })}${pct !== null ? t("context.pct", { pct, win: kilo(info.ctx.window) }) : ""}</span><br/>
@@ -579,12 +624,14 @@ function Session({ sid }) {
     ${lv.state === "work" && html`<div class="working">${t("working")}</div>`}
     ${info.pending.map((r) => html`<${Req} key=${r.rid} r=${r} showWhere=${false}/>`)}
     <div ref=${bottom}></div>
-    ${(unread || far) && html`<button class=${"tobottom" + (unread ? " fresh" : "")} aria-label=${t("to.bottom")} onClick=${() => { bottom.current && bottom.current.scrollIntoView({ block: "end" }); setUnread(false); }}>${unread ? t("new.msgs") : "↓"}</button>`}
+    ${(unread || far) && html`<button class=${"tobottom" + (unread ? " fresh" : "")} aria-label=${t("to.bottom")} onClick=${() => { toBottom(); setUnread(false); }}>${unread ? t("new.msgs") : "↓"}</button>`}
     <div class="composer" ref=${comp}>
+      ${pick && html`<${ModelPick} sid=${sid} choice=${info.choice} driven=${lv.driven} tab=${lv.tab} onClose=${closePick} onDone=${() => { closePick(); load("after"); }}/>`}
+      ${note && html`<${Sheet} title=${info.title} lines=${note} onClose=${closeNote}/>`}
       <${Thumbs} a=${a}/>
       <textarea ref=${ta} rows="1" placeholder=${t("write")} value=${text} onInput=${(e) => { setText(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}/>
       <div class="ctl"><${Attach} a=${a} disabled=${busy}/>
-        <span class="status">${status}</span>
+        <button class="status" onClick=${explain}>${status}</button>
         ${lv.driven && lv.state === "work" ? html`<button class="btn danger" onClick=${stop}>${t("stop")}</button>` : ""}
         <button class="btn send" aria-label=${t("send")} disabled=${busy || (!text.trim() && !a.files.length)} onClick=${() => sendText(false)}><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button></div>
     </div>
@@ -596,11 +643,13 @@ function NewTask({ pkey }) {
   const [p, setP] = useState(pkey || "");
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [model, setModel] = useState("");
+  const [effort, setEffort] = useState("");
   const a = useAttach();
   if (!d) return html`<${Loading} err=${err}/>`;
   const send = async () => {
     setBusy(true);
-    try { const r = await api("new", { pkey: p, text, files: a.payload() }); haptic("success"); go("#/s/" + r.sid); }
+    try { const r = await api("new", { pkey: p, text, files: a.payload(), model, effort }); haptic("success"); go("#/s/" + r.sid); }
     catch (e) { alertBox(e.message); }
     setBusy(false);
   };
@@ -614,6 +663,12 @@ function NewTask({ pkey }) {
     <textarea rows="6" placeholder=${t("new.placeholder")} value=${text} onInput=${(e) => setText(e.target.value)}/>
     <${Thumbs} a=${a}/>
     <${Attach} a=${a} disabled=${busy} wide=${true}/>
+    <div class="row2">
+      <label class="lbl">${t("model")}<select value=${model} onChange=${(e) => setModel(e.target.value)}>
+        ${MODELS.map(([m, label]) => html`<option key=${m} value=${m}>${m ? label : t(label)}</option>`)}</select></label>
+      <label class="lbl">${t("effort")}<select value=${effort} onChange=${(e) => setEffort(e.target.value)}>
+        ${EFFORTS.map((x) => html`<option key=${x} value=${x}>${x || t("effort.default")}</option>`)}</select></label>
+    </div>
     <button class="btn wide" disabled=${busy || !p || (!text.trim() && !a.files.length)} onClick=${send}>${t("new.start")}</button>
     <div class="dim small">${t("new.about")}</div>
   </div>`;

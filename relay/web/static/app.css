@@ -35,7 +35,7 @@ h3.toggle { cursor: pointer; }
 .empty { color: var(--muted); text-align: center; padding: 40px 16px; }
 button, a { -webkit-tap-highlight-color: transparent; }
 button { font: inherit; color: inherit; }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:focus-visible, a:focus-visible, label:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }   /* fields show their own border instead */
 .item:active, .opt:active, .btn:active, .where-b:active, .gear:active, .seg button:active, .steps-h:active, .step-h:active { opacity: .7; }
 .item, .opt, .btn, .where-b, .gear, .seg button { transition: opacity .08s; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
@@ -66,7 +66,10 @@ button { font: inherit; color: inherit; }
 .path { font-size: 12.5px !important; overflow-wrap: anywhere; }
 .now { margin-top: 4px; font-size: 14.5px; overflow-wrap: anywhere; }
 .chip { flex: none; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 99px; background: var(--code); color: var(--muted); white-space: nowrap; }
-.chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.bad { color: var(--danger); }
+.chip.ok { color: var(--ok); animation: pulse 1.8s ease-in-out infinite; } .chip.warn { color: var(--warn); } .chip.bad { color: var(--danger); }
+/* a turn in progress pulses in colour: the chip fills green and back */
+@keyframes pulse { 0%, 100% { background: var(--code); color: var(--ok); } 50% { background: var(--ok); color: #fff; } }
+@media (prefers-reduced-motion: reduce) { .chip.ok { animation: none; } }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 5px 0 3px; }
 
 /* what needs you: the one loud thing — a warm bar on the left, everything else as usual */
@@ -142,7 +145,19 @@ details.plan summary { cursor: pointer; color: var(--link); }
   background: var(--card); border-top: 1px solid var(--line); }
 .composer textarea { resize: none; max-height: 160px; border-radius: 14px; }
 .ctl { display: flex; align-items: center; gap: 8px; }
-.ctl .status { flex: 1; min-width: 0; font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ctl .status { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 1px 10px; font-size: 12.5px; line-height: 1.3; color: var(--muted);
+  background: none; border: 0; padding: 0; text-align: left; cursor: pointer; }
+.ctl .status .u { white-space: nowrap; }
+.ctl .status .u.link { color: var(--link); }
+.card.pick { margin: 0 0 4px; position: relative; z-index: 8; }
+.pick-h { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.sheet-p { margin: 6px 0; font-size: 14.5px; }
+.pick-h .x { background: none; border: 0; color: var(--muted); font-size: 22px; line-height: 1; padding: 0 2px; cursor: pointer; }
+.backdrop { position: fixed; inset: 0; z-index: 7; background: rgba(0, 0, 0, .08); }
+.composer { z-index: 8; }
+.row2 { display: flex; gap: 10px; }
+.row2 .lbl { flex: 1; margin-top: 10px; }
+.row2 select { margin-top: 6px; }
 .ctl .warn { color: var(--warn); } .ctl .bad { color: var(--danger); }
 .ctl .btn { flex: none; }
 .ctl .btn.danger { min-height: 36px; padding: 6px 12px; font-size: 14px; }

@@ -202,7 +202,7 @@ S = {
     },
 
     # ----- rendering (pult_render) -----
-    "dur.s": {"en": "{n} s", "ru": "{n} с"},
+    "dur.s": {"en": "{n} s", "ru": "{n} сек"},
     "dur.m": {"en": "{n} min", "ru": "{n} мин"},
     "dur.h": {"en": "{n} h", "ru": "{n} ч"},
     "reset.at": {"en": "at {hm} ({left})", "ru": "в {hm} ({left})"},
@@ -415,6 +415,8 @@ S = {
     "err.no_folder_short": {"en": "I don't know the session's folder", "ru": "не знаю папку сессии"},
     "err.need_project_text": {"en": "a project and a text are needed", "ru": "нужны проект и текст"},
     "err.no_request": {"en": "no such request: {op}", "ru": "нет такого запроса: {op}"},
+    "err.old_wrapper": {"en": "this tab started with an older Pult wrapper: Reload Window in VS Code first",
+                        "ru": "вкладка запущена со старой обёрткой Пульта: сначала Reload Window в VS Code"},
 
     # ----- the pult command in Terminal (plain text; the report itself is English only) -----
     "cli.usage": {

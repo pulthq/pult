@@ -139,7 +139,7 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(R.steps_word(22), "22 шага")
 
     def test_human(self):
-        self.assertEqual(R.human_dur(40), "40 с")
+        self.assertEqual(R.human_dur(40), "40 сек")
         self.assertEqual(R.human_dur(360), "6 мин")
         self.assertEqual(R.human_dur(3600), "1 ч")
         self.assertEqual(R.human_dur(3900), "1 ч 5 мин")
@@ -494,6 +494,21 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         lv.title, lv.named = "Отчёт по продажам", True
         self.assertEqual(self.p.title(lv), "Отчёт по продажам")
 
+    async def test_turn_started_before_pult(self):
+        # Pult restarted mid-turn (or a tab was open before it): the first step it sees starts the turn, and the
+        # start time comes from the owner's prompt in the transcript, not from that step
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        Path(TP).write_text(tline("user", "Долгая задача", ago=600) + "\n" + tline("assistant", "Читаю", ago=590) + "\n" +
+                            json.dumps({"type": "user", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 300)),
+                                        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}}) + "\n")
+        self.assertAlmostEqual(pultd.prompt_started(TP), time.time() - 600, delta=5)
+        await run_hook(ev("SessionStart", source="startup"))
+        await run_hook(ev("PostToolUse", tool_name="Read", tool_input={"file_path": "/Users/x/proj/a.md"}))
+        await until(lambda: self.p.live[SID].turn and self.p.live[SID].turn.msg)
+        self.assertAlmostEqual(self.p.live[SID].turn.started, time.time() - 600, delta=5)
+        await until(lambda: any("работает 10 мин" in t for t in self.sent()))
+        await run_hook(ev("Stop", last_assistant_message="ок"))
+
     async def test_stale_turn(self):
         lv = self.p.live_of(SID, PKEY)
         t = self.p.start_turn(lv, "задача")
@@ -682,6 +697,74 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.p.live_of(SID2, PKEY).transcript = tp2
         self.assertEqual((await self.p.api_session(SID2))["ctx"]["window"], 200000)
         self.assertEqual(self.store.get("ctx_model"), {"claude-opus-5-5": [200000, 32000]})
+
+    async def test_model_choice(self):
+        # the model and effort for a session from Telegram: picked for a new task, switched live on a running one
+        # (SDK set_model), kept for a resume; a VS Code tab keeps its own
+        import claude_agent_sdk
+        from types import SimpleNamespace
+        with mock.patch.object(self.p, "drive", mock.AsyncMock()) as drive:
+            self.store.set_topic(PKEY, str(TMP), "proj", 77)
+            await self.p.api_new(PKEY, "Fix this", model="opus", effort="high")
+            self.assertEqual((drive.call_args.kwargs["model"], drive.call_args.kwargs["effort"]), ("opus", "high"))
+            with self.assertRaises(ValueError):
+                await self.p.api_new(PKEY, "Fix this", model="opus; rm -rf", effort="high")
+            with self.assertRaises(ValueError):
+                await self.p.api_new(PKEY, "Fix this", effort="turbo")
+        self.store.touch_session(SID, PKEY, path="/Users/x/proj", driven=True)
+        self.p.live_of(SID, PKEY).transcript = TP
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        Path(TP).write_text("")
+        client = SimpleNamespace(set_model=mock.AsyncMock())
+        self.p.driven[SID] = SimpleNamespace(busy=False, bg=set(), q=asyncio.Queue(), client=client, want_model=None,
+                                             task=SimpleNamespace(cancel=lambda: None))
+        res = await self.p.api_model(SID, "sonnet")
+        client.set_model.assert_awaited_once_with("sonnet")
+        self.assertEqual((res["live"], res["choice"]), (True, {"model": "sonnet"}))
+        self.assertEqual(self.store.get("choice")[SID], {"model": "sonnet"})
+        info = await self.p.api_session(SID)
+        self.assertEqual((info["choice"], info["switch"]), ({"model": "sonnet"}, True))
+        await self.p.api_model(SID, "")                                            # back to the settings' default
+        client.set_model.assert_awaited_with(None)
+        self.assertNotIn(SID, self.store.get("choice"))
+        # a VS Code tab with the wrapper: the wrapper gets the request (probe_model.py: it switches the tab)
+        del self.p.driven[SID]
+        r, w = await asyncio.open_unix_connection(os.environ["PULT_SOCK"])
+        w.write(('{"op": "hello", "pid": 4545, "cwd": "/Users/x/proj", "sid": "%s", "version": "2.1.301"}\n' % SID).encode())
+        await w.drain()
+        await until(lambda: self.p.tab_for(SID))
+        self.assertFalse((await self.p.api_session(SID))["switch"])              # an old wrapper: no way to switch
+        with self.assertRaises(ValueError):
+            await self.p.api_model(SID, "haiku")
+        w.close()
+        await until(lambda: not self.p.tab_for(SID))
+        r, w = await asyncio.open_unix_connection(os.environ["PULT_SOCK"])
+        w.write(('{"op": "hello", "pid": 4546, "cwd": "/Users/x/proj", "sid": "%s", "version": "2.1.301", "caps": ["model", "ctx"]}\n' % SID).encode())
+        await w.drain()
+        await until(lambda: self.p.tab_for(SID))
+        res = await self.p.api_model(SID, "haiku")
+        self.assertEqual(json.loads(await asyncio.wait_for(r.readline(), 3)), {"op": "model", "model": "haiku"})
+        self.assertTrue(res["live"] and (await self.p.api_session(SID))["switch"])
+        w.close()
+        # a resume starts with the choice; a fake SDK client so the process isn't really started
+        class Fake:
+            def __init__(self, options): self.options = options
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): pass
+            async def receive_messages(self):
+                return
+                yield
+        self.p.driven.pop(SID, None)
+        self.p.set_choice(SID, "opus", "xhigh")
+        old = claude_agent_sdk.ClaudeSDKClient
+        claude_agent_sdk.ClaudeSDKClient = Fake
+        try:
+            d = pultd.Driven(self.p, SID, "/Users/x/proj", resume=SID, model="opus", effort="xhigh")
+            o = d.options()
+            self.assertEqual((o.model, o.effort, o.resume), ("opus", "xhigh", SID))
+            d.task.cancel()
+        finally:
+            claude_agent_sdk.ClaudeSDKClient = old
 
     async def test_project_counts(self):
         # the app's project list: open sessions, working, waiting — from `claude agents`, Pult's own sessions and
