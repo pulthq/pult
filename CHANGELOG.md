@@ -2,6 +2,11 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.9.2 — 2026-10-17
+
+- Every project topic gets its pinned 📱 Pult card when Pult starts, not only once Pult writes there. A topic
+  Telegram refuses (deleted) is remembered and not tried again on every start.
+
 ## 0.9.1 — 2026-10-17
 
 The app is one tap away. Telegram puts an app button next to the message field only in a private chat with the

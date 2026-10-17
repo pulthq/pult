@@ -57,7 +57,7 @@ USAGE_EVERY = 15 * 60    # usage check for warnings, if there was work on the Ma
 USAGE_NEAR_EVERY = 5 * 60   # …and near the threshold (from 70 %), more often
 WARN_AT = (80, 95)       # % of a limit: a warning with sound in General (decision 2026-10-16)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.9.1"
+VERSION = "0.9.2"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -744,24 +744,28 @@ class Pult:
         """A project topic's card: its intro with one button into the app on this project's screen, pinned in the
         topic — Telegram shows that button right in the topic's pinned bar, one tap from anywhere in the topic
         (owner's check 2026-10-17; a button next to the message field exists only in a private chat with the bot).
-        Posted with a new topic, or the first time Pult writes into an older one; edited when the language or the
-        app link changes. Without the app, a new topic gets the intro alone, unpinned."""
+        Posted with a new topic, and into every older topic when Pult starts (ensure_cards) or first writes there;
+        edited when the language or the app link changes. Without the app, a new topic gets the intro alone, unpinned.
+        A topic Telegram refuses (deleted) is remembered and not tried again until the language or the link changes."""
         row = self.store.topic(pkey)
         name, path = (row["name"], row["path"]) if row else (pkey, None)
         text = self.t("topic.intro", name=R.esc(name), path=R.esc(path or "?"))
         buttons = self.card_buttons(pkey)
         sig = "%s|%s" % (self.lang(), buttons[0][0]["url"] if buttons else "")
         cards = self.store.get("cards") or {}
-        mid, old, pinned = cards.get(str(thread)) or (None, None, False)
-        if mid and old != sig:
+        entry = cards.get(str(thread))
+        mid, old, pinned = entry or (None, None, False)
+        if entry and old == sig:
+            return
+        if mid:
             self.edit(mid, text, buttons, prio=7)
-        elif not mid and (buttons or new):
+        elif buttons or new:
             mid = await self.send(None, text, here=thread, buttons=buttons, prio=1 if new else 7)
             if not mid:
-                return
-        elif not mid or old == sig:
+                pinned = False                 # Telegram refused: remember, so every start doesn't try again
+        else:
             return
-        if buttons and not pinned:
+        if mid and buttons and not pinned:
             try:
                 await self.out.submit(1 if new else 7, lambda: self.tg.call(
                     "pinChatMessage", chat_id=self.chat, message_id=mid, disable_notification=True))
@@ -771,6 +775,17 @@ class Pult:
         cards = self.store.get("cards") or {}
         cards[str(thread)] = [mid, sig, pinned]
         self.store.put("cards", cards)
+
+    async def ensure_cards(self):
+        """On start: every project topic gets its card (only with the app set up). One by one, behind other messages."""
+        for row in self.store.db.execute("SELECT pkey, thread FROM topics WHERE thread IS NOT NULL").fetchall():
+            if row["thread"] in self.cards_seen:
+                continue
+            self.cards_seen.add(row["thread"])
+            try:
+                await self.topic_card(row["pkey"], row["thread"])
+            except Exception as e:
+                log("topic card:", repr(e))
 
     def card_check(self, pkey, thread):
         """Once per start for each topic Pult writes into: its card is there and up to date (in the background)."""
@@ -1879,6 +1894,7 @@ class Pult:
             await self.post_panel(0)
         else:
             self.edit(self.store.get("panel"), self.panel_text(), self.panel_buttons(), prio=6)
+        await self.ensure_cards()
 
     async def set_mode(self, mode):
         cur = self.prefs()

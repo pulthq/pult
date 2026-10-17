@@ -40,6 +40,7 @@ class FakeTg:
     def __init__(self):
         self.calls = []
         self.next_id = 1000
+        self.dead_threads = set()      # topics deleted in Telegram: sending there fails
 
     def handler(self, req):
         method = req.url.path.rsplit("/", 1)[-1]
@@ -48,6 +49,9 @@ class FakeTg:
             if ctype.startswith("application/x-www-form-urlencoded") else {}
         self.calls.append((method, data))
         self.next_id += 1
+        if method == "sendMessage" and data.get("message_thread_id") in self.dead_threads:
+            return httpx.Response(400, json={"ok": False, "error_code": 400,
+                                             "description": "Bad Request: message thread not found"})
         if method == "createForumTopic":
             res = {"message_thread_id": 77, "name": data.get("name")}
         elif method in ("sendMessage", "sendDocument"):
@@ -392,20 +396,30 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.texts()[-1], "первое")                                # the card comes first
         await self.p.send(PKEY, "второе")
         self.assertEqual(len(self.fake.of("pinChatMessage")), 1)
-        # an older topic, from before the cards
+        # older topics, from before the cards: on start each gets its card, once; a deleted one is remembered
         self.store.set_topic("-Users-x-old", "/Users/x/old", "old", 55)
+        self.store.set_topic("-Users-x-gone", "/Users/x/gone", "gone", 66)
+        self.fake.dead_threads.add("66")
+        await self.p.ensure_cards()
+        self.assertEqual(len(self.fake.of("pinChatMessage")), 2)
+        self.assertEqual(self.p.store.get("cards")["66"], [None, "ru|https://t.me/b/pult?startapp=p_-Users-x-gone", False])
         await self.p.send("-Users-x-old", "в старую тему")
-        await until(lambda: len(self.fake.of("pinChatMessage")) == 2)
-        await self.p.send("-Users-x-old", "ещё раз")
+        self.p.cards_seen.clear()                                                   # a restart
+        await self.p.ensure_cards()
         await asyncio.sleep(0.05)
         self.assertEqual(len([t for t in self.texts() if "📂 <b>old</b>" in t]), 1)
+        self.assertEqual(len([d for d in self.fake.of("sendMessage") if d.get("message_thread_id") == "66"]), 1)
         # the app moved: after a restart the cards are edited, not posted again
         self.p.env["PULT_APP_LINK"] = "https://t.me/b/app2"
         self.p.cards_seen.clear()
-        await self.p.send("-Users-x-old", "после перезапуска")
+        await self.p.ensure_cards()
         await until(lambda: any("app2" in d.get("reply_markup", "") for d in self.fake.of("editMessageText")))
         self.assertEqual(len([t for t in self.texts() if "📂 <b>old</b>" in t]), 1)
         self.assertEqual(len(self.fake.of("pinChatMessage")), 2)
+        # a topic bound later (/bind) gets its card the first time Pult writes there
+        self.store.set_topic("-Users-x-bound", "/Users/x/bound", "bound", 88)
+        await self.p.send("-Users-x-bound", "первое в привязанной")
+        await until(lambda: len(self.fake.of("pinChatMessage")) == 3)
         # a long path: the start parameter would not fit — the list of projects
         self.assertEqual(self.p.project_start("-" + "x" * 70), "projects")
 
@@ -415,6 +429,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         intro = next(d for d in self.fake.of("sendMessage") if "📂" in d["text"])
         self.assertNotIn("reply_markup", intro)
         self.store.set_topic("-Users-x-old", "/Users/x/old", "old", 55)
+        await self.p.ensure_cards()
         await self.p.send("-Users-x-old", "в старую тему")
         await asyncio.sleep(0.05)
         self.assertEqual(self.fake.of("pinChatMessage"), [])
