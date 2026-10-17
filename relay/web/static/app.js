@@ -136,6 +136,58 @@ document.addEventListener("click", (e) => {
   if (a) { e.preventDefault(); tg && tg.openLink ? tg.openLink(a.href) : window.open(a.href, "_blank", "noopener"); }
 });
 
+// ---------- pictures from the phone ----------
+
+// a screenshot → a JPEG no wider than 1600 px, as base64: a few hundred kilobytes instead of megabytes
+async function shrink(file) {
+  const img = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = URL.createObjectURL(file); });
+  const k = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(img.naturalWidth * k)); c.height = Math.max(1, Math.round(img.naturalHeight * k));
+  c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+  URL.revokeObjectURL(img.src);
+  const blob = await new Promise((ok) => c.toBlob(ok, "image/jpeg", 0.88));
+  const url = await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(blob); });
+  return { name: (file.name || "screenshot").replace(/\.[^.]+$/, "") + ".jpg", data: url.split(",")[1], preview: url };
+}
+const MAX_PICS = 3;
+function useAttach() {
+  const [files, setFiles] = useState([]);
+  const pick = async (e) => {
+    const list = [...(e.target.files || [])].slice(0, MAX_PICS - files.length);
+    e.target.value = "";
+    const out = [];
+    for (const f of list) { try { out.push(await shrink(f)); } catch (err) { alertBox(t("attach.failed")); } }
+    setFiles((cur) => cur.concat(out).slice(0, MAX_PICS));
+  };
+  return { files, pick, remove: (i) => setFiles(files.filter((_, k) => k !== i)), clear: () => setFiles([]),
+    payload: () => files.map((f) => ({ name: f.name, data: f.data })) };
+}
+const CLIP = html`<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>`;
+function Attach({ a, disabled, wide }) {
+  const full = a.files.length >= MAX_PICS;
+  return html`<label class=${"clip" + (wide ? " wide" : "") + (full || disabled ? " off" : "")} aria-label=${t("attach")}>${CLIP}${wide ? html`<span>${t("attach")}</span>` : ""}
+    <input type="file" accept="image/*" multiple disabled=${disabled || full} onChange=${a.pick}/></label>`;
+}
+function Thumbs({ a }) {
+  return a.files.length ? html`<div class="thumbs">${a.files.map((f, i) => html`<div class="thumb" key=${i}><img src=${f.preview} alt=""/>
+    <button aria-label=${t("attach.remove")} onClick=${() => a.remove(i)}>×</button></div>`)}</div>` : "";
+}
+
+// a picture the owner sent (from Telegram or the app): the chat shows it, not the path Claude got
+function Pic({ a }) {
+  const [src, setSrc] = useState(null);
+  const [big, setBig] = useState(false);
+  useEffect(() => {
+    if (!a.image || !a.inbox) return;
+    let alive = true;
+    api("inbox", { name: a.name }).then((d) => alive && setSrc("data:image/" + (d.kind === "jpg" ? "jpeg" : d.kind) + ";base64," + d.data)).catch(() => {});
+    return () => { alive = false; };
+  }, [a.name]);
+  if (src) return html`<img class=${"att" + (big ? " big" : "")} src=${src} alt="" onClick=${() => setBig(!big)}/>`;
+  return html`<span class="att-chip">${a.image ? "🖼 " + a.name.split("/").pop() : t("att.file")}</span>`;
+}
+
 function useNow(every = 15000) {
   const [now, set] = useState(Date.now() / 1000);
   useEffect(() => { const i = setInterval(() => set(Date.now() / 1000), every); return () => clearInterval(i); }, []);
@@ -410,6 +462,7 @@ function Session({ sid }) {
   const bottom = useRef(null);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const a = useAttach();
 
   const load = async (mode) => {
     const cur = ref.current;
@@ -440,10 +493,10 @@ function Session({ sid }) {
   }, [sid]);
 
   const sendText = async (fork) => {
-    if (!text.trim()) return;
+    if (!text.trim() && !a.files.length) return;
     setBusy(true);
     try {
-      const r = await api("send", { sid, text, fork: !!fork });
+      const r = await api("send", { sid, text, fork: !!fork, files: a.payload() });
       if (r.need === "fork") {
         setBusy(false);
         if (await confirmBox(t("fork.ask"))) return sendText(true);
@@ -451,6 +504,7 @@ function Session({ sid }) {
       }
       haptic("success");
       setText("");
+      a.clear();
       if (r.how === "fork") alertBox(t("fork.started"));
     } catch (e) { alertBox(e.message); }
     setBusy(false);
@@ -466,25 +520,27 @@ function Session({ sid }) {
   const st = lv.state === "ask" ? html`<span class="chip warn">${t("st.ask")}</span>`
     : lv.state === "work" ? html`<span class="chip ok">${t("st.work", { dur: lv.started ? dur(now - lv.started) : "" })}</span>` : "";
   const ts = info.stats && info.stats.turn;
+  // the context gauge, the same number VS Code shows: used ÷ (window − the reserve for the answer)
+  const pct = info.ctx && info.stats ? Math.min(100, Math.round(info.stats.context * 100 / info.ctx.usable)) : null;
   return html`<div class="session">
     <div class="sess-h"><h2>${info.title}</h2><div class="dim">${info.project !== info.title ? html`<a class="crumb" href=${"#/p/" + encodeURIComponent(info.pkey)}>${info.project}</a>` : ""} ${st}</div>
-      ${info.stats && info.stats.model && html`<div class="stats">${[modelName(info.stats.model), info.stats.effort,
-        t("context", { n: kilo(info.stats.context) })].filter(Boolean).join(" · ")}<br/>
+      ${info.stats && info.stats.model && html`<div class="stats">${[modelName(info.stats.model), info.stats.effort].filter(Boolean).join(" · ")} · <span class=${pct >= 90 ? "bad" : pct >= 70 ? "warn" : ""}>${t("context", { n: kilo(info.stats.context) })}${pct !== null ? t("context.pct", { pct, win: kilo(info.ctx.window) }) : ""}</span><br/>
         ${t("turn.stats", { n: ts.req, requests: plural(ts.req, "request"), out: kilo(ts.out) })}${ts.think ? t("turn.think", { n: kilo(ts.think) }) : ""}</div>`}
       ${lv.bg && lv.bg.length > 0 && html`<div class="bg">${bgLine(lv.bg)}</div>`}</div>
     ${s.before != null && html`<button class="link center" onClick=${() => load("before")}>${t("earlier")}</button>`}
     ${group(s.items).map((i, n) => i.k === "day" ? html`<div class="day" key=${i.key}>${i.label}</div>`
       : i.k === "steps" ? html`<${Steps} key=${i.key} steps=${i.steps}/>`
-      : i.k === "user" ? html`<div class="msg me" key=${n}>${i.text}<${At} ts=${i.ts}/></div>`
+      : i.k === "user" ? html`<div class="msg me" key=${n}>${i.text}${(i.att || []).map((a, k) => html`<${Pic} key=${k} a=${a}/>`)}<${At} ts=${i.ts}/></div>`
       : i.k === "note" ? html`<div class="note" key=${n}>${i.text}${i.ts ? " · " + hhmm(toDate(i.ts)) : ""}</div>`
       : html`<div class="msg" key=${n}><div class="md" dangerouslySetInnerHTML=${{ __html: md(i.text) }}/><${At} ts=${i.ts}/></div>`)}
     ${lv.state === "work" && html`<div class="working">${t("working")}</div>`}
     ${info.pending.map((r) => html`<${Req} key=${r.rid} r=${r} showWhere=${false}/>`)}
     <div ref=${bottom}></div>
-    <div class="composer">
+    <div class="composer"><${Thumbs} a=${a}/>
+      <div class="composer-row"><${Attach} a=${a} disabled=${busy}/>
       <textarea rows="1" placeholder=${lv.tab ? t("write.tab") : lv.open ? t("write.copy") : t("write.session")} value=${text} onInput=${(e) => { setText(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}/>
       ${lv.driven && lv.state === "work" ? html`<button class="btn danger" onClick=${stop}>${t("stop")}</button>` : ""}
-      <button class="btn send" aria-label=${t("send")} disabled=${busy || !text.trim()} onClick=${() => sendText(false)}><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button>
+      <button class="btn send" aria-label=${t("send")} disabled=${busy || (!text.trim() && !a.files.length)} onClick=${() => sendText(false)}><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button></div>
     </div>
   </div>`;
 }
@@ -494,10 +550,11 @@ function NewTask({ pkey }) {
   const [p, setP] = useState(pkey || "");
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const a = useAttach();
   if (!d) return html`<${Loading} err=${err}/>`;
   const send = async () => {
     setBusy(true);
-    try { const r = await api("new", { pkey: p, text }); haptic("success"); go("#/s/" + r.sid); }
+    try { const r = await api("new", { pkey: p, text, files: a.payload() }); haptic("success"); go("#/s/" + r.sid); }
     catch (e) { alertBox(e.message); }
     setBusy(false);
   };
@@ -509,7 +566,9 @@ function NewTask({ pkey }) {
     </select>
     <label class="lbl">${t("new.what")}</label>
     <textarea rows="6" placeholder=${t("new.placeholder")} value=${text} onInput=${(e) => setText(e.target.value)}/>
-    <button class="btn wide" disabled=${busy || !p || !text.trim()} onClick=${send}>${t("new.start")}</button>
+    <${Thumbs} a=${a}/>
+    <${Attach} a=${a} disabled=${busy} wide=${true}/>
+    <button class="btn wide" disabled=${busy || !p || (!text.trim() && !a.files.length)} onClick=${send}>${t("new.start")}</button>
     <div class="dim small">${t("new.about")}</div>
   </div>`;
 }

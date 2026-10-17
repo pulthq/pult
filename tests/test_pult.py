@@ -160,6 +160,16 @@ class RenderTest(unittest.TestCase):
         self.assertIn("Искать в интернете", R.permission_text("WebSearch", {"query": "погода"}))
         self.assertIn("Вызвать <b>tg: send</b>", R.permission_text("mcp__tg__send", {"a": 1}))
 
+    def test_attachments(self):
+        # the path under the owner's message is for Claude; a person sees "📎 снимок", and the title stays clean
+        text = "тест\n\n[Attachment from the Pult app: /Users/x/.local/share/pult/inbox/2026-10/app-1.jpg]"
+        self.assertEqual(R.attachments(text), ("тест", ["/Users/x/.local/share/pult/inbox/2026-10/app-1.jpg"]))
+        self.assertEqual(R.prompt_text(text), "тест 📎 снимок")
+        self.assertEqual(R.prompt_text("Have a look at the attachment.\n\n[Attachment from Telegram: /a/inbox/2026-10/5.pdf]"), "📎 файл")
+        self.assertEqual(R.prompt_text("просто текст"), "просто текст")
+        self.assertEqual(R.md_to_html("[CHANGELOG.md](CHANGELOG.md) и [journal.md](docs/journal.md)"),
+                         "<code>CHANGELOG.md</code> и <code>docs/journal.md</code>")
+
     def test_answers(self):
         qs = [{"question": "Q1"}, {"question": "Q2"}]
         self.assertEqual(R.answers_for(qs, {0: ["A"], 1: ["B", "C"]}), {"Q1": "A", "Q2": "B, C"})
@@ -637,6 +647,72 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.texts()[-1], I.T("bind.private", "ru"))
         self.assertNotIn("reply_markup", self.fake.of("sendMessage")[-1])
 
+    async def test_context_window(self):
+        # the context window comes from a turn's result (modelUsage): the wrapper taps it for tabs, Driven.read for
+        # sessions from Telegram; the app gets the window and the usable part, as VS Code counts it
+        import pult_tab
+        mu = {"claude-haiku-4-5": {"inputTokens": 5, "cacheReadInputTokens": 0, "contextWindow": 200000, "maxOutputTokens": 32000},
+              "claude-opus-5-5": {"inputTokens": 3000, "cacheReadInputTokens": 150000, "contextWindow": 1000000, "maxOutputTokens": 64000}}
+        self.assertEqual(pultd.ctx_from_usage(mu, "claude-haiku-4-5"), (200000, 32000))
+        self.assertEqual(pultd.ctx_from_usage(mu, None), (1000000, 64000))             # the one that read the most
+        self.assertIsNone(pultd.ctx_from_usage({"m": {"inputTokens": 1}}, "m"))
+        self.assertEqual(pult_tab.ctx_from_result({"type": "result", "modelUsage": mu}, "claude-haiku-4-5"), (200000, 32000))
+        self.assertIsNone(pult_tab.ctx_from_result({"type": "assistant", "modelUsage": mu}))
+        self.assertEqual(pultd.ctx_usable(200000, 32000), 167000)                       # 200k − 20k − 13k, like VS Code
+        self.store.touch_session(SID, PKEY, path="/Users/x/proj")
+        self.p.live_of(SID, PKEY).transcript = TP
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        Path(TP).write_text("")
+        r, w = await asyncio.open_unix_connection(os.environ["PULT_SOCK"])
+        w.write(('{"op": "hello", "pid": 4343, "cwd": "/Users/x/proj", "sid": "%s", "version": "2.1.301"}\n'
+                 '{"op": "ctx", "window": 200000, "max_out": 32000}\n' % SID).encode())
+        await w.drain()
+        await until(lambda: self.p.ctx.get(SID) == [200000, 32000])
+        self.assertEqual(self.store.get("ctx")[SID], [200000, 32000])                   # survives a restart
+        self.assertEqual((await self.p.api_session(SID))["ctx"], {"window": 200000, "max_out": 32000, "usable": 167000})
+        w.close()
+
+    async def test_inbox(self):
+        # the app may fetch pictures from Pult's inbox only: a real image by its month/name, nothing outside
+        import base64
+        d = TMP / "inbox" / "2026-10"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "app-1.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 8)
+        (d / "note.txt").write_text("secret")
+        got = await self.p.api_inbox("2026-10/app-1.png")
+        self.assertEqual((got["kind"], base64.b64decode(got["data"])[:4]), ("png", b"\x89PNG"))
+        for bad in ("2026-10/note.txt", "../env", "2026-10/../../env", "/etc/passwd", ""):
+            with self.assertRaises(ValueError, msg=bad):
+                await self.p.api_inbox(bad)
+
+    async def test_app_uploads(self):
+        # a screenshot from the app: saved like a Telegram attachment, Claude gets the path; anything that isn't a
+        # picture is dropped; a picture alone is a message; nothing usable — an empty message
+        import base64
+        from types import SimpleNamespace
+        self.store.touch_session(SID, PKEY, path="/Users/x/proj", driven=True)
+        self.p.live_of(SID, PKEY).transcript = TP
+        q = asyncio.Queue()
+        self.p.driven[SID] = SimpleNamespace(q=q, busy=False, bg=set(), client=None, task=SimpleNamespace(cancel=lambda: None))
+        png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\0" * 20).decode()
+        bad = base64.b64encode(b"#!/bin/sh\nrm -rf /\n").decode()
+        res = await self.p.api_send(SID, "Look", files=[{"name": "a.png", "data": png}, {"name": "x.sh", "data": bad}, {"data": "%%%"}])
+        self.assertEqual(res, {"ok": True, "how": "session"})
+        text, _ = q.get_nowait()
+        self.assertTrue(text.startswith("Look\n\n[Attachment from the Pult app: "), text)
+        path = text.split(": ", 1)[1].rstrip("]")
+        self.assertTrue(path.startswith(str(TMP / "inbox")) and path.endswith(".png"), path)
+        self.assertEqual(Path(path).read_bytes()[:4], b"\x89PNG")
+        self.assertEqual(text.count("[Attachment"), 1)
+        with self.assertRaises(ValueError):
+            await self.p.api_send(SID, "", files=[{"data": bad}])
+        await self.p.api_send(SID, "", files=[{"data": png}])
+        self.assertTrue(q.get_nowait()[0].startswith("Have a look at the attachment."))
+        with mock.patch.object(self.p, "drive", mock.AsyncMock()) as drive:
+            self.store.set_topic(PKEY, str(TMP), "proj", 77)
+            await self.p.api_new(PKEY, "Fix this", files=[{"data": png}])
+            self.assertIn("[Attachment from the Pult app: ", drive.call_args.args[2])
+
     async def test_new_and_stop_from_menu(self):
         # a tap in the command menu sends a bare /new or /stop: /new — the next text in the topic starts a new session;
         # /stop — the topic's current session from Telegram, no reply needed
@@ -764,6 +840,15 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(kb[0][0]["text"].startswith("💻 "), kb)
         self.assertEqual(await self.p.api_send(SID, "Ещё"), {"ok": True, "how": "tab"})
         self.assertEqual(json.loads(await asyncio.wait_for(r.readline(), 3))["text"], "Ещё")
+        # a message into a busy tab: Claude Code absorbs it into the running turn without a UserPromptSubmit and the
+        # tab doesn't show it (2.1.301) — the turn's result replies to that message in Telegram
+        await self.p.continue_session(SID, "А меня обновил?", 57, 77)
+        self.assertEqual(json.loads(await asyncio.wait_for(r.readline(), 3))["text"], "А меня обновил?")
+        await run_hook(ev("Stop", last_assistant_message="Да, обновил"))
+        await until(lambda: any("Да, обновил" in d.get("text", "") for d in self.fake.of("sendMessage")))
+        res = next(d for d in self.fake.of("sendMessage") if "Да, обновил" in d["text"])
+        self.assertEqual(json.loads(res["reply_parameters"])["message_id"], 57)
+        self.assertNotIn(SID, self.p.tab_expect)
         w.close()
         await until(lambda: not self.p.tabs)                       # the tab was closed — it can no longer be written to
         self.assertEqual(await self.p.api_send(SID, "снова"), {"ok": False, "need": "fork"})

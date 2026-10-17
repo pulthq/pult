@@ -73,6 +73,23 @@ def why_direct(argv, conf, cwd):
     return "folder not in the list"
 
 
+def ctx_from_result(obj, model=None):
+    """A turn's result → (context window, max output tokens) of its main model, from modelUsage; None if absent.
+    The main model is the one system/init named; otherwise the entry that read the most."""
+    if obj.get("type") != "result":
+        return None
+    mu = obj.get("modelUsage")
+    if not isinstance(mu, dict):
+        return None
+    entry = mu.get(model) if model else None
+    if not isinstance(entry, dict):
+        entry = max((v for v in mu.values() if isinstance(v, dict)), default=None,
+                    key=lambda v: (v.get("inputTokens") or 0) + (v.get("cacheReadInputTokens") or 0))
+    if not entry or not entry.get("contextWindow"):
+        return None
+    return int(entry["contextWindow"]), int(entry.get("maxOutputTokens") or 0)
+
+
 def write_all(fd, data):
     view = memoryview(data)
     while view:
@@ -108,7 +125,8 @@ class Tab:
                 pass
 
     def down(self):
-        """Claude Code → extension, byte for byte; along the way, pick up the session ID from system/init."""
+        """Claude Code → extension, byte for byte; along the way, pick up the session ID from system/init and the
+        context window from each turn's result (the same line the tab's own gauge reads)."""
         buf = b""
         while True:
             try:
@@ -127,6 +145,8 @@ class Tab:
                     line, buf = buf.split(b"\n", 1)
                     if b'"init"' in line and b'"system"' in line:
                         self.on_init(line)
+                    elif b'"result"' in line and b'"modelUsage"' in line:
+                        self.on_result(line)
                 if len(buf) > TAP_MAX:
                     buf = b""
             except Exception as e:                 # parsing is a side job: its errors never affect the tab
@@ -134,10 +154,17 @@ class Tab:
                 buf = b""
 
     def on_init(self, line):
-        sid = json.loads(line).get("session_id")
+        obj = json.loads(line)
+        self.model = obj.get("model") or getattr(self, "model", None)
+        sid = obj.get("session_id")
         if sid and sid != self.sid:
             self.sid = sid
             self.tell({"op": "sid", "sid": sid})
+
+    def on_result(self, line):
+        ctx = ctx_from_result(json.loads(line), getattr(self, "model", None))
+        if ctx:
+            self.tell({"op": "ctx", "window": ctx[0], "max_out": ctx[1]})
 
     def tell(self, msg):
         with self.slock:

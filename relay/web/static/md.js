@@ -12,7 +12,7 @@ function inline(s) {
   s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
     (_, t, u) => hold('<a href="' + esc(u) + '" data-ext>' + esc(t) + "</a>"));
   // a link to a project file [name](path) can't be opened on the phone: show the name, and the path as code
-  s = s.replace(/\[([^\]\n]+)\]\(([^\s)]+)\)/g, (_, t, u) => hold(esc(t) + " <code>" + esc(u) + "</code>"));
+  s = s.replace(/\[([^\]\n]+)\]\(([^\s)]+)\)/g, (_, t, u) => hold(t === u || u.endsWith("/" + t) ? "<code>" + esc(u) + "</code>" : esc(t) + " <code>" + esc(u) + "</code>"));
   s = esc(s);
   s = s.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
   s = s.replace(/(^|[^\w*])\*(?!\s)([^*\n]+?)\*(?![\w*])/g, "$1<i>$2</i>");

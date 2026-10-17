@@ -2,6 +2,21 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.9.6 — 2026-10-18
+
+- The app's composer takes pictures: a paperclip on the session screen and in the new-task form. A screenshot is
+  shrunk on the phone (JPEG, up to 1600 px) and saved on the computer next to the attachments from Telegram, and
+  Claude gets its path. Up to three per message; anything that isn't a picture is dropped. In the app's chat the
+  owner's message shows the picture itself (tap to enlarge), not the path Claude got; in Telegram the turn says
+  "You: “deploy it” 📎 picture". A link to a file whose name is its path is shown once, as code.
+- The session screen shows the context the way VS Code does: `context 183k · 92 % of 200k`. The window size comes
+  from each turn's result (`modelUsage`) — the tab wrapper reads it for VS Code tabs, the SDK stream for sessions
+  from Telegram — and the percentage divides by the same usable part VS Code divides by. Open tabs pick the wrapper
+  change up after Reload Window.
+- A message written from Telegram into a VS Code tab where Claude is busy: Claude Code reads it in the middle of
+  its turn and the tab doesn't show it as a separate message (extension 2.1.301). The turn's result now replies to
+  that message in Telegram, so the answer finds the question; the help and the README say how this works.
+
 ## 0.9.5 — 2026-10-17
 
 The front page, rewritten for a stranger.

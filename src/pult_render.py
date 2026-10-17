@@ -64,6 +64,34 @@ def plain(md, n):
     return short(s, n)
 
 
+# ---------- the owner's attachments ----------
+
+# what Claude reads under a message with a picture or a file: the path on the computer (pultd.with_attachments,
+# with_uploads). People see the text without it, and "📎 picture" instead
+_ATT = re.compile(r"[ \n]*\[Attachment from (?:Telegram|the Pult app): ([^\]\n]+)\]")
+ATT_DEFAULT = "Have a look at the attachment."
+IMAGE_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp")
+
+
+def attachments(text):
+    """The owner's text → (the text without attachment markers, [paths])."""
+    text = str(text or "")
+    paths = _ATT.findall(text)
+    clean = _ATT.sub("", text).strip()
+    return ("" if clean == ATT_DEFAULT and paths else clean), paths
+
+
+def is_image(path):
+    return str(path).lower().endswith(IMAGE_EXT)
+
+
+def prompt_text(text):
+    """The owner's prompt for a person: "deploy it 📎 picture" — the path is for Claude."""
+    clean, paths = attachments(text)
+    marks = " ".join(T("att.image" if is_image(p) else "att.file") for p in paths)
+    return (clean + " " + marks).strip() if marks else clean
+
+
 def steps_word(n):
     return "%d %s" % (n, I.plural(n, "step"))
 
@@ -146,7 +174,9 @@ def _inline(s):
                lambda m: hold('<a href="%s">%s</a>' % (html.escape(m.group(2)), html.escape(m.group(1)))), s)
     # a link to a project file [name](path) won't open in Telegram — keep the name and the path as code
     s = re.sub(r"\[([^\]\n]+)\]\(([^\s)]+)\)",
-               lambda m: hold("%s (<code>%s</code>)" % (html.escape(m.group(1)), html.escape(m.group(2)))), s)
+               lambda m: hold("<code>%s</code>" % html.escape(m.group(2)) if m.group(1) == m.group(2)
+                              or m.group(2).endswith("/" + m.group(1))
+                              else "%s (<code>%s</code>)" % (html.escape(m.group(1)), html.escape(m.group(2)))), s)
     s = html.escape(s, quote=False)
     s = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", s)
     s = re.sub(r"(?<![\w*])\*(?!\s)([^*\n]+?)(?<!\s)\*(?![\w*])", r"<i>\1</i>", s)

@@ -90,6 +90,14 @@ class TranscriptTest(unittest.TestCase):
         kinds = [(i["k"], i.get("text") or i.get("step")) for i in page["items"]]
         self.assertEqual(kinds, [("user", "Сделай отчёт"), ("text", "Читаю файлы"), ("tool", "📖 a.md"),
                                  ("text", "Готово"), ("note", "⚙️ Закончилась фоновая задача «Сборка»")])
+        # the owner's picture: the chat gets the text without the path and what to show instead
+        p2 = T.TMP / "att.jsonl"
+        p2.write_text(T.tline("user", "глянь\n\n[Attachment from the Pult app: /Users/x/.local/share/pult/inbox/2026-10/app-7.jpg]") + "\n" +
+                      T.tline("user", "Have a look at the attachment.\n\n[Attachment from Telegram: /Users/x/Downloads/a.pdf]") + "\n")
+        items = PW.transcript_page(str(p2))["items"]
+        self.assertEqual([(i["text"], i.get("att")) for i in items], [
+            ("глянь", [{"name": "2026-10/app-7.jpg", "image": True, "inbox": True}]),
+            ("", [{"name": "a.pdf", "image": False, "inbox": False}])])
         self.assertEqual(page["items"][2]["out"], "строки файла")
         self.assertIsNone(page["before"])
         self.assertEqual(page["end"], self.p.read_bytes().rfind(b"\n") + 1)      # the partial line is not consumed
@@ -142,7 +150,8 @@ class UsageStatsTest(unittest.TestCase):
         p.write_text("\n".join([line("user", "первый"), a("m1", 100, 1000), a("m1", 100, 1000), a("m2", 50, 2000)]) + "\n")
         s = PW.Stats()
         got = s.get(str(p))
-        self.assertEqual((got["model"], got["effort"], got["context"]), ("claude-opus-5-5", "xhigh", 2012))
+        # context counts the reply's own tokens too — the same sum as VS Code's gauge (2012 read + 50 written)
+        self.assertEqual((got["model"], got["effort"], got["context"]), ("claude-opus-5-5", "xhigh", 2062))
         self.assertEqual(got["turn"], {"req": 2, "out": 150, "think": 75})       # m1 is written twice — one request
         with p.open("a") as f:
             f.write(line("user", [{"type": "tool_result", "tool_use_id": "x", "content": "ok"}]) + "\n")

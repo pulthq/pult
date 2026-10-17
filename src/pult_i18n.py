@@ -114,7 +114,9 @@ S = {
               "The choice lasts until the session closes or 2 hours of quiet in the topic. "
               "<code>/new text</code> — a new session right away.\n"
               "• 💻 The session is open in a VS Code tab with Pult's wrapper — your message appears right in the tab. "
-              "🖥 Without the wrapper — I continue as a copy: same history, a separate session from there on.\n"
+              "If Claude is busy there, it reads your message mid-turn (the tab doesn't show it) and the turn's result "
+              "replies to you. 🖥 Without the wrapper — I continue as a copy: same history, a separate session from "
+              "there on.\n"
               "• Asked “which session?” — 💻 a VS Code tab (I write straight into it), 🖥 open on the computer (goes as "
               "a copy), 📱 from Telegram, ▫️ closed (I continue it).\n"
               "• A photo or file with a caption — Claude gets the path to the file.\n"
@@ -125,7 +127,8 @@ S = {
               "кнопкой или <code>/new</code>. Её ещё нет — в единственную открытую сессию, иначе спрошу один раз. Выбор "
               "держится, пока сессия не закроется или 2 часа тишины в теме. <code>/new текст</code> — сразу новая.\n"
               "• 💻 Сессия открыта во вкладке VS Code с обёрткой Пульта — сообщение появится прямо во вкладке. "
-              "🖥 Без обёртки — продолжу копией: история та же, дальше отдельная сессия.\n"
+              "Если Claude там занят, он прочтёт сообщение посреди хода (во вкладке оно не покажется), а итог хода "
+              "ответит тебе. 🖥 Без обёртки — продолжу копией: история та же, дальше отдельная сессия.\n"
               "• В вопросе «в какую сессию?»: 💻 — вкладка VS Code (пишу прямо в неё), 🖥 — открыта на компьютере "
               "(пойдёт копией), 📱 — из Telegram, ▫️ — закрыта (продолжу).\n"
               "• Фото или файл с подписью — Claude получит путь к файлу.\n"
@@ -133,12 +136,13 @@ S = {
     },
     "help.app": {
         "en": "<b>📱 The app</b>\n\nInside Telegram: every session on the computer, full transcripts with times, answers "
-              "to Claude's questions, new tasks, subscription usage, settings.\n"
+              "to Claude's questions, a screenshot for Claude, the context gauge, new tasks, subscription usage, "
+              "settings.\n"
               "Open it with the 📱 Pult button pinned at the top of each project topic (it opens that project), the "
               "button in the pinned message in General, /app, or the Pult button next to the message field in your "
               "private chat with the bot.",
         "ru": "<b>📱 Приложение</b>\n\nВнутри Telegram: все сессии на компьютере, переписка целиком со временем, ответы на "
-              "вопросы Claude, новая задача, расход подписки, настройки.\n"
+              "вопросы Claude, снимок экрана для Claude, шкала контекста, новая задача, расход подписки, настройки.\n"
               "Открыть — кнопкой «📱 Пульт» в закрепе вверху каждой темы проекта (откроет этот проект), кнопкой в "
               "закреплённом сообщении «Общей», командой /app или кнопкой «Пульт» у строки ввода в личном чате с ботом.",
     },
@@ -249,6 +253,8 @@ S = {
     "turn.done": {"en": "done in {dur}", "ru": "готово за {dur}"},
     "turn.stopped": {"en": "interrupted after {dur}", "ru": "прервано через {dur}"},
     "turn.you": {"en": "<i>You: {text}</i>", "ru": "<i>Ты: {text}</i>"},
+    "att.image": {"en": "📎 picture", "ru": "📎 снимок"},
+    "att.file": {"en": "📎 file", "ru": "📎 файл"},
     "vehi": {"en": "⏳ {head} · has been working for {dur}", "ru": "⏳ {head} · работает уже {dur}"},
     "vehi.muted": {"en": "\n<i>🔕 no more reminders — only the result will come</i>",
                    "ru": "\n<i>🔕 вех больше не будет — придёт только итог</i>"},

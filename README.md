@@ -41,10 +41,11 @@ a new one — without the Claude app, and without opening a single port on the c
 - **Only what a person needs to read.** The turn in one live message, the result, Claude's questions and
   permission requests with buttons. No session ids, file paths or tool names in the chat.
 - **Write back.** A reply continues that session; plain text in a topic goes to the topic's current session;
-  `/new` starts a new one. Photos and files reach Claude too: they're saved on the computer, and Claude gets the
-  path.
+  `/new` starts a new one. Photos and files reach Claude too, from the chat or the app's paperclip: they're saved
+  on the computer, and Claude gets the path.
 - **Straight into an open VS Code tab** (optional). Your message appears in the tab as if typed there, and the
-  turn runs in it.
+  turn runs in it. If Claude is busy in that tab, it gets your message in the middle of its turn: the tab doesn't
+  show it as a separate message, and the answer comes with that turn's result, as a reply to your message.
 - **Notifications that know where you are.** 🔄 Auto plays a sound only when you've been away from the computer
   for 2+ minutes. 💻 At my computer is silent; 📱 On my phone always sounds. One tap in the pinned panel, or
   `/desk`, `/phone`, `/auto`.
@@ -57,7 +58,8 @@ a new one — without the Claude app, and without opening a single port on the c
 ## The web app (optional)
 
 A Telegram Mini App on your own server, one tap away from any topic: every session in full and live, with
-answers to Claude's questions; your plan's limits and today's tokens by project; a form for a new task.
+answers to Claude's questions, a screenshot for Claude and the context gauge as in VS Code; your plan's limits and
+today's tokens by project; a form for a new task.
 
 <p align="center">
   <img src="media/app-session.en.png" width="260" alt="A session: the whole conversation, live">

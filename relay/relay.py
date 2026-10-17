@@ -89,7 +89,7 @@ class Relay:
     # ----- phone -----
 
     async def ws_client(self, request):
-        ws = web.WebSocketResponse(heartbeat=25, max_msg_size=256 * 1024)
+        ws = web.WebSocketResponse(heartbeat=25, max_msg_size=8 * 1024 * 1024)   # a message may carry pictures
         await ws.prepare(request)
         if len(self.clients) + len(self.pending) >= MAX_CLIENTS:
             await ws.close(code=4429, message=b"too many")

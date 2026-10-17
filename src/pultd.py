@@ -9,6 +9,8 @@ The daemon (a per-user service: launchd on macOS, systemd --user on Linux). Thre
 Design and decisions: README.md at the repository root.
 """
 import asyncio
+import base64
+import binascii
 import collections
 import importlib.util
 import json
@@ -58,8 +60,10 @@ USAGE_TTL = 60           # s to keep the usage answer: the app window is opened 
 USAGE_EVERY = 15 * 60    # usage check for warnings, if there was work on the Mac
 USAGE_NEAR_EVERY = 5 * 60   # …and near the threshold (from 70 %), more often
 WARN_AT = (80, 95)       # % of a limit: a warning with sound in General (decision 2026-10-16)
+UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the app shrinks them to ~200 KB first)
+UPLOADS_MAX = 3                 # pictures per message
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.9.5"
+VERSION = "0.9.6"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -178,6 +182,41 @@ def last_reply(path, since=0.0, tail=512 * 1024):
             text = "\n".join(b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text")
         if text.strip():
             return text
+    return None
+
+
+CTX_RESERVE = 13000        # VS Code's context gauge: used ÷ (window − min(maxOutputTokens, 20000) − 13000) (webview 2.1.301)
+CTX_OUT_CAP = 20000
+
+
+def ctx_from_usage(model_usage, model=None):
+    """The context window of a turn's main model from the result's modelUsage → (window, max output tokens), or None.
+    The main model is the one named by system/init; without it — the entry that read the most."""
+    mu = model_usage if isinstance(model_usage, dict) else {}
+    entry = mu.get(model) if model else None
+    if not isinstance(entry, dict):
+        entry = max((v for v in mu.values() if isinstance(v, dict)), default=None,
+                    key=lambda v: (v.get("inputTokens") or 0) + (v.get("cacheReadInputTokens") or 0))
+    if not entry or not entry.get("contextWindow"):
+        return None
+    return int(entry["contextWindow"]), int(entry.get("maxOutputTokens") or 0)
+
+
+def ctx_usable(window, max_out):
+    """How much of the window counts as usable — the same number VS Code divides by."""
+    return max(1, window - min(max_out, CTX_OUT_CAP) - CTX_RESERVE)
+
+
+def image_kind(blob):
+    """png / jpg / gif / webp by the first bytes of the file, else None: only pictures are taken from the app."""
+    if blob[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if blob[:3] == b"\xff\xd8\xff":
+        return "jpg"
+    if blob[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    if blob[:4] == b"RIFF" and blob[8:12] == b"WEBP":
+        return "webp"
     return None
 
 
@@ -493,6 +532,7 @@ class Driven:
         self.asking = False       # the query is sent, no result in the SDK stream yet
         self.result = asyncio.Event()
         self.bg = set()           # the process's background tasks: while they run, the process is not closed
+        self.model = None         # the main model, from system/init: picks the entry in the result's modelUsage
         self.task = asyncio.create_task(self.run())
 
     @property
@@ -538,7 +578,12 @@ class Driven:
                     if m.is_error:
                         await self.d.notice(self.sid, self.d.t("err.turn", err=R.esc(R.short(m.result or m.subtype, 600))),
                                             self.d.expect.get(self.sid))
+                    ctx = ctx_from_usage(m.model_usage, self.model)
+                    if ctx:
+                        self.d.set_ctx(self.sid, *ctx)
                     self.result.set()
+                elif isinstance(m, SystemMessage) and m.subtype == "init":
+                    self.model = m.data.get("model") or self.model
                 elif isinstance(m, SystemMessage) and m.subtype == "background_tasks_changed":
                     self.bg = {t.get("task_id") for t in m.data.get("tasks") or [] if isinstance(t, dict)}
         finally:
@@ -620,6 +665,7 @@ class Pult:
         self.jobs = {}                 # tasks without Claude: running
         self.jobs_done = collections.deque(maxlen=10)
         self.new_next = set()          # topics where a bare /new was sent: the next text there starts a new session
+        self.ctx = store.get("ctx") or {}   # sid → [context window, max output tokens], from each turn's result
 
     # ----- this computer's environment -----
 
@@ -989,7 +1035,7 @@ class Pult:
             icon, state = "⏳", self.t("turn.running", dur=dur) if secs >= 60 else self.t("turn.fresh")
         lines = ["%s %s · %s" % (icon, self.head(lv), state)]
         if t.prompt:
-            lines.append(self.t("turn.you", text=R.esc(I.q(R.short(t.prompt, 300)))))
+            lines.append(self.t("turn.you", text=R.esc(I.q(R.short(R.prompt_text(t.prompt), 300)))))
         elif t.note:
             lines.append("<i>%s</i>" % R.esc(t.note))
         if t.now and not t.done:
@@ -1125,7 +1171,7 @@ class Pult:
                 sent = self.tab_expect.get(sid)
                 if not origin and sent and sent[1].strip() == (ev.get("prompt") or "").strip():
                     origin = self.tab_expect.pop(sid)[0]       # written from Telegram into the tab
-                lv.title = lv.title or R.short(ev.get("prompt"), 60) or None
+                lv.title = lv.title or R.short(R.attachments(ev.get("prompt"))[0], 60) or None
                 if not origin:
                     self.seen_here(lv)                         # typed here
                 self.start_turn(lv, None if origin else ev.get("prompt"), reply_to=origin)
@@ -1167,6 +1213,12 @@ class Pult:
             await t.created
         notify = await self.loud(lv.driven)
         reply_to = t.msg if t else None
+        # a message written from Telegram into a tab that was busy: Claude Code absorbs it into the running turn
+        # (queued_command, absorbed_mid_turn — 2.1.301, 2026-10-18) and the tab doesn't show it, so no UserPromptSubmit
+        # ever claims it; the turn's result replies to that message instead, so the answer finds the question
+        sent = self.tab_expect.pop(lv.sid, None)
+        if sent and sent[0]:
+            reply_to = sent[0]
         if not text.strip():
             text = self.t("result.empty")
         when = self.t("result.done_in", dur=R.human_dur(t.done[1] - t.started)) if t and t.done else self.t("result.done")
@@ -1743,6 +1795,44 @@ class Pult:
         p.write_bytes(blob)
         return (text or "Have a look at the attachment.") + "\n\n[Attachment from Telegram: %s]" % p
 
+    def set_ctx(self, sid, window, max_out):
+        """A turn's result said how big the session's context window is: remembered for the app's context gauge."""
+        if not sid or not window or self.ctx.get(sid) == [window, max_out]:
+            return
+        self.ctx[sid] = [int(window), int(max_out)]
+        if len(self.ctx) > 300:
+            for k in list(self.ctx)[:100]:
+                del self.ctx[k]
+        self.store.put("ctx", self.ctx)
+        self.changed(sid)
+
+    def with_uploads(self, text, files):
+        """Pictures sent from the app (base64) go to ~/.local/share/pult/inbox/, like attachments from Telegram, and
+        Claude gets the path. Only real images by their first bytes, at most UPLOADS_MAX of UPLOAD_MAX each; the rest
+        is dropped. Nothing left to send — an error, as for an empty message."""
+        text = (text or "").strip()
+        paths = []
+        for f in (files or [])[:UPLOADS_MAX]:
+            try:
+                blob = base64.b64decode(str((f or {}).get("data") or ""), validate=True)
+            except (ValueError, binascii.Error):
+                continue
+            kind = image_kind(blob)
+            if not kind or len(blob) > UPLOAD_MAX:
+                continue
+            d = HOME / "inbox" / time.strftime("%Y-%m")
+            d.mkdir(parents=True, exist_ok=True)
+            p = d / ("app-%d-%s.%s" % (int(time.time() * 1000), secrets.token_hex(2), kind))
+            p.write_bytes(blob)
+            paths.append(p)
+        if paths:
+            text = (text or "Have a look at the attachment.") + \
+                "".join("\n\n[Attachment from the Pult app: %s]" % p for p in paths)
+            log("pictures from the app: %d" % len(paths))
+        if not text:
+            raise ValueError(self.t("err.empty"))
+        return text
+
     # ----- starting and continuing -----
 
     async def continue_session(self, sid, text, origin, here):
@@ -1797,7 +1887,7 @@ class Pult:
             self.store.map_msg(origin, sid, "owner")
         lv = self.live_of(sid, pkey)
         lv.driven, lv.cwd = True, path
-        lv.title = lv.title or R.short(text, 60)
+        lv.title = lv.title or R.short(R.attachments(text)[0], 60) or None
         dr = self.driven[sid] = Driven(self, sid, path, resume=resume, fork=fork)
         dr.q.put_nowait((text, origin if quote else None))
         await self.react(origin, "👀")
@@ -1821,6 +1911,8 @@ class Pult:
                 if m.get("op") == "sid":
                     t.sid = m.get("sid")
                     self.changed(t.sid)
+                elif m.get("op") == "ctx" and t.sid:          # the wrapper saw a turn's result: the context window
+                    self.set_ctx(t.sid, m.get("window"), m.get("max_out") or 0)
         finally:
             if self.tabs.get(t.pid) is t:
                 del self.tabs[t.pid]
@@ -2097,7 +2189,7 @@ class Pult:
         t = lv.turn
         return {"sid": lv.sid, "title": self.title(lv), "project": self.project_label(lv.pkey), "pkey": lv.pkey,
                 "driven": lv.driven, "state": "ask" if lv.pending else "work" if t else "idle",
-                "started": t.started if t else None, "prompt": R.short(t.prompt, 300) if t and t.prompt else None,
+                "started": t.started if t else None, "prompt": R.short(R.prompt_text(t.prompt), 300) if t and t.prompt else None,
                 "note": t.note if t else None, "now": R.plain(t.now, NOW_LEN) if t and t.now else None,
                 "bg": [R.short(b.get("description") or b.get("command") or self.t("task.default"), 80) for b in lv.bg],
                 "tab": bool(self.tab_for(lv.sid))}
@@ -2179,8 +2271,10 @@ class Pult:
         seen = sid in self.live and not lv.driven and lv.turn is not None
         live["open"] = (seen or any(a.get("sessionId") == sid for a in await self.agents())) \
             and not live["tab"] and sid not in self.driven
+        ctx = self.ctx.get(sid)
         return {"sid": sid, "title": self.title(lv), "project": self.project_label(lv.pkey), "pkey": lv.pkey,
                 "live": live, "page": page, "stats": stats,
+                "ctx": {"window": ctx[0], "max_out": ctx[1], "usable": ctx_usable(ctx[0], ctx[1])} if ctx else None,
                 "pending": [self.req_item(r) for r in lv.pending.values() if not r.fut.done()]}
 
     async def api_answer(self, rid, act=None, answers=None, text=None):
@@ -2197,9 +2291,11 @@ class Pult:
         note = self.act(req, act, "app", text=(text or "").strip() or None)
         return {"ok": note is None, "note": note}
 
-    async def api_send(self, sid, text, fork=False):
+    async def api_send(self, sid, text, fork=False, files=None):
+        """files — pictures from the app's composer; they are saved only once the way is known (a "fork?" answer
+        makes the app ask and send again)."""
         text = (text or "").strip()
-        if not text:
+        if not text and not files:
             raise ValueError(self.t("err.empty"))
         path, lv = self.transcript_of(sid)
         row = self.store.session(sid)
@@ -2208,28 +2304,28 @@ class Pult:
         if not cwd:
             raise ValueError(self.t("err.no_folder_short"))
         if sid in self.driven:
-            self.driven[sid].q.put_nowait((text, None))
+            self.driven[sid].q.put_nowait((self.with_uploads(text, files), None))
             return {"ok": True, "how": "session"}
         tab = self.tab_for(sid)
         if tab:
-            await self.to_tab(tab, text, None)
+            await self.to_tab(tab, self.with_uploads(text, files), None)
             return {"ok": True, "how": "tab"}
         seen = sid in self.live and not self.live[sid].driven and self.live[sid].turn is not None
         if seen or any(a.get("sessionId") == sid for a in await self.agents()):
             if not fork:
                 return {"ok": False, "need": "fork"}
-            await self.drive(sid, cwd, text, None, fork=True, pkey=pkey)
+            await self.drive(sid, cwd, self.with_uploads(text, files), None, fork=True, pkey=pkey)
             return {"ok": True, "how": "fork"}
-        await self.drive(sid, cwd, text, None, resume=sid, pkey=pkey)
+        await self.drive(sid, cwd, self.with_uploads(text, files), None, resume=sid, pkey=pkey)
         return {"ok": True, "how": "resume"}
 
-    async def api_new(self, pkey, text):
+    async def api_new(self, pkey, text, files=None):
         text = (text or "").strip()
         path = self.project_path(pkey)
-        if not text or not path or not os.path.isdir(path):
+        if not (text or files) or not path or not os.path.isdir(path):
             raise ValueError(self.t("err.need_project_text"))
         sid = str(uuid.uuid4())
-        await self.drive(sid, path, text, None, pkey=pkey)
+        await self.drive(sid, path, self.with_uploads(text, files), None, pkey=pkey)
         return {"ok": True, "sid": sid}
 
     async def usage(self, force=False):
@@ -2247,6 +2343,20 @@ class Pult:
                     return await c._query._send_control_request({"subtype": "get_usage"}, timeout=30)
             self._usage = PW.simplify_usage(await asyncio.wait_for(ask(), 60))
             return self._usage
+
+    async def api_inbox(self, name):
+        """A picture from the owner's inbox (Telegram photos, the app's screenshots) for the app's chat: only
+        <month>/<file> inside Pult's own inbox folder, and only real images."""
+        if not re.fullmatch(r"\d{4}-\d{2}/[\w.-]{1,80}", str(name or "")):
+            raise ValueError(self.t("err.no_request", op="inbox"))
+        p = (HOME / "inbox" / name).resolve()
+        if not str(p).startswith(str((HOME / "inbox").resolve()) + os.sep) or not p.is_file() or p.stat().st_size > UPLOAD_MAX:
+            raise ValueError(self.t("err.no_transcript"))
+        blob = await asyncio.to_thread(p.read_bytes)
+        kind = image_kind(blob)
+        if not kind:
+            raise ValueError(self.t("err.no_transcript"))
+        return {"kind": kind, "data": base64.b64encode(blob).decode()}
 
     async def api_lang(self):
         """The language of the bot and the app — the app asks right after connecting, on any screen."""

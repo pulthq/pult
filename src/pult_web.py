@@ -83,6 +83,15 @@ def _short(s, n):
     return s if len(s) <= n else s[:n - 1] + "…"
 
 
+def inbox_name(path):
+    """A path in the owner's inbox → what the app may ask for ("2026-10/app-1.jpg"), with a flag for pictures;
+    a file elsewhere keeps only its name and can't be shown."""
+    path = str(path)
+    parts = path.replace("\\", "/").split("/")
+    inside = len(parts) >= 3 and parts[-3] == "inbox"
+    return {"name": "/".join(parts[-2:]) if inside else parts[-1], "image": R.is_image(path), "inbox": inside}
+
+
 def transcript_page(path, before=None, after=None, cwd=None, page=PAGE):
     """A chunk of the chat: from the end of the file, up to byte `before` (older) or from byte `after` (newer).
     → {"items": [...], "before": where to read older from, or None, "end": where to read newer from}.
@@ -138,7 +147,11 @@ def transcript_page(path, before=None, after=None, cwd=None, page=PAGE):
             if notes:                    # not from the owner: Claude Code began a turn because a background task ended
                 items.append({"k": "note", "text": R.task_notes_text(notes), "ts": ts})
             elif text and not text.startswith("<local-command-") and not text.startswith("<command-"):
-                items.append({"k": "user", "text": _short(text, TEXT_MAX), "ts": ts})
+                clean, paths = R.attachments(text)          # the path is for Claude; the person sees the picture
+                item = {"k": "user", "text": _short(clean, TEXT_MAX), "ts": ts}
+                if paths:
+                    item["att"] = [inbox_name(p) for p in paths]
+                items.append(item)
             continue
         for b in content if isinstance(content, list) else [{"type": "text", "text": content or ""}]:
             if not isinstance(b, dict):
@@ -249,9 +262,10 @@ class Stats:
         st["last_id"] = m.get("id")
         st["model"] = m.get("model") or st["model"]
         st["effort"] = e.get("effort") or st["effort"]
-        st["context"] = (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0) + \
-            (u.get("cache_creation_input_tokens") or 0)
         out = u.get("output_tokens") or 0
+        # the same sum VS Code's context gauge uses (webview 2.1.301): input, cache and the reply itself
+        st["context"] = (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0) + \
+            (u.get("cache_creation_input_tokens") or 0) + out
         think = (u.get("output_tokens_details") or {}).get("thinking_tokens") or 0
         for k in ("turn", "sess"):
             st[k]["req"] += 1
@@ -360,7 +374,7 @@ class Web:
             while True:
                 for proxy in ([self.proxy] if self.proxy else []) + [None]:
                     try:
-                        async with http.ws_connect(self.url, proxy=proxy, heartbeat=25, max_msg_size=256 * 1024,
+                        async with http.ws_connect(self.url, proxy=proxy, heartbeat=25, max_msg_size=8 * 1024 * 1024,
                                                    headers={"Authorization": "Bearer " + self.secret},
                                                    timeout=aiohttp.ClientWSTimeout(ws_close=10)) as ws:
                             self.ws, attempt = ws, 0

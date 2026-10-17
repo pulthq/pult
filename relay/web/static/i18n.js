@@ -105,6 +105,7 @@ const S = {
   "sess.starting": { en: "The session is starting — the conversation will appear in a few seconds.",
     ru: "Сессия запускается — переписка появится через несколько секунд." },
   context: { en: "context {n}", ru: "контекст {n}" },
+  "context.pct": { en: " · {pct} % of {win}", ru: " · {pct} % из {win}" },
   "turn.stats": { en: "turn: {n} {requests} · wrote {out} tokens", ru: "ход: {n} {requests} · написано {out} токенов" },
   "turn.think": { en: " (thinking {n})", ru: " (раздумья {n})" },
   earlier: { en: "Show earlier", ru: "Показать раньше" },
@@ -113,6 +114,10 @@ const S = {
   "write.session": { en: "Write to the session…", ru: "Написать в сессию…" },
   "write.copy": { en: "Open on the computer · as a copy…", ru: "Открыта на компьютере · копией…" },
   stop: { en: "Stop", ru: "Стоп" },
+  attach: { en: "Attach a screenshot", ru: "Приложить снимок" },
+  "attach.remove": { en: "Remove", ru: "Убрать" },
+  "attach.failed": { en: "Couldn't read the picture", ru: "Не удалось прочитать картинку" },
+  "att.file": { en: "📎 file", ru: "📎 файл" },
 
   // new task
   "new.title": { en: "New task", ru: "Новая задача" },
