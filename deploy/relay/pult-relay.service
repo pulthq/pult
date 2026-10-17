@@ -1,0 +1,24 @@
+[Unit]
+Description=Pult relay: the Telegram Mini App <-> Pult on the Mac
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pult
+WorkingDirectory=/opt/pult-relay
+EnvironmentFile=/opt/pult-relay/.env
+ExecStart=/opt/pult-relay/venv/bin/python relay.py
+Restart=always
+RestartSec=3
+# the relay is small (~50 MB) and keeps nothing on disk; it yields to the rest of the server
+MemoryHigh=80M
+MemoryMax=120M
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/pult-relay
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,26 @@
+name: Bug report
+description: Something doesn't work as described
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what happened instead. Roughly when (time), if it matters.
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: pult report
+      description: >
+        Run `pult report` in Terminal and paste its output. It has no tokens, IDs, folder names or message text —
+        still, read it before posting.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: Screenshots (hide anything private), steps to reproduce, ideas about the cause.

@@ -1,0 +1,2218 @@
+#!/usr/bin/env python3
+"""Pult — Claude Code sessions on the Mac, from Telegram.
+
+The daemon (a per-user launchd agent). Three inputs:
+  • a unix socket — session events from pult_hook.py (turn feed, result, permissions, questions);
+  • Telegram — the owner's messages and button presses in a group with topics (topic = project);
+  • the Agent SDK — sessions started or continued from Telegram.
+
+Design and decisions: README.md at the repository root.
+"""
+import asyncio
+import collections
+import importlib.util
+import json
+import os
+import re
+import secrets
+import shutil
+import sqlite3
+import sys
+import time
+import uuid
+from datetime import datetime
+from pathlib import Path
+from types import SimpleNamespace
+
+import httpx
+
+import pult_hook
+import pult_i18n as I
+import pult_render as R
+import pult_web as PW
+
+HOME = Path(os.environ.get("PULT_HOME") or "~/.local/share/pult").expanduser()
+ENV_FILE = Path(os.environ.get("PULT_ENV") or "~/.config/pult/env").expanduser()
+SOCK = os.environ.get("PULT_SOCK") or str(HOME / "pult.sock")
+HOOK_PY = os.environ.get("PULT_HOOK_PY") or sys.executable      # Pult's own Python: the hook needs nothing else
+HOOK = str(HOME / "pult_hook.py")
+CLAUDE_PROJECTS = Path("~/.claude/projects").expanduser()
+
+SID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+SKIP_PREFIXES = ("-private-", "-tmp-", "-var-folders-")   # throwaway folders, not projects
+AWAY_IDLE = 120          # no keyboard/mouse input on the Mac for longer than this: the owner is away, notify with sound
+EDIT_EVERY = 12          # s; edit a turn message no more often than this (Telegram's per-group limit)
+MAX_RUNNING = 3          # turns from Telegram at once: Claude Code takes 250–450 MB each
+MAX_DRIVEN = 5           # sessions from Telegram that hold a process
+DRIVEN_IDLE = 20 * 60    # an idle session from Telegram is closed; it continues via resume
+ASK_TIMEOUT = 6 * 3600   # how long to wait for a permission answer in a session from Telegram
+VEHI = (10 * 60, 30 * 60, 60 * 60)   # long-turn milestones; with sound if the owner is away (decision 2026-10-16)
+TICK = 60                # s; refresh "working N min" this often, even without events
+NOW_LEN = 300            # characters of Claude's reply in the "now" line
+STALE = 20 * 60          # s without events: check whether the session is alive (a tab may close without SessionEnd)
+USAGE_TTL = 60           # s to keep the usage answer: the app window is opened and refreshed often
+USAGE_EVERY = 15 * 60    # usage check for warnings, if there was work on the Mac
+USAGE_NEAR_EVERY = 5 * 60   # …and near the threshold (from 70 %), more often
+WARN_AT = (80, 95)       # % of a limit: a warning with sound in General (decision 2026-10-16)
+PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
+VERSION = "0.8.2"
+LOG_FILE = Path(os.environ.get("PULT_LOG") or "~/Library/Logs/pult.log").expanduser()
+SETTINGS = Path("~/.claude/settings.json").expanduser()
+TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
+VSCODE_SETTINGS = Path("~/Library/Application Support/Code/User/settings.json").expanduser()
+EXTENSIONS = Path("~/.vscode/extensions").expanduser()
+TAB_CHECK_EVERY = 3600   # s; check whether a new Claude Code extension version is out
+PREFS = {"vehi": True, "mode": "auto", "lang": None}   # owner prefs: milestones, location (auto/mac/phone), language
+MODES = ("auto", "mac", "phone")
+REPO_URL = os.environ.get("PULT_REPO_URL") or "https://github.com/pulthq/pult"   # where /feedback sends bugs and ideas
+
+
+def log(*a):
+    print(time.strftime("%Y-%m-%d %H:%M:%S"), *a, flush=True)
+
+
+def find_claude():
+    """Claude Code for `claude agents`: PULT_CLAUDE_BIN, else `claude` on PATH (the native installer, Homebrew,
+    npm), else the one inside the Agent SDK — it has the same command."""
+    found = os.environ.get("PULT_CLAUDE_BIN") or shutil.which("claude")
+    if found:
+        return found
+    spec = importlib.util.find_spec("claude_agent_sdk")
+    for d in (spec.submodule_search_locations or []) if spec else []:
+        p = os.path.join(d, "_bundled", "claude")
+        if os.access(p, os.X_OK):
+            return p
+    return "claude"
+
+
+CLAUDE_BIN = find_claude()
+
+
+def load_env(path=ENV_FILE):
+    env = {}
+    try:
+        for line in Path(path).read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                env[k.strip()] = v.strip().strip("'\"")
+    except FileNotFoundError:
+        pass
+    env.update({k: v for k, v in os.environ.items() if k.startswith("PULT_")})
+    return env
+
+
+def sanitize(path):
+    return re.sub(r"[^a-zA-Z0-9]", "-", path)
+
+
+def decode_pkey(pkey, root="/"):
+    """Folder name ~/.claude/projects/<pkey> → the real path (by searching the disk; '-' is ambiguous)."""
+    def walk(d, rest, depth):
+        if depth > 10:
+            return None
+        try:
+            entries = os.listdir(d)
+        except OSError:
+            return None
+        for e in sorted(entries):
+            s = sanitize(e)
+            if rest == s:
+                return os.path.join(d, e)
+            if rest.startswith(s + "-") and os.path.isdir(os.path.join(d, e)):
+                r = walk(os.path.join(d, e), rest[len(s) + 1:], depth + 1)
+                if r:
+                    return r
+        return None
+    return walk(root, pkey[1:], 0) if pkey.startswith("-") else None
+
+
+def newest_extension(root):
+    """The newest installed version of the Claude Code extension for VS Code, e.g. "2.1.301"."""
+    best = None
+    for p in Path(root).glob("anthropic.claude-code-*"):
+        v = p.name[len("anthropic.claude-code-"):].split("-")[0]
+        try:
+            key = tuple(int(x) for x in v.split("."))
+        except ValueError:
+            continue
+        best = max(best or (key, v), (key, v))
+    return best[1] if best else None
+
+
+def skip_pkey(pkey):
+    return not pkey or pkey.startswith(SKIP_PREFIXES) or len(pkey) > 200
+
+
+def command_of(text):
+    t = (text or "").strip()
+    if not t.startswith("/"):
+        return None, t
+    head, _, rest = t.partition(" ")
+    return head.split("@")[0].lower(), rest.strip()
+
+
+def _ts(s):
+    try:
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def last_reply(path, since=0.0, tail=512 * 1024):
+    """Claude's last reply in the session transcript, no earlier than since — the "now" line of the turn message.
+    The transcript is only read, and only from the end: session files can be ten megabytes or so."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - tail))
+            data = f.read()
+    except OSError:
+        return None
+    for line in reversed(data.split(b"\n")):
+        if b'"assistant"' not in line:
+            continue
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if e.get("type") != "assistant" or e.get("isSidechain"):
+            continue
+        if since and _ts(e.get("timestamp")) < since:
+            return None
+        content = (e.get("message") or {}).get("content")
+        if isinstance(content, str):
+            text = content
+        else:
+            text = "\n".join(b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text")
+        if text.strip():
+            return text
+    return None
+
+
+def when(ts):
+    """Format as "14:05", "yesterday 14:05" or "12.10 14:05" — when the session was active."""
+    if not ts:
+        return "—"
+    t, now = time.localtime(ts), time.localtime()
+    if t.tm_yday == now.tm_yday and t.tm_year == now.tm_year:
+        return time.strftime("%H:%M", t)
+    if time.localtime(ts + 86400).tm_yday == now.tm_yday:
+        return I.T("when.yesterday", hm=time.strftime("%H:%M", t))
+    return time.strftime("%d.%m %H:%M", t)
+
+
+def pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except (PermissionError, ValueError, TypeError):
+        return True
+
+
+def vehi_marks():
+    """Long-turn milestones: 10, 30, 60 min, then every hour."""
+    yield from VEHI
+    m = VEHI[-1]
+    while True:
+        m += 3600
+        yield m
+
+
+# ---------- Telegram ----------
+
+class TgError(Exception):
+    def __init__(self, method, desc, code=None, retry_after=None):
+        super().__init__("%s: %s" % (method, desc))
+        self.desc = str(desc or "")
+        self.code = code
+        self.retry_after = retry_after
+
+
+class Tg:
+    """Bot API. Through the proxy first if one is set (PULT_PROXY); if that fails, directly (and back again)."""
+
+    def __init__(self, token, proxy=None, transport=None):
+        self.base = "https://api.telegram.org/bot%s/" % token
+        self.file_base = "https://api.telegram.org/file/bot%s/" % token
+        t = httpx.Timeout(70, connect=10)
+        if transport is not None:
+            self.clients = [httpx.AsyncClient(transport=transport, timeout=t)]
+        else:
+            self.clients = ([httpx.AsyncClient(proxy=proxy, timeout=t)] if proxy else []) + \
+                           [httpx.AsyncClient(timeout=t)]
+        self.cur = 0
+
+    async def _post(self, url, **kw):
+        last = None
+        for k in range(len(self.clients)):
+            i = (self.cur + k) % len(self.clients)
+            try:
+                r = await self.clients[i].post(url, **kw)
+            except (httpx.ConnectError, httpx.ProxyError, httpx.ConnectTimeout, httpx.ReadError) as e:
+                last = e
+                continue
+            if i != self.cur:
+                log("Telegram: route switched to", "proxy" if i == 0 and len(self.clients) > 1 else "direct")
+                self.cur = i
+            return r
+        raise TgError(url.rsplit("/", 1)[-1], "no connection: %r" % last)
+
+    async def call(self, method, files=None, timeout=None, **params):
+        data = {}
+        for k, v in params.items():
+            if v is None:
+                continue
+            if isinstance(v, bool):
+                v = "true" if v else "false"
+            data[k] = json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v
+        r = await self._post(self.base + method, data=data, files=files,
+                             timeout=timeout if timeout else httpx.USE_CLIENT_DEFAULT)
+        j = r.json()
+        if not j.get("ok"):
+            raise TgError(method, j.get("description"), j.get("error_code"),
+                          (j.get("parameters") or {}).get("retry_after"))
+        return j["result"]
+
+    async def download(self, file_id):
+        info = await self.call("getFile", file_id=file_id)
+        for k in range(len(self.clients)):
+            i = (self.cur + k) % len(self.clients)
+            try:
+                r = await self.clients[i].get(self.file_base + info["file_path"], timeout=180)
+                r.raise_for_status()
+                return info["file_path"], r.content
+            except httpx.HTTPError:
+                continue
+        raise TgError("getFile", "download failed")
+
+
+class Outbox:
+    """Everything posted to the group goes through this queue: Telegram lets ~20 messages a minute into a group,
+    and edits count too. Questions and results go first; turn edits go last
+    and are coalesced: only the latest state of a message is sent."""
+
+    def __init__(self, rate=18, burst=5):
+        self.q = asyncio.PriorityQueue()
+        self.seq = 0
+        self.per = 60.0 / rate
+        self.burst = burst
+        self.tokens = float(burst)
+        self.t = time.monotonic()
+        self.pause_until = 0.0
+        self.edits = {}          # message_id → edit function with the latest text
+
+    def _put(self, prio, fn, fut):
+        self.seq += 1
+        self.q.put_nowait((prio, self.seq, fn, fut))
+
+    async def submit(self, prio, fn):
+        fut = asyncio.get_running_loop().create_future()
+        self._put(prio, fn, fut)
+        return await fut
+
+    def edit(self, key, fn, prio=8):
+        fresh = key not in self.edits
+        self.edits[key] = fn
+        if fresh or prio < 8:
+            self._put(prio, ("edit", key), None)
+
+    async def _token(self):
+        while True:
+            now = time.monotonic()
+            if now < self.pause_until:
+                await asyncio.sleep(self.pause_until - now)
+                continue
+            self.tokens = min(self.burst, self.tokens + (now - self.t) / self.per)
+            self.t = now
+            if self.tokens >= 1:
+                self.tokens -= 1
+                return
+            await asyncio.sleep((1 - self.tokens) * self.per)
+
+    async def run(self):
+        while True:
+            prio, seq, fn, fut = await self.q.get()
+            if isinstance(fn, tuple):
+                fn = self.edits.pop(fn[1], None)
+                if fn is None:
+                    continue           # this message has already been superseded by a newer edit
+            await self._token()
+            try:
+                res = await fn()
+                if fut and not fut.done():
+                    fut.set_result(res)
+            except TgError as e:
+                if e.retry_after:
+                    log("Telegram asks to wait %s s" % e.retry_after)
+                    self.pause_until = time.monotonic() + float(e.retry_after) + 0.5
+                    self._put(prio, fn, fut)
+                    continue
+                if fut and not fut.done():
+                    fut.set_exception(e)
+                else:
+                    log("Telegram:", e)
+            except Exception as e:
+                if fut and not fut.done():
+                    fut.set_exception(e)
+                else:
+                    log("send failed:", repr(e))
+
+
+# ---------- state ----------
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS topics(pkey TEXT PRIMARY KEY, path TEXT, name TEXT, thread INTEGER);
+CREATE TABLE IF NOT EXISTS sessions(sid TEXT PRIMARY KEY, pkey TEXT, path TEXT, title TEXT,
+    driven INTEGER DEFAULT 0, last_seen REAL);
+CREATE TABLE IF NOT EXISTS msgs(msg INTEGER PRIMARY KEY, sid TEXT, kind TEXT, ts REAL);
+"""
+
+
+class Store:
+    def __init__(self, path):
+        self.db = sqlite3.connect(str(path), isolation_level=None)
+        self.db.row_factory = sqlite3.Row
+        self.db.executescript(SCHEMA)
+
+    def get(self, k, default=None):
+        r = self.db.execute("SELECT v FROM kv WHERE k=?", (k,)).fetchone()
+        return json.loads(r["v"]) if r else default
+
+    def put(self, k, v):
+        self.db.execute("INSERT OR REPLACE INTO kv VALUES(?,?)", (k, json.dumps(v)))
+
+    def topic(self, pkey):
+        return self.db.execute("SELECT * FROM topics WHERE pkey=?", (pkey,)).fetchone()
+
+    def topic_by_thread(self, thread):
+        return self.db.execute("SELECT * FROM topics WHERE thread=?", (thread,)).fetchone()
+
+    def set_topic(self, pkey, path, name, thread):
+        self.db.execute("INSERT OR REPLACE INTO topics VALUES(?,?,?,?)", (pkey, path, name, thread))
+
+    def session(self, sid):
+        return self.db.execute("SELECT * FROM sessions WHERE sid=?", (sid,)).fetchone()
+
+    def touch_session(self, sid, pkey, path=None, driven=None, title=None):
+        cur = self.session(sid)
+        if cur is None:
+            self.db.execute("INSERT INTO sessions VALUES(?,?,?,?,?,?)",
+                            (sid, pkey, path, title, int(bool(driven)), time.time()))
+            return
+        self.db.execute("UPDATE sessions SET pkey=?, path=coalesce(?,path), title=coalesce(?,title),"
+                        " driven=max(driven,?), last_seen=? WHERE sid=?",
+                        (pkey or cur["pkey"], path, title, int(bool(driven)), time.time(), sid))
+
+    def map_msg(self, msg, sid, kind):
+        self.db.execute("INSERT OR REPLACE INTO msgs VALUES(?,?,?,?)", (msg, sid, kind, time.time()))
+
+    def msg(self, msg):
+        return self.db.execute("SELECT * FROM msgs WHERE msg=?", (msg,)).fetchone()
+
+    def prune(self, days=60):
+        self.db.execute("DELETE FROM msgs WHERE ts < ?", (time.time() - days * 86400,))
+
+
+# ---------- live session state ----------
+
+class Turn:
+    def __init__(self, prompt=None, reply_to=None):
+        self.started = self.last = time.time()
+        self.prompt = prompt
+        self.reply_to = reply_to
+        self.n = 0
+        self.msg = None
+        self.created = asyncio.get_running_loop().create_future()
+        self.changed = asyncio.Event()
+        self.done = None          # (icon, time) when the turn ended
+        self.now = None           # Claude's latest reply in this turn
+        self.muted = False        # 🔕 — no milestones until the turn ends
+        self.vehi = None
+        self.note = None          # the turn was started by Claude itself: "⚙️ Background task finished …"
+
+
+class Req:
+    """An open permission request or question — waits for a button in Telegram or an answer on the Mac."""
+
+    def __init__(self, sid, tool, inp, suggestions):
+        self.rid = secrets.token_hex(4)
+        self.sid = sid
+        self.tool = tool
+        self.inp = inp if isinstance(inp, dict) else {}
+        self.suggestions = suggestions or []
+        self.kind = "ask" if tool == "AskUserQuestion" else "plan" if tool == "ExitPlanMode" else "perm"
+        self.fut = asyncio.get_running_loop().create_future()
+        self.msgs = []            # [(message_id, question index or None)]
+        self.chosen = {}          # question → [answers]
+        self.picks = {}           # multi-select question → checked options
+
+
+class Live:
+    def __init__(self, sid, pkey):
+        self.sid = sid
+        self.pkey = pkey
+        self.cwd = None
+        self.title = None
+        self.named = False        # title is a real name (set by the user or by Claude Code), not the prompt
+        self.transcript = None
+        self.driven = False
+        self.turn = None
+        self.pending = {}
+        self.bg = []              # background tasks still running after the turn (background_tasks in Stop)
+
+
+class Job:
+    """A task without Claude — `pult run -- command`."""
+
+    def __init__(self, rid, cmd, cwd, pid, pkey):
+        self.rid, self.cmd, self.cwd, self.pid, self.pkey = rid, cmd, cwd, pid, pkey
+        self.started = time.time()
+        self.last = None              # last line of output
+        self.code = None
+        self.ended = None
+        self.tail = []
+        self.msg = None
+        self.muted = False
+        self.watch = None
+
+
+def same_input(a, b):
+    a = {k: v for k, v in (a or {}).items() if k != "answers"}
+    b = {k: v for k, v in (b or {}).items() if k != "answers"}
+    return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+
+
+# ---------- sessions from Telegram ----------
+
+class Driven:
+    """A session Pult drives through the Agent SDK: new, continued or a copy (fork)."""
+
+    def __init__(self, d, sid, path, resume=None, fork=False):
+        self.d = d
+        self.sid = sid
+        self.path = path
+        self.resume = resume
+        self.fork = fork
+        self.q = asyncio.Queue()
+        self.client = None
+        self.asking = False       # the query is sent, no result in the SDK stream yet
+        self.result = asyncio.Event()
+        self.bg = set()           # the process's background tasks: while they run, the process is not closed
+        self.task = asyncio.create_task(self.run())
+
+    @property
+    def busy(self):
+        """A turn is running — our own query, or one Claude Code started itself when a background task finished."""
+        lv = self.d.live.get(self.sid)
+        return self.asking or bool(lv and lv.turn)
+
+    async def _wait_hook(self, tool, inp, ctx):
+        # The decision arrives via the PermissionRequest hook (buttons in Telegram) and cancels this call.
+        from claude_agent_sdk import PermissionResultDeny
+        await asyncio.sleep(ASK_TIMEOUT)
+        return PermissionResultDeny(message="No answer from Telegram within %d h" % (ASK_TIMEOUT // 3600))
+
+    def options(self):
+        from claude_agent_sdk import ClaudeAgentOptions
+        hooks = pult_hook.hooks_config("PULT_INJECTED=1 %s %s" % (HOOK_PY, HOOK))
+        # system_prompt — Claude Code's standard one: without it the SDK starts the session with an empty system
+        # prompt, and Claude behaves differently than in the VS Code tab (seen 2026-10-15)
+        kw = dict(cwd=self.path, system_prompt={"type": "preset", "preset": "claude_code"},
+                  permission_mode=PERMISSION_MODE, can_use_tool=self._wait_hook,
+                  setting_sources=["user", "project", "local"], settings=json.dumps({"hooks": hooks}),
+                  # entrypoint: the SDK sets sdk-py, and VS Code hides sdk-* sessions from its list (a filter
+                  # in extension 2.1.300). Without a terminal, Claude Code itself turns cli into sdk-cli;
+                  # claude-vscode is kept: the session shows up in the Claude tab and can be continued on the Mac
+                  env={"PULT_DRIVEN": "1", "PULT_SOCK": SOCK, "CLAUDE_CODE_ENTRYPOINT": "claude-vscode"},
+                  stderr=lambda s: None)
+        if self.resume:
+            kw["resume"] = self.resume
+        if self.fork:
+            kw["fork_session"] = True
+        if not self.resume or self.fork:
+            kw["session_id"] = self.sid
+        return ClaudeAgentOptions(**kw)
+
+    async def read(self, c):
+        """The whole SDK stream, not just up to our query's result: when a background task finishes, Claude Code
+        starts a turn by itself, and its result would otherwise go to the next query (probe 2026-10-16, 2.1.301)."""
+        from claude_agent_sdk import ResultMessage, SystemMessage
+        try:
+            async for m in c.receive_messages():
+                if isinstance(m, ResultMessage):
+                    if m.is_error:
+                        await self.d.notice(self.sid, self.d.t("err.turn", err=R.esc(R.short(m.result or m.subtype, 600))),
+                                            self.d.expect.get(self.sid))
+                    self.result.set()
+                elif isinstance(m, SystemMessage) and m.subtype == "background_tasks_changed":
+                    self.bg = {t.get("task_id") for t in m.data.get("tasks") or [] if isinstance(t, dict)}
+        finally:
+            self.result.set()                    # the process has ended, so the query doesn't wait forever
+            self.q.put_nowait(None)
+
+    async def run(self):
+        from claude_agent_sdk import ClaudeSDKClient
+        try:
+            async with ClaudeSDKClient(options=self.options()) as c:
+                self.client = c
+                reader = asyncio.create_task(self.read(c))
+                try:
+                    while True:
+                        try:
+                            item = await asyncio.wait_for(self.q.get(), timeout=DRIVEN_IDLE)
+                        except asyncio.TimeoutError:
+                            if self.busy or self.bg:
+                                continue         # a background task lives as long as the process
+                            break
+                        if item is None:
+                            break
+                        text, origin = item
+                        async with self.d.run_sem:
+                            self.asking = True
+                            self.result.clear()
+                            self.d.expect[self.sid] = origin
+                            try:
+                                await c.query(text)
+                                await self.result.wait()
+                            finally:
+                                self.asking = False
+                                self.d.expect.pop(self.sid, None)
+                finally:
+                    reader.cancel()
+                if reader.done() and not reader.cancelled():
+                    if reader.exception():
+                        raise reader.exception()
+                    log("Telegram session %s: the Claude process exited by itself" % self.sid[:8])
+        except Exception as e:
+            log("Telegram session %s crashed: %r" % (self.sid[:8], e))
+            await self.d.notice(self.sid, self.d.t("err.session", err=R.esc(R.short(repr(e), 600))))
+        finally:
+            self.d.driven.pop(self.sid, None)
+            self.client = None
+
+
+# ---------- daemon ----------
+
+class Pult:
+    def __init__(self, env, tg, store):
+        self.env = env
+        self.tg = tg
+        self.store = store
+        self.allowed = {int(x) for x in re.split(r"[,\s]+", env.get("PULT_ALLOWED_USER_IDS", "")) if x.strip()}
+        self.chat = store.get("chat")
+        self.out = Outbox()
+        self.live = {}
+        self.driven = {}
+        self.expect = {}               # sid → the owner's message the turn replies to
+        self.tabs = {}                 # wrapper pid → a VS Code tab we can write into (stage 2)
+        self.tab_expect = {}           # sid → (owner's message, text) sent into the tab
+        self.offers = {}               # button token → data (session copy, open a session, project)
+        self.req_by_rid = {}
+        self.req_by_msg = {}
+        self.topic_locks = {}
+        self.run_sem = asyncio.Semaphore(MAX_RUNNING)
+        self._idle = (0.0, 0.0)
+        self._agents = (0.0, [])
+        self.web = None                # pult_web.Web — the web app, if a relay is configured
+        self.stats = PW.Stats()        # model, thinking, session tokens — for the app
+        self.day_tokens = PW.DayTokens(CLAUDE_PROJECTS, skip_pkey)   # today's tokens per project
+        self.activity = 0.0            # time of the last session event: without work, usage doesn't grow
+        self._usage = None
+        self._usage_lock = asyncio.Lock()
+        self.recent = collections.deque(maxlen=20)   # latest results — for the app's Home screen
+        self.jobs = {}                 # tasks without Claude: running
+        self.jobs_done = collections.deque(maxlen=10)
+
+    # ----- the Mac's environment -----
+
+    async def _run(self, *cmd, timeout=10):
+        p = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE,
+                                                 stderr=asyncio.subprocess.DEVNULL)
+        try:
+            out, _ = await asyncio.wait_for(p.communicate(), timeout)
+        except asyncio.TimeoutError:
+            p.kill()
+            return ""
+        return out.decode(errors="replace")
+
+    async def mac_idle(self):
+        t, v = self._idle
+        if time.monotonic() - t < 5:
+            return v
+        out = await self._run("ioreg", "-c", "IOHIDSystem", "-d", "4", "-r", "-k", "HIDIdleTime")
+        m = re.search(r'"HIDIdleTime"\s*=\s*(\d+)', out)
+        v = int(m.group(1)) / 1e9 if m else 0.0
+        self._idle = (time.monotonic(), v)
+        return v
+
+    async def away(self):
+        if "PULT_FORCE_AWAY" in self.env:
+            return self.env["PULT_FORCE_AWAY"] == "1"
+        return await self.mac_idle() >= AWAY_IDLE
+
+    def prefs(self):
+        stored = self.store.get("prefs") or {}
+        if "mode" not in stored and stored.get("sound_at_mac"):
+            stored = dict(stored, mode="phone")       # before 0.6: "sound at the Mac too" is the same as "on my phone"
+        return dict(PREFS, **{k: v for k, v in stored.items() if k in PREFS})
+
+    def mode(self):
+        m = self.prefs()["mode"]
+        return m if m in MODES else "auto"
+
+    def lang(self):
+        """The language of messages: chosen in the settings, otherwise the owner's Telegram language. Also makes it
+        the current language for rendering (pult_render uses pult_i18n's current language)."""
+        lang = self.prefs()["lang"] or self.store.get("lang_tg") or "en"
+        I.set_lang(lang)
+        return lang
+
+    def t(self, key, **kw):
+        return I.T(key, self.lang(), **kw)
+
+    async def loud(self, driven=False):
+        """Whether to use sound. The owner's mode: 💻 at my Mac — never, 📱 on my phone — always, 🔄 auto — if the
+        session is from Telegram or the owner is away from the Mac. Messages arrive in any mode; only sound changes."""
+        mode = self.mode()
+        if mode != "auto":
+            return mode == "phone"
+        return driven or await self.away()
+
+    async def agents(self):
+        """Sessions open on the Mac right now (VS Code tabs, terminals) — `claude agents --json`."""
+        t, v = self._agents
+        if time.monotonic() - t < 3:
+            return v
+        try:
+            v = json.loads(await self._run(CLAUDE_BIN, "agents", "--json", timeout=15) or "[]")
+        except ValueError:
+            v = []
+        self._agents = (time.monotonic(), v)
+        return v
+
+    # ----- projects and topics -----
+
+    def project_path(self, pkey, hint=None):
+        row = self.store.topic(pkey)
+        if row and row["path"]:
+            return row["path"]
+        if hint and sanitize(hint) == pkey:
+            return hint
+        return decode_pkey(pkey)
+
+    def project_name(self, pkey, path):
+        return os.path.basename(path.rstrip("/")) if path else pkey.lstrip("-")
+
+    async def thread_for(self, pkey, path=None):
+        row = self.store.topic(pkey)
+        if row and row["thread"]:
+            return row["thread"]
+        lock = self.topic_locks.setdefault(pkey, asyncio.Lock())
+        async with lock:
+            row = self.store.topic(pkey)
+            if row and row["thread"]:
+                return row["thread"]
+            path = path or self.project_path(pkey)
+            name = self.project_name(pkey, path)
+            res = await self.out.submit(1, lambda: self.tg.call("createForumTopic", chat_id=self.chat,
+                                                                 name=name[:128]))
+            thread = res["message_thread_id"]
+            self.store.set_topic(pkey, path, name, thread)
+            log("topic created:", name)
+            await self.send(None, self.t("topic.intro", name=R.esc(name), path=R.esc(path or "?")), here=thread, prio=1)
+            return thread
+
+    # ----- sending -----
+
+    def topic_link(self, thread):
+        chat = str(self.chat or "")
+        return "https://t.me/c/%s/%d" % (chat[4:], thread) if chat.startswith("-100") and thread else None
+
+    async def send(self, pkey, text, *, reply_to=None, buttons=None, notify=False, prio=5,
+                   sid=None, kind=None, here=None):
+        """To the topic of project pkey (creating it if missing) or, if here is given, to where the
+        owner wrote: a topic id, 0 — General."""
+        if not self.chat:
+            return None
+        for attempt in (0, 1):
+            if here is not None:
+                thread = here or None
+            else:
+                thread = await self.thread_for(pkey) if pkey else None
+            params = dict(chat_id=self.chat, text=text, parse_mode="HTML",
+                          disable_notification=not notify or self.mode() == "mac",   # at the Mac, everything is silent
+                          link_preview_options={"is_disabled": True})
+            if thread:
+                params["message_thread_id"] = thread
+            if reply_to:
+                params["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
+            if buttons:
+                params["reply_markup"] = {"inline_keyboard": buttons}
+
+            async def go(p=params):
+                try:
+                    return await self.tg.call("sendMessage", **p)
+                except TgError as e:
+                    if "parse" in e.desc.lower() or "entit" in e.desc.lower():
+                        q = dict(p, text=R.html_to_plain(p["text"])[:R.TG_LIMIT])
+                        q.pop("parse_mode")
+                        return await self.tg.call("sendMessage", **q)
+                    raise
+            try:
+                res = await self.out.submit(prio, go)
+            except TgError as e:
+                if attempt == 0 and pkey and here is None and "thread" in e.desc.lower():
+                    log("topic is gone, creating it again:", pkey)
+                    self.store.db.execute("DELETE FROM topics WHERE pkey=?", (pkey,))
+                    continue
+                log("not sent:", e)
+                return None
+            if sid:
+                self.store.map_msg(res["message_id"], sid, kind or "msg")
+            return res["message_id"]
+
+    def edit(self, msg, text, buttons=None, prio=8):
+        if not msg:
+            return
+        params = dict(chat_id=self.chat, message_id=msg, text=text, parse_mode="HTML",
+                      link_preview_options={"is_disabled": True},
+                      reply_markup={"inline_keyboard": buttons or []})
+
+        async def go():
+            try:
+                return await self.tg.call("editMessageText", **params)
+            except TgError as e:
+                d = e.desc.lower()
+                if "not modified" in d or "not found" in d:
+                    return None
+                if "parse" in d or "entit" in d:
+                    q = dict(params, text=R.html_to_plain(text)[:R.TG_LIMIT])
+                    q.pop("parse_mode")
+                    return await self.tg.call("editMessageText", **q)
+                raise
+        self.out.edit(msg, go, prio)
+
+    async def send_long(self, pkey, header, md, *, notify, sid, reply_to=None, prio=3, kind="result"):
+        """A long Claude reply. With the app connected: the beginning in the chat and "Read in full" (the whole
+        text in the app). Without it: 3500-character chunks, up to six chunks without a file (~20k characters), since
+        a file is awkward to read on a phone; beyond that, the first five chunks and the whole text as a file."""
+        chunks = R.split_md(md)
+        ids = []
+        if len(chunks) > 1 and sid and self.app_live():
+            rest = len(md) - len(chunks[0])
+            ids.append(await self.send(pkey, header + "\n" + R.md_to_html(chunks[0]) +
+                                       self.t("long.more", n=rest), notify=notify, sid=sid, kind=kind,
+                                       prio=prio, reply_to=reply_to, buttons=[self.app_row(sid, self.t("btn.read_all"))]))
+            return ids
+        if len(chunks) > 6:
+            for i, ch in enumerate(chunks[:5]):
+                ids.append(await self.send(pkey, (header + "\n" if i == 0 else "") + R.md_to_html(ch),
+                                           notify=notify and i == 0, sid=sid, kind=kind, prio=prio,
+                                           reply_to=reply_to if i == 0 else None))
+            ids.append(await self.send_doc(pkey, md, "%s.md" % (sid or "text")[:8],
+                                           self.t("doc.caption", n=len(md)), sid=sid))
+            return ids
+        for i, ch in enumerate(chunks):
+            last = i == len(chunks) - 1
+            ids.append(await self.send(pkey, (header + "\n" if i == 0 else "") + R.md_to_html(ch),
+                                       notify=notify and i == 0, sid=sid, kind=kind, prio=prio,
+                                       reply_to=reply_to if i == 0 else None,
+                                       buttons=self.with_app(None, sid) if last and sid else None))
+        return ids
+
+    async def send_doc(self, pkey, text, name, caption, sid=None):
+        thread = await self.thread_for(pkey) if pkey else None
+
+        async def go():
+            return await self.tg.call("sendDocument", files={"document": (name, text.encode())},
+                                      chat_id=self.chat, message_thread_id=thread, caption=caption,
+                                      disable_notification=True)
+        try:
+            res = await self.out.submit(4, go)
+        except TgError as e:
+            log("file not sent:", e)
+            return None
+        if sid:
+            self.store.map_msg(res["message_id"], sid, "doc")
+        return res["message_id"]
+
+    async def notice(self, sid, text, reply_to=None):
+        row = self.store.session(sid)
+        pkey = row["pkey"] if row else None
+        await self.send(pkey, "%s\n%s" % (self.head(self.live.get(sid) or self.stub(sid)), text),
+                        reply_to=reply_to, notify=True, prio=2,
+                        sid=sid, kind="notice")
+
+    # ----- events from hooks -----
+
+    def live_of(self, sid, pkey):
+        lv = self.live.get(sid)
+        if lv is None:
+            lv = self.live[sid] = self.stub(sid, pkey)
+        return lv
+
+    def stub(self, sid, pkey=None):
+        """A session from the database — for the header, without adding it to the live ones."""
+        row = self.store.session(sid)
+        lv = Live(sid, pkey or (row["pkey"] if row else ""))
+        lv.title = row["title"] if row else None
+        return lv
+
+    async def refresh_title(self, lv):
+        try:
+            from claude_agent_sdk import get_session_info
+            path = self.project_path(lv.pkey, lv.cwd)
+            info = await asyncio.to_thread(get_session_info, lv.sid, path)
+            if info:
+                # custom_title — a name set by the user or made up by Claude Code; summary without it is
+                # the last prompt ("let's continue"), no good for a title (SDK 0.2.167)
+                t = info.custom_title or info.summary or info.first_prompt
+                if t:
+                    lv.title = R.short(t, 60)
+                    lv.named = bool(info.custom_title)
+                    self.store.touch_session(lv.sid, lv.pkey, title=lv.title)
+        except Exception as e:
+            log("session title not read:", repr(e))
+
+    def title(self, lv):
+        """What to call the session for a human: its name, or the project until it has one. A prompt used as the
+        name ("let's continue", the start of a task) is not repeated — it is shown right next to it anyway."""
+        if lv.named and lv.title:
+            return lv.title
+        row = self.store.topic(lv.pkey)
+        return (row["name"] if row and row["name"] else
+                os.path.basename((lv.cwd or "").rstrip("/")) or lv.pkey.rsplit("-", 1)[-1] or self.t("session.default"))
+
+    def head(self, lv):
+        return "<b>%s</b>" % R.esc(self.title(lv))
+
+    def render_turn(self, lv, t):
+        dur = R.human_dur((time.time() if not t.done else t.done[1]) - t.started)
+        state = {"✔️": "turn.done", "⏹": "turn.stopped"}.get(t.done[0] if t.done else None, "turn.running")
+        lines = ["%s · %s" % (self.head(lv), self.t(state, dur=dur))]
+        if t.prompt:
+            lines.append(self.t("turn.you", text=R.esc(I.q(R.short(t.prompt, 300)))))
+        elif t.note:
+            lines.append("<i>%s</i>" % R.esc(t.note))
+        if t.now and not t.done:
+            lines += ["", "💬 " + R.esc(R.plain(t.now, NOW_LEN))]
+        return "\n".join(lines)
+
+    def start_turn(self, lv, prompt=None, reply_to=None, note=None):
+        t = lv.turn = Turn(prompt, reply_to)
+        t.note = note
+        asyncio.create_task(self.turn_updater(lv, t))
+        t.vehi = asyncio.create_task(self.vehi(lv, t))
+        self.changed(lv.sid)
+        return t
+
+    async def refresh_now(self, lv, t):
+        if lv.transcript:
+            now = await asyncio.to_thread(last_reply, lv.transcript, t.started - 1)
+            t.now = now or t.now
+
+    async def turn_updater(self, lv, t):
+        try:
+            text = self.render_turn(lv, t)
+            t.msg = await self.send(lv.pkey, text, reply_to=t.reply_to, sid=lv.sid, kind="turn", prio=4,
+                                    buttons=self.with_app(None, lv.sid))
+            shown = text
+        finally:
+            if not t.created.done():
+                t.created.set_result(t.msg)
+        while t.msg:
+            try:
+                # even without events: "working N min" must keep ticking while a long command runs
+                await asyncio.wait_for(t.changed.wait(), TICK)
+            except asyncio.TimeoutError:
+                pass
+            t.changed.clear()
+            if not t.done and not await self.alive(lv, t):
+                log("turn %s: the session is gone from the Mac — closing" % lv.sid[:8])
+                self.finish_turn(lv, "⏹")
+            if not t.done:
+                await asyncio.sleep(EDIT_EVERY)
+                await self.refresh_now(lv, t)
+            text = self.render_turn(lv, t)
+            if text != shown:
+                self.edit(t.msg, text, self.with_app(None, lv.sid), prio=8 if not t.done else 4)
+                shown = text
+                self.changed(lv.sid)
+            if t.done:
+                break
+
+    async def alive(self, lv, t):
+        """A turn without events for longer than STALE — is the session alive? Otherwise a dead turn would edit its
+        message forever and ring milestones. An empty `claude agents` list means we don't know (the command may
+        have failed): treat the session as alive."""
+        if time.time() - t.last < STALE or lv.sid in self.driven:
+            return True
+        agents = await self.agents()
+        return not agents or any(a.get("sessionId") == lv.sid for a in agents)
+
+    async def vehi(self, lv, t):
+        """A long turn: at milestones, a short message with sound if the owner is away from the Mac or the
+        session is from Telegram. At the Mac the owner sees the tab anyway, so stay quiet."""
+        for mark in vehi_marks():
+            await asyncio.sleep(max(0.0, t.started + mark - time.time()))
+            if t.done or t.muted:
+                return
+            if not self.prefs()["vehi"] or not await self.loud(lv.driven):
+                continue
+            if not await self.alive(lv, t):
+                return
+            await self.refresh_now(lv, t)
+            text = self.t("vehi", head=self.head(lv), dur=R.human_dur(mark))
+            if t.now:
+                text += "\n💬 " + R.esc(R.plain(t.now, NOW_LEN))
+            tok = self.offer(("mute", t, text))
+            await self.send(lv.pkey, text, reply_to=t.msg, notify=True, prio=2, sid=lv.sid, kind="vehi",
+                            buttons=[[{"text": self.t("btn.mute"), "callback_data": "m:" + tok}] +
+                                     (self.app_row(lv.sid) or [])])
+
+    def finish_turn(self, lv, mark):
+        t = lv.turn
+        if t and not t.done:
+            t.done = (mark, time.time())
+            t.changed.set()
+            if t.vehi:
+                t.vehi.cancel()
+        lv.turn = None
+        self.changed(lv.sid)
+        return t
+
+    async def on_hook(self, msg, reader, writer):
+        ev = msg.get("event") or {}
+        name = ev.get("hook_event_name")
+        sid = ev.get("session_id")
+        pkey = Path(ev.get("transcript_path") or "").parent.name or sanitize(ev.get("cwd") or "")
+        if not sid or skip_pkey(pkey) or not self.chat:
+            return None
+        self.activity = time.time()
+        lv = self.live_of(sid, pkey)
+        lv.driven = bool(msg.get("driven"))     # who drives the session now: Pult or the Mac
+        lv.transcript = ev.get("transcript_path") or lv.transcript
+        dr = self.driven.get(sid)
+        if dr and not lv.driven:
+            # a session from Telegram was opened on the Mac: Pult releases its process so that two
+            # processes don't write to the same session; a running turn is not interrupted
+            if not dr.busy:
+                dr.task.cancel()
+                log("session %s moved to the Mac — Pult's process closed" % sid[:8])
+                if dr.bg:
+                    # the background tasks lived in Pult's process and closed with it
+                    names = ", ".join(I.q(R.short(b.get("description") or self.t("task.default"), 60)) for b in lv.bg)
+                    asyncio.create_task(self.notice(sid, self.t("bg.closed", names=": " + R.esc(names) if names else "")))
+                    lv.bg = []
+        if name == "SessionStart" or lv.cwd is None:
+            lv.cwd = lv.cwd or ev.get("cwd")
+            path = self.project_path(pkey, ev.get("cwd"))
+            self.store.touch_session(sid, pkey, path=path, driven=lv.driven)
+            if not self.store.topic(pkey) and path:
+                self.store.set_topic(pkey, path, self.project_name(pkey, path), None)
+        if name in ("UserPromptSubmit", "Stop"):
+            self.store.touch_session(sid, pkey)          # the topic's recent sessions, for the "where to send" question
+        if name == "UserPromptSubmit":
+            self.resolve_all(lv, self.t("req.decided_mac"))
+            self.finish_turn(lv, "⏹")
+            await self.refresh_title(lv)
+            notes = R.task_notes(ev.get("prompt"))
+            if notes:
+                # the turn was started by Claude Code itself (a background task finished); it's not the owner's prompt
+                ended = {n["id"] for n in notes}
+                lv.bg = [b for b in lv.bg if b.get("id") not in ended]
+                self.start_turn(lv, note=R.task_notes_text(notes))
+            else:
+                origin = self.expect.get(sid)
+                sent = self.tab_expect.get(sid)
+                if not origin and sent and sent[1].strip() == (ev.get("prompt") or "").strip():
+                    origin = self.tab_expect.pop(sid)[0]       # written from Telegram into the tab
+                lv.title = lv.title or R.short(ev.get("prompt"), 60) or None
+                self.start_turn(lv, None if origin else ev.get("prompt"), reply_to=origin)
+        elif name in ("PostToolUse", "PostToolUseFailure"):
+            tool, inp = ev.get("tool_name"), ev.get("tool_input")
+            for r in list(lv.pending.values()):
+                if r.tool == tool and same_input(r.inp, inp):
+                    self.resolve_elsewhere(r, self.t("req.answered_mac" if r.kind == "ask" else "req.allowed_mac"),
+                                           inp)
+            if lv.turn is None:
+                if lv.title is None:
+                    await self.refresh_title(lv)
+                self.start_turn(lv)
+            t = lv.turn
+            t.n += 1
+            t.last = time.time()
+            t.changed.set()
+        elif name == "Stop":
+            self.resolve_all(lv, self.t("req.decided_mac"))
+            if "background_tasks" in ev:                 # the field exists since Claude Code 2.1.30x (probe 2026-10-16)
+                lv.bg = [b for b in ev.get("background_tasks") or [] if isinstance(b, dict)]
+            t = self.finish_turn(lv, "✔️")
+            asyncio.create_task(self.post_result(lv, t, ev.get("last_assistant_message") or "", R.bg_text(lv.bg)))
+        elif name == "SessionEnd":
+            self.resolve_all(lv, self.t("req.session_closed"))
+            self.finish_turn(lv, "⏹")
+            self.live.pop(sid, None)
+        elif name == "PermissionRequest":
+            return await self.on_permission(lv, ev, reader)
+        return None
+
+    async def post_result(self, lv, t, text, bg=""):
+        """bg — the line "⚙️ Still running in the background: …" under the result header: Claude has finished the
+        turn, but its background task is still running; when it ends, Claude starts a new turn by itself."""
+        if t is not None:
+            await t.created
+        notify = await self.loud(lv.driven)
+        reply_to = t.msg if t else None
+        if not text.strip():
+            text = self.t("result.empty")
+        when = self.t("result.done_in", dur=R.human_dur(t.done[1] - t.started)) if t and t.done else self.t("result.done")
+        self.recent.appendleft({"sid": lv.sid, "title": self.title(lv), "project": self.project_label(lv.pkey),
+                                "ts": time.time(), "dur": (t.done[1] - t.started) if t and t.done else None,
+                                "text": R.plain(text, 400)})
+        self.changed(lv.sid)
+        await self.send_long(lv.pkey, "✅ %s%s\n%s" % (self.head(lv), when, R.esc(bg) + "\n" if bg else ""), text,
+                             notify=notify, sid=lv.sid, reply_to=reply_to)
+
+    # ----- tasks without Claude: pult run -- command -----
+
+    def pkey_for_cwd(self, cwd):
+        """The topic of the project whose folder the task runs in (the most nested one), otherwise General (None)."""
+        best = None
+        cwd = os.path.realpath(cwd or "/")          # /var → /private/var and other symlinks
+        for r in self.store.db.execute("SELECT pkey, path FROM topics WHERE path IS NOT NULL"):
+            p = os.path.realpath(r["path"]).rstrip("/")
+            if (cwd == p or cwd.startswith(p + "/")) and (best is None or len(p) > len(best[1])):
+                best = (r["pkey"], p)
+        return best[0] if best else None
+
+    def render_job(self, j, final=False):
+        """The task message: "⚙️ command · running 6 min" and the last line of output; final — the result "✅ / ❌"."""
+        cmd = "<b>%s</b>" % R.esc(R.short(j.cmd, 90))
+        if j.ended is None:
+            text = self.t("job.running", cmd=cmd, dur=R.human_dur(time.time() - j.started))
+            return text + ("\n<code>%s</code>" % R.esc(R.short(j.last, 200)) if j.last else "")
+        took = R.human_dur(j.ended - j.started)
+        if j.code == 0:
+            return self.t("job.done.final" if final else "job.done", cmd=cmd, dur=took)
+        why = self.t("job.killed") if j.code is None else self.t("job.code", code=j.code)
+        return self.t("job.fail.final" if final else "job.fail", cmd=cmd, why=why, dur=took)
+
+    async def job_send(self, j, text, **kw):
+        if j.pkey:
+            return await self.send(j.pkey, text, **kw)
+        return await self.send(None, text, here=0, **kw)
+
+    async def on_run(self, m):
+        rid, op = str(m.get("id") or ""), m.get("op")
+        j = self.jobs.get(rid)
+        if op == "start" and rid and j is None:
+            cwd = str(m.get("cwd") or "")
+            j = self.jobs[rid] = Job(rid, str(m.get("cmd") or "?"), cwd, m.get("pid"), self.pkey_for_cwd(cwd))
+            log("job %s: %s · %s" % (rid, R.short(j.cmd, 80), cwd))
+            j.msg = await self.job_send(j, self.render_job(j), prio=4)
+            j.watch = asyncio.create_task(self.job_watch(j))
+        elif op == "tick" and j:
+            j.last = str(m.get("last") or "")
+            self.edit(j.msg, self.render_job(j))
+        elif op == "end" and j:
+            self.finish_job(j, m.get("code"), m.get("tail") or [])
+            notify = await self.loud()
+            text = self.render_job(j, final=True)
+            tail = [str(x) for x in j.tail[-15:]]
+            if tail and j.code != 0:
+                text += "\n<pre>%s</pre>" % R.esc(R.short_block("\n".join(tail), 2500))
+            elif tail:
+                text += "\n<code>%s</code>" % R.esc(R.short(tail[-1], 200))
+            await self.job_send(j, text, reply_to=j.msg, notify=notify, prio=3)
+        else:
+            return
+        self.changed()
+
+    def finish_job(self, j, code, tail):
+        if j.ended is not None:
+            return
+        j.code, j.tail, j.ended = code, list(tail), time.time()
+        if j.watch:
+            j.watch.cancel()
+        self.jobs.pop(j.rid, None)
+        self.jobs_done.appendleft(j)
+        self.edit(j.msg, self.render_job(j), prio=4)
+        log("job %s: end, code %s" % (j.rid, code))
+
+    async def job_watch(self, j):
+        """Every minute: "running N min" in the message; milestones if the owner is away; if the wrapper was killed
+        without reporting the end, the task is closed as interrupted."""
+        marks = vehi_marks()
+        mark = next(marks)
+        while j.ended is None:
+            await asyncio.sleep(TICK)
+            if j.pid and not pid_alive(j.pid):
+                self.finish_job(j, None, j.tail)
+                self.changed()
+                return
+            self.edit(j.msg, self.render_job(j))
+            if time.time() - j.started >= mark:
+                if not j.muted and self.prefs()["vehi"] and await self.loud():
+                    await self.job_send(j, self.t("job.vehi", cmd=R.esc(R.short(j.cmd, 90)), dur=R.human_dur(mark)),
+                                        reply_to=j.msg, notify=True, prio=2)
+                mark = next(marks)
+
+    def job_item(self, j):
+        return {"id": j.rid, "cmd": j.cmd, "cwd": j.cwd, "project": self.project_label(j.pkey) if j.pkey else None,
+                "started": j.started, "ended": j.ended, "code": j.code, "last": j.last, "tail": j.tail[-30:]}
+
+    # ----- permissions and questions -----
+
+    async def on_permission(self, lv, ev, reader):
+        req = Req(lv.sid, ev.get("tool_name"), ev.get("tool_input"), ev.get("permission_suggestions"))
+        lv.pending[req.rid] = req
+        self.req_by_rid[req.rid] = req
+        notify = await self.loud(lv.driven)
+        self.changed(lv.sid)
+        try:
+            await self.post_request(lv, req, notify)
+            eof = asyncio.create_task(reader.read())
+            await asyncio.wait({req.fut, eof}, return_when=asyncio.FIRST_COMPLETED)
+            eof.cancel()
+            if not req.fut.done():
+                self.resolve_elsewhere(req, self.t("req.decided_mac"))
+            return req.fut.result()
+        finally:
+            lv.pending.pop(req.rid, None)
+            self.req_by_rid.pop(req.rid, None)
+            for m, _ in req.msgs:
+                self.req_by_msg.pop(m, None)
+
+    async def post_request(self, lv, req, notify):
+        rid = req.rid
+        if req.kind == "ask":
+            for i, q in enumerate(req.inp.get("questions") or []):
+                m = await self.send(lv.pkey, self.req_head(req, "❓", self.t("req.asks")) + R.question_text(q),
+                                    buttons=self.with_app(self.q_buttons(req, i), lv.sid), notify=notify and i == 0, prio=0,
+                                    sid=lv.sid, kind="ask")
+                if m:
+                    req.msgs.append((m, i))
+                    self.req_by_msg[m] = (req, i)
+            return
+        if req.kind == "plan":
+            plan = str(req.inp.get("plan") or "")
+            body = R.md_to_html(plan if len(plan) <= 3000 else plan[:3000] + "…")
+            text = self.req_head(req, "📋", self.t("req.plan")) + body
+            buttons = [[{"text": self.t("btn.approve"), "callback_data": "p:%s:y" % rid},
+                        {"text": self.t("btn.reject_plan"), "callback_data": "p:%s:n" % rid}]]
+            if len(plan) > 3000:
+                await self.send_doc(lv.pkey, plan, "plan-%s.md" % lv.sid[:8], self.t("plan.full"), sid=lv.sid)
+        else:
+            text = self.req_head(req, "✋", self.t("req.perm")) + \
+                R.permission_text(req.tool, req.inp, lv.cwd)
+            row = [{"text": self.t("btn.allow"), "callback_data": "p:%s:y" % rid},
+                   {"text": self.t("btn.deny"), "callback_data": "p:%s:n" % rid}]
+            buttons = [row]
+            if req.suggestions:
+                buttons.append([{"text": self.t("btn.always"), "callback_data": "p:%s:a" % rid}])
+        text += self.t("perm.reply_hint")
+        buttons = self.with_app(buttons, lv.sid)
+        m = await self.send(lv.pkey, text, buttons=buttons, notify=notify, prio=0, sid=lv.sid, kind="perm")
+        if m:
+            req.msgs.append((m, None))
+            self.req_by_msg[m] = (req, None)
+
+    def q_buttons(self, req, i):
+        q = (req.inp.get("questions") or [])[i]
+        picks = req.picks.get(i, [])
+        rows = []
+        for k, o in enumerate(q.get("options") or []):
+            label = o.get("label") or "?"
+            if q.get("multiSelect"):
+                label = ("☑️ " if label in picks else "▫️ ") + label
+            rows.append([{"text": R.short(label, 60), "callback_data": "q:%s:%d:%d" % (req.rid, i, k)}])
+        if q.get("multiSelect"):
+            rows.append([{"text": self.t("btn.done"), "callback_data": "q:%s:%d:ok" % (req.rid, i)}])
+        return rows
+
+    def act(self, req, act, where="tg", text=None):
+        """A decision on a permission request or a plan — a chat button or the app (where: "tg" / "app").
+        None — accepted. What Claude reads is in English; what the owner reads — in the owner's language."""
+        if not req or req.fut.done():
+            return self.t("note.decided")
+        plan = req.kind == "plan"
+        place, for_claude = self.t("where." + where), {"tg": "Telegram", "app": "the Pult app"}.get(where, where)
+        if act == "y":
+            self.decide(req, {"behavior": "allow"}, self.t("dec.approved" if plan else "dec.allowed", where=place))
+        elif act == "a" and req.suggestions:
+            self.decide(req, {"behavior": "allow", "updatedPermissions": req.suggestions}, self.t("dec.always"))
+        elif act == "n":
+            if text:
+                self.decide(req, {"behavior": "deny", "message": "The owner replied from %s: %s" % (for_claude, text)},
+                            self.t("dec.denied_note", text=R.short(text, 80)))
+            else:
+                self.decide(req, {"behavior": "deny", "message": "The owner declined from %s." % for_claude},
+                            self.t("dec.rejected_plan") if plan else self.t("dec.denied", where=place))
+        else:
+            return self.t("note.unclear")
+        return None
+
+    def decide(self, req, decision, note):
+        if req.fut.done():
+            return
+        req.fut.set_result({"output": {"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+                                                              "decision": decision}}})
+        log("%s #s%s: %s — %s" % (req.tool, req.sid[:8], decision.get("behavior"), note))
+        self.close_req_msgs(req, note)
+
+    def req_head(self, req, icon, what=None):
+        lv = self.live.get(req.sid) or self.stub(req.sid)
+        return "%s %s%s\n" % (icon, self.head(lv), " · " + what if what else "")
+
+    def close_req_msgs(self, req, note, answers=None):
+        lv = self.live.get(req.sid)
+        for m, i in req.msgs:
+            if i is not None:
+                q = (req.inp.get("questions") or [])[i]
+                got = (answers or {}).get(q.get("question")) or ", ".join(req.chosen.get(i, []))
+                text = "%s%s\n%s%s" % (self.req_head(req, "❓"), R.question_text(q, req.chosen.get(i), done=True),
+                                       "→ <b>%s</b> · " % R.esc(got) if got else "", R.esc(note))
+            elif req.kind == "plan":
+                text = self.req_head(req, "📋") + self.t("plan.decided", note=R.esc(note))
+            else:
+                text = "%s%s\n<b>%s</b>" % (self.req_head(req, "✋"),
+                                            R.permission_text(req.tool, req.inp, lv.cwd if lv else None), R.esc(note))
+            self.edit(m, text, [], prio=3)
+        self.changed(req.sid)
+
+    def resolve_elsewhere(self, req, note, inp=None):
+        if req.fut.done():
+            return
+        req.fut.set_result({"output": None})
+        log("%s #s%s: %s" % (req.tool, req.sid[:8], note))
+        self.close_req_msgs(req, "✔️ " + note, (inp or {}).get("answers"))
+
+    def resolve_all(self, lv, note):
+        for r in list(lv.pending.values()):
+            self.resolve_elsewhere(r, note)
+
+    def answer_question(self, req, i, values):
+        req.chosen[i] = values
+        qs = req.inp.get("questions") or []
+        m = next((m for m, k in req.msgs if k == i), None)
+        if m:
+            self.edit(m, "%s%s\n→ <b>%s</b>" % (self.req_head(req, "❓"), R.question_text(qs[i], values, done=True),
+                                               R.esc(", ".join(values))), [], prio=3)
+        self.changed(req.sid)
+        if len(req.chosen) == len(qs) and not req.fut.done():
+            ans = R.answers_for(qs, req.chosen)
+            req.fut.set_result({"output": {"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+                                "decision": {"behavior": "allow",
+                                             "updatedInput": {"questions": qs, "answers": ans}}}}})
+            log("%s #s%s: answered from Telegram — %s" % (req.tool, req.sid[:8], "; ".join(ans.values())))
+
+    # ----- Telegram: buttons -----
+
+    async def on_callback(self, cq):
+        uid = (cq.get("from") or {}).get("id")
+        data = cq.get("data") or ""
+        note = None
+        if uid not in self.allowed:
+            note = self.t("note.denied")
+        elif data.startswith("p:"):
+            _, rid, act = data.split(":")
+            note = self.act(self.req_by_rid.get(rid), act)
+        elif data.startswith("q:"):
+            _, rid, i, k = data.split(":")
+            req, i = self.req_by_rid.get(rid), int(i)
+            if not req or req.fut.done():
+                note = self.t("note.decided")
+            else:
+                q = (req.inp.get("questions") or [])[i]
+                opts = [o.get("label") for o in q.get("options") or []]
+                if k == "ok":
+                    if req.picks.get(i):
+                        self.answer_question(req, i, req.picks[i])
+                    else:
+                        note = self.t("note.pick_one")
+                elif q.get("multiSelect"):
+                    p = req.picks.setdefault(i, [])
+                    lab = opts[int(k)]
+                    p.remove(lab) if lab in p else p.append(lab)
+                    m = next((m for m, kk in req.msgs if kk == i), None)
+                    self.edit(m, self.req_head(req, "❓", self.t("req.asks")) + R.question_text(q, p),
+                              self.with_app(self.q_buttons(req, i), req.sid), prio=1)
+                else:
+                    self.answer_question(req, i, [opts[int(k)]])
+        elif data.startswith("m:"):
+            o = self.offers.get(data[2:])
+            if not o:
+                note = self.t("note.stale")
+            else:
+                o[1].muted = True
+                self.edit((cq.get("message") or {}).get("message_id"),
+                          o[2] + self.t("vehi.muted"), [], prio=3)
+                note = self.t("note.muted")
+        elif data.startswith("w:") and data[2:] in MODES:
+            await self.set_mode(data[2:])
+            mid = (cq.get("message") or {}).get("message_id")
+            if mid and mid != self.store.get("panel"):
+                self.edit(mid, self.panel_text(), self.panel_buttons(), prio=1)
+            note = self.t("mode.set", mode=self.t("mode." + data[2:]))
+        elif data.startswith("h:"):
+            sec = data[2:]
+            text = self.t("help") if sec == "main" else self.help_section(sec)
+            self.edit((cq.get("message") or {}).get("message_id"), text, self.help_buttons(sec), prio=1)
+        elif data.startswith(("s:", "f:", "o:", "t:")):
+            cm = cq.get("message") or {}
+            note = await self.on_offer(data, cm.get("message_thread_id") if cm.get("is_topic_message") else 0)
+        log("button %s from %s → %s" % (data[:14], uid, note or "ok"))
+        try:
+            await self.tg.call("answerCallbackQuery", callback_query_id=cq["id"], text=note)
+        except TgError:
+            pass
+
+    def offer(self, value):
+        """A button that refers to stored data: Telegram's callback_data is at most 64 bytes."""
+        if len(self.offers) > 500:
+            for k in list(self.offers)[:250]:
+                del self.offers[k]
+        tok = secrets.token_hex(4)
+        self.offers[tok] = value
+        return tok
+
+    async def on_offer(self, data, here=0):
+        kind, tok = data.split(":", 1)
+        o = self.offers.pop(tok, None)
+        if not o:
+            return self.t("note.stale_retry")
+        if kind == "o":
+            mode, pkey, path, pending = o
+            name = self.project_name(pkey, path)
+            if mode == "bind":
+                body, origin, uthread = pending
+                old = self.store.topic(pkey)
+                self.store.set_topic(pkey, path, name, uthread)
+                log("topic %s bound to project %s (was %s)" % (uthread, name, old["thread"] if old else None))
+                await self.send(None, self.t("topic.bound", name=R.esc(name), path=R.esc(path)), here=uthread)
+                await self.drive(str(uuid.uuid4()), path, body, origin, pkey=pkey)
+                return self.t("note.bound", name=name)
+            thread = await self.thread_for(pkey, path)
+            link = self.topic_link(thread)
+            title = '<a href="%s">%s</a>' % (link, R.esc(name)) if link else "<b>%s</b>" % R.esc(name)
+            if mode == "new":
+                body, origin = pending
+                await self.drive(str(uuid.uuid4()), path, body, origin, pkey=pkey, quote=False, here=here)
+                await self.send(None, self.t("started.in", title=title), here=here,
+                                reply_to=origin)
+                return self.t("note.starting_in", name=name)
+            await self.send(None, self.t("topic.link", title=title), here=here)
+            return name
+        if kind == "s":
+            pkey, path, sid = o
+            await self.session_card(pkey, path, sid)
+            return None
+        if kind == "t":
+            if o[0] == "sess":
+                _, sid, body, origin, ohere = o
+                await self.continue_session(sid, body, origin, ohere)
+                return self.t("note.sending_to", name=I.q(R.short(self.title(self.live.get(sid) or self.stub(sid)), 40)))
+            _, path, pkey, body, origin = o
+            await self.drive(str(uuid.uuid4()), path, body, origin, pkey=pkey)
+            return self.t("note.new_session")
+        if kind == "f":
+            sid, path, text, origin, quote, fhere = o
+            await self.drive(sid, path, text, origin, fork=True, quote=quote, here=fhere)
+            return self.t("note.starting_copy")
+        return None
+
+    # ----- Telegram: messages -----
+
+    async def on_message(self, m):
+        uid = (m.get("from") or {}).get("id")
+        chat = (m.get("chat") or {}).get("id")
+        text = m.get("text") or m.get("caption") or ""
+        cmd, rest = command_of(text)
+        if uid not in self.allowed:
+            return
+        lt = I.lang_of((m.get("from") or {}).get("language_code"))
+        if (m.get("from") or {}).get("language_code") and self.store.get("lang_tg") != lt:
+            self.store.put("lang_tg", lt)
+        private = (m.get("chat") or {}).get("type") == "private"
+        if cmd == "/bind":
+            if not (m.get("chat") or {}).get("is_forum"):
+                await self.tg.call("sendMessage", chat_id=chat,
+                                   text=self.t("bind.private" if private else "bind.need_forum"))
+                return
+            self.chat = chat
+            self.store.put("chat", chat)
+            await self.send(None, self.t("help"), here=0, buttons=self.help_buttons())
+            await self.post_panel(0)
+            log("group bound:", chat)
+            return
+        if chat != self.chat:
+            if private:                        # no group yet — how to make one; otherwise — where to write
+                await self.tg.call("sendMessage", chat_id=chat,
+                                   text=self.t("private.elsewhere" if self.chat else "bind.private"))
+            return
+        thread = m.get("message_thread_id") if m.get("is_topic_message") else None
+        here = thread or 0
+        mid = m["message_id"]
+        rep = m.get("reply_to_message") or {}
+        rep_id = rep.get("message_id") if rep and rep.get("message_id") != thread and not rep.get("forum_topic_created") else None
+        topic = self.store.topic_by_thread(thread) if thread else None
+        log("← %s: %s" % (("topic " + topic["name"]) if topic else ("topic %s (not bound)" % thread) if thread
+                          else "General", R.short(text, 80) or "[attachment]"))
+
+        if cmd in ("/start", "/help"):
+            await self.send(None, self.t("help"), here=here, buttons=self.help_buttons())
+        elif cmd in ("/mode", "/app"):
+            await self.post_panel(here)
+        elif cmd in ("/auto", "/mac", "/phone"):
+            await self.set_mode(cmd[1:])
+            await self.send(None, self.panel_text(), here=here, buttons=self.panel_buttons())
+        elif cmd == "/feedback":
+            await self.send(None, self.t("feedback", url=REPO_URL + "/issues") if REPO_URL
+                            else self.t("feedback.none"), here=here)
+        elif cmd == "/status":
+            await self.cmd_status(here)
+        elif cmd == "/projects":
+            await self.cmd_projects(here, "open")
+        elif cmd == "/sessions":
+            await self.cmd_sessions(topic, here)
+        elif cmd == "/stop":
+            await self.cmd_stop(rep_id, here)
+        elif rep_id and rep_id in self.req_by_msg:
+            req, i = self.req_by_msg[rep_id]
+            if req.fut.done():
+                await self.send(None, self.t("q.already"), reply_to=mid, here=here)
+            elif i is not None:
+                self.answer_question(req, i, [text.strip()])
+            else:
+                self.act(req, "n", text=text.strip())
+        elif cmd and cmd != "/new":
+            await self.send(None, self.t("cmd.unknown"), reply_to=mid, here=here)
+        else:
+            body = rest if cmd == "/new" else text
+            body = await self.with_attachments(m, body)
+            if not body.strip():
+                return
+            row = self.store.msg(rep_id) if rep_id else None
+            if row:
+                await self.continue_session(row["sid"], body, mid, here)
+            elif topic and topic["path"] and cmd == "/new":
+                await self.drive(str(uuid.uuid4()), topic["path"], body, mid, pkey=topic["pkey"])
+            elif topic and topic["path"]:
+                await self.ask_target(topic, body, mid, here)
+            elif thread:
+                await self.cmd_projects(here, "bind", (body, mid, thread), reply_to=mid)
+            else:
+                await self.cmd_projects(here, "new", (body, mid), reply_to=mid)
+
+    async def ask_target(self, topic, body, origin, here):
+        """Text in a project topic that is not a reply: which session is it for? Don't start a new one right away —
+        the owner watches one session's turn in the topic and writes as if to it (2026-10-16: "do it" went to a new
+        session without context, and that one set about reorganizing another project)."""
+        rows = []
+        live = {a.get("sessionId") for a in await self.agents()}
+        tabbed = {t.sid for t in self.tabs.values() if t.sid}
+        for r in self.store.db.execute("SELECT sid, title, last_seen FROM sessions WHERE pkey=? "
+                                       "ORDER BY last_seen DESC LIMIT 4", (topic["pkey"],)).fetchall():
+            sid = r["sid"]
+            lv = self.live.get(sid)
+            mark = "📱" if sid in self.driven else "💻" if sid in tabbed else "🖥" if sid in live else "▫️"
+            title = (lv.title if lv else None) or r["title"] or self.t("session.default")
+            tok = self.offer(("sess", sid, body, origin, here))
+            rows.append([{"text": "↩️ %s %s · %s" % (mark, R.short(title, 34), when(r["last_seen"])),
+                          "callback_data": "t:" + tok}])
+        tok = self.offer(("new", topic["path"], topic["pkey"], body, origin))
+        rows.append([{"text": self.t("btn.new_session"), "callback_data": "t:" + tok}])
+        await self.send(None, self.t("where.ask"), buttons=rows,
+                        reply_to=origin, here=here)
+
+    async def with_attachments(self, m, text):
+        """Photos and files from Telegram go to ~/.local/share/pult/inbox/; the path goes into the text for Claude."""
+        f = None
+        if m.get("photo"):
+            f = (m["photo"][-1]["file_id"], "jpg")
+        elif m.get("document"):
+            name = m["document"].get("file_name") or "file"
+            f = (m["document"]["file_id"], name.rsplit(".", 1)[-1][:8] if "." in name else "bin")
+        if not f:
+            return text
+        try:
+            _, blob = await self.tg.download(f[0])
+        except TgError as e:
+            return text + "\n\n[An attachment from Telegram failed to download: %s]" % e
+        d = HOME / "inbox" / time.strftime("%Y-%m")
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / ("%d.%s" % (m["message_id"], re.sub(r"[^\w]", "", f[1]) or "bin"))
+        p.write_bytes(blob)
+        return (text or "Have a look at the attachment.") + "\n\n[Attachment from Telegram: %s]" % p
+
+    # ----- starting and continuing -----
+
+    async def continue_session(self, sid, text, origin, here):
+        row = self.store.session(sid)
+        pkey = row["pkey"] if row else None
+        path = (row["path"] if row else None) or (self.project_path(pkey) if pkey else None)
+        if not path:
+            await self.send(None, self.t("err.no_folder"), reply_to=origin, here=here)
+            return
+        trow = self.store.topic(pkey)
+        quote = bool(trow and trow["thread"] == here)    # a reply in the same topic the session lives in
+        if sid in self.driven:
+            dr = self.driven[sid]
+            dr.q.put_nowait((text, origin if quote else None))
+            if dr.busy:
+                await self.react(origin, "✍")
+            return
+        tab = self.tab_for(sid)
+        if tab:
+            # open in a tab with Pult's wrapper: write straight into it (stage 2)
+            await self.to_tab(tab, text, origin if quote else None)
+            await self.react(origin, "✍" if sid in self.live and self.live[sid].turn else "👀")
+            return
+        # open on the Mac: `claude agents` says so (research preview), or it sent events
+        # and there was no SessionEnd; the second sign backs up the first in case the command goes away
+        seen = sid in self.live and not self.live[sid].driven
+        if seen or any(a.get("sessionId") == sid for a in await self.agents()):
+            tok = self.offer((sid, path, text, origin, quote, here))
+            await self.send(None, self.t("fork.offer"), reply_to=origin, here=here,
+                            buttons=[[{"text": self.t("btn.fork"), "callback_data": "f:" + tok}]])
+            return
+        await self.drive(sid, path, text, origin, resume=sid, pkey=pkey, quote=quote, here=here)
+
+    async def drive(self, sid, path, text, origin, resume=None, fork=False, pkey=None, quote=True, here=None):
+        """quote=False — the owner's message is in another topic (General): the turn doesn't reply to it
+        but shows the prompt itself. here — where the owner wrote (for a refusal); the project topic by default."""
+        pkey = pkey or sanitize(path)
+        if fork:
+            resume, sid = sid, str(uuid.uuid4())
+        if len(self.driven) >= MAX_DRIVEN:
+            idle = [d for d in self.driven.values() if not d.busy and d.q.empty() and not d.bg]
+            if not idle:
+                await self.send(pkey, self.t("busy.driven", n=len(self.driven), sessions=I.plural(len(self.driven), "session")),
+                                reply_to=origin, here=here)
+                return
+            idle[0].task.cancel()
+        self.store.touch_session(sid, pkey, path=path, driven=True)
+        if origin:
+            self.store.map_msg(origin, sid, "owner")
+        lv = self.live_of(sid, pkey)
+        lv.driven, lv.cwd = True, path
+        lv.title = lv.title or R.short(text, 60)
+        dr = self.driven[sid] = Driven(self, sid, path, resume=resume, fork=fork)
+        dr.q.put_nowait((text, origin if quote else None))
+        await self.react(origin, "👀")
+        log("Telegram session:", sid[:8], "fork" if fork else "resume" if resume else "new", path)
+
+    # ----- VS Code tabs with Pult's wrapper (stage 2) -----
+
+    async def on_tab(self, hello, reader, writer):
+        """The tab wrapper (pult_tab.py) keeps a connection open while the tab is alive: it reports the session id
+        and accepts messages for it. If the connection drops, the tab works as usual but can't be written into."""
+        t = SimpleNamespace(pid=hello.get("pid"), cwd=hello.get("cwd"), sid=hello.get("sid"),
+                            version=hello.get("version"), writer=writer)
+        self.tabs[t.pid] = t
+        log("tab with the wrapper: pid %s, %s, Claude Code %s" % (t.pid, t.cwd, t.version))
+        try:
+            while True:
+                line = await reader.readline()
+                if not line:
+                    break
+                m = json.loads(line)
+                if m.get("op") == "sid":
+                    t.sid = m.get("sid")
+                    self.changed(t.sid)
+        finally:
+            if self.tabs.get(t.pid) is t:
+                del self.tabs[t.pid]
+            log("tab with the wrapper closed: pid %s" % t.pid)
+
+    async def tab_version_watch(self):
+        while True:
+            try:
+                await self.tab_version_check()
+            except Exception as e:
+                log("version check for tabs:", repr(e))
+            await asyncio.sleep(TAB_CHECK_EVERY)
+
+    async def tab_version_check(self):
+        """A new Claude Code extension version is out: the tab wrapper injects nothing on it until the version is
+        verified (tests/probe_tab.py, probe_race.py → pult tab allow). The owner is told about it once."""
+        try:
+            conf = json.loads(TAB_CONF.read_text())
+            wrapped = "pult-tab.sh" in VSCODE_SETTINGS.read_text()
+        except (OSError, ValueError):
+            return
+        v = newest_extension(EXTENSIONS)
+        if not wrapped or not v or v in (conf.get("versions") or []) or self.store.get("tab_warned") == v:
+            return
+        self.store.put("tab_warned", v)
+        log("Claude Code extension %s is not verified — writing into tabs is off on it" % v)
+        await self.send(None, self.t("tab.update", v=R.esc(v)), notify=True)
+
+    def tab_for(self, sid):
+        return next((t for t in self.tabs.values() if sid and t.sid == sid), None)
+
+    async def to_tab(self, tab, text, origin):
+        self.tab_expect[tab.sid] = (origin, text)
+        if origin:
+            self.store.map_msg(origin, tab.sid, "owner")
+        tab.writer.write((json.dumps({"op": "send", "text": text, "uuid": str(uuid.uuid4())},
+                                     ensure_ascii=False) + "\n").encode())
+        await tab.writer.drain()
+        log("message to a tab:", tab.sid[:8])
+
+    async def react(self, msg, emoji):
+        if not msg:
+            return
+        try:
+            await self.tg.call("setMessageReaction", chat_id=self.chat, message_id=msg,
+                               reaction=[{"type": "emoji", "emoji": emoji}])
+        except TgError:
+            pass
+
+    # ----- commands -----
+
+    async def cmd_status(self, here):
+        agents = await self.agents()
+        idle = await self.mac_idle()
+        by = {}
+        for a in agents:
+            if a.get("sessionId") not in self.driven:
+                by.setdefault(a.get("cwd") or "?", []).append(a)
+        for sid, dr in self.driven.items():
+            by.setdefault(dr.path, []).append({"sessionId": sid, "status": "busy" if dr.busy else "idle",
+                                               "driven": True})
+        lines = [self.t("status.head", state=self.t("status.at_mac") if idle < AWAY_IDLE else
+                        self.t("status.idle", dur=R.human_dur(idle)))]
+        if not by:
+            lines.append(self.t("status.none"))
+        for cwd, items in sorted(by.items()):
+            lines.append("\n<b>%s</b>" % R.esc(os.path.basename(cwd.rstrip("/")) or cwd))
+            for a in items:
+                sid = a.get("sessionId") or ""
+                lv = self.live.get(sid)
+                if lv and lv.pending:
+                    st = self.t("status.ask")
+                elif a.get("status") == "busy" or (lv and lv.turn):
+                    st = self.t("status.work") + (" %s" % R.human_dur(time.time() - lv.turn.started) if lv and lv.turn else "")
+                else:
+                    st = self.t("status.idle_sess")
+                row = self.store.session(sid)
+                title = (lv.title if lv else None) or (row["title"] if row else None) or a.get("name") or self.t("session.default")
+                lines.append("%s %s — %s" % ("📱" if a.get("driven") else "🖥", R.esc(R.short(title, 50)), st))
+        await self.send(None, "\n".join(lines), here=here)
+
+    @staticmethod
+    def list_projects(known):
+        """Projects with transcripts, most recent first. Runs in a separate thread, so it doesn't touch the database:
+        the known topic paths are passed in known."""
+        out = []
+        for d in CLAUDE_PROJECTS.iterdir() if CLAUDE_PROJECTS.exists() else []:
+            if skip_pkey(d.name):
+                continue
+            files = list(d.glob("*.jsonl"))
+            if not files:
+                continue
+            path = known.get(d.name) or decode_pkey(d.name)
+            if path and os.path.isdir(path):
+                out.append((max(f.stat().st_mtime for f in files), d.name, path))
+        return sorted(out, reverse=True)
+
+    async def cmd_projects(self, here, mode, pending=None, reply_to=None):
+        """Project buttons. mode: open — give a link to the topic; new — start a session with the text from
+        General; bind — bind a topic the owner created and start a session in it."""
+        rows = []
+        known = {r["pkey"]: r["path"] for r in self.store.db.execute("SELECT pkey, path FROM topics") if r["path"]}
+        for _, pkey, path in (await asyncio.to_thread(self.list_projects, known))[:20]:
+            tok = self.offer((mode, pkey, path, pending))
+            rows.append([{"text": self.project_name(pkey, path), "callback_data": "o:" + tok}])
+        text = self.t("projects." + mode)
+        await self.send(None, text if rows else self.t("projects.none"), buttons=rows,
+                        here=here, reply_to=reply_to)
+
+    async def cmd_sessions(self, topic, here):
+        if not topic or not topic["path"]:
+            await self.send(None, self.t("sessions.where"), here=here)
+            return
+        from claude_agent_sdk import list_sessions
+        items = await asyncio.to_thread(list_sessions, topic["path"], 10)
+        live = {a.get("sessionId") for a in await self.agents()}
+        rows = []
+        for s in items:
+            tok = self.offer((topic["pkey"], topic["path"], s.session_id))
+            mark = "📱" if s.session_id in self.driven else "🖥" if s.session_id in live else "▫️"
+            rows.append([{"text": "%s %s · %s" % (mark, when(s.last_modified / 1000),
+                                                  R.short(s.custom_title or s.summary or "—", 40)),
+                          "callback_data": "s:" + tok}])
+        await self.send(topic["pkey"], self.t("sessions.list") if rows else self.t("sessions.none"),
+                        buttons=rows)
+
+    async def session_card(self, pkey, path, sid):
+        from claude_agent_sdk import get_session_info, get_session_messages
+        info = await asyncio.to_thread(get_session_info, sid, path)
+        msgs = await asyncio.to_thread(get_session_messages, sid, path)
+        last = ""
+        for sm in reversed(msgs):
+            if sm.type != "assistant":
+                continue
+            content = (sm.message or {}).get("content")
+            if isinstance(content, str):
+                last = content
+            else:
+                last = "\n".join(b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text")
+            if last.strip():
+                break
+        title = (info.custom_title or info.summary) if info else self.t("session.default")
+        self.store.touch_session(sid, pkey, path=path, title=R.short(title, 60))
+        md = last if len(last) <= 3000 else "…" + last[-3000:]
+        await self.send(pkey, self.t("card", title=R.esc(R.short(title, 80)),
+                                     body=R.md_to_html(md) if md else self.t("card.empty")),
+                        sid=sid, kind="card")
+
+    # ----- the "where am I" panel and help -----
+
+    def panel_text(self):
+        m = self.mode()
+        return self.t("panel", mode=self.t("mode." + m), about=self.t("mode.%s.about" % m)) + \
+            (self.t("panel.app") if self.app_url() else "")
+
+    def panel_buttons(self):
+        m = self.mode()
+        rows = [[{"text": ("✓ " if k == m else "") + self.t("mode." + k), "callback_data": "w:" + k} for k in MODES]]
+        if self.app_url():
+            rows.append([{"text": self.t("panel.open"), "url": self.app_url()}])
+        return rows
+
+    async def post_panel(self, here):
+        """Pult's panel: notification mode buttons and the way into the app. In General, pin it (unpin the old one)."""
+        mid = await self.send(None, self.panel_text(), here=here, buttons=self.panel_buttons())
+        if mid and not here:
+            old = self.store.get("panel")
+            try:
+                await self.tg.call("pinChatMessage", chat_id=self.chat, message_id=mid, disable_notification=True)
+                if old and old != mid:
+                    await self.tg.call("unpinChatMessage", chat_id=self.chat, message_id=old)
+            except TgError as e:
+                log("pin failed:", e)
+            self.store.put("panel", mid)
+        return mid
+
+    async def ensure_panel(self):
+        """No panel yet (a new group or Pult before 0.6): post it and pin it once. There is one — refresh its text
+        and buttons on startup: the language, the mode or the app link may have changed."""
+        if not self.chat:
+            return
+        if self.store.get("welcome"):        # the group was just bound by `pult setup`: help first, as after /bind
+            self.store.put("welcome", False)
+            await self.send(None, self.t("help"), here=0, buttons=self.help_buttons())
+        if not self.store.get("panel"):
+            await self.post_panel(0)
+        else:
+            self.edit(self.store.get("panel"), self.panel_text(), self.panel_buttons(), prio=6)
+
+    async def set_mode(self, mode):
+        cur = self.prefs()
+        cur["mode"] = mode
+        self.store.put("prefs", cur)
+        log("notification mode:", mode)
+        panel = self.store.get("panel")
+        if panel:
+            self.edit(panel, self.panel_text(), self.panel_buttons(), prio=1)
+        self.changed()
+
+    HELP_SECTIONS = ("start", "notify", "write", "app", "onoff", "trouble")
+
+    def help_section(self, sec):
+        if sec == "app":
+            return self.t("help.app") + ("" if self.app_url() else self.t("help.app.off"))
+        if sec == "onoff":
+            return self.t("help.onoff")
+        return self.t("help." + sec) if sec in self.HELP_SECTIONS else self.t("help")
+
+    def help_buttons(self, cur="main"):
+        btn = lambda k: {"text": self.t("help.btn." + k), "callback_data": "h:" + k}
+        rows = [[btn(a), btn(b)] for a, b in zip(self.HELP_SECTIONS[::2], self.HELP_SECTIONS[1::2])]
+        if cur != "main":
+            rows.append([{"text": self.t("help.btn.back"), "callback_data": "h:main"}])
+        return rows
+
+    async def cmd_stop(self, rep_id, here):
+        row = self.store.msg(rep_id) if rep_id else None
+        dr = self.driven.get(row["sid"]) if row else None
+        if not dr or not dr.client:
+            await self.send(None, self.t("stop.how"), here=here)
+            return
+        await dr.client.interrupt()
+        await self.react(rep_id, "🫡")
+
+    # ----- web app (stage 1B): app window requests via pult_web -----
+
+    def app_url(self, sid=None, start=None):
+        """Link to the app (a Direct Link Mini App): in a Telegram group only such link buttons work,
+        web_app buttons only in a private chat with the bot (verified 2026-10-16)."""
+        link = self.env.get("PULT_APP_LINK")
+        if not link:
+            return None
+        start = "s_" + sid if sid else start
+        return link + ("?startapp=" + start if start else "")
+
+    def app_row(self, sid, label=None):
+        url = self.app_url(sid)
+        return [{"text": label or self.t("btn.details"), "url": url}] if url else None
+
+    def with_app(self, rows, sid, label=None):
+        row = self.app_row(sid, label)
+        return (rows or []) + [row] if row else rows
+
+    def app_live(self):
+        return bool(self.web and self.web.ws is not None and self.app_url())
+
+    def changed(self, sid=None):
+        """Something changed: app windows re-read the overview and the open session."""
+        if self.web:
+            self.web.emit("change", sid=sid)
+
+    def project_label(self, pkey):
+        row = self.store.topic(pkey)
+        return row["name"] if row and row["name"] else (pkey or "").rsplit("-", 1)[-1]
+
+    def live_item(self, lv):
+        t = lv.turn
+        return {"sid": lv.sid, "title": self.title(lv), "project": self.project_label(lv.pkey), "pkey": lv.pkey,
+                "driven": lv.driven, "state": "ask" if lv.pending else "work" if t else "idle",
+                "started": t.started if t else None, "prompt": R.short(t.prompt, 300) if t and t.prompt else None,
+                "note": t.note if t else None, "now": R.plain(t.now, NOW_LEN) if t and t.now else None,
+                "bg": [R.short(b.get("description") or b.get("command") or self.t("task.default"), 80) for b in lv.bg],
+                "tab": bool(self.tab_for(lv.sid))}
+
+    def req_item(self, req):
+        lv = self.live.get(req.sid) or self.stub(req.sid)
+        d = {"rid": req.rid, "sid": req.sid, "kind": req.kind, "tool": req.tool, "title": self.title(lv),
+             "project": self.project_label(lv.pkey), "suggest": bool(req.suggestions)}
+        if req.kind == "ask":
+            d["questions"] = req.inp.get("questions") or []
+            d["chosen"] = {str(i): v for i, v in req.chosen.items()}
+        elif req.kind == "plan":
+            d["plan"] = str(req.inp.get("plan") or "")[:20000]
+        else:
+            d["html"] = R.permission_text(req.tool, req.inp, lv.cwd)     # everything is escaped in R
+        return d
+
+    def transcript_of(self, sid):
+        if not SID_RE.fullmatch(sid or ""):
+            raise ValueError(self.t("err.bad_sid"))
+        lv = self.live.get(sid)
+        if lv and lv.transcript:
+            return lv.transcript, lv
+        row = self.store.session(sid)
+        if row and row["pkey"]:
+            p = CLAUDE_PROJECTS / row["pkey"] / (sid + ".jsonl")
+            if p.exists():
+                return str(p), lv
+        found = next(CLAUDE_PROJECTS.glob("*/%s.jsonl" % sid), None)
+        if not found:
+            raise ValueError(self.t("err.no_transcript"))
+        return str(found), lv
+
+    async def api_overview(self):
+        agents = await self.agents()
+        idle = await self.mac_idle()
+        shown = {sid for sid, lv in self.live.items() if lv.turn or lv.pending or lv.bg}
+        opened = []
+        for a in agents:
+            sid = a.get("sessionId")
+            if sid and sid not in shown:
+                lv = self.live.get(sid) or self.stub(sid, sanitize(a.get("cwd") or ""))
+                opened.append(dict(self.live_item(lv), project=os.path.basename((a.get("cwd") or "").rstrip("/"))))
+        return {"mac": {"idle": idle, "away": await self.away(), "mode": self.mode()}, "now": time.time(),
+                "lang": self.lang(),
+                "live": [self.live_item(self.live[s]) for s in shown],
+                "pending": [self.req_item(r) for r in self.req_by_rid.values() if not r.fut.done()],
+                "open": opened, "recent": list(self.recent),
+                "jobs": [self.job_item(j) for j in self.jobs.values()] + [self.job_item(j) for j in self.jobs_done]}
+
+    async def api_projects(self):
+        known = {r["pkey"]: r["path"] for r in self.store.db.execute("SELECT pkey, path FROM topics") if r["path"]}
+        out = []
+        for mtime, pkey, path in (await asyncio.to_thread(self.list_projects, known))[:40]:
+            out.append({"pkey": pkey, "name": self.project_label(pkey) if pkey in known else self.project_name(pkey, path),
+                        "path": path, "last": mtime})
+        return {"projects": out}
+
+    async def api_sessions(self, pkey):
+        path = self.project_path(pkey)
+        if not path:
+            raise ValueError(self.t("err.no_project"))
+        from claude_agent_sdk import list_sessions
+        items = await asyncio.to_thread(list_sessions, path, 30)
+        live = {a.get("sessionId") for a in await self.agents()}
+        return {"pkey": pkey, "name": self.project_label(pkey), "sessions": [
+            {"sid": s.session_id, "title": R.short(s.custom_title or s.summary or "—", 80), "named": bool(s.custom_title),
+             "last": s.last_modified / 1000, "open": s.session_id in live, "driven": s.session_id in self.driven}
+            for s in items]}
+
+    async def api_session(self, sid, before=None, after=None):
+        path, lv = self.transcript_of(sid)
+        row = self.store.session(sid)
+        lv = lv or self.stub(sid, row["pkey"] if row else Path(path).parent.name)
+        page = await asyncio.to_thread(PW.transcript_page, path, before, after, lv.cwd)
+        stats = await asyncio.to_thread(self.stats.get, path)
+        return {"sid": sid, "title": self.title(lv), "project": self.project_label(lv.pkey), "pkey": lv.pkey,
+                "live": self.live_item(lv), "page": page, "stats": stats,
+                "pending": [self.req_item(r) for r in lv.pending.values() if not r.fut.done()]}
+
+    async def api_answer(self, rid, act=None, answers=None, text=None):
+        req = self.req_by_rid.get(rid)
+        if not req or req.fut.done():
+            return {"ok": False, "note": self.t("note.decided")}
+        if req.kind == "ask":
+            qs = req.inp.get("questions") or []
+            for i, vals in (answers or {}).items():
+                i = int(i)
+                if 0 <= i < len(qs) and vals:
+                    self.answer_question(req, i, [str(v) for v in vals])
+            return {"ok": True}
+        note = self.act(req, act, "app", text=(text or "").strip() or None)
+        return {"ok": note is None, "note": note}
+
+    async def api_send(self, sid, text, fork=False):
+        text = (text or "").strip()
+        if not text:
+            raise ValueError(self.t("err.empty"))
+        path, lv = self.transcript_of(sid)
+        row = self.store.session(sid)
+        pkey = row["pkey"] if row else Path(path).parent.name
+        cwd = (row["path"] if row else None) or self.project_path(pkey)
+        if not cwd:
+            raise ValueError(self.t("err.no_folder_short"))
+        if sid in self.driven:
+            self.driven[sid].q.put_nowait((text, None))
+            return {"ok": True, "how": "session"}
+        tab = self.tab_for(sid)
+        if tab:
+            await self.to_tab(tab, text, None)
+            return {"ok": True, "how": "tab"}
+        seen = sid in self.live and not self.live[sid].driven and self.live[sid].turn is not None
+        if seen or any(a.get("sessionId") == sid for a in await self.agents()):
+            if not fork:
+                return {"ok": False, "need": "fork"}
+            await self.drive(sid, cwd, text, None, fork=True, pkey=pkey)
+            return {"ok": True, "how": "fork"}
+        await self.drive(sid, cwd, text, None, resume=sid, pkey=pkey)
+        return {"ok": True, "how": "resume"}
+
+    async def api_new(self, pkey, text):
+        text = (text or "").strip()
+        path = self.project_path(pkey)
+        if not text or not path or not os.path.isdir(path):
+            raise ValueError(self.t("err.need_project_text"))
+        sid = str(uuid.uuid4())
+        await self.drive(sid, path, text, None, pkey=pkey)
+        return {"ok": True, "sid": sid}
+
+    async def usage(self, force=False):
+        """Subscription usage: the get_usage control request to Claude Code — no model request, ~1.5 s.
+        The request is experimental (marked "may change" in the VS Code extension): if it breaks, the Usage screen
+        shows an error and everything else keeps working."""
+        async with self._usage_lock:
+            if not force and self._usage and time.time() - self._usage["ts"] < USAGE_TTL:
+                return self._usage
+            from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+            o = ClaudeAgentOptions(cwd=str(HOME), setting_sources=[], env={"PULT_OFF": "1"}, stderr=lambda s: None)
+
+            async def ask():
+                async with ClaudeSDKClient(options=o) as c:
+                    return await c._query._send_control_request({"subtype": "get_usage"}, timeout=30)
+            self._usage = PW.simplify_usage(await asyncio.wait_for(ask(), 60))
+            return self._usage
+
+    async def api_lang(self):
+        """The language of the bot and the app — the app asks right after connecting, on any screen."""
+        return self.lang()
+
+    async def api_usage(self, force=False):
+        return await self.usage(bool(force))
+
+    async def api_today(self):
+        """Today's tokens per project, for the Usage screen; kept apart from get_usage, since that one may break."""
+        d = await asyncio.to_thread(self.day_tokens.get)
+        for r in d["projects"]:
+            path = None if self.store.topic(r["pkey"]) else await asyncio.to_thread(decode_pkey, r["pkey"])
+            r["name"] = self.project_name(r["pkey"], path) if path else self.project_label(r["pkey"])
+        return d
+
+    async def usage_watch(self):
+        """Limit warnings: at 80 % and 95 %, a message with sound in General, once per window."""
+        last = 0.0
+        while True:
+            await asyncio.sleep(60)
+            near = self._usage and any(x["percent"] >= 70 for x in self._usage["limits"])
+            if time.time() - last < (USAGE_NEAR_EVERY if near else USAGE_EVERY) or self.activity < last:
+                continue
+            last = time.time()
+            try:
+                await self.warn_usage(await self.usage(force=True))
+            except Exception as e:
+                log("usage not received:", type(e).__name__)
+
+    async def warn_usage(self, u):
+        warned = self.store.get("usage_warned", [])
+        for lim in u["limits"]:
+            hit = max((w for w in WARN_AT if lim["percent"] >= w), default=None)
+            key = "%s:%s:%d:%s" % (lim["kind"], lim["name"], int(lim["resets_at"] or 0) // 3600, hit)
+            if hit is None or key in warned:
+                continue
+            warned.append(key)
+            others = [x for x in u["limits"] if x is not lim and x["kind"] != lim["kind"]]
+            text = self.t("usage.warn", name=R.esc(lim["name"]), pct=lim["percent"], reset=R.reset_text(lim["resets_at"]))
+            if others:
+                text += "\n" + R.esc(" · ".join("%s — %d %%" % (x["name"], x["percent"]) for x in others))
+            url = self.app_url(start="usage")
+            await self.send(None, text, here=0, notify=True, prio=1,
+                            buttons=[[{"text": self.t("btn.usage"), "url": url}]] if url else None)
+            log("limit warning:", lim["name"], lim["percent"])
+        self.store.put("usage_warned", warned[-50:])
+
+    async def api_settings(self):
+        hooks = []
+        try:
+            for ev, groups in (json.loads(SETTINGS.read_text()).get("hooks") or {}).items():
+                if any("pult_hook.py" in str(h.get("command", "")) for g in groups for h in g.get("hooks", [])):
+                    hooks.append(ev)
+        except (OSError, ValueError):
+            pass
+        try:
+            with LOG_FILE.open("rb") as f:
+                f.seek(0, 2)
+                f.seek(max(0, f.tell() - 16000))
+                lines = f.read().decode(errors="replace").splitlines()[1:]
+        except OSError:
+            lines = []
+        idle = await self.mac_idle()
+        return {"version": VERSION, "prefs": dict(self.prefs(), lang=self.lang()), "hooks": sorted(hooks),
+                "mac": {"idle": idle, "away": await self.away(), "mode": self.mode()},
+                "telegram": "proxy" if len(self.tg.clients) > 1 and self.tg.cur == 0 else "direct",
+                "log": [x for x in lines if "Bearer" not in x][-40:]}
+
+    async def api_prefs(self, **kw):
+        cur = self.prefs()
+        for k, v in kw.items():
+            if k == "vehi" and isinstance(v, bool) or k == "mode" and v in MODES or k == "lang" and v in I.LANGS:
+                cur[k] = v
+        self.store.put("prefs", cur)
+        if "mode" in kw:
+            await self.set_mode(cur["mode"])
+        log("settings from the app:", cur)
+        return cur
+
+    async def api_stop(self, sid):
+        dr = self.driven.get(sid)
+        if not dr or not dr.client:
+            return {"ok": False, "note": self.t("stop.only_driven")}
+        await dr.client.interrupt()
+        return {"ok": True}
+
+    # ----- loops -----
+
+    async def handle_conn(self, reader, writer):
+        try:
+            line = await reader.readline()
+            if not line:
+                return
+            msg = json.loads(line)
+            if "run" in msg:
+                await self.on_run(msg["run"])
+                return
+            if msg.get("op") == "hello":
+                await self.on_tab(msg, reader, writer)
+                return
+            res = await self.on_hook(msg, reader, writer)
+            if msg.get("wait"):
+                writer.write((json.dumps(res or {"output": None}, ensure_ascii=False) + "\n").encode())
+                await writer.drain()
+        except ConnectionError:
+            pass                       # the hook has gone: answered on the Mac, or the session closed
+        except Exception as e:
+            log("hook event not handled:", repr(e))
+        finally:
+            try:
+                writer.close()
+            except Exception:
+                pass
+
+    async def poll(self):
+        offset = self.store.get("offset", 0)
+        while True:
+            try:
+                ups = await self.tg.call("getUpdates", offset=offset, timeout=50,
+                                         allowed_updates=["message", "callback_query"])
+            except TgError as e:
+                log("getUpdates:", e, "(409 — someone else is reading this token)" if e.code == 409 else "")
+                await asyncio.sleep(15 if e.code == 409 else 5)
+                continue
+            except Exception as e:
+                log("getUpdates:", repr(e))
+                await asyncio.sleep(5)
+                continue
+            for u in ups:
+                offset = u["update_id"] + 1
+                self.store.put("offset", offset)
+                try:
+                    if "callback_query" in u:
+                        await self.on_callback(u["callback_query"])
+                    elif "message" in u:
+                        await self.on_message(u["message"])
+                except Exception as e:
+                    log("update %s not handled: %r" % (u.get("update_id"), e))
+
+    async def setup_commands(self):
+        for lang in I.LANGS:
+            cmds = [{"command": c, "description": I.T("cmd." + c, lang)} for c in I.COMMANDS]
+            try:
+                await self.tg.call("setMyCommands", commands=cmds, language_code=None if lang == "en" else lang)
+            except TgError as e:
+                log("setMyCommands:", e)
+
+
+async def amain():
+    env = load_env()
+    token = env.get("PULT_BOT_TOKEN")
+    if not token:
+        log("no PULT_BOT_TOKEN in", ENV_FILE)
+        sys.exit(2)
+    HOME.mkdir(parents=True, exist_ok=True)
+    os.chmod(HOME, 0o700)
+    __import__("claude_agent_sdk")   # up front: the first import takes ~0.4 s, better not in the middle of events
+    tg = Tg(token, proxy=env.get("PULT_PROXY") or None)
+    store = Store(HOME / "state.db")
+    store.prune()
+    p = Pult(env, tg, store)
+    if not p.allowed:
+        log("no PULT_ALLOWED_USER_IDS — letting nobody in")
+    try:
+        os.unlink(SOCK)
+    except FileNotFoundError:
+        pass
+    server = await asyncio.start_unix_server(p.handle_conn, path=SOCK, limit=8 * 1024 * 1024)
+    os.chmod(SOCK, 0o600)
+    log("Pult started; group:", p.chat, "; socket:", SOCK)
+    await p.setup_commands()
+    # the panel is sent via the message queue, so it must run alongside it, or startup hangs (seen 2026-10-16, 0.6.0)
+    jobs = [p.out.run(), p.poll(), p.usage_watch(), p.tab_version_watch(), p.ensure_panel()]
+    if env.get("PULT_RELAY_URL") and env.get("PULT_RELAY_SECRET"):
+        p.web = PW.Web(p, env["PULT_RELAY_URL"], env["PULT_RELAY_SECRET"], token, p.allowed,
+                       proxy=env.get("PULT_PROXY") or None)
+        jobs.append(p.web.run())
+    async with server:
+        await asyncio.gather(*jobs)
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(amain())
+    except KeyboardInterrupt:
+        pass

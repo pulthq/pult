@@ -1,0 +1,13 @@
+# Pult web app on Caddy: Caddy gets the HTTPS certificate by itself. Replace the domain, then:
+#     caddy run --config Caddyfile        (or merge the handle block into your existing Caddyfile)
+# WebSockets pass through reverse_proxy as is.
+pult.example.com {
+	handle /pult/* {
+		reverse_proxy 127.0.0.1:8097
+		header {
+			X-Content-Type-Options "nosniff"
+			Referrer-Policy "no-referrer"
+			Content-Security-Policy "frame-ancestors 'self' https://web.telegram.org https://*.telegram.org"
+		}
+	}
+}

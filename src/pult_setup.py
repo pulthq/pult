@@ -1,0 +1,999 @@
+#!/usr/bin/env python3
+"""Pult: installing, setting up and removing Pult on a Mac — what is behind `pult install`, `pult setup`,
+`pult start|stop|restart`, `pult report`, `pult uninstall`, `pult tab setup` and `pult app`.
+
+Standard library only, like pultctl: it has to work before Pult's environment exists and when it is broken.
+Paths follow the daemon (PULT_HOME, PULT_ENV, PULT_SOCK, PULT_LOG). The launchd label is PULT_LABEL from the
+settings, else the label of a service that already runs this copy of Pult (an existing install keeps its name),
+else the default one.
+"""
+import getpass
+import http.client
+import json
+import os
+import platform
+import plistlib
+import pwd
+import re
+import secrets
+import shlex
+import shutil
+import socket
+import sqlite3
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import pult_hook  # noqa: E402
+import pult_i18n as I  # noqa: E402
+from pult_i18n import T  # noqa: E402
+
+HOME = Path(os.environ.get("PULT_HOME") or "~/.local/share/pult").expanduser()
+ENV_FILE = Path(os.environ.get("PULT_ENV") or "~/.config/pult/env").expanduser()
+SOCK = os.environ.get("PULT_SOCK") or str(HOME / "pult.sock")
+LOG = Path(os.environ.get("PULT_LOG") or "~/Library/Logs/pult.log").expanduser()
+PY = HOME / "venv" / "bin" / "python"          # Pult's environment; the hook and the tab wrapper run on it too
+AGENTS = Path("~/Library/LaunchAgents").expanduser()
+BIN = Path("~/.local/bin").expanduser()
+TAB_LOG = Path("~/Library/Logs/pult-tab.log").expanduser()
+SETTINGS = Path("~/.claude/settings.json").expanduser()
+TAB_CONF = Path("~/.config/pult/tab.json").expanduser()
+TAB_OFF = Path("~/.config/pult/tab-off").expanduser()
+VSCODE_SETTINGS = Path("~/Library/Application Support/Code/User/settings.json").expanduser()
+EDITORS = Path("~/Library/Application Support").expanduser()   # VS Code and its forks: where the wrapper may be set
+EDITOR_APPS = ("Code", "Code - Insiders", "Cursor", "VSCodium", "Windsurf")
+EXTENSIONS = Path("~/.vscode/extensions").expanduser()
+DEFAULT_LABEL = "io.github.pulthq.pult"
+MARK = "pult_hook.py"                          # Pult's hooks are recognised by this in the command
+LAUNCHER_MARK = "# Pult command line"
+TAB_VERIFIED = ("2.1.301",)    # Claude Code versions the tab wrapper was checked on (tests/probe_tab.py, probe_race.py)
+SERVICE_PATH = "%s:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" % BIN
+WAIT_LIMIT = 15 * 60           # s; how long the setup waits for /start and /bind
+TOKEN_RE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{30,}$")
+
+
+def say(*a):
+    print(*a, flush=True)
+
+
+def tilde(p):
+    p, home = str(p), str(Path.home())
+    return "~" + p[len(home):] if p == home or p.startswith(home + "/") else p
+
+
+def version():
+    for src in (HOME / "pultd.py", HERE / "pultd.py"):
+        try:
+            m = re.search(r'^VERSION = "([^"]+)"', src.read_text(), re.M)
+        except OSError:
+            continue
+        if m:
+            return m.group(1)
+    return "?"
+
+
+# ---------- answers in the terminal ----------
+
+def ask(prompt, default=""):
+    try:
+        v = input(prompt).strip()
+    except EOFError:
+        raise KeyboardInterrupt from None      # no one to answer (closed input): stop, don't guess
+    return v or default
+
+
+def yes(prompt, default=True):
+    v = ask("%s %s " % (prompt, T("cli.yn.y" if default else "cli.yn.n"))).lower()
+    return default if not v else v[0] in "yд"
+
+
+def secret(prompt):
+    try:
+        return getpass.getpass(prompt).strip()
+    except EOFError:
+        raise KeyboardInterrupt from None
+
+
+# ---------- settings and state ----------
+
+def read_env():
+    env = {}
+    try:
+        for line in ENV_FILE.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                env[k.strip()] = v.strip().strip("'\"")
+    except FileNotFoundError:
+        pass
+    return env
+
+
+def write_env(**kv):
+    """Updates the settings file in place (mode 600): given keys are set, None removes one; other lines stay."""
+    path = ENV_FILE.resolve()                  # a symlinked file stays a symlink
+    lines = path.read_text().splitlines() if path.exists() else []
+    out, seen = [], set()
+    for line in lines:
+        k = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else None
+        if k in kv:
+            seen.add(k)
+            if kv[k] is not None:
+                out.append("%s=%s" % (k, kv[k]))
+        else:
+            out.append(line)
+    out += ["%s=%s" % (k, v) for k, v in kv.items() if k not in seen and v is not None]
+    if not path.parent.exists():
+        path.parent.mkdir(parents=True, mode=0o700)   # only a folder it creates gets 700, never someone else's
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.unlink(missing_ok=True)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write("\n".join(out) + "\n")
+    os.replace(tmp, path)
+
+
+def sget(k, default=None):
+    """A value from the daemon's state (state.db, table kv)."""
+    db = HOME / "state.db"
+    if not db.exists():
+        return default
+    try:
+        c = sqlite3.connect(str(db))
+        try:
+            r = c.execute("SELECT v FROM kv WHERE k=?", (k,)).fetchone()
+        finally:
+            c.close()
+    except sqlite3.Error:
+        return default
+    return json.loads(r[0]) if r else default
+
+
+def sput(**kv):
+    HOME.mkdir(parents=True, exist_ok=True)
+    c = sqlite3.connect(str(HOME / "state.db"), isolation_level=None)
+    try:
+        c.execute("CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT)")
+        for k, v in kv.items():
+            c.execute("INSERT OR REPLACE INTO kv VALUES(?,?)", (k, json.dumps(v)))
+    finally:
+        c.close()
+
+
+def system_lang():
+    try:
+        out = subprocess.run(["defaults", "read", "-g", "AppleLanguages"], capture_output=True, text=True,
+                             timeout=3).stdout
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    m = re.search(r'\(\s*"?([A-Za-z]{2})', out)
+    return I.lang_of(m.group(1) if m else os.environ.get("LANG", ""))
+
+
+def cli_lang():
+    """Pult's language (chosen in the settings, else the owner's Telegram), else the Mac's."""
+    if os.environ.get("PULT_LANG") in I.LANGS:
+        return os.environ["PULT_LANG"]
+    return (sget("prefs") or {}).get("lang") or sget("lang_tg") or system_lang()
+
+
+def configured(env=None):
+    env = read_env() if env is None else env
+    return bool(env.get("PULT_BOT_TOKEN") and env.get("PULT_ALLOWED_USER_IDS") and sget("chat"))
+
+
+# ---------- hooks in ~/.claude/settings.json ----------
+
+def hook_command():
+    """The command in settings.json. Claude Code runs it through the shell; without Pult's Python or the hook
+    file (the environment is being rebuilt, Pult was removed while sessions were open) it exits 0 quietly."""
+    py, hook = shlex.quote(str(PY)), shlex.quote(str(HOME / "pult_hook.py"))
+    default = os.path.expanduser("~/.local/share/pult/pult.sock")      # what the hook uses without PULT_SOCK
+    env = "" if SOCK == default else "PULT_SOCK=%s " % shlex.quote(SOCK)
+    return "[ -x %s ] && [ -r %s ] && %sexec %s %s; exit 0" % (py, hook, env, py, hook)
+
+
+def load_settings():
+    return json.loads(SETTINGS.read_text()) if SETTINGS.exists() else {}
+
+
+def save_settings(d):
+    if SETTINGS.exists():
+        bak = SETTINGS.with_name("settings.json.bak-pult-%s" % time.strftime("%Y%m%d-%H%M%S"))
+        shutil.copy2(SETTINGS, bak)
+        say(T("cli.backup", path=tilde(bak)))
+    path = SETTINGS.resolve()                  # settings.json kept as a symlink (dotfiles) stays one
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2) + "\n")
+    os.replace(tmp, path)
+
+
+def strip_ours(hooks):
+    """Removes everything Pult installed from the hooks block; leaves other hooks alone."""
+    out = {}
+    for ev, groups in (hooks or {}).items():
+        kept = []
+        for g in groups:
+            hs = [h for h in g.get("hooks", []) if MARK not in str(h.get("command", ""))]
+            if hs:
+                kept.append(dict(g, hooks=hs))
+        if kept:
+            out[ev] = kept
+    return out
+
+
+def hooks_unreadable():
+    """settings.json mentions Pult's hook but isn't JSON Pult can read (comments, a broken edit)."""
+    try:
+        load_settings()
+        return False
+    except (OSError, ValueError):
+        try:
+            return MARK in SETTINGS.read_text()
+        except OSError:
+            return False
+
+
+def hooks_installed(d=None):
+    try:
+        d = load_settings() if d is None else d
+    except (OSError, ValueError):
+        return []
+    return sorted(ev for ev, groups in (d.get("hooks") or {}).items()
+                  for g in groups for h in g.get("hooks", []) if MARK in str(h.get("command", "")))
+
+
+def hooks_set(on):
+    try:
+        d = load_settings()
+    except ValueError:
+        sys.exit(T("cli.hooks.unreadable", path=tilde(SETTINGS)))
+    hooks = strip_ours(d.get("hooks"))
+    if on:
+        if not (HOME / "pult_hook.py").exists():
+            sys.exit(T("cli.hooks.no_hook", path=tilde(HOME / "pult_hook.py")))
+        for ev, groups in pult_hook.hooks_config(hook_command()).items():
+            hooks.setdefault(ev, []).extend(groups)
+    if hooks:
+        d["hooks"] = hooks
+    else:
+        d.pop("hooks", None)
+    save_settings(d)
+    say(T("cli.hooks.state", events=", ".join(hooks_installed(d)) or T("cli.hooks.off")))
+    say(T("cli.hooks.reload"))
+
+
+# ---------- the launchd service ----------
+
+def label():
+    lbl = read_env().get("PULT_LABEL")
+    if lbl:
+        return lbl
+    mine = str(HOME / "pultd.py")
+    for p in sorted(AGENTS.glob("*.plist")):
+        try:
+            with open(p, "rb") as f:
+                d = plistlib.load(f)
+        except Exception:
+            continue
+        if isinstance(d, dict) and mine in (d.get("ProgramArguments") or []) and d.get("Label"):
+            return d["Label"]
+    return DEFAULT_LABEL
+
+
+def plist_path(lbl):
+    return AGENTS / (lbl + ".plist")
+
+
+def write_plist(lbl):
+    env = {"PATH": SERVICE_PATH, "PULT_LABEL": lbl}
+    for k in ("PULT_HOME", "PULT_ENV", "PULT_SOCK", "PULT_LOG"):
+        if os.environ.get(k):
+            env[k] = os.environ[k]                 # a separate (test) install keeps its own paths
+    if str(Path.home()) != pwd.getpwuid(os.getuid()).pw_dir:
+        env["HOME"] = str(Path.home())             # a trial install in a stand-in HOME: launchd would give the real one
+    d = {"Label": lbl, "ProgramArguments": [str(PY), "-u", str(HOME / "pultd.py")], "WorkingDirectory": str(HOME),
+         "EnvironmentVariables": env, "RunAtLoad": True, "KeepAlive": True, "ThrottleInterval": 10, "Nice": 5,
+         "StandardOutPath": str(LOG), "StandardErrorPath": str(LOG)}
+    AGENTS.mkdir(parents=True, exist_ok=True)
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    with open(plist_path(lbl), "wb") as f:
+        plistlib.dump(d, f)
+    return plist_path(lbl)
+
+
+def service(lbl):
+    """(state, pid) of the service in launchd; (None, None) — not loaded."""
+    try:
+        out = subprocess.run(["launchctl", "print", "gui/%d/%s" % (os.getuid(), lbl)], capture_output=True,
+                             text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None, None
+    val = lambda key: next((ln.split("=", 1)[1].strip() for ln in out.splitlines()
+                            if ln.strip().startswith(key + " =")), None)
+    return val("state"), val("pid")
+
+
+def sock_ok(path=None):
+    s = socket.socket(socket.AF_UNIX)
+    s.settimeout(1.0)
+    try:
+        s.connect(path or SOCK)
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+def svc_stop(lbl):
+    subprocess.run(["launchctl", "bootout", "gui/%d/%s" % (os.getuid(), lbl)], capture_output=True)
+    for _ in range(30):                        # bootout is asynchronous: wait until the old one unloads
+        if service(lbl)[0] is None:
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def svc_start(lbl):
+    if not plist_path(lbl).exists():
+        write_plist(lbl)
+    for _ in range(3):
+        if subprocess.run(["launchctl", "bootstrap", "gui/%d" % os.getuid(), str(plist_path(lbl))],
+                          capture_output=True).returncode == 0:
+            break
+        time.sleep(2)
+    end = time.time() + 20
+    while time.time() < end:
+        if sock_ok():
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def telegram_sessions(lbl):
+    """Claude processes the daemon holds for sessions from Telegram: a restart interrupts a running turn."""
+    pid = service(lbl)[1]
+    if not pid:
+        return 0
+    out = subprocess.run(["pgrep", "-P", pid, "-f", "claude"], capture_output=True, text=True).stdout
+    return len(out.split())
+
+
+def restart(lbl, interactive=False):
+    if interactive and telegram_sessions(lbl) and not yes(T("cli.svc.busy"), False):
+        say(T("cli.svc.kept"))
+        return False
+    svc_stop(lbl)
+    ok = svc_start(lbl)
+    say(T("cli.svc.started", label=lbl) if ok else T("cli.svc.not_started", log=tilde(LOG)))
+    return ok
+
+
+def cmd_service(op):
+    lbl = label()
+    if op == "stop":
+        svc_stop(lbl)
+        say(T("cli.svc.stopped"))
+        return 0
+    if not configured():
+        say(T("cli.svc.not_ready"))
+        return 1
+    if op == "start" and service(lbl)[0]:
+        say(T("cli.svc.started", label=lbl))
+        return 0
+    return 0 if restart(lbl, interactive=sys.stdin.isatty()) else 1
+
+
+# ---------- install ----------
+
+def write_launcher():
+    """~/.local/bin/pult → pultctl on Pult's Python. Someone else's `pult` there is left alone."""
+    if os.environ.get("PULT_HOME"):
+        return None                            # a separate (test) install doesn't take over the command
+    p = BIN / "pult"
+    if p.exists() or p.is_symlink():
+        try:
+            cur = p.read_text()
+        except (OSError, UnicodeDecodeError):
+            cur = ""
+        if LAUNCHER_MARK not in cur:
+            say(T("cli.install.taken", path=tilde(p), ctl="%s %s" % (tilde(PY), tilde(HOME / "pultctl.py"))))
+            return None
+    BIN.mkdir(parents=True, exist_ok=True)
+    p.write_text('#!/bin/sh\n%s — installed by install.sh, removed by `pult uninstall`\nexec %s %s "$@"\n'
+                 % (LAUNCHER_MARK, shlex.quote(str(PY)), shlex.quote(str(HOME / "pultctl.py"))))
+    p.chmod(0o755)
+    return p
+
+
+def cmd_install():
+    """The second half of install.sh, after the files and the environment are in place."""
+    lbl = label()
+    write_plist(lbl)
+    launcher = write_launcher()
+    say(T("cli.install.done", version=version(), home=tilde(HOME)))
+    if launcher and str(BIN) not in os.environ.get("PATH", "").split(":"):
+        say(T("cli.install.path", path=tilde(launcher)))
+    if not configured():
+        if sys.stdin.isatty():
+            return cmd_setup()
+        say(T("cli.install.next"))
+        return 0
+    ok = restart(lbl, interactive=sys.stdin.isatty())
+    if ok and sys.stdin.isatty() and not hooks_installed():
+        step_hooks()
+    return 0 if ok else 1
+
+
+# ---------- Telegram (for the setup and the status) ----------
+
+class TgError(Exception):
+    def __init__(self, desc, code=None):
+        super().__init__(desc)
+        self.code = code
+
+
+def bot_call(token, method, proxy=None, http_timeout=20, **params):
+    """Bot API. proxy: None — the system's (environment variables), "" — direct, otherwise this proxy.
+    Errors never carry the URL: it contains the token."""
+    req = urllib.request.Request("https://api.telegram.org/bot%s/%s" % (token, method),
+                                 data=json.dumps({k: v for k, v in params.items() if v is not None}).encode(),
+                                 headers={"Content-Type": "application/json"})
+    handlers = [] if proxy is None else [urllib.request.ProxyHandler({"https": proxy} if proxy else {})]
+    try:
+        with urllib.request.build_opener(*handlers).open(req, timeout=http_timeout) as r:
+            j = json.load(r)
+    except urllib.error.HTTPError as e:
+        try:
+            j = json.load(e)
+        except ValueError:
+            raise TgError("HTTP %s" % e.code, e.code) from None
+    except urllib.error.URLError as e:
+        raise OSError(str(e.reason)) from None
+    except (http.client.HTTPException, ValueError) as e:
+        # InvalidURL quotes the path — with the token in it; a non-JSON answer (a captive portal) is a ValueError
+        raise TgError("bad request or answer (%s)" % type(e).__name__) from None
+    if not j.get("ok"):
+        raise TgError(j.get("description") or "error", j.get("error_code"))
+    return j["result"]
+
+
+class Bot:
+    def __init__(self, token, proxy=None):
+        self.token, self.proxy = token, proxy
+
+    def __call__(self, method, http_timeout=20, **params):
+        return bot_call(self.token, method, self.proxy, http_timeout, **params)
+
+
+class Updates:
+    """getUpdates for the setup: waits for one kind of message and remembers how far it has read."""
+
+    def __init__(self, bot):
+        self.bot, self.offset = bot, None
+
+    def skip_old(self):
+        ups = self.bot("getUpdates", offset=-1, timeout=0)
+        if ups:
+            self.offset = ups[-1]["update_id"] + 1
+
+    def wait(self, match, limit=WAIT_LIMIT):
+        end = time.time() + limit
+        while time.time() < end:
+            try:
+                ups = self.bot("getUpdates", http_timeout=40, offset=self.offset, timeout=25,
+                               allowed_updates=["message"])
+            except TgError as e:
+                if e.code == 409:
+                    say(T("cli.tg.conflict"))
+                elif not (e.code == 429 or (e.code or 0) >= 500):
+                    raise
+                time.sleep(5)
+                continue
+            except OSError:
+                time.sleep(3)
+                continue
+            for u in ups:
+                self.offset = u["update_id"] + 1
+                r = match(u["message"]) if u.get("message") else None
+                if r:
+                    return r
+        return None
+
+    def confirm(self):
+        """Marks what the setup read as handled — the daemon starts after it."""
+        if self.offset:
+            try:
+                self.bot("getUpdates", offset=self.offset, timeout=0)
+            except (TgError, OSError):
+                pass
+            sput(offset=self.offset)
+
+
+def name_of(user):
+    n = " ".join(x for x in (user.get("first_name"), user.get("last_name")) if x) or str(user.get("id"))
+    return n + (" (@%s)" % user["username"] if user.get("username") else "")
+
+
+# ---------- setup ----------
+
+def step(n, key):
+    say("\n%d/4 · %s" % (n, T(key)))
+
+
+def step_bot(env):
+    proxy = env.get("PULT_PROXY") or None
+    old = env.get("PULT_BOT_TOKEN")
+    if old:
+        try:
+            me = bot_call(old, "getMe", proxy)
+            if yes(T("cli.bot.keep", bot=me["username"])):
+                return Bot(old, proxy), me
+        except TgError:
+            pass
+    say(T("cli.bot.how"))
+    while True:
+        token = secret(T("cli.bot.ask"))
+        if not TOKEN_RE.match(token):
+            say(T("cli.bot.shape"))
+            continue
+        try:
+            me = bot_call(token, "getMe", proxy)
+        except TgError as e:
+            say(T("cli.bot.bad", why=e))
+            continue
+        except OSError as e:
+            say(T("cli.bot.net", why=e, env=tilde(ENV_FILE)))
+            continue
+        hook = bot_call(token, "getWebhookInfo", proxy)
+        if hook.get("url"):
+            if not yes(T("cli.bot.webhook", host=urllib.parse.urlsplit(hook["url"]).netloc), False):
+                continue
+            bot_call(token, "deleteWebhook", proxy)
+        break
+    say(T("cli.bot.ok", bot=me["username"]))
+    if token != old:
+        write_env(PULT_BOT_TOKEN=token)
+        sput(offset=0, panel=None)             # update numbers and messages belong to the old bot
+    return Bot(token, proxy), me
+
+
+def step_you(bot, me, env, ups):
+    ids = env.get("PULT_ALLOWED_USER_IDS")
+    if ids and yes(T("cli.you.keep", id=ids)):
+        return int(re.split(r"[,\s]+", ids.strip())[0])
+    code = secrets.token_hex(3)
+    say(T("cli.you.how", link="https://t.me/%s?start=%s" % (me["username"], code), code=code))
+    ups.skip_old()
+
+    def match(m):
+        if (m.get("chat") or {}).get("type") != "private":
+            return None
+        text = (m.get("text") or "").strip()
+        if text in ("/start " + code, code):
+            return m["from"]
+        if text.startswith("/start"):
+            say(T("cli.you.nocode", name=name_of(m["from"])))
+        return None
+
+    user = ups.wait(match)
+    if not user:
+        say(T("cli.you.timeout"))
+        raise KeyboardInterrupt
+    lang = I.lang_of(user.get("language_code"))
+    sput(lang_tg=lang)
+    if not os.environ.get("PULT_LANG") and not (sget("prefs") or {}).get("lang"):
+        I.set_lang(lang)                       # from here on — in the owner's Telegram language
+    write_env(PULT_ALLOWED_USER_IDS=str(user["id"]))
+    bot("sendMessage", chat_id=user["id"], text=T("cli.tg.hello", lang=lang))
+    say(T("cli.you.ok", name=name_of(user), id=user["id"], language=T("cli.lang." + lang)))
+    return user["id"]
+
+
+def group_check(bot, me, chat):
+    """(title, problem) — problem is None when Pult can work in the group."""
+    try:
+        c = bot("getChat", chat_id=chat)
+        if not c.get("is_forum"):
+            return c.get("title"), T("cli.why.not_forum")
+        m = bot("getChatMember", chat_id=chat, user_id=me["id"])
+        if m.get("status") != "administrator" or not m.get("can_manage_topics"):
+            return c.get("title"), T("cli.why.not_admin")
+        return c.get("title"), None
+    except TgError as e:
+        return None, T("cli.why.gone", why=e)
+
+
+def step_group(bot, me, owner, ups):
+    chat = sget("chat")
+    if chat:
+        title, problem = group_check(bot, me, chat)
+        if not problem and yes(T("cli.group.keep", title=title)):
+            return chat
+        if problem:
+            say(T("cli.group.problem", title=title or chat, why=problem))
+    say(T("cli.group.how", bot=me["username"]))
+    if ups.offset is None:
+        ups.skip_old()
+    rx = re.compile(r"^/bind(?:@(\w+))?(?:\s|$)", re.I)
+
+    def reply(text, where):
+        try:
+            bot("sendMessage", text=text, **where)
+        except TgError:
+            pass                               # can't post there (no rights yet) — the terminal says it anyway
+
+    def match(m):
+        mm = rx.match((m.get("text") or "").strip())
+        if not mm or (m.get("from") or {}).get("id") != owner:
+            return None
+        if mm.group(1) and mm.group(1).lower() != me["username"].lower():
+            return None
+        c = m.get("chat") or {}
+        where = {"chat_id": c.get("id"), "message_thread_id": m.get("message_thread_id")
+                 if m.get("is_topic_message") else None}
+        if c.get("type") == "private":
+            reply(T("bind.private"), where)
+            return None
+        if not c.get("is_forum"):
+            reply(T("bind.need_forum"), where)
+            say(T("cli.group.not_forum"))
+            return None
+        _, problem = group_check(bot, me, c["id"])
+        if problem:
+            reply(T("cli.tg.need_admin"), where)
+            say(T("cli.group.not_admin", bot=me["username"]))
+            return None
+        reply(T("cli.tg.bound"), where)
+        return c
+
+    c = ups.wait(match)
+    if not c:
+        say(T("cli.group.timeout"))
+        raise KeyboardInterrupt
+    try:
+        m = bot("getChatMember", chat_id=c["id"], user_id=me["id"])
+    except TgError:
+        m = {}
+    if not m.get("can_pin_messages"):
+        say(T("cli.group.no_pin"))
+    sput(chat=c["id"], panel=None, welcome=True)
+    say(T("cli.group.ok", title=c.get("title") or c["id"]))
+    return c["id"]
+
+
+def step_hooks():
+    if hooks_installed():
+        say(T("cli.hooks.already"))
+        return
+    say(T("cli.hooks.about", n=len(pult_hook.EVENTS), path=tilde(SETTINGS)))
+    if yes(T("cli.hooks.ask")):
+        hooks_set(True)
+    else:
+        say(T("cli.hooks.later"))
+
+
+def cmd_setup():
+    if not (HOME / "pultd.py").exists():
+        say(T("cli.not_installed"))
+        return 1
+    lbl = label()
+    say(T("cli.setup.title"))
+    if service(lbl)[0]:
+        say(T("cli.setup.pause"))
+        svc_stop(lbl)
+    ups, done = None, False
+    try:
+        step(1, "cli.step.bot")
+        bot, me = step_bot(read_env())
+        ups = Updates(bot)
+        step(2, "cli.step.you")
+        owner = step_you(bot, me, read_env(), ups)
+        step(3, "cli.step.group")
+        step_group(bot, me, owner, ups)
+        step(4, "cli.step.hooks")
+        step_hooks()
+        done = True
+    except KeyboardInterrupt:
+        say("")
+    except (OSError, TgError) as e:
+        say(T("cli.bot.net", why=e, env=tilde(ENV_FILE)))
+    except SystemExit as e:                    # hooks_set: settings.json can't be read
+        say(str(e.code or ""))
+    except Exception as e:                     # whatever it is, the daemon must not stay stopped
+        say(T("cli.setup.failed", why=type(e).__name__))
+    finally:
+        if ups:
+            ups.confirm()
+        if not done:
+            say(T("cli.setup.stopped"))
+            if configured():
+                restart(lbl)
+    if not done:
+        return 1
+    write_plist(lbl)
+    if not restart(lbl):
+        return 1
+    say(T("cli.setup.done"))
+    say(T("cli.setup.extras"))
+    return 0
+
+
+# ---------- tabs and the app ----------
+
+def tab_conf():
+    try:
+        return json.loads(TAB_CONF.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def tab_wrapped():
+    try:
+        return "pult-tab.sh" in VSCODE_SETTINGS.read_text()      # JSON with comments: search for the string
+    except OSError:
+        return False
+
+
+def wrapper_users():
+    """Settings files of VS Code, its forks and their profiles that run Claude tabs through pult-tab.sh
+    (claudeProcessWrapper is a machine-level setting: it isn't in a workspace's settings)."""
+    found = []
+    for app in EDITOR_APPS:
+        user = EDITORS / app / "User"
+        for f in [user / "settings.json"] + sorted(user.glob("profiles/*/settings.json")):
+            try:
+                if "pult-tab.sh" in f.read_text():
+                    found.append(f)
+            except (OSError, UnicodeDecodeError):
+                pass
+    if tab_wrapped() and VSCODE_SETTINGS not in found:
+        found.append(VSCODE_SETTINGS)
+    return found
+
+
+def vkey(v):
+    try:
+        return tuple(int(x) for x in v.split("."))
+    except ValueError:
+        return (0,)
+
+
+def newest_extension():
+    vs = [p.name[len("anthropic.claude-code-"):].split("-")[0] for p in EXTENSIONS.glob("anthropic.claude-code-*")]
+    return max(vs, key=vkey) if vs else None
+
+
+def cmd_tab_setup():
+    say(T("cli.tab.about"))
+    conf = tab_conf()
+    default = ", ".join(conf.get("folders") or ["~"])
+    folders = [f.strip() for f in ask(T("cli.tab.folders", default=default), default).split(",") if f.strip()]
+    conf["folders"] = folders
+    conf["versions"] = sorted(set(conf.get("versions") or []) | set(TAB_VERIFIED), key=vkey)
+    TAB_CONF.parent.mkdir(parents=True, exist_ok=True)
+    TAB_CONF.write_text(json.dumps(conf, ensure_ascii=False) + "\n")
+    say(T("cli.tab.saved", path=tilde(TAB_CONF)))
+    line = '"claudeCode.claudeProcessWrapper": "%s",' % (HOME / "pult-tab.sh")
+    say(T("cli.tab.line", line=line))
+    ext = newest_extension()
+    if ext and ext not in conf["versions"]:
+        say(T("cli.tab.unverified", v=ext))
+    if shutil.which("pbcopy") and sys.stdin.isatty() and yes(T("cli.tab.copy")):
+        subprocess.run(["pbcopy"], input=line.encode())
+        say(T("cli.tab.copied"))
+    return 0
+
+
+def cmd_app(argv):
+    env = read_env()
+    if argv[:1] == ["off"]:
+        write_env(PULT_RELAY_URL=None, PULT_RELAY_SECRET=None, PULT_APP_LINK=None)
+        say(T("cli.app.off"))
+        if service(label())[0]:
+            restart(label())
+        return 0
+    if not configured(env):
+        say(T("cli.svc.not_ready"))
+        return 1
+    say(T("cli.app.about"))
+    cur = env.get("PULT_RELAY_URL", "")
+    cur = "https://" + cur[len("wss://"):-len("/agent")] + "/" if cur.startswith("wss://") and cur.endswith("/agent") \
+        else ""
+    while True:
+        u = urllib.parse.urlsplit(ask(T("cli.app.url", default=cur or "—"), cur))
+        if u.scheme == "https" and u.netloc:
+            break
+        say(T("cli.app.bad_url"))
+    path = u.path.rstrip("/") or "/pult"
+    try:
+        botname = bot_call(env["PULT_BOT_TOKEN"], "getMe", env.get("PULT_PROXY") or None)["username"]
+    except (TgError, OSError):
+        botname = "your_bot"
+    link_default = env.get("PULT_APP_LINK") or "https://t.me/%s/pult" % botname
+    link = ask(T("cli.app.link", default=link_default), link_default)
+    key = env.get("PULT_RELAY_SECRET") or secrets.token_urlsafe(32)
+    write_env(PULT_RELAY_URL="wss://%s%s/agent" % (u.netloc, path), PULT_RELAY_SECRET=key, PULT_APP_LINK=link)
+    say(T("cli.app.server_env"))
+    say("  PULT_RELAY_SECRET=%s\n  PULT_OWNER_ID=%s\n  PULT_BOT_ID=%s" % (
+        key, re.split(r"[,\s]+", env["PULT_ALLOWED_USER_IDS"].strip())[0], env["PULT_BOT_TOKEN"].split(":")[0]))
+    say(T("cli.app.botfather", url="https://%s%s/" % (u.netloc, path)))
+    restart(label())
+    return 0
+
+
+# ---------- report and uninstall ----------
+
+def redactor(env):
+    """Hides what a public bug report must not carry: secrets, IDs, folder names, message text, commands."""
+    vals = sorted({v for k, v in env.items() if k not in ("PULT_LABEL", "PULT_LANG") and len(v) >= 6},
+                  key=len, reverse=True)
+    home = str(Path.home())
+    rules = [
+        (r"(?<!\d)\d{5,}:[A-Za-z0-9_-]{30,}", "<token>"),
+        (r"←.*", "← …"),                                     # incoming message: where and the text
+        (r"\b(job \w+:|задача \w+:).*", r"\1 …"),            # a task's command and folder
+        (r"(answered from Telegram —|bound to project|topic created:|тема создана:|is gone, creating it again:).*",
+         r"\1 …"),
+        (r"(#s\w+: [^—]*—).*", r"\1 …"),                     # a permission decision's note
+        (r"(→).*", r"\1 …"),                                 # what a button did: project and session names
+        (r"~/(?!\.local/share/pult|\.config/pult|Library/Logs)[^\s,;:)'\"]+", "~/…"),
+        (r"/(?:private|var|tmp|Volumes)/[^\s,;:)'\"]+", "/…"),
+        (r"(?<!\w)-?\d{6,}(?!\w)", "<id>"),                 # a standalone number: Telegram IDs, chats
+    ]
+    rules = [(re.compile(rx), rep) for rx, rep in rules]
+
+    def f(line):
+        for v in vals:
+            line = line.replace(v, "<secret>")
+        line = line.replace(home, "~")
+        for rx, rep in rules:
+            line = rx.sub(rep, line)
+        return line
+    return f
+
+
+def tail(path, n):
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 256 * 1024))
+            return f.read().decode(errors="replace").splitlines()[-n:]
+    except OSError:
+        return []
+
+
+def run_out(*cmd):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=15).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def claude_versions():
+    out = []
+    cli = shutil.which("claude", path=SERVICE_PATH + ":" + os.environ.get("PATH", ""))
+    if cli:
+        out.append("CLI %s" % (run_out(cli, "--version").split(" ")[0] or "?"))
+    ext = newest_extension()
+    if ext:
+        out.append("VS Code extension %s" % ext)
+    sdk = run_out(str(PY), "-c", "import importlib.metadata as m; print(m.version('claude-agent-sdk'))")
+    if sdk:
+        out.append("Agent SDK %s" % sdk)
+    return " · ".join(out) or "not found"
+
+
+def report_lines():
+    """The report itself is in English: it goes into a GitHub issue."""
+    env = read_env()
+    lbl = label()
+    st, _ = service(lbl)
+    have = lambda k: "set" if env.get(k) else "—"
+    conf = tab_conf()
+    lines = [
+        "Pult %s · macOS %s (%s) · Python %s" % (version(), platform.mac_ver()[0] or "?", platform.machine(),
+                                                run_out(str(PY), "-c", "import platform; print(platform.python_version())")
+                                                or "— (no environment)"),
+        "Claude Code: %s" % claude_versions(),
+        "service: %s (%s) · socket %s" % (st or "not loaded", "default label" if lbl == DEFAULT_LABEL else "own label",
+                                          "answers" if sock_ok() else "no"),
+        "settings: token %s · owner %s · group %s · language %s · proxy %s · app %s" % (
+            have("PULT_BOT_TOKEN"), have("PULT_ALLOWED_USER_IDS"), "set" if sget("chat") else "—", cli_lang(),
+            have("PULT_PROXY"), have("PULT_RELAY_URL")),
+        "hooks: %s" % (", ".join(hooks_installed()) or "off"),
+        "tabs: wrapper in VS Code settings %s · off switch %s · folders %d · verified versions %s" % (
+            "yes" if tab_wrapped() else "no", "yes" if TAB_OFF.exists() else "no", len(conf.get("folders") or []),
+            ", ".join(conf.get("versions") or []) or "—"),
+    ]
+    if env.get("PULT_BOT_TOKEN"):
+        routes = ([("via proxy", env["PULT_PROXY"])] if env.get("PULT_PROXY") else []) + [("direct", "")]
+        res = []
+        for name, proxy in routes:
+            try:
+                bot_call(env["PULT_BOT_TOKEN"], "getMe", proxy, http_timeout=10)
+                res.append("%s ok" % name)
+            except (TgError, OSError) as e:
+                res.append("%s: %s" % (name, type(e).__name__ if isinstance(e, OSError) else e))
+        lines.append("Telegram: %s" % " · ".join(res))
+    hide = redactor(env)
+    lines += ["", "pult.log (last 40 lines):"] + [hide(x) for x in tail(LOG, 40)]
+    lines += ["", "pult-tab.log (last 10 lines):"] + [hide(x) for x in tail(TAB_LOG, 10)]
+    return lines
+
+
+def cmd_report():
+    say(T("cli.report.head"))
+    say("```\n" + "\n".join(report_lines()) + "\n```")
+    return 0
+
+
+# Pult's own files: removal touches only these, never a whole folder it doesn't know
+HOME_FILES = ("pultd.py", "pult_hook.py", "pult_render.py", "pult_web.py", "pult_i18n.py", "pult_setup.py", "pultctl.py",
+              "pult_tab.py", "pult-tab.sh", "requirements.txt", "state.db", "state.db-journal", "state.db-wal",
+              "state.db-shm", "pult.sock", "venv", "__pycache__")
+CONF_FILES = ("env", "env.tmp", "tab.json", "tab-off")
+TAB_STUB = ('#!/bin/sh\n# Pult was removed. This stub runs Claude Code directly, so VS Code tabs keep working:\n'
+            '# remove the claudeCode.claudeProcessWrapper line from the VS Code settings, then delete this folder.\n'
+            'exec "$@"\n')
+
+
+def remove_known(folder, names, keep=()):
+    for n in names:
+        p = folder / n
+        if n in keep or not (p.exists() or p.is_symlink()):
+            continue
+        if p.is_dir() and not p.is_symlink():
+            shutil.rmtree(p)
+        else:
+            p.unlink()
+    try:
+        folder.rmdir()                          # only if nothing else is left
+    except OSError:
+        pass
+
+
+def cmd_uninstall():
+    lbl = label()
+    say(T("cli.un.about", settings=tilde(SETTINGS), home=tilde(HOME)))
+    if hooks_unreadable():                     # removing the files would leave hooks pointing at nothing
+        say(T("cli.hooks.unreadable", path=tilde(SETTINGS)))
+        return 1
+    if not yes(T("cli.un.ask"), False):
+        say(T("cli.un.cancel"))
+        return 1
+    drop_conf = yes(T("cli.un.conf", conf=tilde(ENV_FILE.parent)), False)
+    if hooks_installed():
+        hooks_set(False)
+    svc_stop(lbl)
+    plist_path(lbl).unlink(missing_ok=True)
+    launcher = BIN / "pult"
+    try:
+        if not os.environ.get("PULT_HOME") and LAUNCHER_MARK in launcher.read_text():
+            launcher.unlink()
+    except (OSError, UnicodeDecodeError):
+        pass
+    users = wrapper_users()
+    if users:
+        # VS Code would fail to start Claude tabs without the wrapper file: leave a pass-through stub
+        remove_known(HOME, HOME_FILES, keep=("pult-tab.sh",))
+        (HOME / "pult-tab.sh").write_text(TAB_STUB)
+        (HOME / "pult-tab.sh").chmod(0o755)
+        say(T("cli.un.tab", path=tilde(HOME / "pult-tab.sh"), home=tilde(HOME),
+              settings=", ".join(tilde(f) for f in users)))
+    else:
+        remove_known(HOME, HOME_FILES)
+    if drop_conf:
+        remove_known(ENV_FILE.parent, CONF_FILES + (ENV_FILE.name,))
+        for p in (LOG, TAB_LOG):
+            p.unlink(missing_ok=True)
+    say(T("cli.un.done"))
+    return 0

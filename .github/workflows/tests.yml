@@ -1,0 +1,30 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # Pult is macOS-only (launchd, VS Code paths, idle detection), so the tests run on macOS too
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Dependencies
+        run: python -m pip install -r requirements.txt -r relay/requirements.txt
+      - name: Daemon, hook, tab wrapper, rendering, both languages
+        run: python tests/test_pult.py
+      - name: Install, setup wizard, report, uninstall
+        run: python tests/test_setup.py
+      - name: Web app data and the phone → relay → Mac chain
+        run: python tests/test_web.py
+      - name: Relay
+        run: python tests/test_relay.py
+      - name: Shell scripts parse
+        run: bash -n install.sh && bash -n deploy/relay/install.sh && sh -n src/pult-tab.sh

@@ -1,0 +1,16 @@
+name: Idea
+description: Something Pult could do, or do better
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: situation
+    attributes:
+      label: The situation
+      description: What you were doing and what got in the way. A real moment helps more than a feature name.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+      description: How you imagine it — in the chat, in the web app, in the `pult` command.
