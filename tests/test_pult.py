@@ -462,10 +462,10 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.fake.of("createForumTopic")), 1)
         self.assertIn("📂", self.texts()[0])                     # intro message of the new topic
         turn = next(t for t in self.texts() if "Сделай отчёт" in t)
-        self.assertIn("<b>proj</b> · работает", turn)             # named after the project: no session title yet
+        self.assertIn("⏳ <b>proj</b> · работает", turn)          # named after the project: no session title yet
         self.assertIn("<i>Ты: «Сделай отчёт по продажам»</i>", turn)
         self.assertNotIn("старая реплика", "".join(self.sent()))   # a reply from the previous turn is not "now"
-        await until(lambda: any("✔️ готово за" in t for t in self.texts("editMessageText")))
+        await until(lambda: any("✔️ <b>proj</b> · готово за" in t for t in self.texts("editMessageText")))
         self.assertNotIn("💬", self.texts("editMessageText")[-1])   # done — no "now" line
         result = self.fake.of("sendMessage")[-1]
         self.assertTrue(result["text"].startswith("✅ <b>proj</b> · готово за "), result["text"])
@@ -581,7 +581,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.fake.of("sendMessage")[-1]["disable_notification"], "true")
         await self.p.on_callback({"id": "c", "from": {"id": OWNER}, "data": "w:phone", "message": {"message_id": 999}})
         self.assertEqual(self.p.mode(), "phone")
-        await until(lambda: any("✓ 📱 С телефоном" in d.get("reply_markup", "") for d in self.fake.of("editMessageText")))
+        await until(lambda: any("✓ 📱 Телефон" in d.get("reply_markup", "") for d in self.fake.of("editMessageText")))
         # help: sections as buttons; a section opens by editing the same message
         await self.p.on_message(dict(base, message_id=3, text="/help"))
         h = self.fake.of("sendMessage")[-1]
@@ -605,6 +605,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([d.get("language_code") for d in menus], [None, "ru"])
         self.assertIn('"desk"', menus[0]["commands"])
         self.assertNotIn('"mac"', menus[0]["commands"])
+        self.assertTrue(json.loads(menus[0]["commands"])[0]["command"] == "new")       # the most used come first
 
     async def test_idle_without_the_system(self):
         # where the system can't tell keyboard and mouse idle (servers, remote sessions), "away" comes from the
@@ -630,9 +631,46 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.get("chat"), CHAT)                              # the group stays bound
         await self.p.on_message(dict(dm, message_id=2, text="привет"))
         self.assertEqual(self.texts()[-1], I.T("private.elsewhere", "ru"))
+        self.assertIn("https://t.me/c/123/1", self.fake.of("sendMessage")[-1]["reply_markup"])   # a button into the group
         self.p.chat = None                                                          # no group yet — how to make one
         await self.p.on_message(dict(dm, message_id=3, text="привет"))
         self.assertEqual(self.texts()[-1], I.T("bind.private", "ru"))
+        self.assertNotIn("reply_markup", self.fake.of("sendMessage")[-1])
+
+    async def test_new_and_stop_from_menu(self):
+        # a tap in the command menu sends a bare /new or /stop: /new — the next text in the topic starts a new session;
+        # /stop — the topic's current session from Telegram, no reply needed
+        from types import SimpleNamespace
+        self.store.set_topic(PKEY, "/Users/x/proj", "proj", 77)
+        base = {"from": {"id": OWNER}, "chat": {"id": CHAT}, "message_thread_id": 77, "is_topic_message": True}
+        with mock.patch.object(self.p, "drive", mock.AsyncMock()) as drive:
+            await self.p.on_message(dict(base, message_id=1, text="/new"))
+            self.assertIn("Напиши задачу", self.texts()[-1])
+            drive.assert_not_called()
+            await self.p.on_message(dict(base, message_id=2, text="Собери отчёт"))
+            drive.assert_called_once()
+            self.assertEqual(drive.call_args.args[2:4], ("Собери отчёт", 2))      # a new session, no "which session?"
+            self.assertFalse(self.fake.buttons("t:"))
+            self.assertEqual(self.p.new_next, set())
+            await self.p.on_message({"from": {"id": OWNER}, "chat": {"id": CHAT}, "message_id": 3, "text": "/new"})
+            self.assertIn("спрошу, в каком проекте", self.texts()[-1])            # General: no project to start in
+        await self.p.on_message(dict(base, message_id=4, text="/stop"))
+        self.assertIn("Прерывать нечего", self.texts()[-1])
+        stopped = []
+        self.store.touch_session(SID, PKEY, path="/Users/x/proj", driven=True)
+        self.p.driven[SID] = SimpleNamespace(busy=True, bg=set(), q=asyncio.Queue(), task=SimpleNamespace(cancel=lambda: None),
+                                             client=SimpleNamespace(interrupt=mock.AsyncMock(side_effect=lambda: stopped.append(1))))
+        self.p.set_focus(PKEY, SID)
+        await self.p.on_message(dict(base, message_id=5, text="/stop"))
+        self.assertEqual(stopped, [1])
+        self.assertEqual(self.fake.of("setMessageReaction")[-1]["message_id"], "5")
+        # a reply to one's own message continues the same session; an idle session from Telegram reacts 👀 at once
+        self.p.driven[SID].busy = False
+        await self.p.on_message(dict(base, message_id=6, text="ещё раз"))
+        self.assertEqual(self.store.msg(6)["sid"], SID)
+        self.assertIn('"👀"', self.fake.of("setMessageReaction")[-1]["reaction"])
+        await self.p.on_message(dict(base, message_id=7, text="и ещё", reply_to_message={"message_id": 6}))
+        self.assertEqual(self.p.driven[SID].q.qsize(), 2)
 
     async def test_vehi(self):
         old = pultd.VEHI
@@ -723,7 +761,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.p.live_item(self.p.live[SID])["tab"])
         await self.p.ask_target(self.store.topic(PKEY), "Ещё вопрос", 56, 77)    # "where to": this session is 💻
         kb = json.loads(self.fake.of("sendMessage")[-1]["reply_markup"])["inline_keyboard"]
-        self.assertTrue(kb[0][0]["text"].startswith("↩️ 💻"), kb)
+        self.assertTrue(kb[0][0]["text"].startswith("💻 "), kb)
         self.assertEqual(await self.p.api_send(SID, "Ещё"), {"ok": True, "how": "tab"})
         self.assertEqual(json.loads(await asyncio.wait_for(r.readline(), 3))["text"], "Ещё")
         w.close()
@@ -756,13 +794,14 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         r2, w2 = await tab(4002, SID2)                                              # a second tab opens
         await self.p.on_message(dict(base, message_id=11, text="И ошибки"))
         self.assertEqual(json.loads(await asyncio.wait_for(r1.readline(), 3))["text"], "И ошибки")
-        await until(lambda: "→ «Отчёт»" in self.texts())
+        await asyncio.sleep(0.05)
+        self.assertEqual(len([t for t in self.texts() if t.startswith("→")]), 1)       # said once, not on every text
         # two hours of quiet: two open tabs — ask, once
         focus = self.store.get("focus")
         focus[PKEY][1] -= pultd.FOCUS_IDLE + 1
         self.store.put("focus", focus)
         await self.p.on_message(dict(base, message_id=12, text="Теперь тесты"))
-        await until(lambda: any("Выбор запомню" in t for t in self.texts()))
+        await until(lambda: any("Запомню выбор" in t for t in self.texts()))
         choice = next(b for b in self.fake.buttons("t:") if self.p.offers[b[2:]][0] == "sess"
                       and self.p.offers[b[2:]][1] == SID2)
         await self.p.on_offer(choice, 77)

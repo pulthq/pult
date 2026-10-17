@@ -27,7 +27,7 @@ one, or write straight into a VS Code tab that is already open.
 - **One live message per turn** shows how long it has been running and what Claude is doing. The result arrives
   as a separate message:
   ```
-  Checkout: clearer error messages · working 6 min
+  ⏳ Checkout: clearer error messages · working 6 min
   You: “Make the checkout error messages clearer”
 
   💬 Deploying to staging and checking the checkout page there.
@@ -40,9 +40,10 @@ one, or write straight into a VS Code tab that is already open.
   make deploy-staging && git commit -qm 'Checkout: clearer errors'
   [✅ Allow]  [❌ Deny]  [♾ Allow and don't ask again]
   ```
-- **Write back.** Reply to a session's message to continue it. Write in a project topic to start a new session
-  (Pult asks which session you mean first). Text, photos and files all go to Claude: files are saved on the
-  computer, and Claude gets their path.
+- **Write back.** Text in a project topic goes to the topic's current session — the one you chose last, or the
+  only one open; otherwise Pult asks once. A reply to a session's message continues that session, `/new text`
+  starts a new one. Text, photos and files all go to Claude: files are saved on the computer, and Claude gets
+  their path.
 - **Straight into an open VS Code tab** (optional). Your message appears in the tab as if you typed it there, and
   the turn runs in it.
 - **Notification modes.** 🔄 Auto plays a sound when you've been away from the computer for 2+ minutes. 💻 At my
@@ -142,12 +143,12 @@ Work on the computer as usual. In Telegram:
 |---|---|
 | a project's topic | its sessions' turns, results, questions and permission requests |
 | reply to a session's message | continue that session |
-| text in a project's topic | asks which session it's for, or starts a new one |
-| `/new text` | a new session in this topic's project, no questions |
+| text in a project's topic | the topic's current session (🎯 in the pinned card); none — the only open one, else Pult asks once |
+| `/new text`, or `/new` and then the text | a new session in this topic's project |
 | `/desk` `/phone` `/auto` `/mode` | notification mode |
 | `/status` | what's open on the computer right now |
 | `/projects`, `/sessions` | projects with their topics; recent sessions of this project |
-| `/stop` (as a reply) | interrupt a turn of a session started from Telegram |
+| `/stop` | interrupt the topic's current session started from Telegram; as a reply — that session |
 | `/app`, 📱 Pult in a topic's pinned bar | open the web app (from a topic — on that project) |
 | `/help` | everything above, in sections |
 

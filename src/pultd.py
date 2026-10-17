@@ -59,7 +59,7 @@ USAGE_EVERY = 15 * 60    # usage check for warnings, if there was work on the Ma
 USAGE_NEAR_EVERY = 5 * 60   # …and near the threshold (from 70 %), more often
 WARN_AT = (80, 95)       # % of a limit: a warning with sound in General (decision 2026-10-16)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.9.3"
+VERSION = "0.9.4"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -619,6 +619,7 @@ class Pult:
         self.recent = collections.deque(maxlen=20)   # latest results — for the app's Home screen
         self.jobs = {}                 # tasks without Claude: running
         self.jobs_done = collections.deque(maxlen=10)
+        self.new_next = set()          # topics where a bare /new was sent: the next text there starts a new session
 
     # ----- this computer's environment -----
 
@@ -813,6 +814,10 @@ class Pult:
         chat = str(self.chat or "")
         return "https://t.me/c/%s/%d" % (chat[4:], thread) if chat.startswith("-100") and thread else None
 
+    def group_link(self):
+        """The group's General topic (its thread id is 1) — for the way back from the private chat with the bot."""
+        return self.topic_link(1)
+
     async def send(self, pkey, text, *, reply_to=None, buttons=None, notify=False, prio=5,
                    sid=None, kind=None, here=None):
         """To the topic of project pkey (creating it if missing) or, if here is given, to where the
@@ -974,9 +979,15 @@ class Pult:
         return "<b>%s</b>" % R.esc(self.title(lv))
 
     def render_turn(self, lv, t):
-        dur = R.human_dur((time.time() if not t.done else t.done[1]) - t.started)
-        state = {"✔️": "turn.done", "⏹": "turn.stopped"}.get(t.done[0] if t.done else None, "turn.running")
-        lines = ["%s · %s" % (self.head(lv), self.t(state, dur=dur))]
+        """"⏳ title · working 6 min" → "✔️ title · done in 6 min" (or ⏹ interrupted). The icon comes first, so the
+        state is readable in a topic full of messages; under a minute the seconds are not counted aloud."""
+        secs = (time.time() if not t.done else t.done[1]) - t.started
+        dur = R.human_dur(secs)
+        if t.done:
+            icon, state = t.done[0], self.t("turn.done" if t.done[0] == "✔️" else "turn.stopped", dur=dur)
+        else:
+            icon, state = "⏳", self.t("turn.running", dur=dur) if secs >= 60 else self.t("turn.fresh")
+        lines = ["%s %s · %s" % (icon, self.head(lv), state)]
         if t.prompt:
             lines.append(self.t("turn.you", text=R.esc(I.q(R.short(t.prompt, 300)))))
         elif t.note:
@@ -1182,7 +1193,8 @@ class Pult:
         """The task message: "⚙️ command · running 6 min" and the last line of output; final — the result "✅ / ❌"."""
         cmd = "<b>%s</b>" % R.esc(R.short(j.cmd, 90))
         if j.ended is None:
-            text = self.t("job.running", cmd=cmd, dur=R.human_dur(time.time() - j.started))
+            secs = time.time() - j.started
+            text = self.t("job.running", cmd=cmd, dur=R.human_dur(secs)) if secs >= 60 else self.t("job.fresh", cmd=cmd)
             return text + ("\n<code>%s</code>" % R.esc(R.short(j.last, 200)) if j.last else "")
         took = R.human_dur(j.ended - j.started)
         if j.code == 0:
@@ -1541,9 +1553,12 @@ class Pult:
             log("group bound:", chat)
             return
         if chat != self.chat:
-            if private:                        # no group yet — how to make one; otherwise — where to write
+            if private:                        # no group yet — how to make one; otherwise — where to write, with a way there
+                link = self.group_link() if self.chat else None
                 await self.tg.call("sendMessage", chat_id=chat,
-                                   text=self.t("private.elsewhere" if self.chat else "bind.private"))
+                                   text=self.t("private.elsewhere" if self.chat else "bind.private"),
+                                   reply_markup={"inline_keyboard": [[{"text": self.t("btn.group"), "url": link}]]}
+                                   if link else None)
             return
         thread = m.get("message_thread_id") if m.get("is_topic_message") else None
         here = thread or 0
@@ -1571,7 +1586,13 @@ class Pult:
         elif cmd == "/sessions":
             await self.cmd_sessions(topic, here)
         elif cmd == "/stop":
-            await self.cmd_stop(rep_id, here)
+            await self.cmd_stop(rep_id, here, topic, mid)
+        elif cmd == "/new" and not rest and not (m.get("photo") or m.get("document")):
+            # a bare /new — a tap in the command menu: the next text in this topic starts a new session
+            if topic and topic["path"]:
+                self.new_next.add(here)
+            await self.send(None, self.t("new.next" if topic and topic["path"] else "new.general"),
+                            reply_to=mid, here=here)
         elif rep_id and rep_id in self.req_by_msg:
             req, i = self.req_by_msg[rep_id]
             if req.fut.done():
@@ -1588,9 +1609,11 @@ class Pult:
             if not body.strip():
                 return
             row = self.store.msg(rep_id) if rep_id else None
+            fresh = cmd == "/new" or here in self.new_next
+            self.new_next.discard(here)
             if row:
                 await self.continue_session(row["sid"], body, mid, here)
-            elif topic and topic["path"] and cmd == "/new":
+            elif topic and topic["path"] and fresh:
                 await self.drive(str(uuid.uuid4()), topic["path"], body, mid, pkey=topic["pkey"])
             elif topic and topic["path"]:
                 await self.to_topic(topic, body, mid, here)
@@ -1604,7 +1627,8 @@ class Pult:
         session (the owner chose it: a button, a reply, /new — remembered until it closes or FOCUS_IDLE passes), or
         to the only session of the project that can be written into right now (a tab with Pult's wrapper, a session
         from Telegram). Otherwise — ask (decision 2026-10-17: both rules; "do it" of 10-16 went to a new session, these
-        go to the one the owner is watching). Pult says where it went."""
+        go to the one the owner is watching). The first time a topic picks a session by itself, Pult says so once;
+        after that the reaction on the message and the turn replying to it are enough (0.9.4)."""
         pkey = topic["pkey"]
         target, first = self.focus_of(pkey), False
         if not target:
@@ -1613,9 +1637,10 @@ class Pult:
         if not target:
             await self.ask_target(topic, body, origin, here)
             return
-        name = I.q(R.esc(R.short(self.session_label(target), 50)))
         await self.continue_session(target, body, origin, here)
-        await self.send(None, self.t("focus.first" if first else "focus.sent", name=name), reply_to=origin, here=here)
+        if first:
+            name = I.q(R.esc(R.short(self.session_label(target), 50)))
+            await self.send(None, self.t("focus.first", name=name), reply_to=origin, here=here)
 
     def open_writable(self, pkey):
         """Sessions of the project that a message reaches right now: tabs with Pult's wrapper, sessions from Telegram."""
@@ -1691,7 +1716,7 @@ class Pult:
             mark = "📱" if sid in self.driven else "💻" if sid in tabbed else "🖥" if sid in live else "▫️"
             title = (lv.title if lv else None) or r["title"] or self.t("session.default")
             tok = self.offer(("sess", sid, body, origin, here))
-            rows.append([{"text": "↩️ %s %s · %s" % (mark, R.short(title, 34), when(r["last_seen"])),
+            rows.append([{"text": "%s %s · %s" % (mark, R.short(title, 36), when(r["last_seen"])),
                           "callback_data": "t:" + tok}])
         tok = self.offer(("new", topic["path"], topic["pkey"], body, origin))
         rows.append([{"text": self.t("btn.new_session"), "callback_data": "t:" + tok}])
@@ -1728,13 +1753,14 @@ class Pult:
             await self.send(None, self.t("err.no_folder"), reply_to=origin, here=here)
             return
         self.set_focus(pkey, sid)
+        if origin:
+            self.store.map_msg(origin, sid, "owner")     # a reply to one's own message continues the same session
         trow = self.store.topic(pkey)
         quote = bool(trow and trow["thread"] == here)    # a reply in the same topic the session lives in
         if sid in self.driven:
             dr = self.driven[sid]
             dr.q.put_nowait((text, origin if quote else None))
-            if dr.busy:
-                await self.react(origin, "✍")
+            await self.react(origin, "✍" if dr.busy else "👀")
             return
         tab = self.tab_for(sid)
         if tab:
@@ -1917,8 +1943,8 @@ class Pult:
         for s in items:
             tok = self.offer((topic["pkey"], topic["path"], s.session_id))
             mark = "📱" if s.session_id in self.driven else "🖥" if s.session_id in live else "▫️"
-            rows.append([{"text": "%s %s · %s" % (mark, when(s.last_modified / 1000),
-                                                  R.short(s.custom_title or s.summary or "—", 40)),
+            rows.append([{"text": "%s %s · %s" % (mark, R.short(s.custom_title or s.summary or "—", 36),
+                                                  when(s.last_modified / 1000)),
                           "callback_data": "s:" + tok}])
         await self.send(topic["pkey"], self.t("sessions.list") if rows else self.t("sessions.none"),
                         buttons=rows)
@@ -1954,7 +1980,7 @@ class Pult:
 
     def panel_buttons(self):
         m = self.mode()
-        rows = [[{"text": ("✓ " if k == m else "") + self.t("mode." + k), "callback_data": "w:" + k} for k in MODES]]
+        rows = [[{"text": ("✓ " if k == m else "") + self.t("mode.%s.btn" % k), "callback_data": "w:" + k} for k in MODES]]
         if self.app_url():
             rows.append([{"text": self.t("panel.open"), "url": self.app_url()}])
         return rows
@@ -2018,14 +2044,23 @@ class Pult:
             rows.append([{"text": self.t("help.btn.back"), "callback_data": "h:main"}])
         return rows
 
-    async def cmd_stop(self, rep_id, here):
+    async def cmd_stop(self, rep_id, here, topic=None, mid=None):
+        """/stop as a reply — that session; in a project topic without a reply — the topic's current session, or the
+        only session from Telegram in the project (0.9.4: a tap in the command menu sends a bare /stop)."""
         row = self.store.msg(rep_id) if rep_id else None
-        dr = self.driven.get(row["sid"]) if row else None
-        if not dr or not dr.client:
-            await self.send(None, self.t("stop.how"), here=here)
+        sid = row["sid"] if row else None
+        if not sid and topic:
+            sid = self.focus_of(topic["pkey"])
+            if not sid:
+                ours = [s for s in self.driven if self.session_pkey(s) == topic["pkey"]]
+                sid = ours[0] if len(ours) == 1 else None
+        dr = self.driven.get(sid) if sid else None
+        if not dr or not dr.client or not dr.busy:
+            key = "stop.how" if rep_id or not topic else "stop.tab" if sid and self.tab_for(sid) else "stop.none"
+            await self.send(None, self.t(key), here=here)
             return
         await dr.client.interrupt()
-        await self.react(rep_id, "🫡")
+        await self.react(rep_id or mid, "🫡")
 
     # ----- web app (stage 1B): app window requests via pult_web -----
 
@@ -2139,8 +2174,13 @@ class Pult:
         lv = lv or self.stub(sid, row["pkey"] if row else Path(path).parent.name)
         page = await asyncio.to_thread(PW.transcript_page, path, before, after, lv.cwd)
         stats = await asyncio.to_thread(self.stats.get, path)
+        live = self.live_item(lv)
+        # open on the computer without Pult's wrapper: a message from here goes as a copy — the app says so up front
+        seen = sid in self.live and not lv.driven and lv.turn is not None
+        live["open"] = (seen or any(a.get("sessionId") == sid for a in await self.agents())) \
+            and not live["tab"] and sid not in self.driven
         return {"sid": sid, "title": self.title(lv), "project": self.project_label(lv.pkey), "pkey": lv.pkey,
-                "live": self.live_item(lv), "page": page, "stats": stats,
+                "live": live, "page": page, "stats": stats,
                 "pending": [self.req_item(r) for r in lv.pending.values() if not r.fut.done()]}
 
     async def api_answer(self, rid, act=None, answers=None, text=None):

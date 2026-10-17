@@ -14,7 +14,8 @@ setLang(String((tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initData
 const bus = new Map();
 const on = (ev, fn) => { bus.has(ev) || bus.set(ev, new Set()); bus.get(ev).add(fn); return () => bus.get(ev).delete(fn); };
 const emit = (ev, x) => (bus.get(ev) || []).forEach((fn) => fn(x));
-const useLang = (l) => { if (l && l !== LANG) { setLang(l); emit("lang"); } };
+// the re-render is deferred: a screen may learn the language while rendering, before the app has subscribed
+const useLang = (l) => { if (l && l !== LANG) { setLang(l); setTimeout(() => emit("lang"), 0); } };
 
 const conn = { ws: null, state: "connecting", ready: false, mac: null, seq: 0, wait: new Map(), retry: 0 };
 const setState = (s) => { conn.state = s; emit("conn"); };
@@ -250,8 +251,24 @@ function ModePick({ mode, onSet }) {
   };
   const cur = MODES.includes(mode) ? mode : "auto";
   return html`<div class="modes"><div class="seg">${MODES.map((k) =>
-    html`<button key=${k} class=${k === cur ? "on" : ""} onClick=${() => pick(k)}>${t("mode." + k)}</button>`)}</div>
+    html`<button key=${k} class=${k === cur ? "on" : ""} onClick=${() => pick(k)}>${t("mode." + k + ".btn")}</button>`)}</div>
     <div class="dim small">${t("mode." + cur + ".about")}</div></div>`;
+}
+
+// the Home strip: where you are in one line (tap — the mode picker), and the way to the settings. The strip is a
+// setting, not the news: what waits for an answer comes right under it
+const GEAR = html`<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`;
+function Where({ mac, onSet }) {
+  const [open, setOpen] = useState(false);
+  const cur = MODES.includes(mac.mode) ? mac.mode : "auto";
+  const line = cur === "auto" ? (mac.away ? t("mac.away", { dur: dur(mac.idle) }) : t("mac.here")) : t("mode." + cur + ".short");
+  return html`<div class="where">
+    <div class="where-h">
+      <button class="where-b" aria-expanded=${open} onClick=${() => setOpen(!open)}><b>${t("mode." + cur + ".btn")}</b><span class="dim">${line}</span><span class="caret">${open ? "▾" : "▸"}</span></button>
+      <a class="gear" href="#/settings" aria-label=${t("settings")}>${GEAR}</a>
+    </div>
+    ${open && html`<${ModePick} mode=${cur} onSet=${onSet}/>`}
+  </div>`;
 }
 
 function Home() {
@@ -262,8 +279,7 @@ function Home() {
   useLang(d.lang);
   const quiet = !d.pending.length && !d.live.length;
   return html`<div>
-    <${ModePick} mode=${d.mac.mode} onSet=${(m) => set(Object.assign({}, d, { mac: Object.assign({}, d.mac, { mode: m }) }))}/>
-    ${d.mac.mode === "auto" && html`<div class="mac">${d.mac.away ? t("mac.away", { dur: dur(d.mac.idle) }) : t("mac.here")}</div>`}
+    <${Where} mac=${d.mac} onSet=${(m) => set(Object.assign({}, d, { mac: Object.assign({}, d.mac, { mode: m }) }))}/>
     ${d.pending.length > 0 && html`<h3>${t("home.pending", { n: d.pending.length })}</h3>${d.pending.map((r) => html`<${Req} key=${r.rid} r=${r}/>`)}`}
     ${d.live.length > 0 && html`<h3>${t("home.live", { n: d.live.length })}</h3>
       <div class="list">${d.live.map((s) => html`<${Row} key=${s.sid} s=${s} now=${now} onClick=${() => go("#/s/" + s.sid)}/>`)}</div>`}
@@ -276,7 +292,6 @@ function Home() {
         <div class="item-h"><b>✅ ${x.title}</b><span class="dim">${ago(x.ts)}</span></div>
         <div class="dim">${[x.project !== x.title ? x.project : "", x.dur ? t("home.took", { dur: dur(x.dur) }) : ""].filter(Boolean).join(" · ")}</div>
         <div class="now">${x.text}</div></button>`)}</div>`}
-    <button class="link center" onClick=${() => go("#/settings")}>${t("home.settings")}</button>
   </div>`;
 }
 
@@ -452,7 +467,7 @@ function Session({ sid }) {
     : lv.state === "work" ? html`<span class="chip ok">${t("st.work", { dur: lv.started ? dur(now - lv.started) : "" })}</span>` : "";
   const ts = info.stats && info.stats.turn;
   return html`<div class="session">
-    <div class="sess-h"><h2>${info.title}</h2><div class="dim">${info.project !== info.title ? info.project : ""} ${st}</div>
+    <div class="sess-h"><h2>${info.title}</h2><div class="dim">${info.project !== info.title ? html`<a class="crumb" href=${"#/p/" + encodeURIComponent(info.pkey)}>${info.project}</a>` : ""} ${st}</div>
       ${info.stats && info.stats.model && html`<div class="stats">${[modelName(info.stats.model), info.stats.effort,
         t("context", { n: kilo(info.stats.context) })].filter(Boolean).join(" · ")}<br/>
         ${t("turn.stats", { n: ts.req, requests: plural(ts.req, "request"), out: kilo(ts.out) })}${ts.think ? t("turn.think", { n: kilo(ts.think) }) : ""}</div>`}
@@ -467,9 +482,9 @@ function Session({ sid }) {
     ${info.pending.map((r) => html`<${Req} key=${r.rid} r=${r} showWhere=${false}/>`)}
     <div ref=${bottom}></div>
     <div class="composer">
-      <textarea rows="1" placeholder=${lv.tab ? t("write.tab") : t("write.session")} value=${text} onInput=${(e) => { setText(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}/>
+      <textarea rows="1" placeholder=${lv.tab ? t("write.tab") : lv.open ? t("write.copy") : t("write.session")} value=${text} onInput=${(e) => { setText(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}/>
       ${lv.driven && lv.state === "work" ? html`<button class="btn danger" onClick=${stop}>${t("stop")}</button>` : ""}
-      <button class="btn" disabled=${busy || !text.trim()} onClick=${() => sendText(false)}>➤</button>
+      <button class="btn send" aria-label=${t("send")} disabled=${busy || !text.trim()} onClick=${() => sendText(false)}><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button>
     </div>
   </div>`;
 }

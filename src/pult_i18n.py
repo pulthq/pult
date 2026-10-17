@@ -12,6 +12,9 @@ S = {
     "mode.auto": {"en": "🔄 Auto", "ru": "🔄 Авто"},
     "mode.mac": {"en": "💻 At my computer", "ru": "💻 За компьютером"},
     "mode.phone": {"en": "📱 On my phone", "ru": "📱 С телефоном"},
+    "mode.auto.btn": {"en": "🔄 Auto", "ru": "🔄 Авто"},          # short: three fit in one row of chat buttons
+    "mode.mac.btn": {"en": "💻 Computer", "ru": "💻 Компьютер"},
+    "mode.phone.btn": {"en": "📱 Phone", "ru": "📱 Телефон"},
     "mode.auto.about": {
         "en": "Sound only when you've been away from the computer for 2+ minutes or the session was started from Telegram.",
         "ru": "Со звуком — только если ты отошёл от компьютера больше чем на 2 минуты или сессия запущена из Telegram.",
@@ -40,7 +43,6 @@ S = {
                           "session's message, or <code>/new text</code>.",
                     "ru": "→ {name}. Текст в этой теме дальше идёт туда же; сменить — ответ на сообщение другой "
                           "сессии или <code>/new текст</code>."},
-    "focus.sent": {"en": "→ {name}", "ru": "→ {name}"},
     "menu.app": {"en": "Pult", "ru": "Пульт"},            # the app button next to the message field, private chat
 
     # ----- help -----
@@ -49,15 +51,17 @@ S = {
               "• Every project gets its own topic. Sessions from VS Code and the terminal show up by themselves: "
               "what Claude is doing right now, and the result.\n"
               "• Claude's questions and permission requests — answer with buttons, here or on the computer, whoever is first.\n"
-              "• Write in a project topic to give Claude a task; reply to a session's message to continue it.\n\n"
-              "/mode — notifications · /status — what's open on the computer · /projects — projects · /app — the app · "
+              "• Text in a project topic goes to the topic's current session; a reply to a session's message — to that "
+              "session; <code>/new text</code> — a new session.\n\n"
+              "/new · /stop · /status — what's open on the computer · /projects · /mode — notifications · /app · "
               "/feedback — a bug or an idea\n\nPick a topic:",
         "ru": "<b>Пульт</b> — Claude Code на твоём компьютере, из Telegram.\n\n"
               "• У каждого проекта — своя тема. Сессии из VS Code и терминала появляются сами: что Claude делает "
               "сейчас и итог.\n"
               "• На вопросы и разрешения Claude — кнопками, здесь или на компьютере, кто первый.\n"
-              "• Напиши в тему проекта — Claude получит задачу; ответ на сообщение сессии — продолжение.\n\n"
-              "/mode — уведомления · /status — что открыто на компьютере · /projects — проекты · /app — приложение · "
+              "• Текст в теме проекта идёт в её текущую сессию; ответ на сообщение сессии — в ту сессию; "
+              "<code>/new текст</code> — новая сессия.\n\n"
+              "/new · /stop · /status — что открыто на компьютере · /projects · /mode — уведомления · /app · "
               "/feedback — ошибка или идея\n\nВыбери раздел:",
     },
     "help.btn.start": {"en": "🚀 Getting started", "ru": "🚀 С чего начать"},
@@ -74,7 +78,7 @@ S = {
               "The result comes as a separate message.\n"
               "3. ✋ A permission request or ❓ a question from Claude — answer with buttons. The dialog on the computer is "
               "open at the same time; whoever answers first decides.\n"
-              "4. A new task — write in the project's topic, or /projects → pick a project.\n"
+              "4. A new task — <code>/new text</code> in the project's topic, or write in General and pick the project.\n"
               "5. Leaving the computer — /phone; back — /desk. Or keep 🔄 Auto.",
         "ru": "<b>🚀 С чего начать</b>\n\n"
               "1. Работай на компьютере как обычно — в VS Code или терминале. Сессии появятся в темах сами.\n"
@@ -82,7 +86,7 @@ S = {
               "сообщением.\n"
               "3. ✋ Разрешение или ❓ вопрос Claude — кнопками. Окно на компьютере открыто одновременно: кто ответил "
               "первым, тот и решил.\n"
-              "4. Новая задача — напиши в тему проекта или /projects → проект.\n"
+              "4. Новая задача — <code>/new текст</code> в теме проекта или текст в «Общей» → выбор проекта.\n"
               "5. Уходишь от компьютера — /phone, вернулся — /desk. Или оставь 🔄 Авто.",
     },
     "help.notify": {
@@ -111,8 +115,10 @@ S = {
               "<code>/new text</code> — a new session right away.\n"
               "• 💻 The session is open in a VS Code tab with Pult's wrapper — your message appears right in the tab. "
               "🖥 Without the wrapper — I continue as a copy: same history, a separate session from there on.\n"
+              "• Asked “which session?” — 💻 a VS Code tab (I write straight into it), 🖥 open on the computer (goes as "
+              "a copy), 📱 from Telegram, ▫️ closed (I continue it).\n"
               "• A photo or file with a caption — Claude gets the path to the file.\n"
-              "• /stop as a reply to a session started from here — interrupts the turn.",
+              "• /stop in a topic interrupts its current session started from here; as a reply — that session.",
         "ru": "<b>✍️ Писать Claude</b>\n\n"
               "• Ответ на любое сообщение сессии — продолжение этой сессии.\n"
               "• Текст в теме проекта идёт в текущую сессию темы (🎯 в закрепе): ту, что ты выбрал последней — ответом, "
@@ -120,8 +126,10 @@ S = {
               "держится, пока сессия не закроется или 2 часа тишины в теме. <code>/new текст</code> — сразу новая.\n"
               "• 💻 Сессия открыта во вкладке VS Code с обёрткой Пульта — сообщение появится прямо во вкладке. "
               "🖥 Без обёртки — продолжу копией: история та же, дальше отдельная сессия.\n"
+              "• В вопросе «в какую сессию?»: 💻 — вкладка VS Code (пишу прямо в неё), 🖥 — открыта на компьютере "
+              "(пойдёт копией), 📱 — из Telegram, ▫️ — закрыта (продолжу).\n"
               "• Фото или файл с подписью — Claude получит путь к файлу.\n"
-              "• /stop ответом на сообщение сессии, запущенной отсюда, — прервать ход.",
+              "• /stop в теме — прервать её текущую сессию, запущенную отсюда; ответом — ту сессию.",
     },
     "help.app": {
         "en": "<b>📱 The app</b>\n\nInside Telegram: every session on the computer, full transcripts with times, answers "
@@ -217,10 +225,10 @@ S = {
     "perm.search": {"en": "Search the web: <b>{query}</b>", "ru": "Искать в интернете: <b>{query}</b>"},
     "perm.mcp": {"en": "Call <b>{name}</b>", "ru": "Вызвать <b>{name}</b>"},
     "perm.tool": {"en": "Use the tool <b>{name}</b>", "ru": "Использовать инструмент <b>{name}</b>"},
-    "ask.hint.one": {"en": "pick an option; your own answer — reply to this message",
-                     "ru": "выбери вариант; свой ответ — ответом на это сообщение"},
-    "ask.hint.many": {"en": "check the options and tap “Done”; your own answer — reply to this message",
-                      "ru": "отметь варианты и нажми «Готово»; свой ответ — ответом на это сообщение"},
+    "ask.hint.one": {"en": "pick an option, or reply to this message with your own answer",
+                     "ru": "выбери вариант кнопкой или напиши свой — ответом на это сообщение"},
+    "ask.hint.many": {"en": "check the options and tap “Done”, or reply to this message with your own answer",
+                      "ru": "отметь варианты и нажми «Готово» или напиши свой ответ — ответом на это сообщение"},
 
     # ----- daemon messages (pultd) -----
     "when.yesterday": {"en": "yesterday {hm}", "ru": "вчера {hm}"},
@@ -228,19 +236,20 @@ S = {
     "err.turn": {"en": "⚠️ The turn ended with an error: {err}", "ru": "⚠️ Ход закончился ошибкой: {err}"},
     "err.session": {"en": "⚠️ The session failed to start or crashed: <code>{err}</code>",
                     "ru": "⚠️ Сессия не запустилась или упала: <code>{err}</code>"},
-    "topic.intro": {"en": "📂 <b>{name}</b> · <code>{path}</code>\nWrite here to start a new session in this project. "
-                          "Reply to a session's message to continue that session.",
-                    "ru": "📂 <b>{name}</b> · <code>{path}</code>\nПиши сюда — начну новую сессию в этом проекте. "
-                          "Ответ на сообщение сессии — продолжение этой сессии."},
+    "topic.intro": {"en": "📂 <b>{name}</b> · <code>{path}</code>\nText here goes to the topic's current session (🎯 at the "
+                          "top); a reply to a session's message — to that session; <code>/new text</code> — a new session.",
+                    "ru": "📂 <b>{name}</b> · <code>{path}</code>\nТекст сюда — в текущую сессию темы (🎯 наверху); ответ на "
+                          "сообщение сессии — в неё; <code>/new текст</code> — новая сессия."},
     "long.more": {"en": "\n<i>… {n} more characters</i>", "ru": "\n<i>… ещё {n} знаков</i>"},
     "btn.read_all": {"en": "Read in full", "ru": "Читать полностью"},
     "btn.details": {"en": "Details", "ru": "Подробнее"},
     "doc.caption": {"en": "in full — {n} characters", "ru": "целиком — {n} знаков"},
+    "turn.fresh": {"en": "working…", "ru": "работает…"},
     "turn.running": {"en": "working {dur}", "ru": "работает {dur}"},
-    "turn.done": {"en": "✔️ done in {dur}", "ru": "✔️ готово за {dur}"},
-    "turn.stopped": {"en": "⏹ interrupted after {dur}", "ru": "⏹ прервано через {dur}"},
+    "turn.done": {"en": "done in {dur}", "ru": "готово за {dur}"},
+    "turn.stopped": {"en": "interrupted after {dur}", "ru": "прервано через {dur}"},
     "turn.you": {"en": "<i>You: {text}</i>", "ru": "<i>Ты: {text}</i>"},
-    "vehi": {"en": "⏳ {head} has been working for {dur}", "ru": "⏳ {head} работает уже {dur}"},
+    "vehi": {"en": "⏳ {head} · has been working for {dur}", "ru": "⏳ {head} · работает уже {dur}"},
     "vehi.muted": {"en": "\n<i>🔕 no more reminders — only the result will come</i>",
                    "ru": "\n<i>🔕 вех больше не будет — придёт только итог</i>"},
     "btn.mute": {"en": "🔕 Quiet until done", "ru": "🔕 Не беспокоить до конца"},
@@ -256,8 +265,8 @@ S = {
     "req.perm": {"en": "Claude asks for permission", "ru": "Claude спрашивает разрешение"},
     "plan.full": {"en": "the full plan", "ru": "план целиком"},
     "plan.decided": {"en": "plan · <b>{note}</b>", "ru": "план · <b>{note}</b>"},
-    "perm.reply_hint": {"en": "\n<i>or reply with text — Claude gets a refusal with your explanation</i>",
-                        "ru": "\n<i>или ответь текстом — Claude получит отказ с твоим пояснением</i>"},
+    "perm.reply_hint": {"en": "\n<i>a text reply — a refusal with your note for Claude</i>",
+                        "ru": "\n<i>ответ текстом — отказ с пояснением для Claude</i>"},
     "btn.approve": {"en": "✅ Approve", "ru": "✅ Утвердить"},
     "btn.reject_plan": {"en": "❌ Don't approve", "ru": "❌ Не утверждать"},
     "btn.allow": {"en": "✅ Allow", "ru": "✅ Разрешить"},
@@ -290,20 +299,23 @@ S = {
     "result.empty": {"en": "_Claude finished without text._", "ru": "_Claude закончил без текста._"},
     "result.done_in": {"en": " · done in {dur}", "ru": " · готово за {dur}"},
     "result.done": {"en": " · done", "ru": " · готово"},
+    "job.fresh": {"en": "⚙️ {cmd} · running…", "ru": "⚙️ {cmd} · идёт…"},
     "job.running": {"en": "⚙️ {cmd} · running {dur}", "ru": "⚙️ {cmd} · идёт {dur}"},
     "job.done.final": {"en": "✅ {cmd} · done in {dur}", "ru": "✅ {cmd} · готово за {dur}"},
-    "job.done": {"en": "⚙️ {cmd} · ✔️ done in {dur}", "ru": "⚙️ {cmd} · ✔️ готово за {dur}"},
+    "job.done": {"en": "✔️ {cmd} · done in {dur}", "ru": "✔️ {cmd} · готово за {dur}"},
     "job.killed": {"en": "interrupted", "ru": "прервана"},
     "job.code": {"en": "error, code {code}", "ru": "ошибка, код {code}"},
     "job.fail.final": {"en": "❌ {cmd} · {why} after {dur}", "ru": "❌ {cmd} · {why}, через {dur}"},
-    "job.fail": {"en": "⚙️ {cmd} · ✖ {why} after {dur}", "ru": "⚙️ {cmd} · ✖ {why}, через {dur}"},
-    "job.vehi": {"en": "⏳ <b>{cmd}</b> has been running for {dur}", "ru": "⏳ <b>{cmd}</b> идёт уже {dur}"},
+    "job.fail": {"en": "✖ {cmd} · {why} after {dur}", "ru": "✖ {cmd} · {why}, через {dur}"},
+    "job.vehi": {"en": "⏳ <b>{cmd}</b> · has been running for {dur}", "ru": "⏳ <b>{cmd}</b> · идёт уже {dur}"},
     "topic.bound": {"en": "📂 This topic is now bound to project <b>{name}</b> · <code>{path}</code>",
                     "ru": "📂 Тема привязана к проекту <b>{name}</b> · <code>{path}</code>"},
     "started.in": {"en": "▶️ Started a session in {title} — the turn and the result will be there.",
                    "ru": "▶️ Запустил сессию в теме {title} — ход и итог будут там."},
-    "topic.link": {"en": "📂 Project topic {title} — write there to start a new session.",
-                   "ru": "📂 Тема проекта {title} — пиши туда, начну новую сессию."},
+    "topic.link": {"en": "📂 {title} — the project's topic: the turns, results and questions of its sessions. "
+                         "A new session there: <code>/new text</code>.",
+                   "ru": "📂 {title} — тема проекта: ходы, итоги и вопросы её сессий. Новая сессия там: "
+                         "<code>/new текст</code>."},
     "bind.need_forum": {"en": "Topics are off in this group: the group's settings → Topics → on, then /bind again.",
                         "ru": "В этой группе выключены темы: настройки группы → Темы → включить, потом снова /bind."},
     "bind.private": {
@@ -319,17 +331,17 @@ S = {
               "«Закрепление сообщений».\n"
               "4. Напиши /bind в самой группе.",
     },
-    "private.elsewhere": {"en": "I don't read this private chat: I work in Pult's group, a topic per project — "
-                                "write there.",
-                          "ru": "Этот личный чат я не читаю: работаю в группе Пульта, тема на проект, — пиши туда."},
+    "private.elsewhere": {"en": "I don't read this private chat: I work in Pult's group, a topic per project.",
+                          "ru": "Этот личный чат я не читаю: работаю в группе Пульта, тема на проект."},
+    "btn.group": {"en": "Open the group", "ru": "Открыть группу"},
     "q.already": {"en": "This question is already decided.", "ru": "Этот вопрос уже решён."},
     "cmd.unknown": {"en": "I don't know this command. /help", "ru": "Не знаю такой команды. /help"},
-    "where.ask": {"en": "Where should I send it? I'll remember the choice for this topic. (💻 — open in a VS Code tab, "
-                        "I'll write right into it; 🖥 — open on the computer, it'll go as a copy; reply to a session's "
-                        "message or <code>/new text</code> — no question)",
-                  "ru": "Куда отправить? Выбор запомню для этой темы. (💻 — открыта во вкладке, напишу прямо в неё; "
-                        "🖥 — открыта на компьютере, пойдёт копией; ответ на сообщение сессии или <code>/new текст</code> "
-                        "— без этого вопроса)"},
+    "where.ask": {"en": "Which session? I'll remember the choice for this topic.\n"
+                        "💻 a VS Code tab — straight into it · 🖥 open on the computer — as a copy · 📱 from Telegram · "
+                        "▫️ closed — I'll continue it",
+                  "ru": "В какую сессию? Запомню выбор для этой темы.\n"
+                        "💻 вкладка VS Code — прямо в неё · 🖥 открыта на компьютере — копией · 📱 из Telegram · "
+                        "▫️ закрыта — продолжу"},
     "err.no_folder": {"en": "I don't know which folder this session is in.", "ru": "Не знаю, в какой папке эта сессия."},
     "fork.offer": {"en": "This session is open on the computer (a VS Code tab or the terminal). Writing to it from here "
                          "would mix up the conversation. I can continue as a <b>copy</b>: the same history, a separate "
@@ -360,18 +372,29 @@ S = {
                       "ru": "Эта тема ещё не привязана к проекту. Выбери проект — привяжу тему и запущу сессию."},
     "projects.none": {"en": "No projects with Claude sessions found.", "ru": "Проектов с сессиями Claude не нашёл."},
     "sessions.where": {"en": "/sessions — inside a project topic.", "ru": "/sessions — в теме проекта."},
-    "sessions.list": {"en": "Recent sessions (🖥 — open on the computer). Tap one — I'll show its last answer; reply to it "
-                            "to continue.",
-                      "ru": "Последние сессии (🖥 — открыта на компьютере). Нажми — покажу последний ответ, ответом на "
-                            "него продолжишь."},
+    "sessions.list": {"en": "Recent sessions of this project. Tap one — I'll show its last answer; reply to that to "
+                            "continue. 🖥 — open on the computer, 📱 — from Telegram.",
+                      "ru": "Последние сессии проекта. Нажми — покажу последний ответ, ответом на него продолжишь. "
+                            "🖥 — открыта на компьютере, 📱 — из Telegram."},
     "sessions.none": {"en": "No sessions.", "ru": "Сессий нет."},
     "card": {"en": "🧵 <b>{title}</b>\n{body}\n\n<i>reply to this message to continue the session</i>",
              "ru": "🧵 <b>{title}</b>\n{body}\n\n<i>ответь на это сообщение — продолжу сессию</i>"},
     "card.empty": {"en": "<i>no answers yet</i>", "ru": "<i>ответов нет</i>"},
-    "stop.how": {"en": "/stop — as a reply to a message of a session started from Telegram. A turn in VS Code can "
-                       "only be interrupted on the computer.",
-                 "ru": "/stop — ответом на сообщение сессии, запущенной из Telegram. Ход в VS Code прерывается "
-                       "только на компьютере."},
+    "stop.how": {"en": "/stop in a project topic interrupts the topic's current session, if it was started from "
+                       "Telegram; as a reply to a session's message — that session. A turn in VS Code is interrupted "
+                       "on the computer.",
+                 "ru": "/stop в теме проекта прерывает её текущую сессию, если она запущена из Telegram; ответом на "
+                       "сообщение сессии — ту сессию. Ход в VS Code прерывается на компьютере."},
+    "stop.none": {"en": "Nothing to interrupt: no session from Telegram is working here right now.",
+                  "ru": "Прерывать нечего: сессии из Telegram здесь сейчас не работают."},
+    "stop.tab": {"en": "The current session is open in VS Code — its turn is interrupted on the computer.",
+                 "ru": "Текущая сессия открыта в VS Code — её ход прерывается на компьютере."},
+    "new.next": {"en": "Write the task — I'll start it as a new session in this project.",
+                 "ru": "Напиши задачу — запущу её новой сессией в этом проекте."},
+    "new.general": {"en": "Write the task here — I'll ask which project it's for. In a project topic, "
+                          "<code>/new text</code> starts it right away.",
+                    "ru": "Напиши задачу сюда — спрошу, в каком проекте. В теме проекта <code>/new текст</code> "
+                          "запускает сразу."},
     "stop.only_driven": {"en": "only a session started from Telegram can be stopped — a turn in a tab is interrupted "
                                "on the computer",
                          "ru": "остановить можно только сессию из Telegram — ход во вкладке прерывается на компьютере"},
@@ -679,6 +702,7 @@ S = {
     },
 
     # ----- bot command menu -----
+    "cmd.new": {"en": "new session: /new task text", "ru": "новая сессия: /new текст задачи"},
     "cmd.help": {"en": "how to use, turn on and off", "ru": "как пользоваться, включить и выключить"},
     "cmd.mode": {"en": "notifications: at the computer / on the phone", "ru": "уведомления: за компьютером / с телефоном"},
     "cmd.desk": {"en": "I'm at the computer — everything silent", "ru": "я за компьютером — всё беззвучно"},
@@ -687,12 +711,12 @@ S = {
     "cmd.status": {"en": "what's open on the computer", "ru": "что открыто на компьютере"},
     "cmd.sessions": {"en": "recent sessions of the project", "ru": "последние сессии проекта"},
     "cmd.projects": {"en": "projects — open a topic", "ru": "проекты — открыть тему"},
-    "cmd.stop": {"en": "interrupt a turn (as a reply)", "ru": "прервать ход (ответом)"},
+    "cmd.stop": {"en": "interrupt the turn (in a topic or as a reply)", "ru": "прервать ход (в теме или ответом)"},
     "cmd.app": {"en": "open the app", "ru": "открыть приложение"},
     "cmd.feedback": {"en": "report a bug or suggest an idea", "ru": "сообщить об ошибке или идее"},
 }
 
-COMMANDS = ("help", "mode", "desk", "phone", "auto", "status", "sessions", "projects", "stop", "app", "feedback")
+COMMANDS = ("new", "stop", "status", "sessions", "projects", "app", "desk", "phone", "auto", "mode", "help", "feedback")
 
 # Plural forms: English — one/other, Russian — one/few/many.
 P = {

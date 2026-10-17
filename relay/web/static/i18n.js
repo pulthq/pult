@@ -55,6 +55,11 @@ const S = {
   "mode.auto": { en: "🔄 Auto", ru: "🔄 Авто" },
   "mode.mac": { en: "💻 At my computer", ru: "💻 За компьютером" },
   "mode.phone": { en: "📱 On my phone", ru: "📱 С телефоном" },
+  "mode.auto.btn": { en: "🔄 Auto", ru: "🔄 Авто" },
+  "mode.mac.btn": { en: "💻 Computer", ru: "💻 Компьютер" },
+  "mode.phone.btn": { en: "📱 Phone", ru: "📱 Телефон" },
+  "mode.mac.short": { en: "everything silent", ru: "всё беззвучно" },
+  "mode.phone.short": { en: "with sound", ru: "со звуком" },
   "mode.auto.about": { en: "Sound if you've been away from the computer for 2+ minutes or the session was started from the phone",
     ru: "Звук, если ты отошёл от компьютера больше чем на 2 мин или сессия запущена с телефона" },
   "mode.mac.about": { en: "Everything arrives silently — nothing is lost", ru: "Всё приходит беззвучно — ничего не теряется" },
@@ -68,7 +73,6 @@ const S = {
   "home.jobs": { en: "Tasks without Claude", ru: "Задачи без Claude" },
   "home.recent": { en: "Recent results", ru: "Недавние итоги" },
   "home.took": { en: "in {dur}", ru: "за {dur}" },
-  "home.settings": { en: "Settings and Pult's log", ru: "Настройки и журнал Пульта" },
   "job.running": { en: "running {dur}", ru: "идёт {dur}" },
   "job.killed": { en: "interrupted", ru: "прервана" },
   "job.code": { en: "code {code}", ru: "код {code}" },
@@ -107,6 +111,7 @@ const S = {
   working: { en: "⏳ working…", ru: "⏳ работает…" },
   "write.tab": { en: "Write into the tab on the computer…", ru: "Написать во вкладку на компьютере…" },
   "write.session": { en: "Write to the session…", ru: "Написать в сессию…" },
+  "write.copy": { en: "Open on the computer · as a copy…", ru: "Открыта на компьютере · копией…" },
   stop: { en: "Stop", ru: "Стоп" },
 
   // new task

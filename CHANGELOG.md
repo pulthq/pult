@@ -2,6 +2,30 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.9.4 — 2026-10-17
+
+A usability pass over the chat and the app: the same words and icons everywhere, less noise, and two commands that
+work straight from the command menu.
+
+- A turn message starts with its state: `⏳ title · working 6 min`, then `✔️ title · done in 6 min` or
+  `⏹ title · interrupted after 6 min`; `pult run` tasks follow the same pattern. Under a minute the seconds aren't
+  counted aloud.
+- The "which session?" question is short, with a one-line legend (💻 a VS Code tab · 🖥 open on the computer ·
+  📱 from Telegram · ▫️ closed); the session buttons read `💻 title · 14:05`, in that question and in `/sessions`.
+- Pult no longer posts "→ session" after every text in a topic — only the first time a topic picks a session by
+  itself. The reaction on your message and the turn replying to it say where the text went.
+- A reply to your own message continues the same session; an idle session from Telegram reacts 👀 at once.
+- `/new` on its own (a tap in the command menu): the next text in the topic starts a new session. `/stop` on its
+  own in a project topic interrupts the topic's current session started from Telegram.
+- The command menu is ordered by use and includes `/new`; the mode buttons in the pinned panel are short enough to
+  fit one row on a phone (🔄 Auto · 💻 Computer · 📱 Phone).
+- Texts that still said "write here to start a new session" (the topic card, `/projects`, help) describe the
+  current rules; the private chat with the bot gets a button into the group.
+- The app: Home opens with a one-line strip — where you are, and the settings gear — instead of a three-button
+  switch; the session screen links to its project and says "as a copy" in the message field when the session is
+  open on the computer; sentence-case section headers, touch feedback, a neutral palette outside Telegram. The tab
+  bar no longer stays in English when a screen learns the language first.
+
 ## 0.9.3 — 2026-10-17
 
 Text in a project topic no longer asks "where to?" every time.
