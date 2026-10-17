@@ -154,7 +154,7 @@ S = {
               "• The feed works but no permission buttons — Claude in auto mode decides by itself; that's normal.\n"
               "• A message didn't reach the tab — the tab was started without the wrapper (Reload Window fixes it) "
               "or Claude Code was just updated: until it's checked, messages go as a copy.\n"
-              "• Log: <code>~/Library/Logs/pult.log</code>\n\nA bug or an idea — /feedback.",
+              "• Log: <code>{log}</code>\n\nA bug or an idea — /feedback.",
         "ru": "<b>🛠 Если что-то не так</b>\n\n"
               "• Бот молчит — <code>pult status</code> на компьютере: служба, связь с Telegram; "
               "<code>pult restart</code> перезапустит.\n"
@@ -162,7 +162,7 @@ S = {
               "• Лента есть, а кнопок разрешений нет — Claude в режиме auto решает сам, это норма.\n"
               "• Сообщение не дошло во вкладку — вкладка запущена без обёртки (поможет Reload Window) или вышло "
               "обновление Claude Code: до проверки — копией.\n"
-              "• Журнал: <code>~/Library/Logs/pult.log</code>\n\nОшибка или идея — /feedback.",
+              "• Журнал: <code>{log}</code>\n\nОшибка или идея — /feedback.",
     },
     "feedback": {
         "en": "Found a bug or have an idea? Open an issue: {url}\nFor a bug, add the output of "
@@ -409,14 +409,14 @@ S = {
     "cli.lang.ru": {"en": "Russian", "ru": "русский"},
     "cli.install.done": {"en": "Pult {version} is installed in {home}.", "ru": "Пульт {version} установлен в {home}."},
     "cli.install.path": {
-        "en": "The command is {path}, but ~/.local/bin isn't in PATH. Add it, then open a new Terminal window:\n"
-              "  echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.zshrc",
-        "ru": "Команда — {path}, но ~/.local/bin нет в PATH. Добавь и открой новое окно Терминала:\n"
-              "  echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.zshrc",
+        "en": "The command is {path}, but ~/.local/bin isn't in PATH. Add it, then open a new terminal window:\n"
+              "  echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> {rc}",
+        "ru": "Команда — {path}, но ~/.local/bin нет в PATH. Добавь и открой новое окно терминала:\n"
+              "  echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> {rc}",
     },
     "cli.install.taken": {"en": "{path} already belongs to another program — left as is. Pult's command: {ctl}",
                           "ru": "{path} уже занят другой программой — не трогаю. Команда Пульта: {ctl}"},
-    "cli.install.next": {"en": "Next, set it up in Terminal: pult setup", "ru": "Дальше — настройка, в Терминале: pult setup"},
+    "cli.install.next": {"en": "Next, set it up in a terminal: pult setup", "ru": "Дальше — настройка, в терминале: pult setup"},
     "cli.svc.busy": {
         "en": "Pult holds a session started from Telegram. A restart interrupts a running turn (an idle session "
               "continues later by itself). Restart now?",
@@ -429,6 +429,20 @@ S = {
                             "ru": "✗ Пульт не запустился — смотри журнал: {log}"},
     "cli.svc.stopped": {"en": "Pult is stopped. Start it: pult start", "ru": "Пульт остановлен. Запустить: pult start"},
     "cli.svc.not_ready": {"en": "Pult isn't set up yet: pult setup", "ru": "Пульт ещё не настроен: pult setup"},
+    "cli.svc.no_manager": {
+        "en": "✗ Pult runs as a systemd user service, and those aren't available here ({why}). Log in as this user "
+              "directly (SSH, not su or sudo); on WSL turn systemd on ([boot] systemd=true in /etc/wsl.conf). "
+              "Or keep the daemon running yourself: {cmd}",
+        "ru": "✗ Пульт работает как служба systemd пользователя, а их здесь нет ({why}). Войди этим пользователем "
+              "напрямую (SSH, не su и не sudo); в WSL включи systemd ([boot] systemd=true в /etc/wsl.conf). "
+              "Или держи демон запущенным сам: {cmd}",
+    },
+    "cli.svc.linger": {
+        "en": "On a server or over SSH, Pult stops when you log out. To keep it running (and start it at boot): "
+              "sudo loginctl enable-linger {user}",
+        "ru": "На сервере или по SSH Пульт останавливается, когда ты выходишь. Чтобы работал всегда (и сам "
+              "запускался при загрузке): sudo loginctl enable-linger {user}",
+    },
     "cli.setup.title": {
         "en": "Pult setup: 4 steps, about 5 minutes. Ctrl+C stops it; `pult setup` again continues where you left off.",
         "ru": "Настройка Пульта: 4 шага, минут пять. Ctrl+C — прервать; `pult setup` ещё раз продолжит с того же места.",
@@ -538,8 +552,8 @@ S = {
     "cli.hooks.later": {"en": "Later: pult hooks on", "ru": "Позже: pult hooks on"},
     "cli.hooks.state": {"en": "Pult hooks: {events}", "ru": "Хуки Пульта: {events}"},
     "cli.hooks.off": {"en": "off", "ru": "выключены"},
-    "cli.hooks.reload": {"en": "New sessions pick this up; in VS Code: Cmd+Shift+P → Developer: Reload Window.",
-                         "ru": "Подхватят новые сессии; в VS Code: Cmd+Shift+P → Developer: Reload Window."},
+    "cli.hooks.reload": {"en": "New sessions pick this up; in VS Code: {palette} → Developer: Reload Window.",
+                         "ru": "Подхватят новые сессии; в VS Code: {palette} → Developer: Reload Window."},
     "cli.hooks.no_hook": {"en": "No {path} — run ./install.sh first.", "ru": "Нет {path} — сначала ./install.sh."},
     "cli.hooks.unreadable": {
         "en": "{path} mentions Pult's hook but isn't plain JSON (comments or a broken edit) — I won't touch it. Remove "
@@ -549,7 +563,7 @@ S = {
     },
     "cli.st.daemon": {"en": "daemon:", "ru": "демон:"},
     "cli.st.running": {"en": "{state}, pid {pid}", "ru": "{state}, pid {pid}"},
-    "cli.st.not_loaded": {"en": "not loaded ({label})", "ru": "не загружен ({label})"},
+    "cli.st.not_loaded": {"en": "not running ({label})", "ru": "не запущен ({label})"},
     "cli.st.sock": {"en": "socket:", "ru": "сокет:"},
     "cli.st.answers": {"en": "answers", "ru": "отвечает"},
     "cli.st.no": {"en": "no", "ru": "нет"},
@@ -583,10 +597,16 @@ S = {
                         "ru": "Папки, где это работает, через запятую (Enter — {default}): "},
     "cli.tab.saved": {"en": "saved: {path}", "ru": "записано: {path}"},
     "cli.tab.line": {
-        "en": "Add this line to the VS Code settings (Cmd+Shift+P → Preferences: Open User Settings (JSON)):\n"
-              "  {line}\nthen Cmd+Shift+P → Developer: Reload Window. Turn it off any time: pult tab off.",
-        "ru": "Добавь строку в настройки VS Code (Cmd+Shift+P → Preferences: Open User Settings (JSON)):\n"
-              "  {line}\nпотом Cmd+Shift+P → Developer: Reload Window. Выключить в любой момент: pult tab off.",
+        "en": "Add this line to the VS Code settings ({palette} → Preferences: Open User Settings (JSON)):\n"
+              "  {line}\nthen {palette} → Developer: Reload Window. Turn it off any time: pult tab off.",
+        "ru": "Добавь строку в настройки VS Code ({palette} → Preferences: Open User Settings (JSON)):\n"
+              "  {line}\nпотом {palette} → Developer: Reload Window. Выключить в любой момент: pult tab off.",
+    },
+    "cli.tab.remote": {
+        "en": "VS Code reaches this machine through Remote-SSH: then the line goes into the remote settings instead — "
+              "in a window connected here, {palette} → Preferences: Open Remote Settings (JSON).",
+        "ru": "VS Code заходит на эту машину через Remote-SSH: тогда строка идёт в удалённые настройки — в окне, "
+              "подключённом сюда, {palette} → Preferences: Open Remote Settings (JSON).",
     },
     "cli.tab.unverified": {
         "en": "Your Claude Code extension is {v}: the wrapper hasn't been checked on it and stays out of the way "

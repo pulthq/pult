@@ -1,6 +1,7 @@
 # Pult — notes for coding agents
 
-Pult is a Telegram remote for the Claude Code sessions on a Mac: a per-user launchd daemon (`src/pultd.py`), a
+Pult is a Telegram remote for the Claude Code sessions on a computer (macOS or Linux): a per-user daemon
+(`src/pultd.py`, run by launchd or systemd --user; what differs between systems is in `src/pult_os.py`), a
 Claude Code hook (`src/pult_hook.py`), an optional VS Code tab wrapper (`src/pult_tab.py`, `src/pult-tab.sh`), the
 `pult` command (`src/pultctl.py`, `src/pult_setup.py`) and an optional web app with a relay (`src/pult_web.py`,
 `relay/`). Start with [README.md](README.md) and [CONTRIBUTING.md](CONTRIBUTING.md).

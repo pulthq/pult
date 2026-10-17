@@ -18,7 +18,8 @@ from claude_agent_sdk import (AssistantMessage, ClaudeAgentOptions, ClaudeSDKCli
 
 SRC = Path(__file__).resolve().parent.parent / "src"
 CLI = sys.argv[1] if len(sys.argv) > 1 else str(max(
-    Path.home().glob(".vscode/extensions/anthropic.claude-code-*/resources/native-binary/claude"),
+    [p for pat in (".vscode/extensions", ".vscode-server/extensions")
+     for p in Path.home().glob(pat + "/anthropic.claude-code-*/resources/native-binary/claude")],
     key=lambda p: [int(x) for x in p.parts[-4].split("-")[2].split(".")]))
 sys.path.insert(0, str(SRC))
 import pult_tab  # noqa: E402
@@ -101,7 +102,7 @@ async def main():
             "· ход начат (init):", ("init",) in new, "· итог:", [x[1] for x in new if x[0] == "result"])
         reader.cancel()
     server.close()
-    log = Path("~/Library/Logs/pult-tab.log").expanduser()
+    log = Path(pult_tab.LOG)
     if log.exists():
         say("журнал обёртки:", [l for l in log.read_text().splitlines() if str(PROJ) in l or "во вкладку" in l][-3:])
 

@@ -9,8 +9,12 @@ permissions:
 
 jobs:
   test:
-    # Pult runs on macOS for now (launchd, VS Code paths); Linux and Windows runners come with stage K
-    runs-on: macos-latest
+    # Pult runs on macOS and Linux; a Windows runner comes with it (stage K)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -22,7 +26,7 @@ jobs:
         run: python tests/test_pult.py
       - name: Install, setup wizard, report, uninstall
         run: python tests/test_setup.py
-      - name: Web app data and the phone → relay → Mac chain
+      - name: Web app data and the phone → relay → computer chain
         run: python tests/test_web.py
       - name: Relay
         run: python tests/test_relay.py

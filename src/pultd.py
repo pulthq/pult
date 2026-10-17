@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Pult — Claude Code sessions on the Mac, from Telegram.
+"""Pult — Claude Code sessions on this computer, from Telegram.
 
-The daemon (a per-user launchd agent). Three inputs:
+The daemon (a per-user service: launchd on macOS, systemd --user on Linux). Three inputs:
   • a unix socket — session events from pult_hook.py (turn feed, result, permissions, questions);
   • Telegram — the owner's messages and button presses in a group with topics (topic = project);
   • the Agent SDK — sessions started or continued from Telegram.
@@ -57,12 +57,12 @@ USAGE_EVERY = 15 * 60    # usage check for warnings, if there was work on the Ma
 USAGE_NEAR_EVERY = 5 * 60   # …and near the threshold (from 70 %), more often
 WARN_AT = (80, 95)       # % of a limit: a warning with sound in General (decision 2026-10-16)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.8.3"
-LOG_FILE = Path(os.environ.get("PULT_LOG") or "~/Library/Logs/pult.log").expanduser()
+VERSION = "0.9.0"
+LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
-VSCODE_SETTINGS = Path("~/Library/Application Support/Code/User/settings.json").expanduser()
-EXTENSIONS = Path("~/.vscode/extensions").expanduser()
+EDITOR_DIRS = pult_os.editor_dirs()     # VS Code and its forks (and their remote side): where the tab wrapper is set
+EXT_DIRS = pult_os.extension_dirs()
 TAB_CHECK_EVERY = 3600   # s; check whether a new Claude Code extension version is out
 PREFS = {"vehi": True, "mode": "auto", "lang": None}   # owner prefs: milestones, location (auto/mac/phone), language
 MODES = ("auto", "mac", "phone")
@@ -127,19 +127,6 @@ def decode_pkey(pkey, root="/"):
                     return r
         return None
     return walk(root, pkey[1:], 0) if pkey.startswith("-") else None
-
-
-def newest_extension(root):
-    """The newest installed version of the Claude Code extension for VS Code, e.g. "2.1.301"."""
-    best = None
-    for p in Path(root).glob("anthropic.claude-code-*"):
-        v = p.name[len("anthropic.claude-code-"):].split("-")[0]
-        try:
-            key = tuple(int(x) for x in v.split("."))
-        except ValueError:
-            continue
-        best = max(best or (key, v), (key, v))
-    return best[1] if best else None
 
 
 def skip_pkey(pkey):
@@ -1663,10 +1650,10 @@ class Pult:
         verified (tests/probe_tab.py, probe_race.py → pult tab allow). The owner is told about it once."""
         try:
             conf = json.loads(TAB_CONF.read_text(encoding="utf-8"))
-            wrapped = "pult-tab.sh" in VSCODE_SETTINGS.read_text(encoding="utf-8")
         except (OSError, ValueError):
             return
-        v = newest_extension(EXTENSIONS)
+        wrapped = bool(pult_os.files_with(EDITOR_DIRS, "pult-tab.sh"))
+        v = pult_os.newest_extension(EXT_DIRS)
         if not wrapped or not v or v in (conf.get("versions") or []) or self.store.get("tab_warned") == v:
             return
         self.store.put("tab_warned", v)
@@ -1851,6 +1838,11 @@ class Pult:
             return self.t("help.app") + ("" if self.app_url() else self.t("help.app.off"))
         if sec == "onoff":
             return self.t("help.onoff")
+        if sec == "trouble":
+            home = str(Path.home())
+            log_path = str(LOG_FILE)
+            return self.t("help.trouble", log=R.esc("~" + log_path[len(home):] if log_path.startswith(home + "/")
+                                                    else log_path))
         return self.t("help." + sec) if sec in self.HELP_SECTIONS else self.t("help")
 
     def help_buttons(self, cur="main"):

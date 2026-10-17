@@ -28,12 +28,14 @@ import uuid
 CONF = os.environ.get("PULT_TAB_CONF") or os.path.expanduser("~/.config/pult/tab.json")
 OFF = os.path.expanduser("~/.config/pult/tab-off")        # off switch: if the file exists, there is no wrapper
 SOCK = os.environ.get("PULT_SOCK") or os.path.expanduser("~/.local/share/pult/pult.sock")
-LOG = os.path.expanduser("~/Library/Logs/pult-tab.log")
+# where pult_os.LOG_DIR is (repeated here: the wrapper imports nothing of Pult's — fewer ways to fail)
+LOG = os.path.expanduser("~/Library/Logs/pult-tab.log" if sys.platform == "darwin" else "~/.local/state/pult/pult-tab.log")
 TAP_MAX = 4 * 1024 * 1024                                  # longer lines are not parsed, only passed through
 
 
 def log(*a):
     try:
+        os.makedirs(os.path.dirname(LOG), exist_ok=True)
         with open(LOG, "a", encoding="utf-8") as f:
             f.write("%s %d %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), os.getpid(), " ".join(map(str, a))))
     except OSError:

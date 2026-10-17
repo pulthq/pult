@@ -2,6 +2,33 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.9.0 — 2026-10-17
+
+Pult runs on Linux (stage K1). Tested on Ubuntu 24.04 (arm64): the installer, the setup wizard with a real bot,
+a Claude Code session in a terminal with a permission answered from Telegram, a session started from Telegram,
+`pult run`, the tab wrapper with the Linux build of the Claude Code extension 2.1.301, removal. Windows is next.
+
+- `./install.sh` works on Linux. It looks for Python 3.10+ in PATH and, when the venv module is missing (Debian,
+  Ubuntu), says which package to install.
+- The service on Linux is a systemd user service (`~/.config/systemd/user/pult.service`, `Restart=always`), started
+  at login. Over SSH or on a server, the installer reminds you about `sudo loginctl enable-linger $USER`, so Pult
+  keeps running after you log out. Without systemd user services (a container, WSL without systemd), it says so
+  and how to run the daemon yourself.
+- Logs on Linux: `~/.local/state/pult/pult.log` and `pult-tab.log`; the bot's help shows this system's log.
+- VS Code settings are looked for on Linux too (`~/.config/Code/User`, forks, Flatpak) and on a server VS Code
+  reaches through Remote-SSH (`~/.vscode-server/data/Machine`). `pult tab setup` tells where the line goes in a
+  remote window. The Claude Code extension's version is read from `~/.vscode-server/extensions` as well.
+- Whether you're away from the computer on Linux comes from GNOME, KDE (the freedesktop screensaver) or X11;
+  elsewhere, from your own actions in sessions (as in 0.8.3). The X11 query runs in a separate process.
+- Ctrl+Shift+P instead of Cmd+Shift+P on Linux; "terminal" instead of "Terminal"; the PATH hint names your
+  shell's startup file. `pult tab setup` copies the line with wl-copy, xclip or xsel where they exist.
+- `pult report` names the system (for example, Ubuntu 24.04.5 LTS), the desktop, where idle time comes from and
+  whether linger is on. `pult status` says "not running" instead of "not loaded".
+- The language of `pult` before setup comes from LANGUAGE, LC_ALL, LC_MESSAGES or LANG on Linux.
+- `src/pult_os.py` now holds everything that differs between systems: paths, the service (launchd and systemd),
+  idle time, the system language.
+- GitHub Actions run the tests on macOS and Ubuntu.
+
 ## 0.8.3 — 2026-10-17
 
 The first step towards Linux and Windows (stage K): nothing changes on the Mac except the words.

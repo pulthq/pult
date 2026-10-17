@@ -270,6 +270,54 @@ class HelpersTest(unittest.TestCase):
         with mock.patch.object(pult_os.subprocess, "run", side_effect=FileNotFoundError):
             self.assertIsNone(pult_os.input_idle())                 # no ioreg (or no such system): "don't know"
 
+    def test_linux_idle(self):
+        # GNOME tells milliseconds, KDE (the freedesktop screensaver) seconds; a server — "don't know"
+        answers = {"org.gnome.Mutter.IdleMonitor": "(uint64 4500,)\n", "org.freedesktop.ScreenSaver": "(uint32 7,)\n"}
+        calls = []
+
+        def fake_run(*cmd, timeout=5):
+            calls.append(cmd[0])
+            return answers.get(cmd[cmd.index("--dest") + 1]) if cmd[0] == "gdbus" else None
+        with mock.patch.object(pult_os, "KIND", "linux"), mock.patch.object(pult_os, "run", fake_run), \
+                mock.patch.object(pult_os.shutil, "which", lambda n: "/usr/bin/" + n), \
+                mock.patch.dict(os.environ, {"DISPLAY": "", "WAYLAND_DISPLAY": ""}):
+            self.assertEqual(pult_os.input_idle(), 4.5)
+            self.assertEqual(pult_os.idle_source(), "gnome")
+            del answers["org.gnome.Mutter.IdleMonitor"]
+            self.assertEqual(pult_os.input_idle(), 7.0)
+            calls.clear()
+            self.assertEqual(pult_os.input_idle(), 7.0)
+            self.assertEqual(len(calls), 1)                          # the way that answered is asked first
+            answers.clear()
+            self.assertIsNone(pult_os.input_idle())
+            self.assertEqual(pult_os.idle_source(), "none")
+        # dbus-send instead of gdbus
+        with mock.patch.object(pult_os, "KIND", "linux"), \
+                mock.patch.object(pult_os, "run", lambda *c, timeout=5: "method return\n   uint64 2000\n"
+                                  if "--dest=org.gnome.Mutter.IdleMonitor" in c else None), \
+                mock.patch.object(pult_os.shutil, "which", lambda n: "/usr/bin/dbus-send" if n == "dbus-send" else None):
+            self.assertEqual(pult_os.input_idle(), 2.0)
+
+    def test_x11_query_alone(self):
+        # the X11 query runs in a separate Python: without a screen it just fails, and the caller says "don't know"
+        r = subprocess.run([sys.executable, "-I", pult_os.__file__, "x11-idle"], capture_output=True, text=True,
+                           env=dict(os.environ, DISPLAY=""), timeout=20)
+        self.assertEqual((r.returncode, r.stdout), (1, ""))
+        with mock.patch.dict(os.environ, {"DISPLAY": ":0", "WAYLAND_DISPLAY": "", "XDG_SESSION_TYPE": "x11"}), \
+                mock.patch.object(pult_os, "run", lambda *c, timeout=5: None):
+            self.assertIsNone(pult_os._x11())
+        with mock.patch.dict(os.environ, {"DISPLAY": ":0", "WAYLAND_DISPLAY": "wayland-0"}):
+            self.assertIsNone(pult_os._x11())                          # Wayland: X sees only its own windows
+
+    def test_system_lang(self):
+        with mock.patch.object(pult_os, "KIND", "linux"):
+            for env, want in (({"LANGUAGE": "ru:en", "LANG": "en_US.UTF-8"}, "ru"), ({"LC_ALL": "C.UTF-8", "LANG": "ru_RU.UTF-8"}, "ru"),
+                              ({"LANG": "de_DE.UTF-8"}, "de"), ({"LANG": "C"}, ""), ({}, "")):
+                clean = {k: "" for k in ("LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG")}
+                with mock.patch.dict(os.environ, dict(clean, **env)):
+                    self.assertEqual(pult_os.system_lang(), want, env)
+        self.assertTrue(pult_os.describe())
+
     def test_hooks_config(self):
         c = pult_hook.hooks_config("CMD")
         self.assertEqual(set(c), set(pult_hook.EVENTS))
@@ -470,6 +518,10 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await self.p.on_callback({"id": "c2", "from": {"id": OWNER}, "data": "h:onoff", "message": {"message_id": 1000}})
         await until(lambda: any("pult tab off" in d.get("text", "") for d in self.fake.of("editMessageText")))
         self.assertIn("pult stop", self.fake.of("editMessageText")[-1]["text"])
+        await self.p.on_callback({"id": "c3", "from": {"id": OWNER}, "data": "h:trouble", "message": {"message_id": 1000}})
+        await until(lambda: "Журнал:" in self.fake.of("editMessageText")[-1].get("text", ""))
+        self.assertIn("<code>%s</code>" % str(pultd.LOG_FILE).replace(str(Path.home()) + "/", "~/", 1),
+                      self.fake.of("editMessageText")[-1]["text"])                    # this system's log
         await self.p.api_prefs(lang="en")                                            # language chosen in the settings
         await self.p.on_message(dict(base, message_id=4, text="/help"))
         self.assertIn("Pick a topic", self.fake.of("sendMessage")[-1]["text"])
@@ -611,12 +663,15 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         ext = TMP / "ext"
         for v in ("2.1.9", "2.1.301", "2.1.30"):
             (ext / ("anthropic.claude-code-%s-darwin-arm64" % v)).mkdir(parents=True, exist_ok=True)
-        self.assertEqual(pultd.newest_extension(ext), "2.1.301")
-        conf, vs = TMP / "tabv.json", TMP / "vscode.json"
+        server = TMP / "ext-server"                                   # the server side of Remote-SSH counts too
+        (server / "anthropic.claude-code-2.1.300-linux-x64").mkdir(parents=True, exist_ok=True)
+        self.assertEqual(pult_os.newest_extension([ext, server]), "2.1.301")
+        conf, vs = TMP / "tabv.json", TMP / "vscode" / "User" / "settings.json"
         conf.write_text('{"folders": ["~/Documents"], "versions": ["2.1.300"]}')
+        vs.parent.mkdir(parents=True, exist_ok=True)
         vs.write_text('{\n  // настройки\n  "claudeCode.claudeProcessWrapper": "/x/pult-tab.sh",\n}')
-        old = (pultd.TAB_CONF, pultd.VSCODE_SETTINGS, pultd.EXTENSIONS)
-        pultd.TAB_CONF, pultd.VSCODE_SETTINGS, pultd.EXTENSIONS = conf, vs, ext
+        old = (pultd.TAB_CONF, pultd.EDITOR_DIRS, pultd.EXT_DIRS)
+        pultd.TAB_CONF, pultd.EDITOR_DIRS, pultd.EXT_DIRS = conf, [TMP / "nothing", vs.parent], [ext, server]
         try:
             await self.p.tab_version_check()
             await self.p.tab_version_check()
@@ -630,7 +685,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.1)
             self.assertEqual(len([t for t in self.texts() if "Вышло обновление" in t]), 1)
         finally:
-            pultd.TAB_CONF, pultd.VSCODE_SETTINGS, pultd.EXTENSIONS = old
+            pultd.TAB_CONF, pultd.EDITOR_DIRS, pultd.EXT_DIRS = old
 
     def test_tab_wrapper_rules(self):
         import pult_tab

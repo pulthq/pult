@@ -17,12 +17,12 @@ git clone https://github.com/pulthq/pult.git && cd pult
 python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt -r relay/requirements.txt
 .venv/bin/python tests/test_pult.py      # daemon, hook, tab wrapper, rendering, both languages
 .venv/bin/python tests/test_setup.py     # install, setup wizard, report, uninstall — in a temporary folder
-.venv/bin/python tests/test_web.py       # web app data, the phone → relay → Mac chain
+.venv/bin/python tests/test_web.py       # web app data, the phone → relay → computer chain
 .venv/bin/python tests/test_relay.py     # relay
 ```
 
 None of these need Telegram, Claude or your settings. They use a fake Bot API and temporary folders, and the same
-four run on GitHub Actions (macOS). `./install.sh` installs your working copy to `~/.local/share/pult` and
+four run on GitHub Actions (macOS and Ubuntu). `./install.sh` installs your working copy to `~/.local/share/pult` and
 restarts the service.
 
 Checks that use the real Claude Code, and spend a little of your plan:
@@ -45,6 +45,7 @@ screenshots of it. The README pictures come from there.
 | `src/pult_render.py`, `src/pult_i18n.py` | message rendering; every user-facing string in English and Russian |
 | `src/pult_web.py`, `relay/` | the web app: the daemon's side, the relay, the Mini App (Preact + htm, no build step) |
 | `src/pultctl.py`, `src/pult_setup.py` | the `pult` command: install, setup, service, report, uninstall |
+| `src/pult_os.py` | what differs between systems: paths, the service (launchd, systemd), idle, the system language |
 | `deploy/relay/` | running the relay on a Linux server |
 
 ## Rules that keep Pult safe to run
@@ -57,7 +58,7 @@ screenshots of it. The README pictures come from there.
 2. **Verify facts about Claude Code on a real version.** Hook payloads, the tab's message stream and permission
    races are internals. Anything Pult relies on is checked with a probe, and the PR says which version it was
    checked on.
-3. **Nothing personal leaves the Mac by accident.** Logs never get request headers or tokens. `pult report`
+3. **Nothing personal leaves the computer by accident.** Logs never get request headers or tokens. `pult report`
    stays redacted. Screenshots and examples use made-up data.
 4. **Other people's settings stay theirs.** Pult changes `~/.claude/settings.json` only through `pult hooks`
    (with a backup) and never edits VS Code settings itself.

@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
-"""Pult: installing, setting up and removing Pult on a Mac — what is behind `pult install`, `pult setup`,
+"""Pult: installing, setting up and removing Pult on this computer — what is behind `pult install`, `pult setup`,
 `pult start|stop|restart`, `pult report`, `pult uninstall`, `pult tab setup` and `pult app`.
 
 Standard library only, like pultctl: it has to work before Pult's environment exists and when it is broken.
-Paths follow the daemon (PULT_HOME, PULT_ENV, PULT_SOCK, PULT_LOG). The launchd label is PULT_LABEL from the
-settings, else the label of a service that already runs this copy of Pult (an existing install keeps its name),
-else the default one.
+Paths follow the daemon (PULT_HOME, PULT_ENV, PULT_SOCK, PULT_LOG). The service (launchd on macOS, systemd --user
+on Linux — pult_os) is named PULT_LABEL from the settings, else the name of a service that already runs this copy
+of Pult (an existing install keeps its name), else the default one.
 """
 import getpass
 import http.client
 import json
 import os
-import platform
-import plistlib
 import pwd
 import re
 import secrets
@@ -32,28 +30,27 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import pult_hook  # noqa: E402
 import pult_i18n as I  # noqa: E402
+import pult_os  # noqa: E402
 from pult_i18n import T  # noqa: E402
 
 HOME = Path(os.environ.get("PULT_HOME") or "~/.local/share/pult").expanduser()
 ENV_FILE = Path(os.environ.get("PULT_ENV") or "~/.config/pult/env").expanduser()
 SOCK = os.environ.get("PULT_SOCK") or str(HOME / "pult.sock")
-LOG = Path(os.environ.get("PULT_LOG") or "~/Library/Logs/pult.log").expanduser()
+LOG = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 PY = HOME / "venv" / "bin" / "python"          # Pult's environment; the hook and the tab wrapper run on it too
-AGENTS = Path("~/Library/LaunchAgents").expanduser()
+SVC = pult_os.service_manager()                 # launchd / systemd --user
 BIN = Path("~/.local/bin").expanduser()
-TAB_LOG = Path("~/Library/Logs/pult-tab.log").expanduser()
+TAB_LOG = pult_os.LOG_DIR / "pult-tab.log"
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()
 TAB_OFF = Path("~/.config/pult/tab-off").expanduser()
-VSCODE_SETTINGS = Path("~/Library/Application Support/Code/User/settings.json").expanduser()
-EDITORS = Path("~/Library/Application Support").expanduser()   # VS Code and its forks: where the wrapper may be set
-EDITOR_APPS = ("Code", "Code - Insiders", "Cursor", "VSCodium", "Windsurf")
-EXTENSIONS = Path("~/.vscode/extensions").expanduser()
-DEFAULT_LABEL = "io.github.pulthq.pult"
+EDITOR_DIRS = pult_os.editor_dirs()             # VS Code and its forks (and their remote side): where the wrapper may be set
+EXT_DIRS = pult_os.extension_dirs()
+DEFAULT_LABEL = SVC.DEFAULT
 MARK = "pult_hook.py"                          # Pult's hooks are recognised by this in the command
 LAUNCHER_MARK = "# Pult command line"
 TAB_VERIFIED = ("2.1.301",)    # Claude Code versions the tab wrapper was checked on (tests/probe_tab.py, probe_race.py)
-SERVICE_PATH = "%s:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" % BIN
+SERVICE_PATH = pult_os.service_path(BIN)
 WAIT_LIMIT = 15 * 60           # s; how long the setup waits for /start and /bind
 TOKEN_RE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{30,}$")
 
@@ -167,17 +164,11 @@ def sput(**kv):
 
 
 def system_lang():
-    try:
-        out = subprocess.run(["defaults", "read", "-g", "AppleLanguages"], capture_output=True, text=True,
-                             timeout=3).stdout
-    except (OSError, subprocess.SubprocessError):
-        out = ""
-    m = re.search(r'\(\s*"?([A-Za-z]{2})', out)
-    return I.lang_of(m.group(1) if m else os.environ.get("LANG", ""))
+    return I.lang_of(pult_os.system_lang())
 
 
 def cli_lang():
-    """Pult's language (chosen in the settings, else the owner's Telegram), else the Mac's."""
+    """Pult's language (chosen in the settings, else the owner's Telegram), else the system's."""
     if os.environ.get("PULT_LANG") in I.LANGS:
         return os.environ["PULT_LANG"]
     return (sget("prefs") or {}).get("lang") or sget("lang_tg") or system_lang()
@@ -267,58 +258,33 @@ def hooks_set(on):
         d.pop("hooks", None)
     save_settings(d)
     say(T("cli.hooks.state", events=", ".join(hooks_installed(d)) or T("cli.hooks.off")))
-    say(T("cli.hooks.reload"))
+    say(T("cli.hooks.reload", palette=pult_os.PALETTE))
 
 
-# ---------- the launchd service ----------
+# ---------- the service (launchd / systemd --user, pult_os) ----------
 
 def label():
-    lbl = read_env().get("PULT_LABEL")
-    if lbl:
-        return lbl
-    mine = str(HOME / "pultd.py")
-    for p in sorted(AGENTS.glob("*.plist")):
-        try:
-            with open(p, "rb") as f:
-                d = plistlib.load(f)
-        except Exception:
-            continue
-        if isinstance(d, dict) and mine in (d.get("ProgramArguments") or []) and d.get("Label"):
-            return d["Label"]
-    return DEFAULT_LABEL
+    return read_env().get("PULT_LABEL") or SVC.find(HOME / "pultd.py") or DEFAULT_LABEL
 
 
-def plist_path(lbl):
-    return AGENTS / (lbl + ".plist")
+def service_file(lbl):
+    return SVC.path(lbl)
 
 
-def write_plist(lbl):
+def write_service(lbl):
     env = {"PATH": SERVICE_PATH, "PULT_LABEL": lbl}
     for k in ("PULT_HOME", "PULT_ENV", "PULT_SOCK", "PULT_LOG"):
         if os.environ.get(k):
             env[k] = os.environ[k]                 # a separate (test) install keeps its own paths
     if str(Path.home()) != pwd.getpwuid(os.getuid()).pw_dir:
-        env["HOME"] = str(Path.home())             # a trial install in a stand-in HOME: launchd would give the real one
-    d = {"Label": lbl, "ProgramArguments": [str(PY), "-u", str(HOME / "pultd.py")], "WorkingDirectory": str(HOME),
-         "EnvironmentVariables": env, "RunAtLoad": True, "KeepAlive": True, "ThrottleInterval": 10, "Nice": 5,
-         "StandardOutPath": str(LOG), "StandardErrorPath": str(LOG)}
-    AGENTS.mkdir(parents=True, exist_ok=True)
+        env["HOME"] = str(Path.home())             # a trial install in a stand-in HOME: the service would get the real one
     LOG.parent.mkdir(parents=True, exist_ok=True)
-    with open(plist_path(lbl), "wb") as f:
-        plistlib.dump(d, f)
-    return plist_path(lbl)
+    return SVC.write(lbl, [PY, "-u", HOME / "pultd.py"], env, LOG, HOME)
 
 
 def service(lbl):
-    """(state, pid) of the service in launchd; (None, None) — not loaded."""
-    try:
-        out = subprocess.run(["launchctl", "print", "gui/%d/%s" % (os.getuid(), lbl)], capture_output=True,
-                             text=True, timeout=10).stdout
-    except (OSError, subprocess.SubprocessError):
-        return None, None
-    val = lambda key: next((ln.split("=", 1)[1].strip() for ln in out.splitlines()
-                            if ln.strip().startswith(key + " =")), None)
-    return val("state"), val("pid")
+    """(state, pid) of the service; (None, None) — not running (not loaded, stopped)."""
+    return SVC.state(lbl)
 
 
 def sock_ok(path=None):
@@ -334,8 +300,8 @@ def sock_ok(path=None):
 
 
 def svc_stop(lbl):
-    subprocess.run(["launchctl", "bootout", "gui/%d/%s" % (os.getuid(), lbl)], capture_output=True)
-    for _ in range(30):                        # bootout is asynchronous: wait until the old one unloads
+    SVC.stop(lbl)
+    for _ in range(30):                        # launchd's bootout is asynchronous: wait until the old one is gone
         if service(lbl)[0] is None:
             return True
         time.sleep(0.5)
@@ -343,11 +309,10 @@ def svc_stop(lbl):
 
 
 def svc_start(lbl):
-    if not plist_path(lbl).exists():
-        write_plist(lbl)
+    if not service_file(lbl).exists():
+        write_service(lbl)
     for _ in range(3):
-        if subprocess.run(["launchctl", "bootstrap", "gui/%d" % os.getuid(), str(plist_path(lbl))],
-                          capture_output=True).returncode == 0:
+        if SVC.start(lbl):
             break
         time.sleep(2)
     end = time.time() + 20
@@ -372,9 +337,19 @@ def restart(lbl, interactive=False):
         say(T("cli.svc.kept"))
         return False
     svc_stop(lbl)
+    why = SVC.problem()
+    if why:
+        say(T("cli.svc.no_manager", why=why, cmd="%s -u %s" % (tilde(PY), tilde(HOME / "pultd.py"))))
+        return False
     ok = svc_start(lbl)
     say(T("cli.svc.started", label=lbl) if ok else T("cli.svc.not_started", log=tilde(LOG)))
     return ok
+
+
+def linger_hint():
+    """Linux over SSH or on a server: user services stop at logout unless linger is on — say how to turn it on."""
+    if SVC.linger() is False and pult_os.desktop() == "none":
+        say(T("cli.svc.linger", user=getpass.getuser()))
 
 
 def cmd_service(op):
@@ -417,17 +392,19 @@ def write_launcher():
 def cmd_install():
     """The second half of install.sh, after the files and the environment are in place."""
     lbl = label()
-    write_plist(lbl)
+    write_service(lbl)
     launcher = write_launcher()
     say(T("cli.install.done", version=version(), home=tilde(HOME)))
     if launcher and str(BIN) not in os.environ.get("PATH", "").split(":"):
-        say(T("cli.install.path", path=tilde(launcher)))
+        say(T("cli.install.path", path=tilde(launcher), rc=pult_os.shell_rc()))
     if not configured():
         if sys.stdin.isatty():
             return cmd_setup()
         say(T("cli.install.next"))
         return 0
     ok = restart(lbl, interactive=sys.stdin.isatty())
+    if ok:
+        linger_hint()
     if ok and sys.stdin.isatty() and not hooks_installed():
         step_hooks()
     return 0 if ok else 1
@@ -719,9 +696,10 @@ def cmd_setup():
                 restart(lbl)
     if not done:
         return 1
-    write_plist(lbl)
+    write_service(lbl)
     if not restart(lbl):
         return 1
+    linger_hint()
     say(T("cli.setup.done"))
     say(T("cli.setup.extras"))
     return 0
@@ -736,28 +714,14 @@ def tab_conf():
         return {}
 
 
-def tab_wrapped():
-    try:
-        return "pult-tab.sh" in VSCODE_SETTINGS.read_text(encoding="utf-8")      # JSON with comments: search for the string
-    except OSError:
-        return False
-
-
 def wrapper_users():
-    """Settings files of VS Code, its forks and their profiles that run Claude tabs through pult-tab.sh
-    (claudeProcessWrapper is a machine-level setting: it isn't in a workspace's settings)."""
-    found = []
-    for app in EDITOR_APPS:
-        user = EDITORS / app / "User"
-        for f in [user / "settings.json"] + sorted(user.glob("profiles/*/settings.json")):
-            try:
-                if "pult-tab.sh" in f.read_text(encoding="utf-8"):
-                    found.append(f)
-            except (OSError, UnicodeDecodeError):
-                pass
-    if tab_wrapped() and VSCODE_SETTINGS not in found:
-        found.append(VSCODE_SETTINGS)
-    return found
+    """Settings files of VS Code, its forks, their profiles and their remote side that run Claude tabs through
+    pult-tab.sh (claudeProcessWrapper is a machine-level setting: it isn't in a workspace's settings)."""
+    return pult_os.files_with(EDITOR_DIRS, "pult-tab.sh")
+
+
+def tab_wrapped():
+    return bool(wrapper_users())
 
 
 def vkey(v):
@@ -768,8 +732,7 @@ def vkey(v):
 
 
 def newest_extension():
-    vs = [p.name[len("anthropic.claude-code-"):].split("-")[0] for p in EXTENSIONS.glob("anthropic.claude-code-*")]
-    return max(vs, key=vkey) if vs else None
+    return pult_os.newest_extension(EXT_DIRS)
 
 
 def cmd_tab_setup():
@@ -783,12 +746,15 @@ def cmd_tab_setup():
     TAB_CONF.write_text(json.dumps(conf, ensure_ascii=False) + "\n", encoding="utf-8")
     say(T("cli.tab.saved", path=tilde(TAB_CONF)))
     line = '"claudeCode.claudeProcessWrapper": "%s",' % (HOME / "pult-tab.sh")
-    say(T("cli.tab.line", line=line))
+    say(T("cli.tab.line", line=line, palette=pult_os.PALETTE))
+    if pult_os.remote_server():
+        say(T("cli.tab.remote", palette=pult_os.PALETTE))
     ext = newest_extension()
     if ext and ext not in conf["versions"]:
         say(T("cli.tab.unverified", v=ext))
-    if shutil.which("pbcopy") and sys.stdin.isatty() and yes(T("cli.tab.copy")):
-        subprocess.run(["pbcopy"], input=line.encode())
+    clip = pult_os.clipboard()
+    if clip and sys.stdin.isatty() and yes(T("cli.tab.copy")):
+        subprocess.run(clip, input=line.encode())
         say(T("cli.tab.copied"))
     return 0
 
@@ -845,7 +811,7 @@ def redactor(env):
          r"\1 …"),
         (r"(#s\w+: [^—]*—).*", r"\1 …"),                     # a permission decision's note
         (r"(→).*", r"\1 …"),                                 # what a button did: project and session names
-        (r"~/(?!\.local/share/pult|\.config/pult|Library/Logs)[^\s,;:)'\"]+", "~/…"),
+        (r"~/(?!\.local/share/pult|\.config/pult|\.local/state/pult|Library/Logs)[^\s,;:)'\"]+", "~/…"),
         (r"~\\(?!AppData\\Local\\pult)[^\s,;:)'\"]+", r"~\\…"),        # Windows: under the home folder
         (r"(?<![\w/])[A-Za-z]:[\\/][^\s,;)'\"]+", r"?:\\…"),               # …and anywhere on a drive
         (r"/(?:private|var|tmp|Volumes|home|root|mnt|media|srv)/[^\s,;:)'\"]+", "/…"),
@@ -901,17 +867,22 @@ def report_lines():
     st, _ = service(lbl)
     have = lambda k: "set" if env.get(k) else "—"
     conf = tab_conf()
+    linger = SVC.linger()
     lines = [
-        "Pult %s · macOS %s (%s) · Python %s" % (version(), platform.mac_ver()[0] or "?", platform.machine(),
-                                                run_out(str(PY), "-c", "import platform; print(platform.python_version())")
-                                                or "— (no environment)"),
+        "Pult %s · %s · Python %s" % (version(), pult_os.describe(),
+                                     run_out(str(PY), "-c", "import platform; print(platform.python_version())")
+                                     or "— (no environment)"),
         "Claude Code: %s" % claude_versions(),
-        "service: %s (%s) · socket %s" % (st or "not loaded", "default label" if lbl == DEFAULT_LABEL else "own label",
-                                          "answers" if sock_ok() else "no"),
+        "service: %s (%s%s) · socket %s" % (
+            st or "not running", "default label" if lbl == DEFAULT_LABEL else "own label",
+            "" if linger is None else ", linger " + ("on" if linger else "off"), "answers" if sock_ok() else "no"),
         "settings: token %s · owner %s · group %s · language %s · proxy %s · app %s" % (
             have("PULT_BOT_TOKEN"), have("PULT_ALLOWED_USER_IDS"), "set" if sget("chat") else "—", cli_lang(),
             have("PULT_PROXY"), have("PULT_RELAY_URL")),
         "hooks: %s" % (", ".join(hooks_installed()) or "off"),
+        "this computer: desktop %s · keyboard idle from %s · VS Code server %s" % (
+            pult_os.desktop() if pult_os.KIND == "linux" else pult_os.NAME, pult_os.idle_source(),
+            "yes" if pult_os.remote_server() else "no"),
         "tabs: wrapper in VS Code settings %s · off switch %s · folders %d · verified versions %s" % (
             "yes" if tab_wrapped() else "no", "yes" if TAB_OFF.exists() else "no", len(conf.get("folders") or []),
             ", ".join(conf.get("versions") or []) or "—"),
@@ -976,7 +947,7 @@ def cmd_uninstall():
     if hooks_installed():
         hooks_set(False)
     svc_stop(lbl)
-    plist_path(lbl).unlink(missing_ok=True)
+    SVC.remove(lbl)
     launcher = BIN / "pult"
     try:
         if not os.environ.get("PULT_HOME") and LAUNCHER_MARK in launcher.read_text(encoding="utf-8"):
@@ -997,5 +968,11 @@ def cmd_uninstall():
         remove_known(ENV_FILE.parent, CONF_FILES + (ENV_FILE.name,))
         for p in (LOG, TAB_LOG):
             p.unlink(missing_ok=True)
+        for d in {LOG.parent, TAB_LOG.parent}:
+            if d.name == "pult":                # Linux: Pult's own log folder (macOS keeps logs in a shared one)
+                try:
+                    d.rmdir()
+                except OSError:
+                    pass
     say(T("cli.un.done"))
     return 0

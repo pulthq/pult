@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Checks for installing, setting up and removing Pult (pult_setup, pultctl) — without Telegram, launchd or the
-real settings: every path points into a temporary folder, Telegram and the service are fakes.
+"""Checks for installing, setting up and removing Pult (pult_setup, pultctl) — without Telegram, launchd, systemd
+or the real settings: every path points into a temporary folder, Telegram and the service are fakes.
 
   ~/.local/share/pult/venv/bin/python tests/test_setup.py
 """
@@ -11,6 +11,7 @@ import json
 import os
 import plistlib
 import pwd
+import shlex
 import shutil
 import subprocess
 import sys
@@ -25,6 +26,7 @@ SRC = Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 
 import pult_i18n as I  # noqa: E402
+import pult_os  # noqa: E402
 import pult_setup as S  # noqa: E402
 import pultctl  # noqa: E402
 
@@ -69,17 +71,51 @@ class FakeBot:
         return [p["text"] for m, p in self.calls if m == "sendMessage"]
 
 
+def fake_manager(folder):
+    """This system's service manager writing its files into folder, but never calling launchctl or systemctl."""
+    class Fake(type(pult_os.service_manager())):
+        def ctl(self, *a, **kw):
+            return None
+
+        def state(self, lbl):
+            return None, None
+
+        def problem(self):
+            return None
+
+        def stop(self, lbl):
+            return True
+
+        def start(self, lbl):
+            return True
+
+        def linger(self):
+            return None
+    return Fake(folder)
+
+
+def service_env(path):
+    """The environment a service file gives the daemon: a plist or a systemd unit."""
+    if path.suffix == ".plist":
+        with open(path, "rb") as f:
+            return plistlib.load(f)["EnvironmentVariables"]
+    line = next(ln for ln in path.read_text().splitlines() if ln.startswith("Environment="))
+    return dict(kv.split("=", 1) for kv in shlex.split(line[len("Environment="):]))
+
+
 class Base(unittest.TestCase):
-    """Every path of pult_setup in a temporary folder; launchd is a fake."""
+    """Every path of pult_setup in a temporary folder; the service is a fake."""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="pult-setup-test-"))
         t = self.tmp
         self.paths = dict(HOME=t / "share", ENV_FILE=t / "conf" / "env", SOCK=str(t / "s.sock"), LOG=t / "pult.log",
-                          PY=t / "share" / "venv" / "bin" / "python", AGENTS=t / "LaunchAgents", BIN=t / "bin",
+                          PY=t / "share" / "venv" / "bin" / "python", SVC=fake_manager(t / "services"), BIN=t / "bin",
                           TAB_LOG=t / "pult-tab.log", SETTINGS=t / "claude" / "settings.json",
                           TAB_CONF=t / "conf" / "tab.json", TAB_OFF=t / "conf" / "tab-off",
-                          VSCODE_SETTINGS=t / "vscode.json", EXTENSIONS=t / "extensions", EDITORS=t / "AppSupport")
+                          EDITOR_DIRS=[t / "editors" / app / "User" for app in ("Code", "Cursor")]
+                          + [t / ".vscode-server" / "data" / "Machine"],
+                          EXT_DIRS=[t / "extensions", t / ".vscode-server" / "extensions"])
         self.patches = [mock.patch.object(S, k, v) for k, v in self.paths.items()]
         self.svc = SimpleNamespace(loaded=False, started=0, stopped=0)
         self.patches += [
@@ -137,31 +173,63 @@ class SettingsTest(Base):
         self.assertEqual(S.read_env(), {"PULT_BOT_TOKEN": "new", "PULT_ALLOWED_USER_IDS": "42"})
 
     def test_label(self):
-        # an existing install keeps its service name: found by the plist that runs this copy of Pult
+        # an existing install keeps its service name: found by the service file that runs this copy of Pult
         self.assertEqual(S.label(), S.DEFAULT_LABEL)
-        S.AGENTS.mkdir()
-        (S.AGENTS / "other.plist").write_bytes(b"not a plist")
-        with open(S.AGENTS / "com.someone.pult.plist", "wb") as f:
-            plistlib.dump({"Label": "com.someone.pult", "ProgramArguments": ["py", "-u", str(S.HOME / "pultd.py")]}, f)
-        self.assertEqual(S.label(), "com.someone.pult")
+        script = S.HOME / "pultd.py"
+        mac, linux = pult_os.Launchd(self.tmp / "agents"), pult_os.Systemd(self.tmp / "units")
+        mac.folder.mkdir()
+        (mac.folder / "other.plist").write_bytes(b"not a plist")
+        mac.write("com.someone.pult", ["py", "-u", script], {}, "log", "/")
+        self.assertEqual(mac.find(script), "com.someone.pult")
+        linux.folder.mkdir()
+        (linux.folder / "other.service").write_text("[Service]\nExecStart=/bin/true\n")
+        linux.write("my-pult", ["py", "-u", script], {}, "log", "/")
+        self.assertEqual(linux.find(script), "my-pult")
+        self.assertIsNone(linux.find(S.HOME / "elsewhere.py"))
+        S.SVC.write("their.pult", ["py", "-u", script], {}, "log", "/")
+        self.assertEqual(S.label(), "their.pult")
         S.write_env(PULT_LABEL="io.example.pult")
         self.assertEqual(S.label(), "io.example.pult")
 
+    def test_service_file(self):
+        # what the service runs and with which settings — the same on both systems
+        p = S.write_service("io.github.pulthq.pult")
+        self.assertEqual(p, S.service_file("io.github.pulthq.pult"))
+        self.assertIn(str(S.HOME / "pultd.py"), p.read_text())
+        env = service_env(p)
+        self.assertEqual(env["PULT_LABEL"], "io.github.pulthq.pult")
+        self.assertEqual(env["PATH"], S.SERVICE_PATH)
+        with mock.patch.dict(os.environ, {"HOME": pwd.getpwuid(os.getuid()).pw_dir}):    # the real home
+            self.assertNotIn("HOME", service_env(S.write_service("x")))
+        with mock.patch.dict(os.environ, {"HOME": str(self.tmp / "friend")}):       # a trial install
+            self.assertEqual(service_env(S.write_service("x"))["HOME"], str(self.tmp / "friend"))
+
     def test_plist(self):
-        p = S.write_plist("io.github.pulthq.pult")
-        with open(p, "rb") as f:
+        m = pult_os.Launchd(self.tmp / "agents")
+        with open(m.write("io.github.pulthq.pult", ["/p y/python", "-u", "/p y/pultd.py"],
+                          {"PATH": pult_os.service_path("/b"), "PULT_LABEL": "io.github.pulthq.pult"},
+                          "/l/pult.log", "/p y"), "rb") as f:
             d = plistlib.load(f)
         self.assertEqual(d["Label"], "io.github.pulthq.pult")
-        self.assertEqual(d["ProgramArguments"], [str(S.PY), "-u", str(S.HOME / "pultd.py")])
+        self.assertEqual(d["ProgramArguments"], ["/p y/python", "-u", "/p y/pultd.py"])
         self.assertEqual(d["EnvironmentVariables"]["PULT_LABEL"], "io.github.pulthq.pult")
-        self.assertIn("/opt/homebrew/bin", d["EnvironmentVariables"]["PATH"])
         self.assertTrue(d["KeepAlive"])
-        with mock.patch.dict(os.environ, {"HOME": pwd.getpwuid(os.getuid()).pw_dir}):    # the real home
-            with open(S.write_plist("x"), "rb") as f:
-                self.assertNotIn("HOME", plistlib.load(f)["EnvironmentVariables"])
-        with mock.patch.dict(os.environ, {"HOME": str(self.tmp / "friend")}):       # a trial install
-            with open(S.write_plist("x"), "rb") as f:
-                self.assertEqual(plistlib.load(f)["EnvironmentVariables"]["HOME"], str(self.tmp / "friend"))
+        self.assertEqual(d["StandardOutPath"], "/l/pult.log")
+
+    def test_systemd_unit(self):
+        # quotes keep a path with spaces whole; % and $ would be expanded by systemd — doubled
+        m = pult_os.Systemd(self.tmp / "units")
+        text = m.write("pult", ["/home/a b/venv/bin/python", "-u", "/home/a b/pult%d$X.py"],
+                       {"PATH": "/x:/usr/bin", "PULT_LABEL": "pult"}, "/home/a b/.local/state/pult/pult.log",
+                       "/home/a b/pult").read_text()
+        self.assertEqual(m.path("pult").name, "pult.service")
+        self.assertIn('ExecStart="/home/a b/venv/bin/python" "-u" "/home/a b/pult%%d$$X.py"\n', text)
+        self.assertIn('Environment="PATH=/x:/usr/bin" "PULT_LABEL=pult"\n', text)
+        self.assertIn("Restart=always\n", text)
+        self.assertIn("StartLimitIntervalSec=0\n", text)
+        self.assertIn("StandardOutput=append:/home/a b/.local/state/pult/pult.log\n", text)
+        self.assertIn("WantedBy=default.target\n", text)
+        self.assertEqual(m.find("/home/a b/pult%d$X.py"), "pult")
 
     def test_hooks(self):
         # Pult's hooks on the environment's Python; other hooks stay; a backup copy before every change
@@ -217,7 +285,7 @@ class SettingsTest(Base):
             res, out = self.run_cli(S.cmd_install)
         self.assertEqual(res, 0)
         self.assertIn("pult setup", out)
-        self.assertTrue(S.plist_path(S.DEFAULT_LABEL).exists())
+        self.assertTrue(S.service_file(S.DEFAULT_LABEL).exists())
         self.assertEqual(self.svc.started, 0)
 
 
@@ -258,7 +326,7 @@ class SetupTest(Base):
         self.assertIn("Хуки Пульта", out)                                   # after /start the setup speaks Russian
         self.assertEqual(S.hooks_installed(), sorted(S.pult_hook.EVENTS))
         self.assertEqual(self.svc.started, 1)
-        self.assertTrue(S.plist_path(S.DEFAULT_LABEL).exists())
+        self.assertTrue(S.service_file(S.DEFAULT_LABEL).exists())
 
     def test_rerun_keeps_everything(self):
         # a second run: Enter keeps the bot, the owner and the group; the running service is paused and started
@@ -375,6 +443,8 @@ class ReportTest(Base):
             "socket: ~\\AppData\\Local\\pult\\pult.sock, project ~\\Documents\\secret-proj":
                 "socket: ~\\AppData\\Local\\pult\\pult.sock, project ~\\…",
             "proxying a tab: /home/someone/secret-proj and /mnt/data/x": "proxying a tab: /… and /…",
+            "log: %s/.local/state/pult/pult.log, settings %s/.config/Code/User/settings.json" % (home, home):
+                "log: ~/.local/state/pult/pult.log, settings ~/…",
         }
         for line, want in cases.items():
             self.assertEqual(hide(line), want, line)
@@ -402,12 +472,13 @@ class UninstallTest(Base):
         (S.HOME / "pult-tab.sh").write_text("wrapper")
         S.SETTINGS.parent.mkdir()
         S.SETTINGS.write_text(json.dumps({"hooks": S.pult_hook.hooks_config("py pult_hook.py")}))
-        S.write_plist(S.label())
+        S.write_service(S.label())
         S.BIN.mkdir()
         (S.BIN / "pult").write_text("#!/bin/sh\n%s\n" % S.LAUNCHER_MARK)
         S.LOG.write_text("log")
-        S.VSCODE_SETTINGS.write_text('{"claudeCode.claudeProcessWrapper": "%s"}' % (S.HOME / "pult-tab.sh")
-                                     if wrapped else "{}")
+        vs = S.EDITOR_DIRS[0] / "settings.json"
+        vs.parent.mkdir(parents=True)
+        vs.write_text('{"claudeCode.claudeProcessWrapper": "%s"}' % (S.HOME / "pult-tab.sh") if wrapped else "{}")
 
     def test_keeps_tab_stub(self):
         # VS Code still runs tabs through the wrapper: a pass-through stub stays, settings are kept
@@ -419,27 +490,43 @@ class UninstallTest(Base):
         self.assertIn('exec "$@"', (S.HOME / "pult-tab.sh").read_text())
         self.assertEqual(S.hooks_installed(), [])
         self.assertFalse((S.BIN / "pult").exists())
-        self.assertFalse(S.plist_path(S.DEFAULT_LABEL).exists())
+        self.assertFalse(S.service_file(S.DEFAULT_LABEL).exists())
         self.assertTrue(S.ENV_FILE.exists() and S.LOG.exists())
         self.assertIn("claudeCode.claudeProcessWrapper", out)
 
     def test_removes_all(self):
         self.prepare(wrapped=False)
-        with mock.patch.dict(os.environ, {"PULT_HOME": ""}):
+        logs = self.tmp / "state" / "pult"                                  # Linux: a log folder of its own
+        logs.mkdir(parents=True)
+        with mock.patch.dict(os.environ, {"PULT_HOME": ""}), mock.patch.object(S, "LOG", logs / "pult.log"), \
+                mock.patch.object(S, "TAB_LOG", logs / "pult-tab.log"):
+            S.LOG.write_text("log")
             self.run_cli(S.cmd_uninstall, answers=["y", "y"])
         self.assertFalse(S.HOME.exists())
-        self.assertFalse(S.ENV_FILE.exists() or S.TAB_CONF.exists() or S.LOG.exists())
+        self.assertFalse(S.ENV_FILE.exists() or S.TAB_CONF.exists() or logs.exists())
+        self.assertTrue(logs.parent.exists())
         self.assertEqual([p.name for p in S.ENV_FILE.parent.iterdir()], ["notes.txt"])
 
     def test_fork_editor(self):
         # the wrapper set in a Cursor profile: the stub stays, and the message names that file
         self.prepare(wrapped=False)
-        prof = S.EDITORS / "Cursor" / "User" / "profiles" / "p1" / "settings.json"
+        prof = S.EDITOR_DIRS[1] / "profiles" / "p1" / "settings.json"
         prof.parent.mkdir(parents=True)
         prof.write_text('{"claudeCode.claudeProcessWrapper": "%s"}' % (S.HOME / "pult-tab.sh"))
         res, out = self.run_cli(S.cmd_uninstall, answers=["y", "n"])
         self.assertIn('exec "$@"', (S.HOME / "pult-tab.sh").read_text())
         self.assertIn("Cursor/User/profiles/p1/settings.json", out)
+
+    def test_remote_ssh(self):
+        # a server VS Code reaches through Remote-SSH: the wrapper is in its remote machine settings
+        self.prepare(wrapped=False)
+        remote = S.EDITOR_DIRS[2] / "settings.json"
+        remote.parent.mkdir(parents=True)
+        remote.write_text('{"claudeCode.claudeProcessWrapper": "%s"}' % (S.HOME / "pult-tab.sh"))
+        self.assertTrue(S.tab_wrapped())
+        res, out = self.run_cli(S.cmd_uninstall, answers=["y", "n"])
+        self.assertIn('exec "$@"', (S.HOME / "pult-tab.sh").read_text())
+        self.assertIn(".vscode-server/data/Machine/settings.json", out)
 
     def test_unreadable_settings(self):
         # hooks can't be removed from settings.json — nothing is deleted
@@ -506,9 +593,13 @@ class TabTest(Base):
         self.assertEqual(run().stdout, "hi\n")                                   # pult_tab.py: not a chat → exec
 
     def test_tab_setup(self):
-        (S.EXTENSIONS / "anthropic.claude-code-2.1.999-darwin-arm64").mkdir(parents=True)
-        with mock.patch.object(sys.stdin, "isatty", lambda: False):
-            self.run_cli(S.cmd_tab_setup, answers=["~/Documents, ~/work"])
+        (S.EXT_DIRS[1] / "anthropic.claude-code-2.1.999-linux-x64").mkdir(parents=True)
+        with mock.patch.object(sys.stdin, "isatty", lambda: False), \
+                mock.patch.object(pult_os, "remote_server", lambda: True):
+            _, out = self.run_cli(S.cmd_tab_setup, answers=["~/Documents, ~/work"])
+        self.assertIn(pult_os.PALETTE + " → Preferences: Open User Settings (JSON)", out)
+        self.assertIn("Open Remote Settings (JSON)", out)                   # Remote-SSH: where the line goes there
+        self.assertIn("pult tab allow 2.1.999", out)
         conf = json.loads(S.TAB_CONF.read_text())
         self.assertEqual(conf["folders"], ["~/Documents", "~/work"])
         self.assertEqual(conf["versions"], list(S.TAB_VERIFIED))
