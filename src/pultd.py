@@ -15,6 +15,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import sqlite3
 import sys
@@ -28,6 +29,7 @@ import httpx
 
 import pult_hook
 import pult_i18n as I
+import pult_os
 import pult_render as R
 import pult_web as PW
 
@@ -40,7 +42,7 @@ CLAUDE_PROJECTS = Path("~/.claude/projects").expanduser()
 
 SID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 SKIP_PREFIXES = ("-private-", "-tmp-", "-var-folders-")   # throwaway folders, not projects
-AWAY_IDLE = 120          # no keyboard/mouse input on the Mac for longer than this: the owner is away, notify with sound
+AWAY_IDLE = 120          # idle here for longer than this (Pult.idle): the owner is away, notify with sound
 EDIT_EVERY = 12          # s; edit a turn message no more often than this (Telegram's per-group limit)
 MAX_RUNNING = 3          # turns from Telegram at once: Claude Code takes 250–450 MB each
 MAX_DRIVEN = 5           # sessions from Telegram that hold a process
@@ -55,7 +57,7 @@ USAGE_EVERY = 15 * 60    # usage check for warnings, if there was work on the Ma
 USAGE_NEAR_EVERY = 5 * 60   # …and near the threshold (from 70 %), more often
 WARN_AT = (80, 95)       # % of a limit: a warning with sound in General (decision 2026-10-16)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.8.2"
+VERSION = "0.8.3"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or "~/Library/Logs/pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -91,7 +93,7 @@ CLAUDE_BIN = find_claude()
 def load_env(path=ENV_FILE):
     env = {}
     try:
-        for line in Path(path).read_text().splitlines():
+        for line in Path(path).read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
@@ -518,7 +520,7 @@ class Driven:
 
     def options(self):
         from claude_agent_sdk import ClaudeAgentOptions
-        hooks = pult_hook.hooks_config("PULT_INJECTED=1 %s %s" % (HOOK_PY, HOOK))
+        hooks = pult_hook.hooks_config("PULT_INJECTED=1 %s %s" % (shlex.quote(HOOK_PY), shlex.quote(HOOK)))
         # system_prompt — Claude Code's standard one: without it the SDK starts the session with an empty system
         # prompt, and Claude behaves differently than in the VS Code tab (seen 2026-10-15)
         kw = dict(cwd=self.path, system_prompt={"type": "preset", "preset": "claude_code"},
@@ -615,7 +617,8 @@ class Pult:
         self.req_by_msg = {}
         self.topic_locks = {}
         self.run_sem = asyncio.Semaphore(MAX_RUNNING)
-        self._idle = (0.0, 0.0)
+        self._idle = (0.0, None)
+        self.here_seen = time.monotonic()   # the owner's last action in a session here (Pult.idle)
         self._agents = (0.0, [])
         self.web = None                # pult_web.Web — the web app, if a relay is configured
         self.stats = PW.Stats()        # model, thinking, session tokens — for the app
@@ -627,11 +630,14 @@ class Pult:
         self.jobs = {}                 # tasks without Claude: running
         self.jobs_done = collections.deque(maxlen=10)
 
-    # ----- the Mac's environment -----
+    # ----- this computer's environment -----
 
     async def _run(self, *cmd, timeout=10):
-        p = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE,
-                                                 stderr=asyncio.subprocess.DEVNULL)
+        try:
+            p = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE,
+                                                     stderr=asyncio.subprocess.DEVNULL)
+        except OSError:
+            return ""
         try:
             out, _ = await asyncio.wait_for(p.communicate(), timeout)
         except asyncio.TimeoutError:
@@ -639,20 +645,29 @@ class Pult:
             return ""
         return out.decode(errors="replace")
 
-    async def mac_idle(self):
+    async def input_idle(self):
+        """Seconds without keyboard and mouse input here, or None if the system can't tell; asked every 5 s at most."""
         t, v = self._idle
         if time.monotonic() - t < 5:
             return v
-        out = await self._run("ioreg", "-c", "IOHIDSystem", "-d", "4", "-r", "-k", "HIDIdleTime")
-        m = re.search(r'"HIDIdleTime"\s*=\s*(\d+)', out)
-        v = int(m.group(1)) / 1e9 if m else 0.0
+        v = await asyncio.to_thread(pult_os.input_idle)
         self._idle = (time.monotonic(), v)
         return v
+
+    async def idle(self):
+        """How long the owner hasn't used this computer: keyboard and mouse, where the system tells; otherwise the
+        time since their last action in a session here — a prompt typed, a permission answered (or Pult's start)."""
+        v = await self.input_idle()
+        return v if v is not None else time.monotonic() - self.here_seen
+
+    def seen_here(self, lv):
+        if not lv.driven:
+            self.here_seen = time.monotonic()
 
     async def away(self):
         if "PULT_FORCE_AWAY" in self.env:
             return self.env["PULT_FORCE_AWAY"] == "1"
-        return await self.mac_idle() >= AWAY_IDLE
+        return await self.idle() >= AWAY_IDLE
 
     def prefs(self):
         stored = self.store.get("prefs") or {}
@@ -1032,11 +1047,14 @@ class Pult:
                 if not origin and sent and sent[1].strip() == (ev.get("prompt") or "").strip():
                     origin = self.tab_expect.pop(sid)[0]       # written from Telegram into the tab
                 lv.title = lv.title or R.short(ev.get("prompt"), 60) or None
+                if not origin:
+                    self.seen_here(lv)                         # typed here
                 self.start_turn(lv, None if origin else ev.get("prompt"), reply_to=origin)
         elif name in ("PostToolUse", "PostToolUseFailure"):
             tool, inp = ev.get("tool_name"), ev.get("tool_input")
             for r in list(lv.pending.values()):
                 if r.tool == tool and same_input(r.inp, inp):
+                    self.seen_here(lv)
                     self.resolve_elsewhere(r, self.t("req.answered_mac" if r.kind == "ask" else "req.allowed_mac"),
                                            inp)
             if lv.turn is None:
@@ -1180,6 +1198,7 @@ class Pult:
             await asyncio.wait({req.fut, eof}, return_when=asyncio.FIRST_COMPLETED)
             eof.cancel()
             if not req.fut.done():
+                self.seen_here(lv)                             # the dialog here was answered first
                 self.resolve_elsewhere(req, self.t("req.decided_mac"))
             return req.fut.result()
         finally:
@@ -1435,9 +1454,10 @@ class Pult:
         cmd, rest = command_of(text)
         if uid not in self.allowed:
             return
-        lt = I.lang_of((m.get("from") or {}).get("language_code"))
-        if (m.get("from") or {}).get("language_code") and self.store.get("lang_tg") != lt:
-            self.store.put("lang_tg", lt)
+        if (m.get("from") or {}).get("language_code") and not self.store.get("lang_tg"):
+            # only the first time: Telegram on the phone and on the computer may speak different languages, and the
+            # bot must not switch with every device (seen 2026-10-17); later — the app's settings
+            self.store.put("lang_tg", I.lang_of(m["from"]["language_code"]))
         private = (m.get("chat") or {}).get("type") == "private"
         if cmd == "/bind":
             if not (m.get("chat") or {}).get("is_forum"):
@@ -1468,8 +1488,8 @@ class Pult:
             await self.send(None, self.t("help"), here=here, buttons=self.help_buttons())
         elif cmd in ("/mode", "/app"):
             await self.post_panel(here)
-        elif cmd in ("/auto", "/mac", "/phone"):
-            await self.set_mode(cmd[1:])
+        elif cmd in ("/auto", "/desk", "/mac", "/phone"):
+            await self.set_mode("mac" if cmd == "/desk" else cmd[1:])     # /mac — the name before 0.8.3
             await self.send(None, self.panel_text(), here=here, buttons=self.panel_buttons())
         elif cmd == "/feedback":
             await self.send(None, self.t("feedback", url=REPO_URL + "/issues") if REPO_URL
@@ -1642,8 +1662,8 @@ class Pult:
         """A new Claude Code extension version is out: the tab wrapper injects nothing on it until the version is
         verified (tests/probe_tab.py, probe_race.py → pult tab allow). The owner is told about it once."""
         try:
-            conf = json.loads(TAB_CONF.read_text())
-            wrapped = "pult-tab.sh" in VSCODE_SETTINGS.read_text()
+            conf = json.loads(TAB_CONF.read_text(encoding="utf-8"))
+            wrapped = "pult-tab.sh" in VSCODE_SETTINGS.read_text(encoding="utf-8")
         except (OSError, ValueError):
             return
         v = newest_extension(EXTENSIONS)
@@ -1678,7 +1698,7 @@ class Pult:
 
     async def cmd_status(self, here):
         agents = await self.agents()
-        idle = await self.mac_idle()
+        idle = await self.idle()
         by = {}
         for a in agents:
             if a.get("sessionId") not in self.driven:
@@ -1920,7 +1940,7 @@ class Pult:
 
     async def api_overview(self):
         agents = await self.agents()
-        idle = await self.mac_idle()
+        idle = await self.idle()
         shown = {sid for sid, lv in self.live.items() if lv.turn or lv.pending or lv.bg}
         opened = []
         for a in agents:
@@ -2080,7 +2100,7 @@ class Pult:
     async def api_settings(self):
         hooks = []
         try:
-            for ev, groups in (json.loads(SETTINGS.read_text()).get("hooks") or {}).items():
+            for ev, groups in (json.loads(SETTINGS.read_text(encoding="utf-8")).get("hooks") or {}).items():
                 if any("pult_hook.py" in str(h.get("command", "")) for g in groups for h in g.get("hooks", [])):
                     hooks.append(ev)
         except (OSError, ValueError):
@@ -2092,7 +2112,7 @@ class Pult:
                 lines = f.read().decode(errors="replace").splitlines()[1:]
         except OSError:
             lines = []
-        idle = await self.mac_idle()
+        idle = await self.idle()
         return {"version": VERSION, "prefs": dict(self.prefs(), lang=self.lang()), "hooks": sorted(hooks),
                 "mac": {"idle": idle, "away": await self.away(), "mode": self.mode()},
                 "telegram": "proxy" if len(self.tg.clients) > 1 and self.tg.cur == 0 else "direct",

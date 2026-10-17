@@ -2,6 +2,23 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.8.3 — 2026-10-17
+
+The first step towards Linux and Windows (stage K): nothing changes on the Mac except the words.
+
+- The bot and the app say "computer" instead of "Mac": 💻 At my computer, what's open on the computer. The command
+  is `/desk`; `/mac` still works.
+- Whether you're away is asked through `src/pult_os.py`. Where the system can't tell (no keyboard and mouse idle,
+  as on a server), Pult goes by your own actions in sessions here: a prompt typed or a permission answered in the
+  last 2 minutes means you're at the computer. Before, a failed idle check could drop permission requests and
+  results.
+- The hook reads and writes UTF-8 whatever the console's encoding is; Pult's files are read and written as UTF-8.
+- The hook Pult adds to its own sessions keeps paths with spaces whole.
+- `pult report` also hides Windows and Linux folder paths.
+- The bot's language comes from your Telegram only the first time; after that it changes only in the app's
+  settings. Before, a message from Telegram on another device in another language switched the bot.
+- GitHub Actions: `actions/checkout@v5`, `actions/setup-python@v6`.
+
 ## 0.8.2 — 2026-10-17
 
 - `pult setup` and the bot say plainly that `/bind` goes in the group itself, not in the private chat with the

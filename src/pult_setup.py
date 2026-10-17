@@ -70,7 +70,7 @@ def tilde(p):
 def version():
     for src in (HOME / "pultd.py", HERE / "pultd.py"):
         try:
-            m = re.search(r'^VERSION = "([^"]+)"', src.read_text(), re.M)
+            m = re.search(r'^VERSION = "([^"]+)"', src.read_text(encoding="utf-8"), re.M)
         except OSError:
             continue
         if m:
@@ -105,7 +105,7 @@ def secret(prompt):
 def read_env():
     env = {}
     try:
-        for line in ENV_FILE.read_text().splitlines():
+        for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
@@ -118,7 +118,7 @@ def read_env():
 def write_env(**kv):
     """Updates the settings file in place (mode 600): given keys are set, None removes one; other lines stay."""
     path = ENV_FILE.resolve()                  # a symlinked file stays a symlink
-    lines = path.read_text().splitlines() if path.exists() else []
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
     out, seen = [], set()
     for line in lines:
         k = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else None
@@ -134,7 +134,7 @@ def write_env(**kv):
     tmp = path.with_name(path.name + ".tmp")
     tmp.unlink(missing_ok=True)
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w") as f:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write("\n".join(out) + "\n")
     os.replace(tmp, path)
 
@@ -200,7 +200,7 @@ def hook_command():
 
 
 def load_settings():
-    return json.loads(SETTINGS.read_text()) if SETTINGS.exists() else {}
+    return json.loads(SETTINGS.read_text(encoding="utf-8")) if SETTINGS.exists() else {}
 
 
 def save_settings(d):
@@ -211,7 +211,7 @@ def save_settings(d):
     path = SETTINGS.resolve()                  # settings.json kept as a symlink (dotfiles) stays one
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2) + "\n")
+    tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, path)
 
 
@@ -236,7 +236,7 @@ def hooks_unreadable():
         return False
     except (OSError, ValueError):
         try:
-            return MARK in SETTINGS.read_text()
+            return MARK in SETTINGS.read_text(encoding="utf-8")
         except OSError:
             return False
 
@@ -401,7 +401,7 @@ def write_launcher():
     p = BIN / "pult"
     if p.exists() or p.is_symlink():
         try:
-            cur = p.read_text()
+            cur = p.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             cur = ""
         if LAUNCHER_MARK not in cur:
@@ -409,7 +409,7 @@ def write_launcher():
             return None
     BIN.mkdir(parents=True, exist_ok=True)
     p.write_text('#!/bin/sh\n%s — installed by install.sh, removed by `pult uninstall`\nexec %s %s "$@"\n'
-                 % (LAUNCHER_MARK, shlex.quote(str(PY)), shlex.quote(str(HOME / "pultctl.py"))))
+                 % (LAUNCHER_MARK, shlex.quote(str(PY)), shlex.quote(str(HOME / "pultctl.py"))), encoding="utf-8")
     p.chmod(0o755)
     return p
 
@@ -731,14 +731,14 @@ def cmd_setup():
 
 def tab_conf():
     try:
-        return json.loads(TAB_CONF.read_text())
+        return json.loads(TAB_CONF.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
 
 
 def tab_wrapped():
     try:
-        return "pult-tab.sh" in VSCODE_SETTINGS.read_text()      # JSON with comments: search for the string
+        return "pult-tab.sh" in VSCODE_SETTINGS.read_text(encoding="utf-8")      # JSON with comments: search for the string
     except OSError:
         return False
 
@@ -751,7 +751,7 @@ def wrapper_users():
         user = EDITORS / app / "User"
         for f in [user / "settings.json"] + sorted(user.glob("profiles/*/settings.json")):
             try:
-                if "pult-tab.sh" in f.read_text():
+                if "pult-tab.sh" in f.read_text(encoding="utf-8"):
                     found.append(f)
             except (OSError, UnicodeDecodeError):
                 pass
@@ -780,7 +780,7 @@ def cmd_tab_setup():
     conf["folders"] = folders
     conf["versions"] = sorted(set(conf.get("versions") or []) | set(TAB_VERIFIED), key=vkey)
     TAB_CONF.parent.mkdir(parents=True, exist_ok=True)
-    TAB_CONF.write_text(json.dumps(conf, ensure_ascii=False) + "\n")
+    TAB_CONF.write_text(json.dumps(conf, ensure_ascii=False) + "\n", encoding="utf-8")
     say(T("cli.tab.saved", path=tilde(TAB_CONF)))
     line = '"claudeCode.claudeProcessWrapper": "%s",' % (HOME / "pult-tab.sh")
     say(T("cli.tab.line", line=line))
@@ -846,7 +846,9 @@ def redactor(env):
         (r"(#s\w+: [^—]*—).*", r"\1 …"),                     # a permission decision's note
         (r"(→).*", r"\1 …"),                                 # what a button did: project and session names
         (r"~/(?!\.local/share/pult|\.config/pult|Library/Logs)[^\s,;:)'\"]+", "~/…"),
-        (r"/(?:private|var|tmp|Volumes)/[^\s,;:)'\"]+", "/…"),
+        (r"~\\(?!AppData\\Local\\pult)[^\s,;:)'\"]+", r"~\\…"),        # Windows: under the home folder
+        (r"(?<![\w/])[A-Za-z]:[\\/][^\s,;)'\"]+", r"?:\\…"),               # …and anywhere on a drive
+        (r"/(?:private|var|tmp|Volumes|home|root|mnt|media|srv)/[^\s,;:)'\"]+", "/…"),
         (r"(?<!\w)-?\d{6,}(?!\w)", "<id>"),                 # a standalone number: Telegram IDs, chats
     ]
     rules = [(re.compile(rx), rep) for rx, rep in rules]
@@ -937,8 +939,8 @@ def cmd_report():
 
 
 # Pult's own files: removal touches only these, never a whole folder it doesn't know
-HOME_FILES = ("pultd.py", "pult_hook.py", "pult_render.py", "pult_web.py", "pult_i18n.py", "pult_setup.py", "pultctl.py",
-              "pult_tab.py", "pult-tab.sh", "requirements.txt", "state.db", "state.db-journal", "state.db-wal",
+HOME_FILES = ("pultd.py", "pult_hook.py", "pult_render.py", "pult_web.py", "pult_i18n.py", "pult_os.py", "pult_setup.py",
+              "pultctl.py", "pult_tab.py", "pult-tab.sh", "requirements.txt", "state.db", "state.db-journal", "state.db-wal",
               "state.db-shm", "pult.sock", "venv", "__pycache__")
 CONF_FILES = ("env", "env.tmp", "tab.json", "tab-off")
 TAB_STUB = ('#!/bin/sh\n# Pult was removed. This stub runs Claude Code directly, so VS Code tabs keep working:\n'
@@ -977,7 +979,7 @@ def cmd_uninstall():
     plist_path(lbl).unlink(missing_ok=True)
     launcher = BIN / "pult"
     try:
-        if not os.environ.get("PULT_HOME") and LAUNCHER_MARK in launcher.read_text():
+        if not os.environ.get("PULT_HOME") and LAUNCHER_MARK in launcher.read_text(encoding="utf-8"):
             launcher.unlink()
     except (OSError, UnicodeDecodeError):
         pass
@@ -985,7 +987,7 @@ def cmd_uninstall():
     if users:
         # VS Code would fail to start Claude tabs without the wrapper file: leave a pass-through stub
         remove_known(HOME, HOME_FILES, keep=("pult-tab.sh",))
-        (HOME / "pult-tab.sh").write_text(TAB_STUB)
+        (HOME / "pult-tab.sh").write_text(TAB_STUB, encoding="utf-8")
         (HOME / "pult-tab.sh").chmod(0o755)
         say(T("cli.un.tab", path=tilde(HOME / "pult-tab.sh"), home=tilde(HOME),
               settings=", ".join(tilde(f) for f in users)))

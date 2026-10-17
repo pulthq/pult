@@ -48,7 +48,7 @@ def wanted():
 def main():
     if not wanted():
         return
-    ev = json.loads(sys.stdin.read() or "{}")
+    ev = json.loads(sys.stdin.buffer.read().decode("utf-8", errors="replace") or "{}")   # UTF-8 on every system
     wait = ev.get("hook_event_name") == "PermissionRequest"
     msg = {"event": ev, "pid": os.getppid(), "entry": os.environ.get("CLAUDE_CODE_ENTRYPOINT", ""),
            "driven": os.environ.get("PULT_DRIVEN") == "1", "wait": wait}
@@ -67,8 +67,8 @@ def main():
         buf += chunk
     out = json.loads(buf).get("output")
     if out:
-        sys.stdout.write(json.dumps(out, ensure_ascii=False))
-        sys.stdout.flush()
+        sys.stdout.buffer.write(json.dumps(out, ensure_ascii=False).encode())
+        sys.stdout.buffer.flush()
 
 
 if __name__ == "__main__":

@@ -10,15 +10,15 @@ LANGS = ("en", "ru")
 S = {
     # ----- notification modes -----
     "mode.auto": {"en": "🔄 Auto", "ru": "🔄 Авто"},
-    "mode.mac": {"en": "💻 At my Mac", "ru": "💻 За Маком"},
+    "mode.mac": {"en": "💻 At my computer", "ru": "💻 За компьютером"},
     "mode.phone": {"en": "📱 On my phone", "ru": "📱 С телефоном"},
     "mode.auto.about": {
-        "en": "Sound only when you've been away from the Mac for 2+ minutes or the session was started from Telegram.",
-        "ru": "Со звуком — только если ты отошёл от Мака больше чем на 2 минуты или сессия запущена из Telegram.",
+        "en": "Sound only when you've been away from the computer for 2+ minutes or the session was started from Telegram.",
+        "ru": "Со звуком — только если ты отошёл от компьютера больше чем на 2 минуты или сессия запущена из Telegram.",
     },
     "mode.mac.about": {
-        "en": "Everything arrives silently — you're at the Mac. Nothing is lost: every message is still posted.",
-        "ru": "Всё приходит беззвучно — ты за Маком. Ничего не теряется: сообщения приходят как обычно.",
+        "en": "Everything arrives silently — you're at the computer. Nothing is lost: every message is still posted.",
+        "ru": "Всё приходит беззвучно — ты за компьютером. Ничего не теряется: сообщения приходят как обычно.",
     },
     "mode.phone.about": {
         "en": "Results, questions, permission requests and long-turn reminders arrive with sound.",
@@ -30,26 +30,26 @@ S = {
         "ru": "🎛 <b>Пульт</b> · уведомления: <b>{mode}</b>\n{about}",
     },
     "panel.app": {
-        "en": "\n\nThe app: every session on the Mac, full transcripts, Claude's questions, new tasks, usage.",
-        "ru": "\n\nПриложение: все сессии Мака, переписка целиком, вопросы Claude, новые задачи, расход.",
+        "en": "\n\nThe app: every session on the computer, full transcripts, Claude's questions, new tasks, usage.",
+        "ru": "\n\nПриложение: все сессии на компьютере, переписка целиком, вопросы Claude, новые задачи, расход.",
     },
     "panel.open": {"en": "Open Pult", "ru": "Открыть Пульт"},
 
     # ----- help -----
     "help": {
-        "en": "<b>Pult</b> — Claude Code on your Mac, from Telegram.\n\n"
+        "en": "<b>Pult</b> — Claude Code on your computer, from Telegram.\n\n"
               "• Every project gets its own topic. Sessions from VS Code and the terminal show up by themselves: "
               "what Claude is doing right now, and the result.\n"
-              "• Claude's questions and permission requests — answer with buttons, here or on the Mac, whoever is first.\n"
+              "• Claude's questions and permission requests — answer with buttons, here or on the computer, whoever is first.\n"
               "• Write in a project topic to give Claude a task; reply to a session's message to continue it.\n\n"
-              "/mode — notifications · /status — what's open on the Mac · /projects — projects · /app — the app · "
+              "/mode — notifications · /status — what's open on the computer · /projects — projects · /app — the app · "
               "/feedback — a bug or an idea\n\nPick a topic:",
-        "ru": "<b>Пульт</b> — Claude Code на твоём Маке, из Telegram.\n\n"
+        "ru": "<b>Пульт</b> — Claude Code на твоём компьютере, из Telegram.\n\n"
               "• У каждого проекта — своя тема. Сессии из VS Code и терминала появляются сами: что Claude делает "
               "сейчас и итог.\n"
-              "• На вопросы и разрешения Claude — кнопками, здесь или на Маке, кто первый.\n"
+              "• На вопросы и разрешения Claude — кнопками, здесь или на компьютере, кто первый.\n"
               "• Напиши в тему проекта — Claude получит задачу; ответ на сообщение сессии — продолжение.\n\n"
-              "/mode — уведомления · /status — что открыто на Маке · /projects — проекты · /app — приложение · "
+              "/mode — уведомления · /status — что открыто на компьютере · /projects — проекты · /app — приложение · "
               "/feedback — ошибка или идея\n\nВыбери раздел:",
     },
     "help.btn.start": {"en": "🚀 Getting started", "ru": "🚀 С чего начать"},
@@ -61,36 +61,36 @@ S = {
     "help.btn.back": {"en": "◀️ Help", "ru": "◀️ Помощь"},
     "help.start": {
         "en": "<b>🚀 Getting started</b>\n\n"
-              "1. Work on the Mac as usual — in VS Code or the terminal. Sessions appear in the topics by themselves.\n"
+              "1. Work on the computer as usual — in VS Code or the terminal. Sessions appear in the topics by themselves.\n"
               "2. A turn is one message that keeps updating: how long it has been running and what Claude is doing. "
               "The result comes as a separate message.\n"
-              "3. ✋ A permission request or ❓ a question from Claude — answer with buttons. The dialog on the Mac is "
+              "3. ✋ A permission request or ❓ a question from Claude — answer with buttons. The dialog on the computer is "
               "open at the same time; whoever answers first decides.\n"
               "4. A new task — write in the project's topic, or /projects → pick a project.\n"
-              "5. Leaving the Mac — /phone; back — /mac. Or keep 🔄 Auto.",
+              "5. Leaving the computer — /phone; back — /desk. Or keep 🔄 Auto.",
         "ru": "<b>🚀 С чего начать</b>\n\n"
-              "1. Работай на Маке как обычно — в VS Code или терминале. Сессии появятся в темах сами.\n"
+              "1. Работай на компьютере как обычно — в VS Code или терминале. Сессии появятся в темах сами.\n"
               "2. Ход — одно сообщение, оно обновляется: сколько идёт и что Claude делает сейчас. Итог — отдельным "
               "сообщением.\n"
-              "3. ✋ Разрешение или ❓ вопрос Claude — кнопками. Окно на Маке открыто одновременно: кто ответил "
+              "3. ✋ Разрешение или ❓ вопрос Claude — кнопками. Окно на компьютере открыто одновременно: кто ответил "
               "первым, тот и решил.\n"
               "4. Новая задача — напиши в тему проекта или /projects → проект.\n"
-              "5. Уходишь от Мака — /phone, вернулся — /mac. Или оставь 🔄 Авто.",
+              "5. Уходишь от компьютера — /phone, вернулся — /desk. Или оставь 🔄 Авто.",
     },
     "help.notify": {
         "en": "<b>🔔 Notifications</b>\n\nMessages always arrive — only the sound changes.\n"
-              "• 🔄 Auto — with sound if you've been away from the Mac for 2+ minutes or the session was started "
+              "• 🔄 Auto — with sound if you've been away from the computer for 2+ minutes or the session was started "
               "from here.\n"
-              "• 💻 At my Mac — everything silent.\n"
+              "• 💻 At my computer — everything silent.\n"
               "• 📱 On my phone — results, questions, permission requests and reminders with sound.\n\n"
-              "Switch: the buttons in the pinned message in General, /auto /mac /phone, or in the app.\n"
+              "Switch: the buttons in the pinned message in General, /auto /desk /phone, or in the app.\n"
               "Long turns: reminders at 10, 30 and 60 minutes while sound is on; 🔕 — only the result after that. "
               "Reminders can be turned off in the app's settings.",
         "ru": "<b>🔔 Уведомления</b>\n\nСообщения приходят всегда — меняется только звук.\n"
-              "• 🔄 Авто — со звуком, если ты отошёл от Мака больше чем на 2 минуты или сессия запущена отсюда.\n"
-              "• 💻 За Маком — всё беззвучно.\n"
+              "• 🔄 Авто — со звуком, если ты отошёл от компьютера больше чем на 2 минуты или сессия запущена отсюда.\n"
+              "• 💻 За компьютером — всё беззвучно.\n"
               "• 📱 С телефоном — итоги, вопросы, разрешения и напоминания со звуком.\n\n"
-              "Переключить: кнопки в закреплённом сообщении «Общей», /auto /mac /phone или в приложении.\n"
+              "Переключить: кнопки в закреплённом сообщении «Общей», /auto /desk /phone или в приложении.\n"
               "Долгий ход: напоминания на 10, 30 и 60 минуте, пока звук включён; 🔕 — дальше только итог. "
               "Выключить напоминания — в настройках приложения.",
     },
@@ -113,10 +113,10 @@ S = {
               "• /stop ответом на сообщение сессии, запущенной отсюда, — прервать ход.",
     },
     "help.app": {
-        "en": "<b>📱 The app</b>\n\nInside Telegram: every session on the Mac, full transcripts with times, answers "
+        "en": "<b>📱 The app</b>\n\nInside Telegram: every session on the computer, full transcripts with times, answers "
               "to Claude's questions, new tasks, subscription usage, settings.\n"
               "Open it with /app or the button in the pinned message.",
-        "ru": "<b>📱 Приложение</b>\n\nВнутри Telegram: все сессии Мака, переписка целиком со временем, ответы на "
+        "ru": "<b>📱 Приложение</b>\n\nВнутри Telegram: все сессии на компьютере, переписка целиком со временем, ответы на "
               "вопросы Claude, новая задача, расход подписки, настройки.\n"
               "Открыть — /app или кнопка в закреплённом сообщении.",
     },
@@ -125,30 +125,30 @@ S = {
         "ru": "\n\nСейчас не настроено: приложению нужен свой сервер с доменом — инструкция в README.",
     },
     "help.onoff": {
-        "en": "<b>⏻ Turn on and off</b> — in Terminal on the Mac\n\n"
+        "en": "<b>⏻ Turn on and off</b> — in a terminal on the computer\n\n"
               "<code>pult status</code> — what is on\n"
               "<code>pult hooks off</code> / <code>on</code> — Pult stops / starts seeing sessions "
               "(then Reload Window in VS Code)\n"
               "<code>pult tab off</code> / <code>on</code> — writing from Telegram into VS Code tabs\n"
               "<code>pult stop</code> / <code>start</code> — stop Pult entirely / start it again\n"
               "<code>pult setup</code> — change the bot, the owner or the group\n"
-              "<code>pult uninstall</code> — remove Pult from the Mac\n\n"
+              "<code>pult uninstall</code> — remove Pult from the computer\n\n"
               "If <code>pult</code> isn't found: <code>~/.local/bin/pult</code>. "
               "Claude sessions keep working as usual without Pult.",
-        "ru": "<b>⏻ Включить и выключить</b> — в Терминале на Маке\n\n"
+        "ru": "<b>⏻ Включить и выключить</b> — в терминале на компьютере\n\n"
               "<code>pult status</code> — что включено\n"
               "<code>pult hooks off</code> / <code>on</code> — Пульт перестаёт / начинает видеть сессии "
               "(потом Reload Window в VS Code)\n"
               "<code>pult tab off</code> / <code>on</code> — запись из Telegram во вкладки VS Code\n"
               "<code>pult stop</code> / <code>start</code> — остановить Пульт целиком / запустить снова\n"
               "<code>pult setup</code> — сменить бота, владельца или группу\n"
-              "<code>pult uninstall</code> — удалить Пульт с Мака\n\n"
+              "<code>pult uninstall</code> — удалить Пульт с компьютера\n\n"
               "Если <code>pult</code> не находится: <code>~/.local/bin/pult</code>. "
               "Сессии Claude без Пульта работают как обычно.",
     },
     "help.trouble": {
         "en": "<b>🛠 Troubleshooting</b>\n\n"
-              "• The bot is silent — <code>pult status</code> on the Mac: the service, the link to Telegram; "
+              "• The bot is silent — <code>pult status</code> on the computer: the service, the link to Telegram; "
               "<code>pult restart</code> restarts it.\n"
               "• No sessions from VS Code — hooks are off: <code>pult hooks on</code> and Reload Window.\n"
               "• The feed works but no permission buttons — Claude in auto mode decides by itself; that's normal.\n"
@@ -156,7 +156,7 @@ S = {
               "or Claude Code was just updated: until it's checked, messages go as a copy.\n"
               "• Log: <code>~/Library/Logs/pult.log</code>\n\nA bug or an idea — /feedback.",
         "ru": "<b>🛠 Если что-то не так</b>\n\n"
-              "• Бот молчит — <code>pult status</code> на Маке: служба, связь с Telegram; "
+              "• Бот молчит — <code>pult status</code> на компьютере: служба, связь с Telegram; "
               "<code>pult restart</code> перезапустит.\n"
               "• Нет сессий из VS Code — хуки выключены: <code>pult hooks on</code> и Reload Window.\n"
               "• Лента есть, а кнопок разрешений нет — Claude в режиме auto решает сам, это норма.\n"
@@ -230,12 +230,12 @@ S = {
     "vehi.muted": {"en": "\n<i>🔕 no more reminders — only the result will come</i>",
                    "ru": "\n<i>🔕 вех больше не будет — придёт только итог</i>"},
     "btn.mute": {"en": "🔕 Quiet until done", "ru": "🔕 Не беспокоить до конца"},
-    "bg.closed": {"en": "⚙️ The session was opened on the Mac — its background tasks stopped together with Pult's "
+    "bg.closed": {"en": "⚙️ The session was opened on the computer — its background tasks stopped together with Pult's "
                         "process{names}",
-                  "ru": "⚙️ Сессию открыли на Маке — её фоновые задачи остановлены вместе с процессом Пульта{names}"},
-    "req.decided_mac": {"en": "decided on the Mac", "ru": "решено на Маке"},
-    "req.answered_mac": {"en": "answered on the Mac", "ru": "отвечено на Маке"},
-    "req.allowed_mac": {"en": "allowed on the Mac", "ru": "разрешено на Маке"},
+                  "ru": "⚙️ Сессию открыли на компьютере — её фоновые задачи остановлены вместе с процессом Пульта{names}"},
+    "req.decided_mac": {"en": "decided on the computer", "ru": "решено на компьютере"},
+    "req.answered_mac": {"en": "answered on the computer", "ru": "отвечено на компьютере"},
+    "req.allowed_mac": {"en": "allowed on the computer", "ru": "разрешено на компьютере"},
     "req.session_closed": {"en": "the session was closed", "ru": "сессия закрыта"},
     "req.asks": {"en": "Claude asks", "ru": "Claude спрашивает"},
     "req.plan": {"en": "Claude proposes a plan", "ru": "Claude предлагает план"},
@@ -311,15 +311,15 @@ S = {
     "q.already": {"en": "This question is already decided.", "ru": "Этот вопрос уже решён."},
     "cmd.unknown": {"en": "I don't know this command. /help", "ru": "Не знаю такой команды. /help"},
     "where.ask": {"en": "Where should I send it? (💻 — open in a VS Code tab, I'll write right into it; 🖥 — open on "
-                        "the Mac, it'll go as a copy; reply to a session's message or <code>/new text</code> — no "
+                        "the computer, it'll go as a copy; reply to a session's message or <code>/new text</code> — no "
                         "question)",
-                  "ru": "Куда отправить? (💻 — открыта во вкладке, напишу прямо в неё; 🖥 — открыта на Маке, "
+                  "ru": "Куда отправить? (💻 — открыта во вкладке, напишу прямо в неё; 🖥 — открыта на компьютере, "
                         "пойдёт копией; ответ на сообщение сессии или <code>/new текст</code> — без этого вопроса)"},
     "err.no_folder": {"en": "I don't know which folder this session is in.", "ru": "Не знаю, в какой папке эта сессия."},
-    "fork.offer": {"en": "This session is open on the Mac (a VS Code tab or the terminal). Writing to it from here "
+    "fork.offer": {"en": "This session is open on the computer (a VS Code tab or the terminal). Writing to it from here "
                          "would mix up the conversation. I can continue as a <b>copy</b>: the same history, a separate "
                          "session from there on.",
-                   "ru": "Эта сессия открыта на Маке (вкладка VS Code или терминал). Писать в неё отсюда нельзя — "
+                   "ru": "Эта сессия открыта на компьютере (вкладка VS Code или терминал). Писать в неё отсюда нельзя — "
                          "переписка перемешается. Могу продолжить <b>копией</b>: вся история та же, дальше — "
                          "отдельная сессия."},
     "busy.driven": {"en": "{n} {sessions} from Telegram are already running — wait until one finishes.",
@@ -330,9 +330,9 @@ S = {
                    "ru": "🔄 Вышло обновление Claude Code <b>{v}</b>. Писать из Telegram прямо во вкладки на нём пока "
                          "нельзя — сначала проверка. До неё сообщения в открытые вкладки уходят копией, как раньше.\n"
                          "После проверки: <code>pult tab allow {v}</code> (см. README)."},
-    "status.head": {"en": "<b>On the Mac now</b> · {state}", "ru": "<b>Сейчас на Маке</b> · {state}"},
-    "status.at_mac": {"en": "you're at the Mac", "ru": "ты у Мака"},
-    "status.idle": {"en": "the Mac has been idle for {dur}", "ru": "Мак простаивает {dur}"},
+    "status.head": {"en": "<b>On the computer now</b> · {state}", "ru": "<b>Сейчас на компьютере</b> · {state}"},
+    "status.at_mac": {"en": "you're at the computer", "ru": "ты за компьютером"},
+    "status.idle": {"en": "the computer has been idle for {dur}", "ru": "компьютер простаивает {dur}"},
     "status.none": {"en": "no open sessions", "ru": "открытых сессий нет"},
     "status.ask": {"en": "❓ waiting for an answer", "ru": "❓ ждёт ответа"},
     "status.work": {"en": "⏳ working", "ru": "⏳ работает"},
@@ -345,21 +345,21 @@ S = {
                       "ru": "Эта тема ещё не привязана к проекту. Выбери проект — привяжу тему и запущу сессию."},
     "projects.none": {"en": "No projects with Claude sessions found.", "ru": "Проектов с сессиями Claude не нашёл."},
     "sessions.where": {"en": "/sessions — inside a project topic.", "ru": "/sessions — в теме проекта."},
-    "sessions.list": {"en": "Recent sessions (🖥 — open on the Mac). Tap one — I'll show its last answer; reply to it "
+    "sessions.list": {"en": "Recent sessions (🖥 — open on the computer). Tap one — I'll show its last answer; reply to it "
                             "to continue.",
-                      "ru": "Последние сессии (🖥 — открыта на Маке). Нажми — покажу последний ответ, ответом на "
+                      "ru": "Последние сессии (🖥 — открыта на компьютере). Нажми — покажу последний ответ, ответом на "
                             "него продолжишь."},
     "sessions.none": {"en": "No sessions.", "ru": "Сессий нет."},
     "card": {"en": "🧵 <b>{title}</b>\n{body}\n\n<i>reply to this message to continue the session</i>",
              "ru": "🧵 <b>{title}</b>\n{body}\n\n<i>ответь на это сообщение — продолжу сессию</i>"},
     "card.empty": {"en": "<i>no answers yet</i>", "ru": "<i>ответов нет</i>"},
     "stop.how": {"en": "/stop — as a reply to a message of a session started from Telegram. A turn in VS Code can "
-                       "only be interrupted on the Mac.",
+                       "only be interrupted on the computer.",
                  "ru": "/stop — ответом на сообщение сессии, запущенной из Telegram. Ход в VS Code прерывается "
-                       "только на Маке."},
+                       "только на компьютере."},
     "stop.only_driven": {"en": "only a session started from Telegram can be stopped — a turn in a tab is interrupted "
-                               "on the Mac",
-                         "ru": "остановить можно только сессию из Telegram — ход во вкладке прерывается на Маке"},
+                               "on the computer",
+                         "ru": "остановить можно только сессию из Telegram — ход во вкладке прерывается на компьютере"},
     "usage.warn": {"en": "⚠️ <b>{name} — {pct} %</b>\nResets {reset}.", "ru": "⚠️ <b>{name} — {pct} %</b>\nСброс {reset}."},
     "lim.session": {"en": "5-hour window", "ru": "Окно 5 ч"},
     "lim.week": {"en": "Week", "ru": "Неделя"},
@@ -374,7 +374,7 @@ S = {
 
     # ----- the pult command in Terminal (plain text; the report itself is English only) -----
     "cli.usage": {
-        "en": "Pult — Claude Code on your Mac, from Telegram.\n\n"
+        "en": "Pult — Claude Code on your computer, from Telegram.\n\n"
               "  pult setup                    set up or change: the bot, you, the group, hooks\n"
               "  pult status                   what is on: the service, hooks, Telegram, tabs\n"
               "  pult start | stop | restart   the background service\n"
@@ -384,10 +384,10 @@ S = {
               "  pult app [off]                the web app on your own server\n"
               "  pult run -- COMMAND           run a command; its start, progress and end go to Telegram\n"
               "  pult report                   versions and state for a bug report (no tokens, IDs or messages)\n"
-              "  pult uninstall                remove Pult from this Mac\n\n"
+              "  pult uninstall                remove Pult from this computer\n\n"
               "Hooks and the tab wrapper are picked up when a session starts: after changing them, run Reload Window "
               "in VS Code.",
-        "ru": "Пульт — Claude Code на твоём Маке из Telegram.\n\n"
+        "ru": "Пульт — Claude Code на твоём компьютере из Telegram.\n\n"
               "  pult setup                    настроить или поменять: бот, ты, группа, хуки\n"
               "  pult status                   что включено: служба, хуки, Telegram, вкладки\n"
               "  pult start | stop | restart   фоновая служба\n"
@@ -397,7 +397,7 @@ S = {
               "  pult app [off]                веб-приложение на своём сервере\n"
               "  pult run -- КОМАНДА           выполнить команду; старт, ход и конец — в Telegram\n"
               "  pult report                   версии и состояние для сообщения об ошибке (без токенов, ID и переписки)\n"
-              "  pult uninstall                удалить Пульт с этого Мака\n\n"
+              "  pult uninstall                удалить Пульт с этого компьютера\n\n"
               "Хуки и обёртка вкладок подхватываются при запуске сессии: после их смены — Reload Window в VS Code.",
     },
     "cli.yn.y": {"en": "[Y/n]", "ru": "[Д/н]"},
@@ -439,9 +439,9 @@ S = {
     "cli.setup.stopped": {"en": "Setup stopped. Continue: pult setup", "ru": "Настройка прервана. Продолжить: pult setup"},
     "cli.setup.done": {
         "en": "\nDone: the panel and help are in the group's General topic. Write a task there — Pult asks which "
-              "project and starts Claude on the Mac; every project gets a topic of its own.",
+              "project and starts Claude on the computer; every project gets a topic of its own.",
         "ru": "\nГотово: панель и помощь — в «Общей» теме группы. Напиши туда задачу — Пульт спросит, в каком "
-              "проекте, и запустит Claude на Маке; у каждого проекта будет своя тема.",
+              "проекте, и запустит Claude на компьютере; у каждого проекта будет своя тема.",
     },
     "cli.setup.extras": {
         "en": "\nOptional:\n• write from Telegram straight into open VS Code tabs — pult tab setup\n"
@@ -514,9 +514,9 @@ S = {
     "cli.why.not_admin": {"en": "the bot isn't an admin with “Manage Topics”",
                           "ru": "бот не админ с правом «Управление темами»"},
     "cli.why.gone": {"en": "the bot can't see the group ({why})", "ru": "бот не видит группу ({why})"},
-    "cli.tg.hello": {"en": "✅ Pult knows you now. Back to Terminal on the Mac: next you'll make a separate group "
+    "cli.tg.hello": {"en": "✅ Pult knows you now. Back to the terminal on the computer: next you'll make a separate group "
                            "with topics.",
-                     "ru": "✅ Пульт тебя узнал. Возвращайся в Терминал на Маке: дальше сделаем отдельную группу с "
+                     "ru": "✅ Пульт тебя узнал. Возвращайся в терминал на компьютере: дальше сделаем отдельную группу с "
                            "темами."},
     "cli.tg.need_admin": {"en": "Make me an admin with “Manage Topics” (and “Pin Messages”), then send /bind again.",
                           "ru": "Сделай меня админом с правом «Управление темами» (и «Закрепление сообщений»), потом "
@@ -573,10 +573,10 @@ S = {
                      "ru": "Действует на вкладки, которые запустятся дальше; открытые — после Reload Window."},
     "cli.tab.about": {
         "en": "Pult can put your Telegram messages straight into an open Claude tab in VS Code — they show up there "
-              "as if typed on the Mac. It works through a small wrapper around Claude Code: if anything is off, Claude "
+              "as if typed on the computer. It works through a small wrapper around Claude Code: if anything is off, Claude "
               "starts directly, as without Pult.",
         "ru": "Пульт может вписывать сообщения из Telegram прямо в открытую вкладку Claude в VS Code — они появятся "
-              "там, будто набраны на Маке. Для этого — небольшая обёртка вокруг Claude Code: если что-то не так, "
+              "там, будто набраны на компьютере. Для этого — небольшая обёртка вокруг Claude Code: если что-то не так, "
               "Claude запускается напрямую, как без Пульта.",
     },
     "cli.tab.folders": {"en": "Folders where it works, comma-separated (Enter — {default}): ",
@@ -608,8 +608,8 @@ S = {
     "cli.app.link": {"en": "The Mini App link from @BotFather (Enter — {default}): ",
                      "ru": "Ссылка на Mini App из @BotFather (Enter — {default}): "},
     "cli.app.server_env": {
-        "en": "Put these lines into the server's .env (the secret is the Mac's key to the server — keep it private):",
-        "ru": "Эти строки — в .env на сервере (секрет — ключ Мака к серверу, никому не показывай):",
+        "en": "Put these lines into the server's .env (the secret is the computer's key to the server — keep it private):",
+        "ru": "Эти строки — в .env на сервере (секрет — ключ компьютера к серверу, никому не показывай):",
     },
     "cli.app.botfather": {"en": "In @BotFather: /newapp → your bot → Web App URL {url} → a short name (for the link).",
                           "ru": "В @BotFather: /newapp → твой бот → Web App URL {url} → короткое имя (для ссылки)."},
@@ -623,9 +623,9 @@ S = {
               "перед отправкой.",
     },
     "cli.un.about": {
-        "en": "This removes Pult from this Mac: the background service, the hooks in {settings}, the pult command and "
+        "en": "This removes Pult from this computer: the background service, the hooks in {settings}, the pult command and "
               "{home} (state and environment). Claude Code itself stays as it is.",
-        "ru": "Это удалит Пульт с Мака: фоновую службу, хуки в {settings}, команду pult и {home} (состояние и "
+        "ru": "Это удалит Пульт с компьютера: фоновую службу, хуки в {settings}, команду pult и {home} (состояние и "
               "окружение). Сам Claude Code останется как есть.",
     },
     "cli.un.ask": {"en": "Remove Pult?", "ru": "Удалить Пульт?"},
@@ -645,11 +645,11 @@ S = {
 
     # ----- bot command menu -----
     "cmd.help": {"en": "how to use, turn on and off", "ru": "как пользоваться, включить и выключить"},
-    "cmd.mode": {"en": "notifications: at the Mac / on the phone", "ru": "уведомления: за Маком / с телефоном"},
-    "cmd.mac": {"en": "I'm at the Mac — everything silent", "ru": "я за Маком — всё беззвучно"},
+    "cmd.mode": {"en": "notifications: at the computer / on the phone", "ru": "уведомления: за компьютером / с телефоном"},
+    "cmd.desk": {"en": "I'm at the computer — everything silent", "ru": "я за компьютером — всё беззвучно"},
     "cmd.phone": {"en": "I'm on the phone — with sound", "ru": "я с телефоном — со звуком"},
-    "cmd.auto": {"en": "sound when I'm away from the Mac", "ru": "звук, когда отошёл от Мака"},
-    "cmd.status": {"en": "what's open on the Mac", "ru": "что открыто на Маке"},
+    "cmd.auto": {"en": "sound when I'm away from the computer", "ru": "звук, когда отошёл от компьютера"},
+    "cmd.status": {"en": "what's open on the computer", "ru": "что открыто на компьютере"},
     "cmd.sessions": {"en": "recent sessions of the project", "ru": "последние сессии проекта"},
     "cmd.projects": {"en": "projects — open a topic", "ru": "проекты — открыть тему"},
     "cmd.stop": {"en": "interrupt a turn (as a reply)", "ru": "прервать ход (ответом)"},
@@ -657,7 +657,7 @@ S = {
     "cmd.feedback": {"en": "report a bug or suggest an idea", "ru": "сообщить об ошибке или идее"},
 }
 
-COMMANDS = ("help", "mode", "mac", "phone", "auto", "status", "sessions", "projects", "stop", "app", "feedback")
+COMMANDS = ("help", "mode", "desk", "phone", "auto", "status", "sessions", "projects", "stop", "app", "feedback")
 
 # Plural forms: English — one/other, Russian — one/few/many.
 P = {

@@ -11,7 +11,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
+from unittest import mock
 import urllib.parse
 from pathlib import Path
 
@@ -24,6 +26,7 @@ import httpx  # noqa: E402
 
 import pult_hook  # noqa: E402
 import pult_i18n as I  # noqa: E402
+import pult_os  # noqa: E402
 import pult_render as R  # noqa: E402
 import pultd  # noqa: E402
 
@@ -70,7 +73,7 @@ async def run_hook(ev, entry="claude-vscode", extra_env=None, wait=True):
     env.pop("PULT_DRIVEN", None)
     p = await asyncio.create_subprocess_exec(sys.executable, str(HERE / "pult_hook.py"), env=env,
                                              stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE)
-    p.stdin.write(json.dumps(ev).encode())
+    p.stdin.write(json.dumps(ev, ensure_ascii=False).encode())          # as Claude Code sends it: raw UTF-8
     p.stdin.close()
     if not wait:
         return p
@@ -251,6 +254,22 @@ class HelpersTest(unittest.TestCase):
             os.environ.clear()
             os.environ.update(old)
 
+    def test_injected_hook_command(self):
+        # the hook Pult injects into its own sessions runs through a shell: paths with spaces stay whole
+        with mock.patch.object(pultd, "HOOK_PY", "/x y/venv/bin/python"), \
+                mock.patch.object(pultd, "HOOK", "/x y/pult_hook.py"):
+            me = types.SimpleNamespace(path="/x", sid=SID, resume=None, fork=False, _wait_hook=None)
+            opts = pultd.Driven.options(me)
+        cmd = json.loads(opts.settings)["hooks"]["Stop"][0]["hooks"][0]["command"]
+        self.assertEqual(cmd, "PULT_INJECTED=1 '/x y/venv/bin/python' '/x y/pult_hook.py'")
+
+    def test_input_idle(self):
+        v = pult_os.input_idle()
+        if pult_os.KIND == "mac":
+            self.assertIsInstance(v, float)
+        with mock.patch.object(pult_os.subprocess, "run", side_effect=FileNotFoundError):
+            self.assertIsNone(pult_os.input_idle())                 # no ioreg (or no such system): "don't know"
+
     def test_hooks_config(self):
         c = pult_hook.hooks_config("CMD")
         self.assertEqual(set(c), set(pult_hook.EVENTS))
@@ -430,7 +449,12 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await self.p.ensure_panel()                                                 # on startup: refresh, don't re-post
         await until(lambda: len(self.fake.of("editMessageText")) > n)
         self.assertEqual(int(self.fake.of("editMessageText")[-1]["message_id"]), self.store.get("panel"))
-        await self.p.on_message(dict(base, message_id=2, text="/mac"))
+        await self.p.on_message(dict(base, message_id=2, text="/phone"))
+        self.assertEqual(self.p.mode(), "phone")
+        await self.p.on_message(dict(base, message_id=2, text="/mac"))                # the old name still works
+        self.assertEqual(self.p.mode(), "mac")
+        await self.p.set_mode("auto")
+        await self.p.on_message(dict(base, message_id=2, text="/desk"))
         self.assertEqual(self.p.mode(), "mac")
         await self.p.notice(SID, "важное")                                          # explicit sound — still silent
         await until(lambda: any("важное" in d.get("text", "") for d in self.fake.of("sendMessage")))
@@ -455,7 +479,24 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await self.p.setup_commands()
         menus = self.fake.of("setMyCommands")
         self.assertEqual([d.get("language_code") for d in menus], [None, "ru"])
-        self.assertIn('"mac"', menus[0]["commands"])
+        self.assertIn('"desk"', menus[0]["commands"])
+        self.assertNotIn('"mac"', menus[0]["commands"])
+
+    async def test_idle_without_the_system(self):
+        # where the system can't tell keyboard and mouse idle (servers, remote sessions), "away" comes from the
+        # owner's own actions in sessions here: a prompt typed, a permission answered
+        self.p.env.pop("PULT_FORCE_AWAY", None)
+        with mock.patch.object(pult_os, "input_idle", lambda: None):
+            self.assertFalse(await self.p.away())                                   # just started: assume here
+            self.p.here_seen -= pultd.AWAY_IDLE + 1
+            self.assertTrue(await self.p.away())
+            ov = await self.p.api_overview()
+            self.assertTrue(ov["mac"]["away"])
+            self.assertGreater(ov["mac"]["idle"], pultd.AWAY_IDLE)
+            await run_hook(ev("SessionStart", source="startup"))
+            await run_hook(ev("UserPromptSubmit", prompt="Сделай отчёт"))           # typed here
+            await until(lambda: time.monotonic() - self.p.here_seen < 5)
+            self.assertFalse(await self.p.away())
 
     async def test_private_chat(self):
         # the owner's private chat with the bot: /bind there explains the group; anything else says where to write
@@ -632,6 +673,14 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(" · done", next(t for t in self.texts() if t.startswith("✅")))
         await self.p.on_message({"from": {"id": OWNER}, "chat": {"id": CHAT}, "message_id": 9, "text": "/help"})
         self.assertIn("Pick a topic", self.fake.of("sendMessage")[-1]["text"])
+        # a message from Telegram in another language (the phone vs the computer) doesn't switch the bot
+        await self.p.on_message({"from": {"id": OWNER, "language_code": "ru"}, "chat": {"id": CHAT}, "message_id": 10,
+                                 "text": "/help"})
+        self.assertIn("Pick a topic", self.fake.of("sendMessage")[-1]["text"])
+        self.store.put("lang_tg", None)                                   # not known yet: the first message sets it
+        await self.p.on_message({"from": {"id": OWNER, "language_code": "ru"}, "chat": {"id": CHAT}, "message_id": 11,
+                                 "text": "/help"})
+        self.assertIn("Выбери раздел", self.fake.of("sendMessage")[-1]["text"])
 
     async def test_today(self):
         # today's tokens: project name is the topic, else the folder, and if the folder is gone, the key's tail
@@ -720,9 +769,11 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await until(lambda: any("разрешено и запомнено" in t for t in self.texts("editMessageText")))
 
     async def test_permission_deny_by_reply(self):
-        proc = await run_hook(ev("PermissionRequest", tool_name="Bash", tool_input={"command": "rm -rf build"}),
-                              wait=False)
+        # a hook whose console isn't UTF-8 (Windows uses the system code page) still reads and writes UTF-8
+        proc = await run_hook(ev("PermissionRequest", tool_name="Bash", tool_input={"command": "rm -rf сборка"}),
+                              wait=False, extra_env={"PYTHONIOENCODING": "latin-1"})
         await until(lambda: self.p.req_by_msg)
+        self.assertIn("rm -rf сборка", self.texts()[-1])
         msg_id = next(iter(self.p.req_by_msg))
         await self.p.on_message({"message_id": 5, "from": {"id": OWNER}, "chat": {"id": CHAT}, "text": "не надо, сначала бэкап",
                                  "message_thread_id": 77, "is_topic_message": True,
@@ -752,14 +803,14 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await until(lambda: self.p.req_by_msg)
         await run_hook(ev("PostToolUse", tool_name="Bash", tool_input=inp))
         self.assertEqual((await proc.stdout.read()).decode(), "")
-        await until(lambda: any("разрешено на Маке" in t for t in self.texts("editMessageText")))
+        await until(lambda: any("разрешено на компьютере" in t for t in self.texts("editMessageText")))
 
     async def test_hook_killed(self):
         proc = await run_hook(ev("PermissionRequest", tool_name="Write", tool_input={"file_path": "/a"}), wait=False)
         await until(lambda: self.p.req_by_msg)
         proc.kill()
         await proc.wait()
-        await until(lambda: any("решено на Маке" in t for t in self.texts("editMessageText")))
+        await until(lambda: any("решено на компьютере" in t for t in self.texts("editMessageText")))
         self.assertEqual(self.p.req_by_rid, {})
 
     async def test_projects(self):

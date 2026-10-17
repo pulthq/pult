@@ -69,7 +69,7 @@ def cmd_tab(argv):
         conf = S.tab_conf()
         conf["versions"] = sorted(set(conf.get("versions") or []) | {argv[1]}, key=S.vkey)
         S.TAB_CONF.parent.mkdir(parents=True, exist_ok=True)
-        S.TAB_CONF.write_text(json.dumps(conf, ensure_ascii=False) + "\n")
+        S.TAB_CONF.write_text(json.dumps(conf, ensure_ascii=False) + "\n", encoding="utf-8")
     print("%s %s" % (T("cli.st.tabs"), tab_state()))
     if argv[:1] in (["off"], ["on"], ["allow"]):
         print(T("cli.tab.next"))

@@ -45,9 +45,9 @@ one, or write straight into a VS Code tab that is already open.
   Mac, and Claude gets their path.
 - **Straight into an open VS Code tab** (optional). Your message appears in the tab as if you typed it on the Mac,
   and the turn runs there.
-- **Notification modes.** 🔄 Auto plays a sound when you've been away from the Mac for 2+ minutes. 💻 At my Mac
-  is silent. 📱 On my phone always plays a sound. Switch with one tap in the pinned panel, or with `/mac`,
-  `/phone` or `/auto`.
+- **Notification modes.** 🔄 Auto plays a sound when you've been away from the computer for 2+ minutes. 💻 At my
+  computer is silent. 📱 On my phone always plays a sound. Switch with one tap in the pinned panel, or with
+  `/desk`, `/phone` or `/auto`.
 - **Reminders and warnings.** You get a reminder when a turn runs for 10, 30 or 60 minutes, and a warning when
   your plan's usage reaches 80 % and 95 %.
 - **Any long command, not only Claude.** `pult run -- npm run build` reports start, progress, the exit code and
@@ -122,7 +122,7 @@ Work on the Mac as usual. In Telegram:
 | reply to a session's message | continue that session |
 | text in a project's topic | asks which session it's for, or starts a new one |
 | `/new text` | a new session in this topic's project, no questions |
-| `/mac` `/phone` `/auto` `/mode` | notification mode |
+| `/desk` `/phone` `/auto` `/mode` | notification mode |
 | `/status` | what's open on the Mac right now |
 | `/projects`, `/sessions` | projects with their topics; recent sessions of this project |
 | `/stop` (as a reply) | interrupt a turn of a session started from Telegram |

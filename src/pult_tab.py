@@ -34,7 +34,7 @@ TAP_MAX = 4 * 1024 * 1024                                  # longer lines are no
 
 def log(*a):
     try:
-        with open(LOG, "a") as f:
+        with open(LOG, "a", encoding="utf-8") as f:
             f.write("%s %d %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), os.getpid(), " ".join(map(str, a))))
     except OSError:
         pass
@@ -198,7 +198,8 @@ class Tab:
 
 def main(argv):
     try:
-        conf = json.load(open(CONF))
+        with open(CONF, encoding="utf-8") as f:
+            conf = json.load(f)
         why = why_direct(argv, conf, os.getcwd())
     except Exception as e:
         why = "no wrapper config (%s)" % type(e).__name__

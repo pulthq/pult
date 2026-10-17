@@ -370,6 +370,11 @@ class ReportTest(Base):
             "AskUserQuestion #sb1234567: answered on the Mac": "AskUserQuestion #sb1234567: answered on the Mac",
             "button o:abc from 123456789 → x": "button o:abc from <id> → …",
             "proxying a tab: /private/var/folders/x/T/sandbox 2.1.301": "proxying a tab: /… 2.1.301",
+            "tab with the wrapper: pid 7, C:\\Users\\x\\Documents\\secret-proj, Claude Code 2.1.301":
+                "tab with the wrapper: pid 7, ?:\\…, Claude Code 2.1.301",
+            "socket: ~\\AppData\\Local\\pult\\pult.sock, project ~\\Documents\\secret-proj":
+                "socket: ~\\AppData\\Local\\pult\\pult.sock, project ~\\…",
+            "proxying a tab: /home/someone/secret-proj and /mnt/data/x": "proxying a tab: /… and /…",
         }
         for line, want in cases.items():
             self.assertEqual(hide(line), want, line)
