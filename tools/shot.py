@@ -3,6 +3,7 @@
 SHOT_HEIGHT=860 — one phone screen instead of the whole page (the README pictures).
 SHOT_FIT=.chat — cut the picture at the bottom edge of that element (a page shorter than the window).
 SHOT_JS="document.querySelector('.mchip').click()" — run on the loaded page before the picture (open a menu).
+SHOT_CLEAR=1 — a transparent background where the page has none (pictures composed for the README).
 Not --screenshot with --virtual-time-budget: the app holds a WebSocket open, the page never "settles", and Chrome
 hangs. Only a type=page tab is used: the first one in the list is sometimes an internal one (Omnibox Popup)."""
 import asyncio, base64, json, os, subprocess, sys, tempfile, time
@@ -15,12 +16,13 @@ DARK = len(sys.argv) > 5 and sys.argv[5] == "dark"
 HEIGHT = int(os.environ.get("SHOT_HEIGHT") or 0)
 FIT = os.environ.get("SHOT_FIT")
 JS = os.environ.get("SHOT_JS")
+CLEAR = os.environ.get("SHOT_CLEAR") == "1"
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 
 async def main():
     prof = tempfile.mkdtemp(prefix="cdp-")
-    p = subprocess.Popen([CHROME, "--headless=new", "--disable-gpu", "--remote-debugging-port=9333", "--user-data-dir=" + prof,
+    p = subprocess.Popen([CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--remote-debugging-port=9333", "--user-data-dir=" + prof,
                           "--no-first-run", "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         async with aiohttp.ClientSession() as s:
@@ -45,6 +47,8 @@ async def main():
                     if m.get("id") == n:
                         return m.get("result", {})
             await cmd("Emulation.setDeviceMetricsOverride", width=W, height=900, deviceScaleFactor=2, mobile=True)
+            if CLEAR:
+                await cmd("Emulation.setDefaultBackgroundColorOverride", color={"r": 0, "g": 0, "b": 0, "a": 0})
             if DARK:
                 await cmd("Emulation.setEmulatedMedia", features=[{"name": "prefers-color-scheme", "value": "dark"}])
             await cmd("Page.enable")

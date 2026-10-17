@@ -2,6 +2,20 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.9.10 — 2026-10-18
+
+- The README opens with an animation of a project's topic: Claude at work, a permission request with the phone's
+  notification, a tap on Allow, the turn going on, its result. Like every picture there, it is drawn from Pult's own
+  messages on the test stand, never from a real project.
+- The web app is shown as it is now: the session screen with your message pinned and the model with its effort
+  dots, and Home, the model and effort menu and Usage side by side in phone frames.
+- The comparison with Remote Control and Channels is a table, checked against their documentation: Remote
+  Control works in VS Code tabs too and can connect every session, so the README no longer claims otherwise.
+  Install is one line at the top; the Linux notes and troubleshooting fold away. The Russian README matches.
+- `tools/media.py` remakes every README picture in both languages, plus a 1280×640 link preview
+  (`media/social.png`, for the repository's settings). `tools/chat_shot.py` draws the animation when asked for
+  a `.gif`; `tools/shot.py` hides scrollbars and can leave the background transparent (`SHOT_CLEAR=1`).
+
 ## 0.9.9 — 2026-10-18
 
 - The effort level of a session can be switched from the phone, next to the model: one menu with two columns,

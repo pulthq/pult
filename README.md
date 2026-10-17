@@ -6,20 +6,25 @@
 [![release](https://img.shields.io/github/v/release/pulthq/pult?label=release&color=2f6fcf)](https://github.com/pulthq/pult/releases)
 &nbsp;MIT · macOS and Linux · English and Russian · [Русский](README.ru.md)
 
-You give Claude Code a task in VS Code or a terminal and walk away. Claude keeps going: it reads, edits, runs
-tests — and then stops to ask a question or wait for a permission, and the work stalls until you're back. Pult
-puts every Claude Code session on your computer into a Telegram group, one topic per project. Your phone shows
-what Claude is doing right now, buzzes when Claude needs you, and lets you answer, continue the session or start
-a new one — without the Claude app, and without opening a single port on the computer.
-
 <p align="center">
-  <img src="media/chat.en.png" width="300" alt="A project topic in Telegram: a finished turn with its result, a running turn with Claude's words, a permission request with Allow and Deny buttons">
+  <img src="media/demo.en.gif" width="330" alt="A project's topic in Telegram: Claude works, asks for permission to run a command, the phone shows a notification, a tap on Allow, the turn goes on and its result arrives">
   &nbsp;
-  <img src="media/app-home.en.png" width="300" alt="The optional web app: everything that waits for an answer, on one screen">
+  <img src="media/app-session.en.png" width="330" alt="The same session in the web app: your message pinned on top, Claude's summary, the model with its effort and the context gauge by the message field">
 </p>
-<p align="center"><sub>Left: a project topic in Telegram. Right: the optional web app inside Telegram. A made-up project, rendered from the test stand.</sub></p>
+<p align="center"><sub>Left: a project's topic in Telegram. Right: the same session in the web app. A made-up project, drawn from Pult's own output on the test stand.</sub></p>
 
-*Pult* is Russian for a remote control.
+You give Claude Code a task in VS Code or a terminal and walk away. Claude keeps going, then stops to ask a
+question or wait for a permission, and the work stalls until you're back. Pult puts every Claude Code session on
+your computer into a Telegram group, one topic per project. Your phone shows what Claude is doing, buzzes when
+Claude needs you, and lets you answer, continue the session or start a new one. Pult runs on your computer and
+opens no port on it.
+
+```
+git clone https://github.com/pulthq/pult.git && cd pult && ./install.sh
+```
+
+The installer walks you through your own Telegram bot and group in about ten minutes. macOS and Linux; Windows is
+next. *Pult* is Russian for a remote control.
 
 ## An hour with Pult
 
@@ -46,6 +51,8 @@ a new one — without the Claude app, and without opening a single port on the c
 - **Straight into an open VS Code tab** (optional). Your message appears in the tab as if typed there, and the
   turn runs in it. If Claude is busy in that tab, it gets your message in the middle of its turn: the tab doesn't
   show it as a separate message, and the answer comes with that turn's result, as a reply to your message.
+- **The model and the effort, from the phone.** Pick Opus, Sonnet or Haiku and how hard Claude thinks, for one
+  session: a running one switches at once, an open VS Code tab too, without touching Claude Code's settings.
 - **Notifications that know where you are.** 🔄 Auto plays a sound only when you've been away from the computer
   for 2+ minutes. 💻 At my computer is silent; 📱 On my phone always sounds. One tap in the pinned panel, or
   `/desk`, `/phone`, `/auto`.
@@ -57,14 +64,19 @@ a new one — without the Claude app, and without opening a single port on the c
 
 ## The web app (optional)
 
-A Telegram Mini App on your own server, one tap away from any topic: every session in full and live, with
-answers to Claude's questions, a screenshot for Claude and the context gauge as in VS Code; your plan's limits and
-today's tokens by project; a form for a new task.
+A Telegram Mini App on your own server, one tap away from any topic. It is the comfortable way to work from the
+phone:
+
+- **Home** gathers everything that waits for you: permission requests and Claude's questions from every project,
+  with buttons, and what is running right now.
+- **A session** shows the whole conversation, live. When you scroll up, your own message stays pinned on top, and
+  earlier history loads by itself. Under the message field: the model with its effort as five dots (a tap opens
+  the menu), where your message will go, and the context gauge as in VS Code. The paperclip sends a screenshot
+  to Claude.
+- **Usage** shows your plan's limits and today's tokens by project. A form starts a new task in any project.
 
 <p align="center">
-  <img src="media/app-session.en.png" width="260" alt="A session: the whole conversation, live">
-  &nbsp;
-  <img src="media/app-usage.en.png" width="260" alt="Usage: plan limits and today's tokens by project">
+  <img src="media/app.en.png" width="860" alt="Three screens of the web app: Home with a permission request and a question, the model and effort menu of a session, Usage with plan limits and today's tokens by project">
 </p>
 
 It needs a Linux server with a domain name and HTTPS: see [deploy/relay/README.md](deploy/relay/README.md).
@@ -72,22 +84,21 @@ Without it, everything above works in the chat alone.
 
 ## How it differs from the official options
 
-Anthropic has its own ways to reach Claude Code away from the keyboard. If they fit you, use them:
+Anthropic has its own ways to reach Claude Code away from the keyboard. If they fit you, use them.
 
-- **[Remote Control](https://code.claude.com/docs/en/remote-control)** connects claude.ai/code or the Claude app
-  for iOS and Android to a Claude Code session running on your machine.
-- **[Channels](https://code.claude.com/docs/en/channels)** (a research preview) let an MCP server, including
-  ready-made Telegram, Discord and iMessage plugins, push messages into a running Claude Code session.
+| | Pult | [Remote Control](https://code.claude.com/docs/en/remote-control) | [Channels](https://code.claude.com/docs/en/channels) |
+|---|---|---|---|
+| Where you answer | Telegram, plus an optional web app inside it | claude.ai/code or the Claude app | Telegram, Discord or iMessage |
+| Which sessions | every VS Code tab and terminal session, picked up by hooks | the ones you connect, or all with its auto-connect setting | a session started with `claude --channels …` |
+| Your sign-in | whatever Claude Code is signed in with | a claude.ai plan; API keys aren't supported | claude.ai or a Console API key |
+| Status | independent, open source | official | official, research preview |
 
-Pult is built for a different way of working:
+What Pult adds on top of reaching a session:
 
-- **Telegram as the place where everything lands.** You don't need the Claude app.
-- **All sessions on the computer at once, with nothing to start.** Hooks pick up every VS Code tab and terminal
-  session, including ones you opened before leaving.
-- **One group with a topic per project**, keeping the history of turns, results and decisions.
-- **Writing into a tab that is already open** in VS Code, not only into sessions started for remote use.
-- **Everything runs on your computer.** The only outside service is Telegram (plus your own server, if you want the
-  web app).
+- **One Telegram group with a topic per project**, keeping the history of turns, results and decisions.
+- **Notifications that know where you are**, reminders on long turns, and warnings at 80 % and 95 % of your plan.
+- **Long commands of your own** reported the same way: `pult run -- npm run build`.
+- **Nothing to start per session**, and no Claude app needed: it isn't available in every country.
 
 ## Requirements
 
@@ -129,7 +140,8 @@ Optional:
   Code settings.
 - `pult app` sets up the web app. It needs your own server: see [deploy/relay/README.md](deploy/relay/README.md).
 
-### On Linux
+<details>
+<summary><b>On Linux</b></summary>
 
 Pult goes where Claude Code runs:
 
@@ -146,6 +158,8 @@ On a server, a user's services stop when they log out. To keep Pult running, and
 Whether you're away from the computer (the sound in 🔄 Auto) comes from GNOME, KDE or X11. Elsewhere (a server,
 another desktop) it comes from what you do in sessions: a prompt typed or a permission answered in the last two
 minutes.
+
+</details>
 
 ## Using it
 
@@ -235,6 +249,9 @@ Claude Code works exactly as before without Pult.
 
 ## Troubleshooting
 
+<details>
+<summary>When something doesn't work</summary>
+
 | | |
 |---|---|
 | The bot is silent | `pult status` shows the service and the connection to Telegram. `pult restart`. The log is `~/Library/Logs/pult.log` on macOS, `~/.local/state/pult/pult.log` on Linux. |
@@ -244,6 +261,8 @@ Claude Code works exactly as before without Pult.
 | No permission buttons, but the feed works | Claude Code's `auto` mode decides by itself. That's normal. |
 | A message to an open tab went to a copy | The tab was opened before the wrapper was set up (Reload Window), or the Claude Code extension just updated (Pult said so in General). |
 | Something else | `pult report`, then [open an issue](https://github.com/pulthq/pult/issues/new/choose). |
+
+</details>
 
 **Windows?** Not yet: it comes next.
 
