@@ -164,7 +164,7 @@ class Tab:
     def on_result(self, line):
         ctx = ctx_from_result(json.loads(line), getattr(self, "model", None))
         if ctx:
-            self.tell({"op": "ctx", "window": ctx[0], "max_out": ctx[1]})
+            self.tell({"op": "ctx", "window": ctx[0], "max_out": ctx[1], "model": getattr(self, "model", None)})
 
     def tell(self, msg):
         with self.slock:

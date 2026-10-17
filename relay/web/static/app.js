@@ -178,13 +178,21 @@ function Thumbs({ a }) {
 function Pic({ a }) {
   const [src, setSrc] = useState(null);
   const [big, setBig] = useState(false);
+  // full screen is a history entry: the system back gesture, Telegram's Back and a tap all go through history.back()
+  const open = () => { lightboxes++; history.pushState({ lightbox: true }, ""); setBig(true); };
+  useEffect(() => {
+    if (!big) return;
+    const onPop = () => { lightboxes = Math.max(0, lightboxes - 1); setBig(false); };
+    addEventListener("popstate", onPop);
+    return () => removeEventListener("popstate", onPop);
+  }, [big]);
   useEffect(() => {
     if (!a.image || !a.inbox) return;
     let alive = true;
     api("inbox", { name: a.name }).then((d) => alive && setSrc("data:image/" + (d.kind === "jpg" ? "jpeg" : d.kind) + ";base64," + d.data)).catch(() => {});
     return () => { alive = false; };
   }, [a.name]);
-  if (src) return html`<img class=${"att" + (big ? " big" : "")} src=${src} alt="" onClick=${() => setBig(!big)}/>`;
+  if (src) return html`<img class="att" src=${src} alt="" onClick=${open}/>${big && html`<div class="lightbox" onClick=${() => history.back()}><img src=${src} alt=""/></div>`}`;
   return html`<span class="att-chip">${a.image ? "🖼 " + a.name.split("/").pop() : t("att.file")}</span>`;
 }
 
@@ -210,8 +218,9 @@ const stack = [location.hash];
 addEventListener("hashchange", () => {
   if (stack.length > 1 && stack[stack.length - 2] === location.hash) stack.pop(); else stack.push(location.hash);
 });
+let lightboxes = 0;    // a picture open full screen is a step in the history: Back closes it, not the screen
 function back() {
-  if (stack.length > 1) history.back(); else { history.replaceState(null, "", "#/"); stack[0] = "#/"; dispatchEvent(new HashChangeEvent("hashchange")); }
+  if (lightboxes > 0 || stack.length > 1) history.back(); else { history.replaceState(null, "", "#/"); stack[0] = "#/"; dispatchEvent(new HashChangeEvent("hashchange")); }
 }
 function useRoute() {
   const [r, set] = useState(parse());
@@ -313,7 +322,7 @@ const GEAR = html`<svg viewBox="0 0 24 24" width="22" height="22" fill="none" st
 function Where({ mac, onSet }) {
   const [open, setOpen] = useState(false);
   const cur = MODES.includes(mac.mode) ? mac.mode : "auto";
-  const line = cur === "auto" ? (mac.away ? t("mac.away", { dur: dur(mac.idle) }) : t("mac.here")) : t("mode." + cur + ".short");
+  const line = cur === "auto" ? (mac.away ? t("mac.away.short", { dur: dur(mac.idle) }) : t("mac.here.short")) : t("mode." + cur + ".short");
   return html`<div class="where">
     <div class="where-h">
       <button class="where-b" aria-expanded=${open} onClick=${() => setOpen(!open)}><b>${t("mode." + cur + ".btn")}</b><span class="dim">${line}</span><span class="caret">${open ? "▾" : "▸"}</span></button>
@@ -392,11 +401,16 @@ function Settings() {
 }
 
 function Projects() {
-  const [d, err] = useLive(() => api("projects"), [], () => false);
+  const [d, err] = useLive(() => api("projects"), []);          // live: the counts change with every turn
   if (!d) return html`<${Loading} err=${err}/>`;
+  if (!d.projects.length) return html`<div><h3>${t("projects")}</h3><div class="empty">${t("projects.none")}</div></div>`;
   return html`<div><h3>${t("projects")}</h3><div class="list">${d.projects.map((p) => html`
     <button class="item" key=${p.pkey} onClick=${() => go("#/p/" + encodeURIComponent(p.pkey))}>
       <div class="item-h"><b>${p.name}</b><span class="dim">${ago(p.last)}</span></div>
+      ${(p.open || p.work || p.ask) ? html`<div class="chips">
+        ${p.work ? html`<span class="chip ok">${t("pj.work", { n: p.work })}</span>` : ""}
+        ${p.ask ? html`<span class="chip warn">${t("pj.ask", { n: p.ask })}</span>` : ""}
+        ${p.open ? html`<span class="chip">${t("pj.open", { n: p.open })}</span>` : ""}</div>` : ""}
       <div class="dim path">${p.path}</div></button>`)}</div></div>`;
 }
 
@@ -405,7 +419,7 @@ function Project({ pkey }) {
   if (!d) return html`<${Loading} err=${err}/>`;
   return html`<div><h2>${d.name}</h2>
     <button class="btn wide" onClick=${() => go("#/new?pkey=" + encodeURIComponent(pkey))}>${t("project.new")}</button>
-    <h3>${t("sessions")}</h3><div class="list">${d.sessions.map((s) => html`
+    <h3>${t("sessions")}</h3>${!d.sessions.length && html`<div class="empty">${t("sessions.none")}</div>`}<div class="list">${d.sessions.map((s) => html`
       <button class="item" key=${s.sid} onClick=${() => go("#/s/" + s.sid)}>
         <div class="item-h"><b>${s.driven ? "📱 " : ""}${s.title}</b><span class="dim">${ago(s.last)}</span></div>
         ${s.open && html`<div class="dim">${t("open.mac")}</div>`}</button>`)}</div></div>`;
@@ -452,7 +466,7 @@ function group(items) {
   }
   return out;
 }
-const At = ({ ts }) => (ts ? html`<span class="t">${hhmm(toDate(ts))}</span>` : "");
+const At = ({ ts, mid }) => (ts ? html`<span class="t">${mid ? t("mid.turn") : ""}${hhmm(toDate(ts))}</span>` : "");
 
 function Session({ sid }) {
   const now = useNow(10000);
@@ -462,7 +476,30 @@ function Session({ sid }) {
   const bottom = useRef(null);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [unread, setUnread] = useState(false);
+  const [far, setFar] = useState(false);          // scrolled up more than a screen: a way straight to the bottom
   const a = useAttach();
+  const comp = useRef(null);
+  const ta = useRef(null);
+  useEffect(() => {
+    const el = comp.current, main = document.querySelector("main");
+    if (!el || !main || !window.ResizeObserver) return;
+    const ro = new ResizeObserver(() => {
+      main.style.paddingBottom = (el.offsetHeight + 12) + "px";
+      document.documentElement.style.setProperty("--composer-h", el.offsetHeight + "px");
+    });
+    ro.observe(el);
+    return () => { ro.disconnect(); main.style.paddingBottom = ""; };
+  }, [!!s.info]);
+  useEffect(() => {
+    const f = () => {
+      const gap = document.body.scrollHeight - (window.innerHeight + window.scrollY);
+      if (gap < 120) setUnread(false);
+      setFar(gap > window.innerHeight);
+    };
+    addEventListener("scroll", f, { passive: true });
+    return () => removeEventListener("scroll", f);
+  }, []);
 
   const load = async (mode) => {
     const cur = ref.current;
@@ -480,6 +517,7 @@ function Session({ sid }) {
       setS({ items, before: mode === "after" ? cur.before : p.before, end: mode === "before" ? cur.end : p.end,
              info: d, err: null });
       if (stick) setTimeout(() => bottom.current && bottom.current.scrollIntoView({ block: "end" }), 30);
+      else if (mode === "after" && p.items.some((i) => i.k !== "result")) setUnread(true);
     } catch (e) { setS(Object.assign({}, ref.current, { err: e.message })); }
   };
   useEffect(() => {
@@ -505,6 +543,7 @@ function Session({ sid }) {
       haptic("success");
       setText("");
       a.clear();
+      if (ta.current) ta.current.style.height = "auto";       // back to one line: the field grew with the message
       if (r.how === "fork") alertBox(t("fork.started"));
     } catch (e) { alertBox(e.message); }
     setBusy(false);
@@ -522,6 +561,10 @@ function Session({ sid }) {
   const ts = info.stats && info.stats.turn;
   // the context gauge, the same number VS Code shows: used ÷ (window − the reserve for the answer)
   const pct = info.ctx && info.stats ? Math.min(100, Math.round(info.stats.context * 100 / info.ctx.usable)) : null;
+  // the status under the message field: where the text goes (a tab, a copy), the model, the context gauge
+  const dest = lv.tab ? t("dest.tab") : lv.open ? t("dest.copy") : "";
+  const ctxText = info.stats && info.stats.model ? (pct !== null ? t("ctx.pct", { pct, win: kilo(info.ctx.window) }) : t("context", { n: kilo(info.stats.context) })) : "";
+  const status = html`${dest}${dest && info.stats && info.stats.model ? " · " : ""}${info.stats && info.stats.model ? modelName(info.stats.model) + " · " : ""}<span class=${pct >= 90 ? "bad" : pct >= 70 ? "warn" : ""}>${ctxText}</span>`;
   return html`<div class="session">
     <div class="sess-h"><h2>${info.title}</h2><div class="dim">${info.project !== info.title ? html`<a class="crumb" href=${"#/p/" + encodeURIComponent(info.pkey)}>${info.project}</a>` : ""} ${st}</div>
       ${info.stats && info.stats.model && html`<div class="stats">${[modelName(info.stats.model), info.stats.effort].filter(Boolean).join(" · ")} · <span class=${pct >= 90 ? "bad" : pct >= 70 ? "warn" : ""}>${t("context", { n: kilo(info.stats.context) })}${pct !== null ? t("context.pct", { pct, win: kilo(info.ctx.window) }) : ""}</span><br/>
@@ -530,17 +573,20 @@ function Session({ sid }) {
     ${s.before != null && html`<button class="link center" onClick=${() => load("before")}>${t("earlier")}</button>`}
     ${group(s.items).map((i, n) => i.k === "day" ? html`<div class="day" key=${i.key}>${i.label}</div>`
       : i.k === "steps" ? html`<${Steps} key=${i.key} steps=${i.steps}/>`
-      : i.k === "user" ? html`<div class="msg me" key=${n}>${i.text}${(i.att || []).map((a, k) => html`<${Pic} key=${k} a=${a}/>`)}<${At} ts=${i.ts}/></div>`
+      : i.k === "user" ? html`<div class="msg me" key=${n}>${i.text}${i.att && i.att.length ? html`<div class="atts">${i.att.map((a, k) => html`<${Pic} key=${k} a=${a}/>`)}</div>` : ""}<${At} ts=${i.ts} mid=${i.mid}/></div>`
       : i.k === "note" ? html`<div class="note" key=${n}>${i.text}${i.ts ? " · " + hhmm(toDate(i.ts)) : ""}</div>`
       : html`<div class="msg" key=${n}><div class="md" dangerouslySetInnerHTML=${{ __html: md(i.text) }}/><${At} ts=${i.ts}/></div>`)}
     ${lv.state === "work" && html`<div class="working">${t("working")}</div>`}
     ${info.pending.map((r) => html`<${Req} key=${r.rid} r=${r} showWhere=${false}/>`)}
     <div ref=${bottom}></div>
-    <div class="composer"><${Thumbs} a=${a}/>
-      <div class="composer-row"><${Attach} a=${a} disabled=${busy}/>
-      <textarea rows="1" placeholder=${lv.tab ? t("write.tab") : lv.open ? t("write.copy") : t("write.session")} value=${text} onInput=${(e) => { setText(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}/>
-      ${lv.driven && lv.state === "work" ? html`<button class="btn danger" onClick=${stop}>${t("stop")}</button>` : ""}
-      <button class="btn send" aria-label=${t("send")} disabled=${busy || (!text.trim() && !a.files.length)} onClick=${() => sendText(false)}><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button></div>
+    ${(unread || far) && html`<button class=${"tobottom" + (unread ? " fresh" : "")} aria-label=${t("to.bottom")} onClick=${() => { bottom.current && bottom.current.scrollIntoView({ block: "end" }); setUnread(false); }}>${unread ? t("new.msgs") : "↓"}</button>`}
+    <div class="composer" ref=${comp}>
+      <${Thumbs} a=${a}/>
+      <textarea ref=${ta} rows="1" placeholder=${t("write")} value=${text} onInput=${(e) => { setText(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}/>
+      <div class="ctl"><${Attach} a=${a} disabled=${busy}/>
+        <span class="status">${status}</span>
+        ${lv.driven && lv.state === "work" ? html`<button class="btn danger" onClick=${stop}>${t("stop")}</button>` : ""}
+        <button class="btn send" aria-label=${t("send")} disabled=${busy || (!text.trim() && !a.files.length)} onClick=${() => sendText(false)}><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button></div>
     </div>
   </div>`;
 }
@@ -624,7 +670,7 @@ function Banner() {
 function App() {
   const r = useRoute();
   const [, relang] = useState(0);
-  useEffect(() => on("lang", () => relang((x) => x + 1)), []);
+  useEffect(() => { const off = on("lang", () => relang((x) => x + 1)); relang((x) => x + 1); return off; }, []);
   useEffect(() => {
     if (!tg || !tg.BackButton) return;
     if (r.name === "home") tg.BackButton.hide(); else tg.BackButton.show();

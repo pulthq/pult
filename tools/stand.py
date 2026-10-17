@@ -30,6 +30,7 @@ D = {
         title="Checkout: clearer error messages",
         ask="Make the checkout error messages clearer, following the examples in the design doc",
         ask_short="Make the checkout error messages clearer",
+        look="Here's the design doc",
         read="I've read the checkout module. Now the tests: the new messages have to fit them.",
         summary="## Summary\n\nAll **27 tests** pass. What changed:\n\n- a declined card says why and what to do;\n"
                 "- a timeout offers to try again.\n\n| case | before | after |\n|---|---|---|\n"
@@ -48,6 +49,7 @@ D = {
         title="Оформление заказа: понятные ошибки",
         ask="Сделай сообщения об ошибках при оплате понятнее, по примерам из макета",
         ask_short="Сделай сообщения об ошибках при оплате понятнее",
+        look="Вот макет",
         read="Модуль оплаты прочитан. Теперь тесты: новые сообщения должны в них вписаться.",
         summary="## Итог\n\nВсе **27 тестов** зелёные. Что поменялось:\n\n- отказ по карте объясняет причину и что делать;\n"
                 "- при тайм-ауте — предложение повторить.\n\n| случай | было | стало |\n|---|---|---|\n"
@@ -85,7 +87,21 @@ def aline(text, mid, out, ago=0):
     return json.dumps({"type": "assistant", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - ago)),
                        "message": {"id": mid, "model": "claude-opus-5-5", "role": "assistant",
                                    "content": [{"type": "text", "text": text}],
-                                   "usage": {"input_tokens": 2, "cache_read_input_tokens": 183000, "output_tokens": out}}})
+                                   "usage": {"input_tokens": 2, "cache_read_input_tokens": 120000, "output_tokens": out}}})
+
+
+def png_sample(w=320, h=200):
+    """A small made-up picture for the owner's message: coloured bands, no real content."""
+    import struct, zlib
+    rows = b""
+    for y in range(h):
+        band = (y * 4) // h
+        rgb = [(214, 226, 244), (122, 164, 220), (60, 110, 190), (34, 70, 140)][band]
+        rows += b"\x00" + bytes(rgb) * w
+    def chunk(t, b):
+        return struct.pack(">I", len(b)) + t + b + struct.pack(">I", zlib.crc32(t + b) & 0xffffffff)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + \
+        chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
 
 
 def ev(name, sid, cwd=SHOP, **kw):
@@ -125,11 +141,15 @@ async def main():
     d.mkdir(parents=True, exist_ok=True)
     (d.parent / PKEY2).mkdir(parents=True, exist_ok=True)
     summary = D["summary"] + ("\n<script>alert(1)</script>" if os.environ.get("STAND_XSS") == "1" else "")
+    pic = Path(os.environ["PULT_HOME"]) / "inbox" / "2026-10" / "app-stand.png"
+    pic.parent.mkdir(parents=True, exist_ok=True)
+    pic.write_bytes(png_sample())
     (d / (T.SID + ".jsonl")).write_text("\n".join([
         line("user", D["ask"], ago=86400),
+        line("user", D["look"] + "\n\n[Attachment from the Pult app: %s]\n\n[Attachment from the Pult app: %s]" % (pic, pic), ago=86300),
         json.dumps({"type": "assistant", "effort": "xhigh", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
                     "message": {"id": "u1", "model": "claude-opus-5-5", "role": "assistant", "content": [],
-                                "usage": {"input_tokens": 2, "cache_read_input_tokens": 182000, "cache_creation_input_tokens": 900,
+                                "usage": {"input_tokens": 2, "cache_read_input_tokens": 120000, "cache_creation_input_tokens": 900,
                                           "output_tokens": 9800, "output_tokens_details": {"thinking_tokens": 4100}}}}),
         line("assistant", [{"type": "text", "text": D["read"]}]),
         line("assistant", [{"type": "tool_use", "id": "a1", "name": "Read", "input": {"file_path": SHOP + "/tests/test_checkout.py"}}]),
@@ -144,6 +164,7 @@ async def main():
         aline(D["after_bg"], "u5", 1400),
     ]) + "\n")
     store.touch_session(T.SID, T.PKEY, path=SHOP, title=D["title"])
+    p.set_ctx(T.SID, 200000, 32000, model="claude-opus-5-5")        # the context gauge, as a turn's result reports it
     await T.run_hook(ev("SessionStart", T.SID))
     await T.run_hook(ev("UserPromptSubmit", T.SID, prompt=D["ask_short"]))
     p.live[T.SID].title, p.live[T.SID].named = D["title"], True

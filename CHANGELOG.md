@@ -2,6 +2,27 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.9.7 — 2026-10-18
+
+- The context gauge sits by the message field on the session screen, always in view, next to the model name — as
+  in VS Code. A session that hasn't finished a turn since the update borrows the window size known for its model.
+- A tap on a picture in the chat opens it full screen; a tap, the system back gesture or Telegram's Back closes it
+  and keeps the conversation open. The message field shrinks back to one line
+  after sending, and the page leaves room for the composer whatever its height — the end of the conversation no
+  longer hides under it.
+- A message that reached Claude in the middle of its turn (written while it was busy) now shows in the app's chat
+  as your message, marked "during the turn". Claude Code keeps such messages apart from ordinary ones and its own
+  tab doesn't show them.
+- The composer is laid out like a chat's: the message field on top, one line of controls under it — the paperclip,
+  where the text goes (the VS Code tab, or a copy), the model and the context gauge, Stop, Send. The field's hint is
+  one word. Scrolled up more than a screen, a “↓” button takes you straight to the bottom; it says “↓ new” when
+  messages arrived meanwhile.
+- The project list shows what is going on in each project: how many sessions are open, working and waiting for an
+  answer; projects with activity come first, and the list updates live.
+- Several pictures in one message sit in a row as square thumbnails. The Home strip says "away 1 h 7 min" in
+  short, so the time fits. The tab bar no longer stays in English when the language arrives before the app has
+  subscribed to it.
+
 ## 0.9.6 — 2026-10-18
 
 - The app's composer takes pictures: a paperclip on the session screen and in the new-task form. A screenshot is

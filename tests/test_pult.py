@@ -671,6 +671,47 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.get("ctx")[SID], [200000, 32000])                   # survives a restart
         self.assertEqual((await self.p.api_session(SID))["ctx"], {"window": 200000, "max_out": 32000, "usable": 167000})
         w.close()
+        # another session on the same model (the transcript's dated id) borrows the window before its own result
+        SID2 = "22222222-3333-4444-5555-666666666666"
+        self.p.set_ctx(SID, 200000, 32000, model="claude-opus-5-5")
+        tp2 = str(Path(TP).parent / (SID2 + ".jsonl"))
+        Path(tp2).write_text(json.dumps({"type": "assistant", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+                                         "message": {"id": "m1", "model": "claude-opus-5-5-20260301", "role": "assistant", "content": [],
+                                                     "usage": {"input_tokens": 10, "output_tokens": 5}}}) + "\n")
+        self.store.touch_session(SID2, PKEY, path="/Users/x/proj")
+        self.p.live_of(SID2, PKEY).transcript = tp2
+        self.assertEqual((await self.p.api_session(SID2))["ctx"]["window"], 200000)
+        self.assertEqual(self.store.get("ctx_model"), {"claude-opus-5-5": [200000, 32000]})
+
+    async def test_project_counts(self):
+        # the app's project list: open sessions, working, waiting — from `claude agents`, Pult's own sessions and
+        # live turns; active projects come first
+        from types import SimpleNamespace
+        base = TMP / "claude-projects-counts"
+        for pkey in (PKEY, "-Users-x-other"):
+            (base / pkey).mkdir(parents=True, exist_ok=True)
+            (base / pkey / "a.jsonl").write_text("{}")
+        fs = TMP / "fs-counts"
+        for name in ("proj", "other"):
+            (fs / name).mkdir(parents=True, exist_ok=True)            # the list keeps only folders that exist
+        os.utime(base / "-Users-x-other" / "a.jsonl", (time.time() + 100, time.time() + 100))   # the most recent
+        self.store.set_topic(PKEY, str(fs / "proj"), "proj", None)
+        self.store.set_topic("-Users-x-other", str(fs / "other"), "other", None)
+        SID2 = "22222222-3333-4444-5555-666666666666"
+        self.store.touch_session(SID2, PKEY, path="/Users/x/proj", driven=True)
+        self.p._agents = (time.monotonic() + 1e6, [{"sessionId": SID, "cwd": "/Users/x/proj", "status": "idle"}])
+        self.p.driven[SID2] = SimpleNamespace(busy=True, bg=set(), q=asyncio.Queue(), path="/Users/x/proj", client=None,
+                                              task=SimpleNamespace(cancel=lambda: None))
+        lv = self.p.live_of(SID, PKEY)
+        lv.pending["r1"] = SimpleNamespace(fut=asyncio.get_running_loop().create_future())
+        old = pultd.CLAUDE_PROJECTS
+        pultd.CLAUDE_PROJECTS = base
+        try:
+            rows = (await self.p.api_projects())["projects"]
+        finally:
+            pultd.CLAUDE_PROJECTS = old
+        self.assertEqual([(r["pkey"], r["open"], r["work"], r["ask"]) for r in rows],
+                         [(PKEY, 2, 1, 1), ("-Users-x-other", 0, 0, 0)])            # active first, despite recency
 
     async def test_inbox(self):
         # the app may fetch pictures from Pult's inbox only: a real image by its month/name, nothing outside

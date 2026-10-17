@@ -98,6 +98,18 @@ class TranscriptTest(unittest.TestCase):
         self.assertEqual([(i["text"], i.get("att")) for i in items], [
             ("глянь", [{"name": "2026-10/app-7.jpg", "image": True, "inbox": True}]),
             ("", [{"name": "a.pdf", "image": False, "inbox": False}])])
+        # a message that reached Claude mid-turn (Claude Code 2.1.301: a queued_command attachment, not a user
+        # message) shows up as the owner's message, marked; other attachments stay invisible
+        p3 = T.TMP / "mid.jsonl"
+        p3.write_text("\n".join([
+            json.dumps({"type": "attachment", "timestamp": "2026-10-17T20:56:18.492Z", "attachment": {
+                "type": "queued_command", "prompt": [{"type": "text", "text": "а меня ты обновил?"}], "commandMode": "prompt",
+                "origin": {"kind": "human"}, "humanTurn": True}}),
+            json.dumps({"type": "attachment", "timestamp": "2026-10-17T20:56:19.000Z", "attachment": {"type": "total_tokens_reminder"}}),
+            json.dumps({"type": "queue-operation", "operation": "remove", "content": "а меня ты обновил?", "reason": "absorbed_mid_turn"}),
+        ]) + "\n")
+        items = PW.transcript_page(str(p3))["items"]
+        self.assertEqual([(i["k"], i["text"], i.get("mid")) for i in items], [("user", "а меня ты обновил?", True)])
         self.assertEqual(page["items"][2]["out"], "строки файла")
         self.assertIsNone(page["before"])
         self.assertEqual(page["end"], self.p.read_bytes().rfind(b"\n") + 1)      # the partial line is not consumed

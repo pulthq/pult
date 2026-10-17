@@ -126,6 +126,20 @@ def transcript_page(path, before=None, after=None, cwd=None, page=PAGE):
         except ValueError:
             continue
         kind = e.get("type")
+        if kind == "attachment":
+            # a message that reached Claude in the middle of its turn (written while it was busy): Claude Code keeps
+            # it as a queued_command attachment, not as a user message, and its own tab doesn't show it (2.1.301)
+            att = e.get("attachment") if isinstance(e.get("attachment"), dict) else {}
+            if att.get("type") == "queued_command" and att.get("commandMode", "prompt") == "prompt" \
+                    and (att.get("origin") or {}).get("kind") == "human":
+                text = _NOISE.sub("", _text_of(att.get("prompt"))).strip()
+                if text:
+                    clean, paths = R.attachments(text)
+                    item = {"k": "user", "text": _short(clean, TEXT_MAX), "ts": e.get("timestamp"), "mid": True}
+                    if paths:
+                        item["att"] = [inbox_name(p) for p in paths]
+                    items.append(item)
+            continue
         if kind not in ("user", "assistant") or e.get("isSidechain") or e.get("isMeta"):
             continue
         ts = e.get("timestamp")

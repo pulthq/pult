@@ -63,7 +63,7 @@ WARN_AT = (80, 95)       # % of a limit: a warning with sound in General (decisi
 UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the app shrinks them to ~200 KB first)
 UPLOADS_MAX = 3                 # pictures per message
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.9.6"
+VERSION = "0.9.7"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -200,6 +200,12 @@ def ctx_from_usage(model_usage, model=None):
     if not entry or not entry.get("contextWindow"):
         return None
     return int(entry["contextWindow"]), int(entry.get("maxOutputTokens") or 0)
+
+
+def model_key(model):
+    """A model id without its date: the transcript says claude-opus-5-5-20260301, the result's modelUsage may say
+    claude-opus-5-5 — the same window."""
+    return re.sub(r"-\d{8}$", "", str(model or ""))
 
 
 def ctx_usable(window, max_out):
@@ -580,7 +586,7 @@ class Driven:
                                             self.d.expect.get(self.sid))
                     ctx = ctx_from_usage(m.model_usage, self.model)
                     if ctx:
-                        self.d.set_ctx(self.sid, *ctx)
+                        self.d.set_ctx(self.sid, *ctx, model=self.model)
                     self.result.set()
                 elif isinstance(m, SystemMessage) and m.subtype == "init":
                     self.model = m.data.get("model") or self.model
@@ -666,6 +672,7 @@ class Pult:
         self.jobs_done = collections.deque(maxlen=10)
         self.new_next = set()          # topics where a bare /new was sent: the next text there starts a new session
         self.ctx = store.get("ctx") or {}   # sid → [context window, max output tokens], from each turn's result
+        self.ctx_model = store.get("ctx_model") or {}   # model → the same: a session that hasn't reported yet borrows it
 
     # ----- this computer's environment -----
 
@@ -1795,16 +1802,27 @@ class Pult:
         p.write_bytes(blob)
         return (text or "Have a look at the attachment.") + "\n\n[Attachment from Telegram: %s]" % p
 
-    def set_ctx(self, sid, window, max_out):
-        """A turn's result said how big the session's context window is: remembered for the app's context gauge."""
-        if not sid or not window or self.ctx.get(sid) == [window, max_out]:
+    def set_ctx(self, sid, window, max_out, model=None):
+        """A turn's result said how big the session's context window is: remembered for the app's context gauge —
+        for the session, and for the model, so that other sessions on it show the gauge before their own first result."""
+        if not sid or not window:
             return
-        self.ctx[sid] = [int(window), int(max_out)]
+        val = [int(window), int(max_out or 0)]
+        if model and self.ctx_model.get(model_key(model)) != val:
+            self.ctx_model[model_key(model)] = val
+            self.store.put("ctx_model", self.ctx_model)
+        if self.ctx.get(sid) == val:
+            return
+        self.ctx[sid] = val
         if len(self.ctx) > 300:
             for k in list(self.ctx)[:100]:
                 del self.ctx[k]
         self.store.put("ctx", self.ctx)
         self.changed(sid)
+
+    def ctx_of(self, sid, model=None):
+        """The session's context window, or the window known for its model."""
+        return self.ctx.get(sid) or (self.ctx_model.get(model_key(model)) if model else None)
 
     def with_uploads(self, text, files):
         """Pictures sent from the app (base64) go to ~/.local/share/pult/inbox/, like attachments from Telegram, and
@@ -1912,7 +1930,7 @@ class Pult:
                     t.sid = m.get("sid")
                     self.changed(t.sid)
                 elif m.get("op") == "ctx" and t.sid:          # the wrapper saw a turn's result: the context window
-                    self.set_ctx(t.sid, m.get("window"), m.get("max_out") or 0)
+                    self.set_ctx(t.sid, m.get("window"), m.get("max_out") or 0, model=m.get("model"))
         finally:
             if self.tabs.get(t.pid) is t:
                 del self.tabs[t.pid]
@@ -2240,12 +2258,42 @@ class Pult:
                 "open": opened, "recent": list(self.recent),
                 "jobs": [self.job_item(j) for j in self.jobs.values()] + [self.job_item(j) for j in self.jobs_done]}
 
+    async def project_counts(self):
+        """Per project: sessions open right now (on the computer or from Telegram), working, waiting for an answer."""
+        by = {}
+
+        def add(pkey, sid, work, ask):
+            if not pkey or not sid:
+                return
+            d = by.setdefault(pkey, {"open": set(), "work": set(), "ask": set()})
+            d["open"].add(sid)
+            if work:
+                d["work"].add(sid)
+            if ask:
+                d["ask"].add(sid)
+        for a in await self.agents():
+            sid = a.get("sessionId")
+            lv = self.live.get(sid)
+            add(self.session_pkey(sid) or sanitize(a.get("cwd") or ""), sid,
+                a.get("status") == "busy" or bool(lv and lv.turn), bool(lv and lv.pending))
+        for sid, dr in self.driven.items():
+            lv = self.live.get(sid)
+            add(self.session_pkey(sid) or sanitize(dr.path), sid, dr.busy, bool(lv and lv.pending))
+        for sid, lv in self.live.items():
+            if lv.turn or lv.pending:                 # a tab mid-turn counts even if `claude agents` missed it
+                add(lv.pkey, sid, bool(lv.turn), bool(lv.pending))
+        return {k: {n: len(v[n]) for n in ("open", "work", "ask")} for k, v in by.items()}
+
     async def api_projects(self):
         known = {r["pkey"]: r["path"] for r in self.store.db.execute("SELECT pkey, path FROM topics") if r["path"]}
+        counts = await self.project_counts()
         out = []
         for mtime, pkey, path in (await asyncio.to_thread(self.list_projects, known))[:40]:
+            c = counts.get(pkey) or {}
             out.append({"pkey": pkey, "name": self.project_label(pkey) if pkey in known else self.project_name(pkey, path),
-                        "path": path, "last": mtime})
+                        "path": path, "last": mtime, "open": c.get("open", 0), "work": c.get("work", 0), "ask": c.get("ask", 0)})
+        # what needs you or works first, then what is open, then by recency
+        out.sort(key=lambda r: (-(r["work"] + r["ask"] > 0), -(r["open"] > 0), -r["last"]))
         return {"projects": out}
 
     async def api_sessions(self, pkey):
@@ -2271,7 +2319,7 @@ class Pult:
         seen = sid in self.live and not lv.driven and lv.turn is not None
         live["open"] = (seen or any(a.get("sessionId") == sid for a in await self.agents())) \
             and not live["tab"] and sid not in self.driven
-        ctx = self.ctx.get(sid)
+        ctx = self.ctx_of(sid, (stats or {}).get("model"))
         return {"sid": sid, "title": self.title(lv), "project": self.project_label(lv.pkey), "pkey": lv.pkey,
                 "live": live, "page": page, "stats": stats,
                 "ctx": {"window": ctx[0], "max_out": ctx[1], "usable": ctx_usable(ctx[0], ctx[1])} if ctx else None,

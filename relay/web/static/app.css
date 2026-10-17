@@ -67,6 +67,7 @@ button { font: inherit; color: inherit; }
 .now { margin-top: 4px; font-size: 14.5px; overflow-wrap: anywhere; }
 .chip { flex: none; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 99px; background: var(--code); color: var(--muted); white-space: nowrap; }
 .chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.bad { color: var(--danger); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 5px 0 3px; }
 
 /* what needs you: the one loud thing — a warm bar on the left, everything else as usual */
 .card { background: var(--card); border-radius: 14px; padding: 12px 14px; margin: 10px 0; }
@@ -96,6 +97,7 @@ pre code { background: none; padding: 0; }
 .own { display: flex; gap: 8px; margin-top: 8px; }
 input, textarea, select { font: inherit; color: var(--ink); background: var(--code); border: 1px solid transparent; border-radius: 10px;
   padding: 9px 12px; width: 100%; outline: none; }
+textarea { resize: none; }
 input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .own input { flex: 1; }
 .own .btn { flex: none; }
@@ -126,19 +128,30 @@ details.plan summary { cursor: pointer; color: var(--link); }
 .note { color: var(--muted); font-size: 14px; text-align: center; margin: 12px 8px; overflow-wrap: anywhere; }
 .msg .t { display: block; text-align: right; font-size: 11.5px; color: var(--muted); margin-top: 4px; white-space: nowrap; }
 .msg.me .t { color: inherit; opacity: .7; }
-.msg img.att { display: block; max-width: 160px; max-height: 160px; border-radius: 10px; margin-top: 6px; cursor: zoom-in; }
-.msg img.att.big { max-width: 100%; max-height: none; cursor: zoom-out; }
+.atts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.msg img.att { display: block; width: 112px; height: 112px; object-fit: cover; border-radius: 10px; cursor: zoom-in; }
+.lightbox { position: fixed; inset: 0; z-index: 20; background: rgba(0, 0, 0, .93); display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
+.lightbox img { max-width: 100vw; max-height: 100vh; object-fit: contain; }
 .att-chip { display: inline-block; margin-top: 6px; padding: 2px 8px; border-radius: 8px; background: rgba(255, 255, 255, .22); font-size: 13.5px; }
 .day { text-align: center; color: var(--muted); font-size: 13px; font-weight: 600; margin: 16px 0 6px; }
 .bg { color: var(--muted); font-size: 14px; margin-top: 4px; overflow-wrap: anywhere; }
 
+/* the composer: the field on top, one line of controls under it — the clip, where the text goes with the model
+   and the context gauge (as VS Code keeps them by its field), Stop, Send */
 .composer { position: fixed; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; gap: 6px; padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
   background: var(--card); border-top: 1px solid var(--line); }
-.composer-row { display: flex; gap: 8px; align-items: flex-end; }
 .composer textarea { resize: none; max-height: 160px; border-radius: 14px; }
-.composer .btn { flex: none; }
+.ctl { display: flex; align-items: center; gap: 8px; }
+.ctl .status { flex: 1; min-width: 0; font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ctl .warn { color: var(--warn); } .ctl .bad { color: var(--danger); }
+.ctl .btn { flex: none; }
+.ctl .btn.danger { min-height: 36px; padding: 6px 12px; font-size: 14px; }
+.tobottom { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--composer-h, 110px) + 10px); z-index: 6;
+  background: var(--card); color: var(--link); border: 1px solid var(--line); border-radius: 99px; padding: 6px 14px; font-size: 13.5px;
+  font-weight: 600; box-shadow: 0 2px 8px rgba(0, 0, 0, .12); cursor: pointer; min-width: 40px; }
+.tobottom.fresh { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); }
 /* pictures from the phone: the clip picks them, the thumbnails show what goes with the message */
-.clip { flex: none; width: 42px; height: 42px; display: flex; align-items: center; justify-content: center; border-radius: 50%;
+.clip { flex: none; width: 38px; height: 38px; display: flex; align-items: center; justify-content: center; border-radius: 50%;
   background: var(--code); color: var(--muted); cursor: pointer; }
 .clip input { display: none; }
 .clip.off { opacity: .4; }
@@ -149,7 +162,7 @@ details.plan summary { cursor: pointer; color: var(--link); }
 .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .thumb button { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; border-radius: 50%; border: 0; padding: 0;
   background: rgba(0, 0, 0, .6); color: #fff; font-size: 15px; line-height: 20px; cursor: pointer; }
-.btn.send { width: 42px; height: 42px; padding: 0; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+.btn.send { width: 38px; height: 38px; padding: 0; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
 
 .tabs { position: fixed; left: 0; right: 0; bottom: 0; display: flex; background: var(--card); border-top: 1px solid var(--line);
   padding-bottom: env(safe-area-inset-bottom); }
