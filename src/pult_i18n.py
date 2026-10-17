@@ -34,6 +34,8 @@ S = {
         "ru": "\n\nПриложение: все сессии на компьютере, переписка целиком, вопросы Claude, новые задачи, расход.",
     },
     "panel.open": {"en": "Open Pult", "ru": "Открыть Пульт"},
+    "card.app": {"en": "📱 Pult", "ru": "📱 Пульт"},       # the button of a project topic's pinned card
+    "menu.app": {"en": "Pult", "ru": "Пульт"},            # the app button next to the message field, private chat
 
     # ----- help -----
     "help": {
@@ -115,10 +117,13 @@ S = {
     "help.app": {
         "en": "<b>📱 The app</b>\n\nInside Telegram: every session on the computer, full transcripts with times, answers "
               "to Claude's questions, new tasks, subscription usage, settings.\n"
-              "Open it with /app or the button in the pinned message.",
+              "Open it with the 📱 Pult button pinned at the top of each project topic (it opens that project), the "
+              "button in the pinned message in General, /app, or the Pult button next to the message field in your "
+              "private chat with the bot.",
         "ru": "<b>📱 Приложение</b>\n\nВнутри Telegram: все сессии на компьютере, переписка целиком со временем, ответы на "
               "вопросы Claude, новая задача, расход подписки, настройки.\n"
-              "Открыть — /app или кнопка в закреплённом сообщении.",
+              "Открыть — кнопкой «📱 Пульт» в закрепе вверху каждой темы проекта (откроет этот проект), кнопкой в "
+              "закреплённом сообщении «Общей», командой /app или кнопкой «Пульт» у строки ввода в личном чате с ботом.",
     },
     "help.app.off": {
         "en": "\n\nNot set up yet: the app needs your own server with a domain — see the README.",

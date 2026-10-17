@@ -167,7 +167,8 @@ function useRoute() {
 }
 const start = tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param;
 if ((!location.hash || tgHash(location.hash)) && start) {
-  const h = start.startsWith("s_") ? "#/s/" + start.slice(2) : start === "new" ? "#/new" : start === "usage" ? "#/usage" : start === "settings" ? "#/settings" : null;
+  const h = start.startsWith("s_") ? "#/s/" + start.slice(2) : start.startsWith("p_") ? "#/p/" + encodeURIComponent(start.slice(2))
+    : start === "new" ? "#/new" : start === "usage" ? "#/usage" : start === "settings" ? "#/settings" : start === "projects" ? "#/projects" : null;
   if (h) { history.replaceState(null, "", h); stack[0] = h; }
 }
 

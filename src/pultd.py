@@ -57,7 +57,7 @@ USAGE_EVERY = 15 * 60    # usage check for warnings, if there was work on the Ma
 USAGE_NEAR_EVERY = 5 * 60   # …and near the threshold (from 70 %), more often
 WARN_AT = (80, 95)       # % of a limit: a warning with sound in General (decision 2026-10-16)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.9.0"
+VERSION = "0.9.1"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -603,6 +603,7 @@ class Pult:
         self.req_by_rid = {}
         self.req_by_msg = {}
         self.topic_locks = {}
+        self.cards_seen = set()        # topics whose card was checked since start (Pult.topic_card)
         self.run_sem = asyncio.Semaphore(MAX_RUNNING)
         self._idle = (0.0, None)
         self.here_seen = time.monotonic()   # the owner's last action in a session here (Pult.idle)
@@ -725,8 +726,64 @@ class Pult:
             thread = res["message_thread_id"]
             self.store.set_topic(pkey, path, name, thread)
             log("topic created:", name)
-            await self.send(None, self.t("topic.intro", name=R.esc(name), path=R.esc(path or "?")), here=thread, prio=1)
+            self.cards_seen.add(thread)
+            await self.topic_card(pkey, thread, new=True)
             return thread
+
+    def project_start(self, pkey):
+        """The app's start parameter for a project's screen. Telegram allows 64 characters [A-Za-z0-9_-]; a longer
+        one opens the list of projects."""
+        start = "p_" + pkey
+        return start if len(start) <= 64 and re.fullmatch(r"[A-Za-z0-9_-]+", start) else "projects"
+
+    def card_buttons(self, pkey):
+        url = self.app_url(start=self.project_start(pkey))
+        return [[{"text": self.t("card.app"), "url": url}]] if url else None
+
+    async def topic_card(self, pkey, thread, new=False):
+        """A project topic's card: its intro with one button into the app on this project's screen, pinned in the
+        topic — Telegram shows that button right in the topic's pinned bar, one tap from anywhere in the topic
+        (owner's check 2026-10-17; a button next to the message field exists only in a private chat with the bot).
+        Posted with a new topic, or the first time Pult writes into an older one; edited when the language or the
+        app link changes. Without the app, a new topic gets the intro alone, unpinned."""
+        row = self.store.topic(pkey)
+        name, path = (row["name"], row["path"]) if row else (pkey, None)
+        text = self.t("topic.intro", name=R.esc(name), path=R.esc(path or "?"))
+        buttons = self.card_buttons(pkey)
+        sig = "%s|%s" % (self.lang(), buttons[0][0]["url"] if buttons else "")
+        cards = self.store.get("cards") or {}
+        mid, old, pinned = cards.get(str(thread)) or (None, None, False)
+        if mid and old != sig:
+            self.edit(mid, text, buttons, prio=7)
+        elif not mid and (buttons or new):
+            mid = await self.send(None, text, here=thread, buttons=buttons, prio=1 if new else 7)
+            if not mid:
+                return
+        elif not mid or old == sig:
+            return
+        if buttons and not pinned:
+            try:
+                await self.out.submit(1 if new else 7, lambda: self.tg.call(
+                    "pinChatMessage", chat_id=self.chat, message_id=mid, disable_notification=True))
+                pinned = True
+            except TgError as e:
+                log("card not pinned:", e)
+        cards = self.store.get("cards") or {}
+        cards[str(thread)] = [mid, sig, pinned]
+        self.store.put("cards", cards)
+
+    def card_check(self, pkey, thread):
+        """Once per start for each topic Pult writes into: its card is there and up to date (in the background)."""
+        if thread in self.cards_seen:
+            return
+        self.cards_seen.add(thread)
+
+        async def go():
+            try:
+                await self.topic_card(pkey, thread)
+            except Exception as e:
+                log("topic card:", repr(e))
+        asyncio.create_task(go())
 
     # ----- sending -----
 
@@ -745,6 +802,8 @@ class Pult:
                 thread = here or None
             else:
                 thread = await self.thread_for(pkey) if pkey else None
+                if thread:
+                    self.card_check(pkey, thread)
             params = dict(chat_id=self.chat, text=text, parse_mode="HTML",
                           disable_notification=not notify or self.mode() == "mac",   # at the Mac, everything is silent
                           link_preview_options={"is_disabled": True})
@@ -2188,6 +2247,27 @@ class Pult:
                 await self.tg.call("setMyCommands", commands=cmds, language_code=None if lang == "en" else lang)
             except TgError as e:
                 log("setMyCommands:", e)
+        await self.setup_menu_button()
+
+    def app_web_url(self):
+        """The app's own address (the relay serves it): wss://host/path/agent → https://host/path/."""
+        u = self.env.get("PULT_RELAY_URL") or ""
+        if not (self.env.get("PULT_APP_LINK") and u.startswith("wss://") and u.endswith("/agent")):
+            return None
+        return "https://" + u[len("wss://"):-len("agent")]
+
+    async def setup_menu_button(self):
+        """The owner's private chat with the bot: the app button next to the message field (Telegram has such a
+        button only in private chats, so in the group the way in is the topic cards and the panel). Without the
+        app — Telegram's default, the command list."""
+        url = self.app_web_url()
+        want = {"type": "web_app", "text": self.t("menu.app"), "web_app": {"url": url}} if url else {"type": "default"}
+        for uid in sorted(self.allowed):
+            try:
+                if await self.tg.call("getChatMenuButton", chat_id=uid) != want:
+                    await self.tg.call("setChatMenuButton", chat_id=uid, **({"menu_button": want} if url else {}))
+            except TgError as e:
+                log("menu button:", e)
 
 
 async def amain():

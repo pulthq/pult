@@ -64,7 +64,7 @@ class FakeTg:
         for m, d in self.calls:
             if m in ("sendMessage", "editMessageText") and "reply_markup" in d:
                 for row in json.loads(d["reply_markup"]).get("inline_keyboard", []):
-                    out += [b["callback_data"] for b in row if b["callback_data"].startswith(prefix)]
+                    out += [b["callback_data"] for b in row if b.get("callback_data", "").startswith(prefix)]
         return out
 
 
@@ -342,6 +342,11 @@ class HelpersTest(unittest.TestCase):
         self.assertEqual(pultctl.strip_ours(hooks), {"PreToolUse": hooks["PreToolUse"]})
 
 
+def intro_id(fake, data):
+    """The message_id the fake gave a sendMessage call (ids go up by one per call, starting at 1001)."""
+    return 1001 + next(i for i, (m, d) in enumerate(fake.calls) if d is data)
+
+
 class DaemonTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.fake = FakeTg()
@@ -373,6 +378,58 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
 
     def sent(self):
         return self.texts() + self.texts("editMessageText")
+
+    async def test_topic_cards(self):
+        # the app is set up: a new topic's intro carries one button into the app on the project's screen and is
+        # pinned (Telegram shows the button in the topic's pinned bar); an older topic gets its card once, the
+        # first time Pult writes there; a new app link edits the card
+        self.p.env.update(PULT_APP_LINK="https://t.me/b/pult", PULT_RELAY_URL="wss://h.example/pult/agent")
+        await self.p.send(PKEY, "первое")
+        intro = next(d for d in self.fake.of("sendMessage") if "📂" in d["text"])
+        btn = json.loads(intro["reply_markup"])["inline_keyboard"]
+        self.assertEqual(btn, [[{"text": "📱 Пульт", "url": "https://t.me/b/pult?startapp=p_" + PKEY}]])
+        self.assertEqual([d["message_id"] for d in self.fake.of("pinChatMessage")], [str(intro_id(self.fake, intro))])
+        self.assertEqual(self.texts()[-1], "первое")                                # the card comes first
+        await self.p.send(PKEY, "второе")
+        self.assertEqual(len(self.fake.of("pinChatMessage")), 1)
+        # an older topic, from before the cards
+        self.store.set_topic("-Users-x-old", "/Users/x/old", "old", 55)
+        await self.p.send("-Users-x-old", "в старую тему")
+        await until(lambda: len(self.fake.of("pinChatMessage")) == 2)
+        await self.p.send("-Users-x-old", "ещё раз")
+        await asyncio.sleep(0.05)
+        self.assertEqual(len([t for t in self.texts() if "📂 <b>old</b>" in t]), 1)
+        # the app moved: after a restart the cards are edited, not posted again
+        self.p.env["PULT_APP_LINK"] = "https://t.me/b/app2"
+        self.p.cards_seen.clear()
+        await self.p.send("-Users-x-old", "после перезапуска")
+        await until(lambda: any("app2" in d.get("reply_markup", "") for d in self.fake.of("editMessageText")))
+        self.assertEqual(len([t for t in self.texts() if "📂 <b>old</b>" in t]), 1)
+        self.assertEqual(len(self.fake.of("pinChatMessage")), 2)
+        # a long path: the start parameter would not fit — the list of projects
+        self.assertEqual(self.p.project_start("-" + "x" * 70), "projects")
+
+    async def test_topic_card_without_app(self):
+        # no app: a new topic gets its intro as before — no button, not pinned; older topics are left alone
+        await self.p.send(PKEY, "первое")
+        intro = next(d for d in self.fake.of("sendMessage") if "📂" in d["text"])
+        self.assertNotIn("reply_markup", intro)
+        self.store.set_topic("-Users-x-old", "/Users/x/old", "old", 55)
+        await self.p.send("-Users-x-old", "в старую тему")
+        await asyncio.sleep(0.05)
+        self.assertEqual(self.fake.of("pinChatMessage"), [])
+        self.assertEqual(len([t for t in self.texts() if "📂" in t]), 1)
+
+    async def test_menu_button(self):
+        # the private chat with the bot: the app button next to the message field; without the app — the default
+        self.p.env.update(PULT_APP_LINK="https://t.me/b/pult", PULT_RELAY_URL="wss://h.example/pult/agent")
+        await self.p.setup_menu_button()
+        mb = json.loads(self.fake.of("setChatMenuButton")[-1]["menu_button"])
+        self.assertEqual(mb, {"type": "web_app", "text": "Пульт", "web_app": {"url": "https://h.example/pult/"}})
+        self.assertEqual(self.fake.of("setChatMenuButton")[-1]["chat_id"], str(OWNER))
+        self.p.env.pop("PULT_APP_LINK")
+        await self.p.setup_menu_button()
+        self.assertNotIn("menu_button", self.fake.of("setChatMenuButton")[-1])
 
     async def test_turn_feed(self):
         Path(TP).parent.mkdir(parents=True, exist_ok=True)

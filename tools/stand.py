@@ -1,6 +1,6 @@
 """Web app test stand: a local relay (127.0.0.1:18097) + the daemon with a fake Telegram and made-up sessions:
 one working, one waiting for a permission, one waiting for an answer, jobs without Claude, a final result. Login
-is signed with test keys (tests/test_web.py). Prints the screen URLs (HOME, SESS, USAGE, SETTINGS), stays up HOLD s.
+is signed with test keys (tests/test_web.py). Prints the screen URLs (HOME, SESS, USAGE, SETTINGS, NEW, PROJ, PROJECTS), stays up HOLD s.
 
   HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out &
   ~/.local/share/pult/venv/bin/python tools/shot.py "$(grep ^HOME /tmp/stand.out | cut -d' ' -f2)" home.png 412 4 [dark]
@@ -183,6 +183,10 @@ async def main():
           urllib.parse.quote(init("s_" + T.SID)), flush=True)
     print("NEW http://127.0.0.1:18097/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
           urllib.parse.quote(init("new")), flush=True)
+    print("PROJ http://127.0.0.1:18097/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
+          urllib.parse.quote(init("p_" + T.PKEY)), flush=True)       # a project topic's pinned card
+    print("PROJECTS http://127.0.0.1:18097/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
+          urllib.parse.quote(init("projects")), flush=True)
     if os.environ.get("STAND_DUMP") == "1":            # what went to Telegram — the README's examples come from here
         await asyncio.sleep(2)
         for m, d in fake.calls:

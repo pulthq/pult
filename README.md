@@ -53,7 +53,9 @@ one, or write straight into a VS Code tab that is already open.
 - **Any long command, not only Claude.** `pult run -- npm run build` reports start, progress, the exit code and
   the last lines of output.
 - **The web app** (optional, on your own server) is a Telegram Mini App. It shows every session in full and live,
-  your plan's limits, today's tokens by project, and has a form for new tasks.
+  your plan's limits, today's tokens by project, and has a form for new tasks. It's one tap away: the 📱 Pult
+  button pinned at the top of each project topic opens that project, and your private chat with the bot has a
+  Pult button next to the message field.
 
 ## How it differs from the official options
 
@@ -146,7 +148,7 @@ Work on the computer as usual. In Telegram:
 | `/status` | what's open on the computer right now |
 | `/projects`, `/sessions` | projects with their topics; recent sessions of this project |
 | `/stop` (as a reply) | interrupt a turn of a session started from Telegram |
-| `/app` | open the web app |
+| `/app`, 📱 Pult in a topic's pinned bar | open the web app (from a topic — on that project) |
 | `/help` | everything above, in sections |
 
 In a terminal, `pult help` lists the commands: `status`, `setup`, `start|stop|restart`, `hooks on|off`,

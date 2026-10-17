@@ -2,6 +2,20 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.9.1 — 2026-10-17
+
+The app is one tap away. Telegram puts an app button next to the message field only in a private chat with the
+bot, so Pult adds one there and pins one at the top of each project topic.
+
+- Each project topic gets a pinned card: the topic's intro with a 📱 Pult button that opens the app on that
+  project's screen. Telegram shows the button right in the topic's pinned bar. A new topic gets it at once; a topic
+  from before gets it the first time Pult writes there, so the group isn't flooded with pins. When the language or
+  the app's address changes, the cards are edited, not posted again. Without the app, topics stay as they were.
+- Your private chat with the bot gets a Pult button next to the message field. Without the app, Telegram's own
+  command list stays there.
+- The app opens a project's screen (`startapp=p_<project>`) or the list of projects (`startapp=projects`).
+- `/help` lists every way to open the app.
+
 ## 0.9.0 — 2026-10-17
 
 Pult runs on Linux (stage K1). Tested on Ubuntu 24.04 (arm64): the installer, the setup wizard with a real bot,
