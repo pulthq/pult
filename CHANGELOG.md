@@ -2,6 +2,17 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.9.5 — 2026-10-17
+
+The front page, rewritten for a stranger.
+
+- README (English and Russian): what Pult is in one sentence, then "An hour with Pult" — six steps from leaving
+  the computer to coming back; the feature list is shorter and the web app has a section of its own.
+- A picture of a project topic — the result, a running turn with Claude's words, a permission request with its
+  buttons — drawn from the daemon's real output on the made-up project of the test stand (`tools/chat_shot.py`).
+  Not a Telegram screenshot: the README never shows real projects.
+- A release badge. `tools/shot.py` can cut a picture at an element's bottom edge (`SHOT_FIT`).
+
 ## 0.9.4 — 2026-10-17
 
 A usability pass over the chat and the app: the same words and icons everywhere, less noise, and two commands that
