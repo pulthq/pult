@@ -2,6 +2,28 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.9.9 — 2026-10-18
+
+- The effort level of a session can be switched from the phone, next to the model: one menu with two columns,
+  Model and Effort, that stays open while you pick. A session Pult runs switches at once; a VS Code tab with
+  Pult's wrapper switches for that tab only, without touching Claude Code's settings (`apply_flag_settings`,
+  checked with a probe on 2.1.301: the next request runs at the new level, "Default" goes back to the settings).
+  Open tabs pick it up after Reload Window.
+- The status under the message field is two steady lines: the model with its effort as five dots (a tap opens the
+  menu), then where the message goes and the context gauge. Before, the pieces wrapped unevenly on a narrow phone
+  and the model name stood out of the line.
+- Scrolled up, your own message stays pinned at the top of the session screen — the nearest one above what is on
+  screen, two lines of it; a tap shows it in full with its pictures and a way back to it.
+- Earlier history loads by itself as you scroll up, and what you are reading stays in place; no "Show earlier"
+  button to hunt for.
+- The tab wrapper takes any control request from Pult (`op: control`), so new switches won't need another Reload
+  Window; its log can be redirected with `PULT_TAB_LOG`.
+- After an update the app no longer mixes new and old files: every module it imports gets the release's `?v=`
+  through an import map, and app files are revalidated on each open. Before, Telegram kept an old dictionary under
+  a new app and showed string keys instead of words.
+- A column of the model menu that can't switch here (a tab with an older wrapper) still answers a tap: the reason
+  under the columns lights up.
+
 ## 0.9.8 — 2026-10-18
 
 - The status under the message field wraps instead of being cut off on a narrow phone, and a tap on it explains

@@ -29,7 +29,8 @@ CONF = os.environ.get("PULT_TAB_CONF") or os.path.expanduser("~/.config/pult/tab
 OFF = os.path.expanduser("~/.config/pult/tab-off")        # off switch: if the file exists, there is no wrapper
 SOCK = os.environ.get("PULT_SOCK") or os.path.expanduser("~/.local/share/pult/pult.sock")
 # where pult_os.LOG_DIR is (repeated here: the wrapper imports nothing of Pult's — fewer ways to fail)
-LOG = os.path.expanduser("~/Library/Logs/pult-tab.log" if sys.platform == "darwin" else "~/.local/state/pult/pult-tab.log")
+LOG = os.environ.get("PULT_TAB_LOG") or os.path.expanduser(
+    "~/Library/Logs/pult-tab.log" if sys.platform == "darwin" else "~/.local/state/pult/pult-tab.log")   # env: tests, probes
 TAP_MAX = 4 * 1024 * 1024                                  # longer lines are not parsed, only passed through
 
 
@@ -106,7 +107,7 @@ class Tab:
         self.slock = threading.Lock()
         self.child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
         self.cin, self.cout = self.child.stdin.fileno(), self.child.stdout.fileno()
-        self.drop = set()                      # ids of our own control requests: their responses don't reach the extension
+        self.drop = {}                         # our own control requests, id → subtype: their responses don't reach the extension
 
     def to_claude(self, line):
         with self.lock:
@@ -128,8 +129,8 @@ class Tab:
     def down(self):
         """Claude Code → extension, line by line and unchanged; along the way, pick up the session ID from
         system/init and the context window from each turn's result (the same line the tab's own gauge reads). The
-        only lines held back are the answers to the wrapper's own control requests (set_model): the extension never
-        asked, so it must not see them. A line longer than TAP_MAX is passed through without a look."""
+        only lines held back are the answers to the wrapper's own control requests (set_model, apply_flag_settings):
+        the extension never asked, so it must not see them. A line longer than TAP_MAX is passed through without a look."""
         buf = b""
         while True:
             try:
@@ -170,18 +171,29 @@ class Tab:
         obj = json.loads(line)
         rid = (obj.get("response") or {}).get("request_id") if obj.get("type") == "control_response" else None
         if rid in self.drop:
-            self.drop.discard(rid)
-            log("model switched" if (obj.get("response") or {}).get("subtype") == "success" else
-                "model switch refused: %s" % str(obj.get("response"))[:200])
+            what = self.drop.pop(rid)
+            ok = (obj.get("response") or {}).get("subtype") == "success"
+            if what == "set_model":
+                log("model switched" if ok else "model switch refused: %s" % str(obj.get("response"))[:200])
+            else:
+                log("%s done" % what if ok else "%s refused: %s" % (what, str(obj.get("response"))[:200]))
             return True
         return False
 
-    def set_model(self, model):
-        """A control request like the one the extension's own model picker sends (extension 2.1.301: set_model)."""
+    def control(self, request):
+        """A control request from Pult into Claude Code, the way the extension sends its own; the answer is held
+        back. Pult uses set_model (the model picker, extension 2.1.301) and apply_flag_settings with effortLevel
+        (effort for this process only, probe tests/probe_effort.py)."""
+        if not isinstance(request, dict) or not isinstance(request.get("subtype"), str):
+            return
         rid = "pult-" + uuid.uuid4().hex[:12]
-        self.drop.add(rid)
-        req = {"type": "control_request", "request_id": rid, "request": {"subtype": "set_model", "model": model or None}}
+        self.drop[rid] = request["subtype"]
+        req = {"type": "control_request", "request_id": rid, "request": request}
         self.to_claude(json.dumps(req, ensure_ascii=False).encode() + b"\n")
+
+    def set_model(self, model):
+        """Like the extension's own model picker (extension 2.1.301: set_model)."""
+        self.control({"subtype": "set_model", "model": model or None})
         log("model for the tab:", model or "default")
 
     def on_init(self, line):
@@ -220,7 +232,7 @@ class Tab:
                 with self.slock:
                     self.sock = s
                 self.tell({"op": "hello", "pid": os.getpid(), "cwd": self.cwd, "sid": self.sid,
-                           "version": version_of(self.argv[0]), "caps": ["model", "ctx"]})   # what this wrapper can do
+                           "version": version_of(self.argv[0]), "caps": ["model", "ctx", "control"]})   # what it can do
                 for line in s.makefile("rb"):
                     m = json.loads(line)
                     if m.get("op") == "send" and m.get("text"):
@@ -229,6 +241,9 @@ class Tab:
                         self.tell({"op": "sent", "uuid": m.get("uuid")})
                     elif m.get("op") == "model":
                         self.set_model(m.get("model"))
+                    elif m.get("op") == "control":
+                        self.control(m.get("request"))
+                        log("control for the tab:", json.dumps(m.get("request"), ensure_ascii=False)[:200])
             except Exception as e:
                 if not isinstance(e, (FileNotFoundError, ConnectionRefusedError)):
                     log("daemon link:", type(e).__name__)

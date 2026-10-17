@@ -715,36 +715,73 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.p.live_of(SID, PKEY).transcript = TP
         Path(TP).parent.mkdir(parents=True, exist_ok=True)
         Path(TP).write_text("")
-        client = SimpleNamespace(set_model=mock.AsyncMock())
+        control = mock.AsyncMock(return_value={})
+        client = SimpleNamespace(set_model=mock.AsyncMock(), _query=SimpleNamespace(_send_control_request=control))
         self.p.driven[SID] = SimpleNamespace(busy=False, bg=set(), q=asyncio.Queue(), client=client, want_model=None,
-                                             task=SimpleNamespace(cancel=lambda: None))
+                                             want_effort=None, task=SimpleNamespace(cancel=lambda: None))
         res = await self.p.api_model(SID, "sonnet")
         client.set_model.assert_awaited_once_with("sonnet")
         self.assertEqual((res["live"], res["choice"]), (True, {"model": "sonnet"}))
         self.assertEqual(self.store.get("choice")[SID], {"model": "sonnet"})
         info = await self.p.api_session(SID)
-        self.assertEqual((info["choice"], info["switch"]), ({"model": "sonnet"}, True))
+        self.assertEqual((info["choice"], info["switch"], info["switch_effort"]), ({"model": "sonnet"}, True, True))
+        # the effort on its own: the model stays; live through apply_flag_settings (probe_effort.py)
+        res = await self.p.api_model(SID, effort="low")
+        control.assert_awaited_once_with({"subtype": "apply_flag_settings", "settings": {"effortLevel": "low"}})
+        self.assertEqual((res["live"], res["choice"]), (True, {"model": "sonnet", "effort": "low"}))
+        self.assertEqual(client.set_model.await_count, 1)
+        with self.assertRaises(ValueError):
+            await self.p.api_model(SID, effort="turbo")
+        with self.assertRaises(ValueError):
+            await self.p.api_model(SID)
         await self.p.api_model(SID, "")                                            # back to the settings' default
         client.set_model.assert_awaited_with(None)
+        self.assertEqual(self.store.get("choice")[SID], {"effort": "low"})
+        await self.p.api_model(SID, effort="")
+        control.assert_awaited_with({"subtype": "apply_flag_settings", "settings": {"effortLevel": None}})
         self.assertNotIn(SID, self.store.get("choice"))
+        # an SDK without control requests: the choice is kept for the next start, not switched live
+        self.p.driven[SID].client = SimpleNamespace(set_model=mock.AsyncMock())
+        self.assertFalse((await self.p.api_model(SID, effort="high"))["live"])
+        self.assertEqual(self.store.get("choice")[SID], {"effort": "high"})
+        self.p.set_choice(SID, "", "")
         # a VS Code tab with the wrapper: the wrapper gets the request (probe_model.py: it switches the tab)
         del self.p.driven[SID]
         r, w = await asyncio.open_unix_connection(os.environ["PULT_SOCK"])
         w.write(('{"op": "hello", "pid": 4545, "cwd": "/Users/x/proj", "sid": "%s", "version": "2.1.301"}\n' % SID).encode())
         await w.drain()
         await until(lambda: self.p.tab_for(SID))
-        self.assertFalse((await self.p.api_session(SID))["switch"])              # an old wrapper: no way to switch
+        info = await self.p.api_session(SID)
+        self.assertEqual((info["switch"], info["switch_effort"]), (False, False))   # an old wrapper: no way to switch
         with self.assertRaises(ValueError):
             await self.p.api_model(SID, "haiku")
         w.close()
         await until(lambda: not self.p.tab_for(SID))
+        # a 0.9.8 wrapper: the model, not the effort — and a refused effort isn't kept as the choice
         r, w = await asyncio.open_unix_connection(os.environ["PULT_SOCK"])
         w.write(('{"op": "hello", "pid": 4546, "cwd": "/Users/x/proj", "sid": "%s", "version": "2.1.301", "caps": ["model", "ctx"]}\n' % SID).encode())
         await w.drain()
         await until(lambda: self.p.tab_for(SID))
         res = await self.p.api_model(SID, "haiku")
         self.assertEqual(json.loads(await asyncio.wait_for(r.readline(), 3)), {"op": "model", "model": "haiku"})
-        self.assertTrue(res["live"] and (await self.p.api_session(SID))["switch"])
+        info = await self.p.api_session(SID)
+        self.assertTrue(res["live"] and info["switch"])
+        self.assertFalse(info["switch_effort"])
+        with self.assertRaises(ValueError):
+            await self.p.api_model(SID, effort="max")
+        self.assertEqual(self.store.get("choice")[SID], {"model": "haiku"})
+        w.close()
+        await until(lambda: not self.p.tab_for(SID))
+        # a wrapper from 0.9.9: the effort goes as a control request for this process only
+        r, w = await asyncio.open_unix_connection(os.environ["PULT_SOCK"])
+        w.write(('{"op": "hello", "pid": 4547, "cwd": "/Users/x/proj", "sid": "%s", "version": "2.1.301", "caps": ["model", "ctx", "control"]}\n' % SID).encode())
+        await w.drain()
+        await until(lambda: self.p.tab_for(SID))
+        self.assertTrue((await self.p.api_session(SID))["switch_effort"])
+        res = await self.p.api_model(SID, effort="max")
+        self.assertEqual(json.loads(await asyncio.wait_for(r.readline(), 3)),
+                         {"op": "control", "request": {"subtype": "apply_flag_settings", "settings": {"effortLevel": "max"}}})
+        self.assertEqual((res["live"], res["choice"]), (True, {"model": "haiku", "effort": "max"}))
         w.close()
         # a resume starts with the choice; a fake SDK client so the process isn't really started
         class Fake:
@@ -1089,6 +1126,53 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(pult_tab.why_direct(chat, conf, str(TMP / "sandbox")), "switched off")
         finally:
             pult_tab.OFF = old
+
+    async def test_tab_wrapper_control(self):
+        # a control request from Pult goes into Claude Code; its answer is held back from the extension, the rest of
+        # the output passes unchanged; the wrapper says it can do it ("control" in hello)
+        d = TMP / "ctl"
+        fake = d / "anthropic.claude-code-2.1.301-darwin-arm64" / "claude"
+        fake.parent.mkdir(parents=True, exist_ok=True)
+        seen = d / "seen.jsonl"
+        fake.write_text("#!%s\nimport json, sys\nlog = open(%r, 'a')\nfor line in sys.stdin:\n"
+                        "    log.write(line); log.flush()\n    o = json.loads(line)\n"
+                        "    if o.get('type') == 'control_request':\n"
+                        "        print(json.dumps({'type': 'control_response', 'response': {'subtype': 'success', "
+                        "'request_id': o['request_id'], 'response': {}}}), flush=True)\n"
+                        "    else:\n        print(line.strip(), flush=True)\n" % (sys.executable, str(seen)))
+        fake.chmod(0o755)
+        (d / "tab.json").write_text(json.dumps({"folders": [str(d)], "versions": ["2.1.301"]}))
+        sock = str(d / "d.sock")
+        hello, conn = asyncio.get_running_loop().create_future(), []
+
+        async def daemon(reader, writer):
+            conn.append(writer)
+            hello.set_result(json.loads(await reader.readline()))
+            await reader.read()
+        server = await asyncio.start_unix_server(daemon, path=sock)
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, str(HERE / "pult_tab.py"), str(fake), "--input-format", "stream-json", "--output-format",
+            "stream-json", stdin=subprocess.PIPE, stdout=subprocess.PIPE, cwd=str(d),
+            env=dict(os.environ, PULT_TAB_CONF=str(d / "tab.json"), PULT_SOCK=sock, PULT_TAB_LOG=str(d / "tab.log")))
+        try:
+            self.assertIn("control", (await asyncio.wait_for(hello, 10))["caps"])
+            req = {"subtype": "apply_flag_settings", "settings": {"effortLevel": "low"}}
+            conn[0].write((json.dumps({"op": "control", "request": req}) + "\n").encode())
+            conn[0].write(b'{"op": "control", "request": "not a request"}\n')
+            await conn[0].drain()
+            await until(lambda: seen.exists() and "control_request" in seen.read_text())
+            user = b'{"type":"user","t":"\xd0\xb6"}\n'
+            out, _ = await asyncio.wait_for(proc.communicate(user), 20)
+        finally:
+            for w in conn:
+                w.close()
+            server.close()
+            await server.wait_closed()
+        sent = [json.loads(x) for x in seen.read_text().splitlines()]
+        self.assertEqual([x["type"] for x in sent], ["control_request", "user"])     # the malformed one went nowhere
+        self.assertEqual(sent[0]["request"], req)
+        self.assertEqual(out, user)                                                   # the answer stayed with the wrapper
+        self.assertIn("apply_flag_settings done", (d / "tab.log").read_text())
 
     async def test_english_turn(self):
         # the owner's Telegram is in English — a turn and its result in English

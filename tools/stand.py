@@ -144,7 +144,13 @@ async def main():
     pic = Path(os.environ["PULT_HOME"]) / "inbox" / "2026-10" / "app-stand.png"
     pic.parent.mkdir(parents=True, exist_ok=True)
     pic.write_bytes(png_sample())
-    (d / (T.SID + ".jsonl")).write_text("\n".join([
+    # STAND_LONG=1: a long history in small pages — for scrolling up through it (the earlier part loads by itself)
+    long = [x for k in range(40) for x in (line("user", "#%d %s" % (k, D["ask"]), ago=200000 - k * 600),
+                                            aline("#%d %s" % (k, D["read"]), "old%d" % k, 300, ago=199900 - k * 600))] \
+        if os.environ.get("STAND_LONG") else []
+    if long:
+        PW.transcript_page.__defaults__ = (None, None, None, 6000)
+    (d / (T.SID + ".jsonl")).write_text("\n".join(long + [
         line("user", D["ask"], ago=86400),
         line("user", D["look"] + "\n\n[Attachment from the Pult app: %s]\n\n[Attachment from the Pult app: %s]" % (pic, pic), ago=86300),
         json.dumps({"type": "assistant", "effort": "xhigh", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
@@ -165,6 +171,12 @@ async def main():
     ]) + "\n")
     store.touch_session(T.SID, T.PKEY, path=SHOP, title=D["title"])
     p.set_ctx(T.SID, 200000, 32000, model="claude-opus-5-5")        # the context gauge, as a turn's result reports it
+    if os.environ.get("STAND_TAB"):        # the session open in a VS Code tab with Pult's wrapper (STAND_TAB=old — 0.9.8's)
+        caps = ["model", "ctx"] if os.environ["STAND_TAB"] == "old" else ["model", "ctx", "control"]
+        _, tab_w = await asyncio.open_unix_connection(os.environ["PULT_SOCK"])
+        tab_w.write((json.dumps({"op": "hello", "pid": os.getpid(), "cwd": SHOP, "sid": T.SID, "version": "2.1.301",
+                                 "caps": caps}) + "\n").encode())
+        await tab_w.drain()
     await T.run_hook(ev("SessionStart", T.SID))
     await T.run_hook(ev("UserPromptSubmit", T.SID, prompt=D["ask_short"]))
     p.live[T.SID].title, p.live[T.SID].named = D["title"], True

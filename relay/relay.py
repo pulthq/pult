@@ -173,11 +173,15 @@ class Relay:
     # ----- pages -----
 
     async def index(self, request):
-        # ?v= in links to app files is the latest modification time, so after a deploy Telegram drops stale copies
+        # ?v= in links to app files is the latest modification time, so after a deploy Telegram drops stale copies.
+        # The modules app.js imports get it through an import map: their own links carry no ?v=, and Telegram kept
+        # an old i18n.js under a new app.js (keys instead of words on the owner's phone, 0.9.9)
         files = [p for p in (WEB / "static").rglob("*") if p.is_file()]
         v = str(int(max((p.stat().st_mtime for p in files), default=0)))
-        return web.Response(text=(WEB / "index.html").read_text().replace("{{v}}", v), content_type="text/html",
-                            headers={"Cache-Control": "no-cache"})
+        mods = {"/pult/static/%s" % p.relative_to(WEB / "static").as_posix(): None for p in files if p.suffix == ".js"}
+        imap = json.dumps({"imports": {k: "%s?v=%s" % (k, v) for k in sorted(mods)}})
+        page = (WEB / "index.html").read_text().replace("{{importmap}}", imap).replace("{{v}}", v)
+        return web.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-cache"})
 
     async def health(self, request):
         return web.json_response({"ok": True, "mac": self.mac is not None and not self.mac.closed,
@@ -193,6 +197,12 @@ def app():
     a.router.add_get("/pult/agent", r.ws_agent)
     (WEB / "static").mkdir(parents=True, exist_ok=True)
     a.router.add_static("/pult/static/", WEB / "static", show_index=False)
+
+    async def revalidate(request, response):
+        # app files: the phone asks every time whether its copy is current (a 304 if it is) instead of guessing
+        if request.path.startswith("/pult/static/"):
+            response.headers["Cache-Control"] = "no-cache"
+    a.on_response_prepare.append(revalidate)
     return a
 
 

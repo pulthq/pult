@@ -2,6 +2,7 @@
   python tools/shot.py URL out.png [width] [wait_s] [dark]
 SHOT_HEIGHT=860 — one phone screen instead of the whole page (the README pictures).
 SHOT_FIT=.chat — cut the picture at the bottom edge of that element (a page shorter than the window).
+SHOT_JS="document.querySelector('.mchip').click()" — run on the loaded page before the picture (open a menu).
 Not --screenshot with --virtual-time-budget: the app holds a WebSocket open, the page never "settles", and Chrome
 hangs. Only a type=page tab is used: the first one in the list is sometimes an internal one (Omnibox Popup)."""
 import asyncio, base64, json, os, subprocess, sys, tempfile, time
@@ -13,6 +14,7 @@ WAIT = float(sys.argv[4]) if len(sys.argv) > 4 else 4
 DARK = len(sys.argv) > 5 and sys.argv[5] == "dark"
 HEIGHT = int(os.environ.get("SHOT_HEIGHT") or 0)
 FIT = os.environ.get("SHOT_FIT")
+JS = os.environ.get("SHOT_JS")
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 
@@ -54,6 +56,9 @@ async def main():
             await cmd("Emulation.setDeviceMetricsOverride", width=W, height=HEIGHT or min(int(h), 4000), deviceScaleFactor=2, mobile=True)
             await cmd("Runtime.evaluate", expression="window.scrollTo(0, 0)")
             await asyncio.sleep(0.5)
+            if JS:                       # after the window got its final size: a scroll or a click stays put
+                await cmd("Runtime.evaluate", expression=JS)
+                await asyncio.sleep(1)
             shot = await cmd("Page.captureScreenshot", format="png")
             open(OUT, "wb").write(base64.b64decode(shot["data"]))
             log = (await cmd("Runtime.evaluate", expression="document.querySelector('.banner') ? document.querySelector('.banner').textContent : 'ok'", returnByValue=True))

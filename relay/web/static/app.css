@@ -132,7 +132,17 @@ details.plan summary { cursor: pointer; color: var(--link); }
 .msg .t { display: block; text-align: right; font-size: 11.5px; color: var(--muted); margin-top: 4px; white-space: nowrap; }
 .msg.me .t { color: inherit; opacity: .7; }
 .atts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-.msg img.att { display: block; width: 112px; height: 112px; object-fit: cover; border-radius: 10px; cursor: zoom-in; }
+.msg img.att, .card.pick img.att { display: block; width: 112px; height: 112px; object-fit: cover; border-radius: 10px; cursor: zoom-in; }
+/* your own message above the screen, pinned at the top like a pinned message in Telegram; a tap shows it in full */
+.pinned { position: fixed; top: 0; left: 0; right: 0; z-index: 4; display: block; width: 100%; text-align: left; font: inherit;
+  color: var(--ink); background: var(--card); border: 0; border-bottom: 1px solid var(--line); box-shadow: 0 2px 8px rgba(0, 0, 0, .08);
+  padding: 7px 14px; cursor: pointer; }
+.pin-in { display: flex; gap: 9px; max-width: 692px; margin: 0 auto; }
+.pin-bar { flex: none; width: 3px; border-radius: 2px; background: var(--accent); }
+.pin-body { min-width: 0; display: flex; flex-direction: column; }
+.pin-h { font-size: 12.5px; font-weight: 600; color: var(--link); }
+.pin-tx { font-size: 14px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.full-tx { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 50vh; overflow-y: auto; font-size: 15px; margin: 4px 0 2px; }
 .lightbox { position: fixed; inset: 0; z-index: 20; background: rgba(0, 0, 0, .93); display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
 .lightbox img { max-width: 100vw; max-height: 100vh; object-fit: contain; }
 .att-chip { display: inline-block; margin-top: 6px; padding: 2px 8px; border-radius: 8px; background: rgba(255, 255, 255, .22); font-size: 13.5px; }
@@ -145,11 +155,28 @@ details.plan summary { cursor: pointer; color: var(--link); }
   background: var(--card); border-top: 1px solid var(--line); }
 .composer textarea { resize: none; max-height: 160px; border-radius: 14px; }
 .ctl { display: flex; align-items: center; gap: 8px; }
-.ctl .status { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 1px 10px; font-size: 12.5px; line-height: 1.3; color: var(--muted);
-  background: none; border: 0; padding: 0; text-align: left; cursor: pointer; }
-.ctl .status .u { white-space: nowrap; }
-.ctl .status .u.link { color: var(--link); }
+/* the status: two steady lines — the model with its effort dots (a tap picks them), then where the text goes · context */
+.ctl .status { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.ctl .status button { background: none; border: 0; padding: 0; margin: 0; font: inherit; color: var(--muted); text-align: left;
+  max-width: 100%; cursor: pointer; line-height: 1.25; }
+.ctl .status .mchip { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; color: var(--ink); white-space: nowrap; }
+.ctl .status .mchip.on { color: var(--link); }
+.ctl .status .mchip .caret { font-size: 11px; margin-left: -2px; }
+.dots { display: block; flex: none; }
+.ctl .status .where { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card.pick { margin: 0 0 4px; position: relative; z-index: 8; }
+/* the model and the effort side by side; each column a short list */
+.pick-cols { display: flex; gap: 10px; }
+.pick-col { flex: 1; min-width: 0; }
+.pick-t { font-size: 12.5px; color: var(--muted); margin: 2px 0 2px 2px; }
+.pick-col .opt { padding: 8px 10px; margin: 5px 0; font-size: 14.5px; }
+.pick-col .opt.off { opacity: .45; }
+.pick-col .opt:disabled { opacity: .45; }
+/* why a column can't switch here: shown always, and flashes when a dim option is tapped */
+.pick-why { margin: 8px 0 6px; padding: 8px 10px; border-radius: 10px; background: var(--code); font-size: 13.5px; color: var(--warn); }
+.pick-why.lit { animation: nudge .7s ease-out; }
+@keyframes nudge { 0% { transform: translateX(0); } 20% { transform: translateX(-6px); } 40% { transform: translateX(6px); }
+  60% { transform: translateX(-3px); } 80% { transform: translateX(3px); } 100% { transform: translateX(0); } }
 .pick-h { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .sheet-p { margin: 6px 0; font-size: 14.5px; }
 .pick-h .x { background: none; border: 0; color: var(--muted); font-size: 22px; line-height: 1; padding: 0 2px; cursor: pointer; }

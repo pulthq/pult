@@ -71,7 +71,15 @@ class RelayTest(unittest.IsolatedAsyncioTestCase):
     async def test_page_and_health(self):
         async with self.http.get(self.url("/pult/")) as r:
             self.assertEqual(r.status, 200)
-            self.assertIn("<title>Pult</title>", await r.text())
+            page = await r.text()
+            self.assertIn("<title>Pult</title>", page)
+        # every module the app imports gets the deploy's ?v= through the import map, not only app.js
+        imap = json.loads(page.split('<script type="importmap">')[1].split("</script>")[0])["imports"]
+        v = page.split("app.js?v=")[1].split('"')[0]
+        for name in ("i18n.js", "md.js", "app.js"):
+            self.assertEqual(imap["/pult/static/" + name], "/pult/static/%s?v=%s" % (name, v))
+        async with self.http.get(self.url("/pult/static/i18n.js")) as r:
+            self.assertEqual((r.status, r.headers.get("Cache-Control")), (200, "no-cache"))
         async with self.http.get(self.url("/pult/healthz")) as r:
             self.assertEqual((await r.json())["mac"], False)
 

@@ -347,5 +347,26 @@ class ChainTest(unittest.IsolatedAsyncioTestCase):
         await ws.close()
 
 
+
+class AppStringsTest(unittest.TestCase):
+    def test_app_strings(self):
+        # the app's dictionary: every key has both languages with the same {placeholders}, and every key the app
+        # names outright is there (a missing one would show the key itself on the screen)
+        import re
+        web = HERE.parent / "relay" / "web" / "static"
+        src = (web / "i18n.js").read_text()
+        body = src[src.index("const S = {"):src.index("\n};")]
+        q = r'"((?:[^"\\]|\\.)*)"'
+        entries = {k: (en, ru) for k, en, ru in re.findall(
+            r'^\s*"?([\w.]+)"?:\s*\{\s*en:\s*' + q + r',\s*ru:\s*' + q + r'\s*\}', body, re.M)}
+        self.assertGreater(len(entries), 150)
+        self.assertEqual(len(entries), len(re.findall(r'^\s*"?[\w.]+"?:\s*\{', body, re.M)))   # none unparsed
+        for k, (en, ru) in entries.items():
+            self.assertEqual(sorted(re.findall(r"\{(\w+)\}", en)), sorted(re.findall(r"\{(\w+)\}", ru)), k)
+        used = {k for k in re.findall(r'\bt\("([\w.]+)"', (web / "app.js").read_text()) if not k.endswith(".")}
+        self.assertFalse(used - set(entries), "keys the app uses but the dictionary lacks")
+        for e in ("low", "medium", "high", "xhigh", "max"):                  # effortName() builds these
+            self.assertIn("effort." + e, entries)
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

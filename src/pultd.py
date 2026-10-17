@@ -63,7 +63,7 @@ WARN_AT = (80, 95)       # % of a limit: a warning with sound in General (decisi
 UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the app shrinks them to ~200 KB first)
 UPLOADS_MAX = 3                 # pictures per message
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.9.8"
+VERSION = "0.9.9"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -75,6 +75,17 @@ MODES = ("auto", "mac", "phone")
 REPO_URL = os.environ.get("PULT_REPO_URL") or "https://github.com/pulthq/pult"   # where /feedback sends bugs and ideas
 MODEL_RE = re.compile(r"[A-Za-z0-9][\w.\-\[\]]{0,63}")        # a model alias or id for a session from Telegram
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
+KEEP = object()        # an api_model argument the app did not send: that half of the choice stays as it is
+
+
+async def sdk_effort(client, effort):
+    """Effort of a running SDK session: the apply_flag_settings control request (effortLevel in the flag layer, this
+    process only; None — back to the settings). The Python SDK has no method for it yet, so its generic request is
+    used; probe tests/probe_effort.py, Claude Code 2.1.301."""
+    send = getattr(getattr(client, "_query", None), "_send_control_request", None)
+    if send is None:
+        raise RuntimeError("the SDK has no control requests")
+    await send({"subtype": "apply_flag_settings", "settings": {"effortLevel": effort}})
 
 
 def log(*a):
@@ -2391,9 +2402,12 @@ class Pult:
         # the model can be picked from here: a session Pult runs, a tab with Pult's wrapper, or a closed session that
         # Pult would resume; only a session open on the computer without the wrapper keeps its own
         tab = self.tab_for(sid)
-        switch = sid in self.driven or (tab is not None and "model" in tab.caps) or not (live["open"] or live["tab"])
+        ours = sid in self.driven or not (live["open"] or live["tab"])
+        switch = ours or (tab is not None and "model" in tab.caps)
+        switch_effort = ours or (tab is not None and "control" in tab.caps)       # a wrapper from 0.9.9 on
         return {"sid": sid, "title": self.title(lv), "project": self.project_label(lv.pkey), "pkey": lv.pkey,
                 "live": live, "page": page, "stats": stats, "choice": self.choice.get(sid) or {}, "switch": switch,
+                "switch_effort": switch_effort,
                 "ctx": {"window": ctx[0], "max_out": ctx[1], "usable": ctx_usable(ctx[0], ctx[1])} if ctx else None,
                 "pending": [self.req_item(r) for r in lv.pending.values() if not r.fut.done()]}
 
@@ -2457,29 +2471,46 @@ class Pult:
         await self.drive(sid, path, self.with_uploads(text, files), None, pkey=pkey, model=model, effort=effort)
         return {"ok": True, "sid": sid}
 
-    async def api_model(self, sid, model=None, effort=None):
-        """The model (and effort) of a session from Telegram: a running one switches at once (SDK set_model), a
-        resting or closed one starts with the choice next time. A VS Code tab keeps its own model."""
+    async def api_model(self, sid, model=KEEP, effort=KEEP):
+        """The model and/or the effort of a session — whichever the app sent ("" — back to the settings). A session
+        Pult runs switches at once (SDK set_model, apply_flag_settings), a resting or closed one starts with the
+        choice next time; a VS Code tab with Pult's wrapper switches through the wrapper."""
         if not SID_RE.fullmatch(sid or ""):
             raise ValueError(self.t("err.bad_sid"))
-        model, effort = self.check_choice(model, effort)
-        self.set_choice(sid, model if model is not None else "", effort if effort is not None else "")
+        if model is KEEP and effort is KEEP:
+            raise ValueError("no model or effort")
+        m, e = self.check_choice(None if model is KEEP else model, None if effort is KEEP else effort)
         dr = self.driven.get(sid)
-        tab = self.tab_for(sid)
+        tab = None if dr else self.tab_for(sid)
+        # a VS Code tab: the wrapper sends the requests the tab's own controls end in (set_model — probe_model.py)
+        # or ones that touch this process only (effortLevel in the flag layer — probe_effort.py); a wrapper older
+        # than the request can't, and the choice isn't kept then — it would show a level the tab doesn't have
+        if tab and (model is not KEEP and "model" not in tab.caps or effort is not KEEP and "control" not in tab.caps):
+            raise ValueError(self.t("err.old_wrapper"))
+        self.set_choice(sid, None if model is KEEP else m or "", None if effort is KEEP else e or "")
         live = False
         if dr and dr.client:
-            await dr.client.set_model(model)
-            dr.want_model = model
             live = True
+            if model is not KEEP:
+                await dr.client.set_model(m)
+                dr.want_model = m
+            if effort is not KEEP:
+                dr.want_effort = e                  # a restart takes it anyway (--effort)
+                try:
+                    await sdk_effort(dr.client, e)
+                except Exception as x:
+                    log("effort for %s: not switched live: %s" % (sid[:8], type(x).__name__))
+                    live = False
         elif tab:
-            # a VS Code tab with Pult's wrapper: the wrapper sends the same set_model request the tab's own picker
-            # ends in (probe tests/probe_model.py, 2.1.301); "default" means the model from the settings
-            if "model" not in tab.caps:
-                raise ValueError(self.t("err.old_wrapper"))
-            tab.writer.write((json.dumps({"op": "model", "model": model}) + "\n").encode())
+            if model is not KEEP:
+                tab.writer.write((json.dumps({"op": "model", "model": m}) + "\n").encode())
+            if effort is not KEEP:
+                req = {"subtype": "apply_flag_settings", "settings": {"effortLevel": e}}
+                tab.writer.write((json.dumps({"op": "control", "request": req}) + "\n").encode())
             await tab.writer.drain()
             live = True
-        log("model for %s: %s%s (%s)" % (sid[:8], model or "default", " · " + effort if effort else "", "live" if live else "next start"))
+        said = ([] if model is KEEP else ["model " + (m or "default")]) + ([] if effort is KEEP else ["effort " + (e or "default")])
+        log("choice for %s: %s (%s)" % (sid[:8], ", ".join(said), "live" if live else "next start"))
         self.changed(sid)
         return {"ok": True, "live": live, "choice": self.choice.get(sid) or {}}
 
