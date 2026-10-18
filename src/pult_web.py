@@ -167,11 +167,17 @@ def transcript_page(path, before=None, after=None, cwd=None, page=PAGE):
                     item["att"] = [inbox_name(p) for p in paths]
                 items.append(item)
             continue
+        # Claude's own words about its progress between steps: the transcript marks the entry thinkingDisplay
+        # "updates", the VS Code tab shows it as "summary" (2.1.296–2.1.301, from the tab and from the SDK alike).
+        # Plain thinking stays private; only the words leave, never the block's signature
+        updates = e.get("thinkingDisplay") == "updates"
         for b in content if isinstance(content, list) else [{"type": "text", "text": content or ""}]:
             if not isinstance(b, dict):
                 continue
             if b.get("type") == "text" and b.get("text", "").strip():
                 items.append({"k": "text", "text": _short(b["text"], TEXT_MAX), "ts": ts})
+            elif updates and b.get("type") == "thinking" and (b.get("thinking") or "").strip():
+                items.append({"k": "update", "text": _short(b["thinking"].strip(), TEXT_MAX), "ts": ts})
             elif b.get("type") == "tool_use":
                 inp = b.get("input") if isinstance(b.get("input"), dict) else {}
                 t = {"k": "tool", "id": b.get("id"), "name": b.get("name"), "ts": ts,

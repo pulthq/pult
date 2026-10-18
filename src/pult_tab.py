@@ -52,10 +52,14 @@ def version_of(path):
 
 
 def arg(argv, name):
-    try:
-        return argv[argv.index(name) + 1]
-    except (ValueError, IndexError):
-        return None
+    """The value of an option: `--name value` or `--name=value` (the extension opens a session from its history
+    as `--resume=<id>`, one argument; checked on 2.1.301)."""
+    for i, a in enumerate(argv):
+        if a == name:
+            return argv[i + 1] if i + 1 < len(argv) else None
+        if a.startswith(name + "="):
+            return a[len(name) + 1:]
+    return None
 
 
 def why_direct(argv, conf, cwd):

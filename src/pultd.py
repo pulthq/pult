@@ -63,7 +63,7 @@ WARN_AT = (80, 95)       # % of a limit: a warning with sound in General (decisi
 UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the app shrinks them to ~200 KB first)
 UPLOADS_MAX = 3                 # pictures per message
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.9.10"
+VERSION = "0.9.12"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -193,6 +193,10 @@ def last_reply(path, since=0.0, tail=512 * 1024):
             text = content
         else:
             text = "\n".join(b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text")
+            if not text.strip() and e.get("thinkingDisplay") == "updates":
+                # Claude's words about its progress (the tab's "summary" lines) are a reply too
+                text = "\n".join(b.get("thinking", "") for b in content or []
+                                 if isinstance(b, dict) and b.get("type") == "thinking")
         if text.strip():
             return text
     return None

@@ -137,6 +137,8 @@ const S = {
   "effort.reload": { en: "Effort can be switched from here after Reload Window in VS Code: this tab runs an older Pult wrapper.",
     ru: "Раздумья можно будет менять отсюда после Reload Window в VS Code: во вкладке старая обёртка Пульта." },
   "pick.default": { en: "Default", ru: "По умолчанию" },
+  "effort.tab": { en: "VS Code keeps showing the effort from its settings; the dots here show the real one.",
+    ru: "VS Code продолжает показывать раздумья из своих настроек; настоящие — точки здесь." },
   "pick.default.note": { en: "Default is what Claude Code's settings say.", ru: "«По умолчанию» — как в настройках Claude Code." },
   "model.pick": { en: "Model and effort", ru: "Модель и раздумья" },
   "model.next": { en: "The next turn will use it.", ru: "Со следующего хода." },

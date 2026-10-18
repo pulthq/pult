@@ -128,6 +128,12 @@ const modelName = (m) => {
 const haptic = (k) => tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred(k);
 const alertBox = (s) => (tg && tg.showAlert ? tg.showAlert(s) : alert(s));
 const confirmBox = (s) => new Promise((ok) => (tg && tg.showConfirm ? tg.showConfirm(s, ok) : ok(confirm(s))));
+// the message fields take the words as typed: no auto-capitals, no autocorrect, no spelling marks (the webview on
+// the Mac and the phone's keyboard both read these). Set as attributes: as a DOM property, autocorrect is a
+// boolean, so the string "off" would switch it on
+const plainField = (el) => { if (el) for (const [k, v] of [["autocapitalize", "none"], ["autocorrect", "off"], ["spellcheck", "false"]]) el.setAttribute(k, v); };
+// Cmd+Enter on the Mac, Ctrl+Enter elsewhere — send, as in Telegram; Enter alone still makes a new line
+const sendKey = (send) => (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); } };
 const go = (h) => { location.hash = h; };
 
 // links in Claude's answers open outside, through Telegram, not inside the app
@@ -222,7 +228,8 @@ function ModelPick({ sid, choice, now, driven, tab, canModel, canEffort, onDone,
   const col = (title, items, on, key, can, cur) => html`<div class="pick-col"><div class="pick-t">${title}</div>
     ${items.map(([v, label]) => html`<button key=${v} class=${"opt" + (v === on ? " on" : "") + (can ? "" : " off")} disabled=${busy}
       onClick=${() => (can ? pick({ [key]: v }) : (haptic("warning"), setNudge(nudge + 1)))}>${label}${!v && !on && cur ? html`<span class="dim">${cur}</span>` : ""}</button>`)}</div>`;
-  const notes = [driven ? t("model.next") : tab ? t("model.next") + " " + t("model.tab") : t("model.later"), t("pick.default.note")];
+  const notes = [driven ? t("model.next") : tab ? t("model.next") + " " + t("model.tab") : t("model.later"), t("pick.default.note"),
+    tab && canEffort ? t("effort.tab") : ""];
   const why = tab && !canModel ? t("model.reload") : tab && !canEffort ? t("effort.reload") : "";
   return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick"><div class="q-t pick-h">${t("model.pick")}<button class="x" aria-label=${t("close")} onClick=${onClose}>×</button></div>
     <div class="pick-cols">
@@ -473,16 +480,20 @@ function Project({ pkey }) {
         ${s.open && html`<div class="dim">${t("open.mac")}</div>`}</button>`)}</div></div>`;
 }
 
-// consecutive steps — one "N steps" block that expands
+// consecutive steps — one "N steps" block that expands; Claude's own lines about its progress (what the VS Code
+// tab shows as "summary") sit among the steps, and the collapsed block ends with the latest step or line
+const brief = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + "…" : s || "");
 function Steps({ steps }) {
   const [open, setOpen] = useState(false);
   const [one, setOne] = useState(null);
-  const bad = steps.filter((s) => s.ok === false).length;
-  const label = steps.length + " " + plural(steps.length, "step");
+  const tools = steps.filter((s) => s.k === "tool");
+  const bad = tools.filter((s) => s.ok === false).length;
+  const label = tools.length + " " + plural(tools.length, "step");
+  const last = steps[steps.length - 1];
   return html`<div class="steps">
     <button class="steps-h" onClick=${() => setOpen(!open)}>${open ? "▾" : "▸"} ${steps[0].ts ? hhmm(toDate(steps[0].ts)) + " · " : ""}${label}${bad ? " · ⚠️ " + bad : ""}
-      <span class="dim">${open ? "" : " · " + steps[steps.length - 1].step}</span></button>
-    ${open && steps.map((s) => html`<div class="step" key=${s.id}>
+      <span class="dim">${open ? "" : " · " + (last.k === "update" ? brief(last.text, 90) : last.step)}</span></button>
+    ${open && steps.map((s, n) => s.k === "update" ? html`<div class="upd" key=${"u" + n}>${s.text}</div>` : html`<div class="step" key=${s.id}>
       <button class="step-h" onClick=${() => setOne(one === s.id ? null : s.id)}><span class="dim">${s.ts ? hhmm(toDate(s.ts)) + " " : ""}</span>${s.ok === false ? "⚠️ " : ""}${s.step}</button>
       ${one === s.id && html`<pre>${s.input}</pre>${s.out ? html`<pre class="out">${s.out}</pre>` : ""}`}</div>`)}
   </div>`;
@@ -506,10 +517,11 @@ function group(items) {
     if (i.k === "result") continue;
     const d = i.ts ? toDate(i.ts).toDateString() : day;
     if (d && d !== day) { out.push({ k: "day", label: dayLabel(toDate(i.ts)), key: "d" + d }); day = d; }
-    if (i.k === "tool") {
+    if (i.k === "tool" || i.k === "update") {
       const last = out[out.length - 1];
       if (last && last.k === "steps") last.steps.push(i);
-      else out.push({ k: "steps", steps: [i], key: "g" + i.id, ts: i.ts });
+      else if (i.k === "tool") out.push({ k: "steps", steps: [i], key: "g" + i.id, ts: i.ts });
+      else out.push(i);                       // Claude's line before any step: on its own
     } else out.push(i);
   }
   return out;
@@ -552,6 +564,7 @@ function Session({ sid }) {
   const a = useAttach();
   const comp = useRef(null);
   const ta = useRef(null);
+  const taRef = useMemo(() => (el) => { ta.current = el; plainField(el); }, []);   // one function: Preact sets the ref once
   useEffect(() => {
     const el = comp.current, main = document.querySelector("main");
     if (!el || !main || !window.ResizeObserver) return;
@@ -680,6 +693,7 @@ function Session({ sid }) {
       : i.k === "steps" ? html`<${Steps} key=${i.key} steps=${i.steps}/>`
       : i.k === "user" ? html`<div class="msg me" key=${n} data-n=${n}>${i.text}${i.att && i.att.length ? html`<div class="atts">${i.att.map((a, k) => html`<${Pic} key=${k} a=${a}/>`)}</div>` : ""}<${At} ts=${i.ts} mid=${i.mid}/></div>`
       : i.k === "note" ? html`<div class="note" key=${n}>${i.text}${i.ts ? " · " + hhmm(toDate(i.ts)) : ""}</div>`
+      : i.k === "update" ? html`<div class="upd solo" key=${n}>${i.text}</div>`
       : html`<div class="msg" key=${n}><div class="md" dangerouslySetInnerHTML=${{ __html: md(i.text) }}/><${At} ts=${i.ts}/></div>`)}
     ${lv.state === "work" && html`<div class="working">${t("working")}</div>`}
     ${info.pending.map((r) => html`<${Req} key=${r.rid} r=${r} showWhere=${false}/>`)}
@@ -694,7 +708,7 @@ function Session({ sid }) {
         <button class="link" onClick=${() => { const el = document.querySelector('.msg.me[data-n="' + full.n + '"]'); closeFull();
           if (el) setTimeout(() => el.scrollIntoView({ block: "start" }), 60); }}>${t("pin.goto")}</button></div>`}
       <${Thumbs} a=${a}/>
-      <textarea ref=${ta} rows="1" placeholder=${t("write")} value=${text} onInput=${(e) => { setText(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}/>
+      <textarea ref=${taRef} rows="1" placeholder=${t("write")} value=${text} onKeyDown=${sendKey(() => { if (!busy) sendText(false); })} onInput=${(e) => { setText(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}/>
       <div class="ctl"><${Attach} a=${a} disabled=${busy}/>
         <div class="status">${line1}${line2}</div>
         ${lv.driven && lv.state === "work" ? html`<button class="btn danger" onClick=${stop}>${t("stop")}</button>` : ""}
@@ -725,7 +739,7 @@ function NewTask({ pkey }) {
       ${d.projects.map((x) => html`<option value=${x.pkey}>${x.name}</option>`)}
     </select>
     <label class="lbl">${t("new.what")}</label>
-    <textarea rows="6" placeholder=${t("new.placeholder")} value=${text} onInput=${(e) => setText(e.target.value)}/>
+    <textarea ref=${plainField} rows="6" placeholder=${t("new.placeholder")} value=${text} onKeyDown=${sendKey(() => { if (!busy && p && (text.trim() || a.files.length)) send(); })} onInput=${(e) => setText(e.target.value)}/>
     <${Thumbs} a=${a}/>
     <${Attach} a=${a} disabled=${busy} wide=${true}/>
     <div class="row2">

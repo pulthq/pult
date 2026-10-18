@@ -2,6 +2,25 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.9.12 — 2026-10-18
+
+- Claude's own lines about its progress, the ones the VS Code tab shows as "summary", now reach the app: they sit
+  among the steps of a turn, the collapsed steps block ends with the latest step or line, and a line said before
+  any step stands on its own. The turn's "now" line in Telegram takes them too. Claude Code marks such an entry
+  in the transcript (`thinkingDisplay: "updates"`, 2.1.296–2.1.301, from the tab and from the SDK alike); plain
+  thinking stays private, and only the words leave the transcript, never the block's signature.
+
+## 0.9.11 — 2026-10-18
+
+- A session started from Telegram and then opened from the history in a VS Code tab takes messages from the phone
+  straight into that tab right away. Before, the tab wrapper read the session id only from `--resume <id>` as two
+  arguments, while the extension (2.1.301) passes `--resume=<id>` as one, so until the first turn typed in the tab
+  the app offered a copy instead.
+- The message fields of the app take words as typed: no automatic capitals, no autocorrect, no spelling marks, on
+  the phone and in Telegram on the computer.
+- Cmd+Enter on a Mac (Ctrl+Enter elsewhere) sends the message or starts the new task, as in Telegram; Enter alone
+  still adds a line.
+
 ## 0.9.10 — 2026-10-18
 
 - The README opens with an animation of a project's topic: Claude at work, a permission request with the phone's

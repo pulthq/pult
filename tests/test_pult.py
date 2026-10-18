@@ -248,6 +248,13 @@ class HelpersTest(unittest.TestCase):
         self.assertEqual(pultd.last_reply(str(p), time.time() - 20), "сейчас делаю")
         self.assertIsNone(pultd.last_reply(str(p), time.time() - 1))          # Claude has said nothing yet in this turn
         self.assertIsNone(pultd.last_reply(str(TMP / "нет.jsonl")))
+        # Claude's line about its progress (thinkingDisplay "updates") is the "now" line too; plain thinking is not
+        upd = json.dumps({"type": "assistant", "thinkingDisplay": "updates", "timestamp": time.strftime(
+            "%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 2)), "message": {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "Смотрю журнал", "signature": "SIG"}]}}, ensure_ascii=False)
+        with open(p, "a") as f:
+            f.write(upd + "\n" + upd.replace('"thinkingDisplay": "updates", ', "").replace("Смотрю журнал", "private") + "\n")
+        self.assertEqual(pultd.last_reply(str(p), time.time() - 20), "Смотрю журнал")
         self.assertEqual(list(zip(range(5), pultd.vehi_marks()))[-1][1], pultd.VEHI[-1] + 2 * 3600)
 
     def test_skip(self):
@@ -1101,6 +1108,12 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         import pult_tab
         v = "/x/anthropic.claude-code-2.1.301-darwin-arm64/resources/native-binary/claude"
         self.assertEqual(pult_tab.version_of(v), "2.1.301")
+        # the session id: `--resume=<id>` is how the extension opens a session from its history (2.1.301),
+        # `--resume <id>` is how the SDK passes it; without either, the wrapper waits for system/init
+        self.assertEqual(pult_tab.arg([v, "--resume=" + SID, "--verbose"], "--resume"), SID)
+        self.assertEqual(pult_tab.arg([v, "--resume", SID], "--resume"), SID)
+        self.assertIsNone(pult_tab.arg([v, "--resume"], "--resume"))
+        self.assertIsNone(pult_tab.arg([v, "--resumed=x"], "--resume"))
         conf = {"folders": [str(TMP / "sandbox")], "versions": ["2.1.301"]}
         (TMP / "sandbox" / "sub").mkdir(parents=True, exist_ok=True)
         chat = [v, "--output-format", "stream-json", "--input-format", "stream-json", "--verbose"]

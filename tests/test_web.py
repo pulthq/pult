@@ -114,6 +114,24 @@ class TranscriptTest(unittest.TestCase):
         self.assertIsNone(page["before"])
         self.assertEqual(page["end"], self.p.read_bytes().rfind(b"\n") + 1)      # the partial line is not consumed
 
+    def test_updates(self):
+        # Claude's own lines about its progress: the transcript marks the entry thinkingDisplay "updates" (the VS Code
+        # tab shows it as "summary"); plain thinking stays private, empty lines are skipped, signatures never leave
+        def think(text, display=None):
+            e = {"type": "assistant", "timestamp": "2026-10-18T08:06:10.000Z",
+                 "message": {"role": "assistant", "content": [{"type": "thinking", "thinking": text, "signature": "SIG"}]}}
+            if display:
+                e["thinkingDisplay"] = display
+            return json.dumps(e, ensure_ascii=False)
+        p = T.TMP / "upd.jsonl"
+        p.write_text("\n".join([think("private reasoning"), think("Смотрю журнал демона\n", "updates"), think("", "updates"),
+                                T.tline("assistant", tool=True)]) + "\n")
+        page = PW.transcript_page(str(p))
+        self.assertEqual([(i["k"], i.get("text") or i.get("name")) for i in page["items"]],
+                         [("update", "Смотрю журнал демона"), ("tool", "Read")])
+        self.assertNotIn("SIG", json.dumps(page))
+        self.assertNotIn("private", json.dumps(page))
+
     def test_before_after(self):
         size = self.p.stat().st_size
         page = PW.transcript_page(str(self.p), page=400)
