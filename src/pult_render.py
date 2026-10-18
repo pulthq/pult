@@ -71,11 +71,24 @@ def plain(md, n):
 _ATT = re.compile(r"[ \n]*\[Attachment from (?:Telegram|the Pult app): ([^\]\n]+)\]")
 ATT_DEFAULT = "Have a look at the attachment."
 IMAGE_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp")
+# words that came by voice (pultd.hear_message): Claude is told so — misheard words are to be expected; people
+# see 🎤 before the text instead
+VOICE_MARK = "\n\n[Spoken message, transcribed automatically; some words may be misheard]"
+_VOICE = re.compile(r"[ \n]*\[Spoken message, transcribed automatically; some words may be misheard\]")
+
+
+def spoken_body(text):
+    """The owner's words from a recording, as Claude gets them."""
+    return str(text or "").rstrip() + VOICE_MARK
+
+
+def is_spoken(text):
+    return bool(_VOICE.search(str(text or "")))
 
 
 def attachments(text):
-    """The owner's text → (the text without attachment markers, [paths])."""
-    text = str(text or "")
+    """The owner's text → (the text without attachment and voice markers, [paths])."""
+    text = _VOICE.sub("", str(text or ""))
     paths = _ATT.findall(text)
     clean = _ATT.sub("", text).strip()
     return ("" if clean == ATT_DEFAULT and paths else clean), paths
@@ -86,10 +99,11 @@ def is_image(path):
 
 
 def prompt_text(text):
-    """The owner's prompt for a person: "deploy it 📎 picture" — the path is for Claude."""
+    """The owner's prompt for a person: "deploy it 📎 picture" — the path is for Claude; "🎤 deploy it" — said aloud."""
     clean, paths = attachments(text)
     marks = " ".join(T("att.image" if is_image(p) else "att.file") for p in paths)
-    return (clean + " " + marks).strip() if marks else clean
+    out = (clean + " " + marks).strip() if marks else clean
+    return ("🎤 " + out).strip() if is_spoken(text) else out
 
 
 def steps_word(n):

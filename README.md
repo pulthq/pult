@@ -48,6 +48,10 @@ next. *Pult* is Russian for a remote control.
 - **Write back.** A reply continues that session; plain text in a topic goes to the topic's current session;
   `/new` starts a new one. Photos and files reach Claude too, from the chat or the app's paperclip: they're saved
   on the computer, and Claude gets the path.
+- **Speak instead of typing.** A voice message in a topic is recognized and goes on as typed text would; in the
+  app, the microphone next to the paperclip puts the words into the message field. Recognition is done by Groq
+  (Whisper) with your free key, set in the app's Settings → Voice input or with `pult stt`; the recordings are kept
+  nowhere. Without a key, nothing changes.
 - **Straight into an open VS Code tab** (optional). Your message appears in the tab as if typed there, and the
   turn runs in it. If Claude is busy in that tab, it gets your message in the middle of its turn: the tab doesn't
   show it as a separate message, and the answer comes with that turn's result, as a reply to your message.
@@ -72,7 +76,7 @@ phone:
 - **A session** shows the whole conversation, live. When you scroll up, your own message stays pinned on top, and
   earlier history loads by itself. Under the message field: the model with its effort as five dots (a tap opens
   the menu), where your message will go, and the context gauge as in VS Code. The paperclip sends a screenshot
-  to Claude.
+  to Claude; the microphone turns your voice into words in the field.
 - **Usage** shows your plan's limits and today's tokens by project. A form starts a new task in any project.
 
 <p align="center">

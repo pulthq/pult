@@ -180,6 +180,57 @@ function Thumbs({ a }) {
     <button aria-label=${t("attach.remove")} onClick=${() => a.remove(i)}>×</button></div>`)}</div>` : "";
 }
 
+// ---------- voice from the phone ----------
+
+// MediaRecorder: webm/opus on Android and in Chrome, m4a in Safari; 32 kbit/s is plenty for speech. The words come
+// back from the computer (Groq) and land in the message field — to be checked and sent with one more tap
+const REC_MIME = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus", "audio/ogg"];
+const REC_MAX = 5 * 60;      // s; the recording stops by itself
+function useRecorder(onText) {
+  const [st, setSt] = useState("idle");           // idle | rec | busy
+  const [secs, setSecs] = useState(0);
+  const cur = useRef(null);
+  const stop = () => { const x = cur.current; if (x && x.rec.state !== "inactive") x.rec.stop(); };
+  const toggle = async () => {
+    if (st !== "idle") return stop();
+    if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder)) return alertBox(t("rec.unsupported"));
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e) { return alertBox(t("rec.denied")); }
+    const mime = REC_MIME.find((m) => MediaRecorder.isTypeSupported(m)) || "";
+    let rec;
+    try { rec = new MediaRecorder(stream, Object.assign({ audioBitsPerSecond: 32000 }, mime ? { mimeType: mime } : {})); }
+    catch (e) { stream.getTracks().forEach((tr) => tr.stop()); return alertBox(t("rec.unsupported")); }
+    const chunks = [], t0 = Date.now();
+    const x = (cur.current = { rec, timer: 0 });
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onstop = async () => {
+      clearInterval(x.timer); stream.getTracks().forEach((tr) => tr.stop()); cur.current = null;
+      const blob = new Blob(chunks, { type: rec.mimeType || mime || "audio/webm" });
+      if (blob.size < 1000) { setSt("idle"); setSecs(0); return alertBox(t("rec.empty")); }
+      setSt("busy");
+      try {
+        const url = await new Promise((ok, no) => { const f = new FileReader(); f.onload = () => ok(f.result); f.onerror = no; f.readAsDataURL(blob); });
+        const res = await api("stt", { data: url.split(",")[1], mime: blob.type });
+        if (res.text) { onText(res.text); haptic("success"); }
+      } catch (e) { alertBox(e.message); }
+      setSt("idle"); setSecs(0);
+    };
+    x.timer = setInterval(() => { const s = Math.round((Date.now() - t0) / 1000); setSecs(s); if (s >= REC_MAX) stop(); }, 500);
+    rec.start(1000);
+    setSt("rec"); setSecs(0);
+  };
+  useEffect(() => () => { const x = cur.current; if (x) { clearInterval(x.timer); try { x.rec.stream.getTracks().forEach((tr) => tr.stop()); } catch (e) { /* already gone */ } } }, []);
+  return { st, secs, toggle };
+}
+const MIC = html`<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg>`;
+function Mic({ v, disabled, wide }) {
+  const label = v.st === "rec" ? t("rec.stop") : v.st === "busy" ? t("rec.busy") : t("rec");
+  const cls = "clip mic" + (wide ? " wide" : "") + (v.st === "rec" ? " rec" : "") + (disabled || v.st === "busy" ? " off" : "");
+  return html`<button type="button" class=${cls} aria-label=${label} disabled=${disabled || v.st === "busy"} onClick=${v.toggle}>
+    ${v.st === "rec" ? html`<span class="dot"></span><span class="secs">${Math.floor(v.secs / 60)}:${String(v.secs % 60).padStart(2, "0")}</span>` : MIC}
+    ${wide ? html`<span>${label}</span>` : ""}</button>`;
+}
+
 // a picture the owner sent (from Telegram or the app): the chat shows it, not the path Claude got
 function Pic({ a }) {
   const [src, setSrc] = useState(null);
@@ -426,6 +477,8 @@ function Job({ j, now }) {
 
 function Settings() {
   const [d, err, set] = useLive(() => api("settings"), [], () => false);
+  const [key, setKey] = useState("");
+  const [kbusy, setKbusy] = useState(false);
   if (!d) return html`<${Loading} err=${err}/>`;
   useLang(d.prefs.lang);
   const toggle = async (k) => {
@@ -438,6 +491,12 @@ function Settings() {
     try { await api("prefs", { lang: k }); set(Object.assign({}, d, { prefs: Object.assign({}, d.prefs, { lang: k }) })); useLang(k); haptic("success"); }
     catch (e) { alertBox(e.message); }
   };
+  const saveKey = async (k) => {
+    setKbusy(true);
+    try { const r = await api("stt_key", { key: k.trim() }); set(Object.assign({}, d, { stt: Object.assign({}, d.stt || {}, { on: r.on }) })); setKey(""); haptic("success"); alertBox(t(r.on ? "voice.saved" : "voice.removed")); }
+    catch (e) { alertBox(e.message); }
+    setKbusy(false);
+  };
   return html`<div><h2>${t("settings")}</h2>
     <h3>${t("notifications")}</h3><div class="list">${sw("vehi", t("vehi"), t("vehi.about"))}</div>
     <h3>${t("where")}</h3>
@@ -445,6 +504,13 @@ function Settings() {
     <h3>${t("language")}</h3>
     <div class="seg">${[["en", "English"], ["ru", "Русский"]].map(([k, label]) => html`<button key=${k}
       class=${d.prefs.lang === k ? "on" : ""} onClick=${() => setLangPref(k)}>${label}</button>`)}</div>
+    <h3>${t("voice")}</h3><div class="list"><div class="item static">
+      <div>${d.stt && d.stt.on ? t("voice.on") : t("voice.off")}</div>
+      <div class="dim">${t("voice.privacy", { lang: (d.stt && d.stt.lang) || "auto" })}</div>
+      <div class="keyrow"><input type="password" ref=${plainField} placeholder=${t("voice.key")} value=${key} onInput=${(e) => setKey(e.target.value)}/>
+        <button class="btn" disabled=${!key.trim() || kbusy} onClick=${() => saveKey(key)}>${t("voice.save")}</button></div>
+      ${d.stt && d.stt.on ? html`<button class="link" disabled=${kbusy} onClick=${() => saveKey("")}>${t("voice.remove")}</button>` : ""}
+    </div></div>
     <h3>${t("status")}</h3><div class="list"><div class="item static">
       <div>${t("status.pult", { v: d.version, mac: d.mac.away ? t("mac.away", { dur: dur(d.mac.idle) }) : t("mac.here") })}</div>
       <div class="dim">${t("status.tg", { how: t("tg." + (d.telegram === "proxy" ? "proxy" : "direct")) })}</div>
@@ -564,6 +630,8 @@ function Session({ sid }) {
   const a = useAttach();
   const comp = useRef(null);
   const ta = useRef(null);
+  const v = useRecorder((w) => { setText((c) => (c ? c.replace(/\s+$/, "") + " " : "") + w);
+    setTimeout(() => { const el = ta.current; if (el) { el.style.height = "auto"; el.style.height = Math.min(el.scrollHeight, 160) + "px"; } }, 0); });
   const taRef = useMemo(() => (el) => { ta.current = el; plainField(el); }, []);   // one function: Preact sets the ref once
   useEffect(() => {
     const el = comp.current, main = document.querySelector("main");
@@ -691,7 +759,7 @@ function Session({ sid }) {
       <span class="pin-tx">${pin.text}</span></span></span></button>`}
     ${(shown.current = group(s.items)).map((i, n) => i.k === "day" ? html`<div class="day" key=${i.key}>${i.label}</div>`
       : i.k === "steps" ? html`<${Steps} key=${i.key} steps=${i.steps}/>`
-      : i.k === "user" ? html`<div class="msg me" key=${n} data-n=${n}>${i.text}${i.att && i.att.length ? html`<div class="atts">${i.att.map((a, k) => html`<${Pic} key=${k} a=${a}/>`)}</div>` : ""}<${At} ts=${i.ts} mid=${i.mid}/></div>`
+      : i.k === "user" ? html`<div class="msg me" key=${n} data-n=${n}>${i.voice ? html`<span class="mic-i">🎤</span>` : ""}${i.text}${i.att && i.att.length ? html`<div class="atts">${i.att.map((a, k) => html`<${Pic} key=${k} a=${a}/>`)}</div>` : ""}<${At} ts=${i.ts} mid=${i.mid}/></div>`
       : i.k === "note" ? html`<div class="note" key=${n}>${i.text}${i.ts ? " · " + hhmm(toDate(i.ts)) : ""}</div>`
       : i.k === "update" ? html`<div class="upd solo" key=${n}>${i.text}</div>`
       : html`<div class="msg" key=${n}><div class="md" dangerouslySetInnerHTML=${{ __html: md(i.text) }}/><${At} ts=${i.ts}/></div>`)}
@@ -709,7 +777,7 @@ function Session({ sid }) {
           if (el) setTimeout(() => el.scrollIntoView({ block: "start" }), 60); }}>${t("pin.goto")}</button></div>`}
       <${Thumbs} a=${a}/>
       <textarea ref=${taRef} rows="1" placeholder=${t("write")} value=${text} onKeyDown=${sendKey(() => { if (!busy) sendText(false); })} onInput=${(e) => { setText(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}/>
-      <div class="ctl"><${Attach} a=${a} disabled=${busy}/>
+      <div class="ctl"><${Attach} a=${a} disabled=${busy}/><${Mic} v=${v} disabled=${busy}/>
         <div class="status">${line1}${line2}</div>
         ${lv.driven && lv.state === "work" ? html`<button class="btn danger" onClick=${stop}>${t("stop")}</button>` : ""}
         <button class="btn send" aria-label=${t("send")} disabled=${busy || (!text.trim() && !a.files.length)} onClick=${() => sendText(false)}><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button></div>
@@ -725,6 +793,7 @@ function NewTask({ pkey }) {
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const a = useAttach();
+  const v = useRecorder((w) => setText((c) => (c ? c.replace(/\s+$/, "") + " " : "") + w));
   if (!d) return html`<${Loading} err=${err}/>`;
   const send = async () => {
     setBusy(true);
@@ -742,6 +811,7 @@ function NewTask({ pkey }) {
     <textarea ref=${plainField} rows="6" placeholder=${t("new.placeholder")} value=${text} onKeyDown=${sendKey(() => { if (!busy && p && (text.trim() || a.files.length)) send(); })} onInput=${(e) => setText(e.target.value)}/>
     <${Thumbs} a=${a}/>
     <${Attach} a=${a} disabled=${busy} wide=${true}/>
+    <${Mic} v=${v} disabled=${busy} wide=${true}/>
     <div class="row2">
       <label class="lbl">${t("model")}<select value=${model} onChange=${(e) => setModel(e.target.value)}>
         ${MODELS.map(([m, label]) => html`<option key=${m} value=${m}>${m ? label : t(label)}</option>`)}</select></label>

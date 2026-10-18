@@ -136,6 +136,8 @@ def transcript_page(path, before=None, after=None, cwd=None, page=PAGE):
                 if text:
                     clean, paths = R.attachments(text)
                     item = {"k": "user", "text": _short(clean, TEXT_MAX), "ts": e.get("timestamp"), "mid": True}
+                    if R.is_spoken(text):
+                        item["voice"] = True
                     if paths:
                         item["att"] = [inbox_name(p) for p in paths]
                     items.append(item)
@@ -163,6 +165,8 @@ def transcript_page(path, before=None, after=None, cwd=None, page=PAGE):
             elif text and not text.startswith("<local-command-") and not text.startswith("<command-"):
                 clean, paths = R.attachments(text)          # the path is for Claude; the person sees the picture
                 item = {"k": "user", "text": _short(clean, TEXT_MAX), "ts": ts}
+                if R.is_spoken(text):
+                    item["voice"] = True
                 if paths:
                     item["att"] = [inbox_name(p) for p in paths]
                 items.append(item)

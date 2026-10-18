@@ -2,6 +2,18 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.9.13 — 2026-10-18
+
+- Voice input. A voice message in a project topic (an audio file or a video note too) is recognized and goes on
+  exactly as typed text would: to the session you reply to, the topic's current session, or the "which session?"
+  question. The turn shows "You: 🎤 …" and Claude is told the words were spoken, so misheard words are expected.
+  In the app, a microphone button next to the paperclip (the session and the new task) records up to five
+  minutes; the words land in the message field to check and send. Recognition is done by Groq (Whisper
+  `whisper-large-v3-turbo`): the recordings go there and are kept nowhere; a free key is made at console.groq.com
+  and set in the app's Settings → Voice input or with `pult stt` (`pult stt off` removes it; the daemon picks up
+  the change without a restart). The language is Pult's own; `PULT_STT_LANG=auto` lets Whisper guess. Without a
+  key nothing changes.
+
 ## 0.9.12 — 2026-10-18
 
 - Claude's own lines about its progress, the ones the VS Code tab shows as "summary", now reach the app: they sit

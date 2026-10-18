@@ -200,6 +200,17 @@ details.plan summary { cursor: pointer; color: var(--link); }
 .clip input { display: none; }
 .clip.off { opacity: .4; }
 .clip.wide { width: auto; height: auto; min-height: 42px; border-radius: 10px; gap: 8px; padding: 9px 14px; margin-top: 8px; color: var(--ink); font-weight: 600; }
+/* voice: the microphone next to the clip; recording — a red dot and the seconds; recognizing — dimmed */
+.clip.mic { border: 0; padding: 0; font: inherit; }
+.clip.mic.rec { width: auto; padding: 0 12px; gap: 6px; color: var(--danger); border-radius: 99px; }
+.clip.mic.wide { width: 100%; }
+.clip.mic.wide.rec { padding: 9px 14px; }
+.clip .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--danger); animation: blink 1s infinite; }
+.clip .secs { font-variant-numeric: tabular-nums; font-size: 14px; font-weight: 600; }
+@keyframes blink { 50% { opacity: .15; } }
+.keyrow { display: flex; gap: 8px; margin-top: 10px; }
+.keyrow input { flex: 1; min-width: 0; }
+.mic-i { margin-right: 4px; }
 .thumbs { display: flex; gap: 8px; margin-top: 8px; }
 .composer .thumbs { margin-top: 0; }
 .thumb { position: relative; width: 56px; height: 56px; border-radius: 8px; overflow: hidden; background: var(--code); }

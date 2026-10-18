@@ -167,6 +167,23 @@ const S = {
   "attach.remove": { en: "Remove", ru: "Убрать" },
   "attach.failed": { en: "Couldn't read the picture", ru: "Не удалось прочитать картинку" },
   "att.file": { en: "📎 file", ru: "📎 файл" },
+
+  // voice input
+  voice: { en: "Voice input", ru: "Голосовой ввод" },
+  "voice.on": { en: "On: a voice message in Telegram or the microphone here becomes text for Claude.", ru: "Включён: голосовое в Telegram или микрофон здесь становятся текстом для Claude." },
+  "voice.off": { en: "Off. Recognition is done by Groq (Whisper); a free key is made at console.groq.com.", ru: "Выключен. Распознаёт Groq (Whisper); бесплатный ключ — на console.groq.com." },
+  "voice.privacy": { en: "Recordings go to Groq for recognition and are kept nowhere; the key stays on the computer. Language: {lang}.", ru: "Записи уходят в Groq на распознавание и нигде не хранятся; ключ остаётся на компьютере. Язык: {lang}." },
+  "voice.key": { en: "Groq API key", ru: "Ключ API Groq" },
+  "voice.save": { en: "Save", ru: "Сохранить" },
+  "voice.remove": { en: "Remove the key", ru: "Убрать ключ" },
+  "voice.saved": { en: "Voice input is on", ru: "Голосовой ввод включён" },
+  "voice.removed": { en: "Voice input is off", ru: "Голосовой ввод выключен" },
+  rec: { en: "Record a voice message", ru: "Записать голосовое" },
+  "rec.stop": { en: "Stop", ru: "Стоп" },
+  "rec.busy": { en: "Recognizing…", ru: "Распознаю…" },
+  "rec.empty": { en: "Nothing got recorded", ru: "Ничего не записалось" },
+  "rec.unsupported": { en: "Recording isn't available here — send a voice message in the chat instead.", ru: "Запись здесь недоступна — отправь голосовое в чате." },
+  "rec.denied": { en: "No access to the microphone. Allow it for Telegram and try again, or send a voice message in the chat.", ru: "Нет доступа к микрофону. Разреши его Telegram и попробуй снова — или отправь голосовое в чате." },
   "mid.turn": { en: "during the turn · ", ru: "во время хода · " },
 
   // new task

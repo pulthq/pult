@@ -255,6 +255,28 @@ S = {
     "turn.you": {"en": "<i>You: {text}</i>", "ru": "<i>Ты: {text}</i>"},
     "att.image": {"en": "📎 picture", "ru": "📎 снимок"},
     "att.file": {"en": "📎 file", "ru": "📎 файл"},
+    # ----- voice input (pult_stt: Groq Whisper) -----
+    "stt.nokey": {
+        "en": "🎤 Voice input is off: add a Groq key in the app (Settings → Voice input) or run pult stt on the computer.",
+        "ru": "🎤 Голосовой ввод выключен: задай ключ Groq в приложении («Настройки → Голосовой ввод») или командой "
+              "pult stt на компьютере.",
+    },
+    "stt.empty": {"en": "🎤 I couldn't make out any words.", "ru": "🎤 Не разобрал ни слова."},
+    "stt.failed": {"en": "🎤 Couldn't recognize the speech: {err}", "ru": "🎤 Не удалось распознать речь: {err}"},
+    "stt.e.big": {"en": "the recording is too big to recognize (up to 20 MB)",
+                  "ru": "запись слишком большая для распознавания (до 20 МБ)"},
+    "stt.e.key": {"en": "Groq doesn't accept this key", "ru": "Groq не принимает этот ключ"},
+    "stt.e.limit": {"en": "Groq's limit is used up for now — try again in a minute",
+                    "ru": "лимит Groq на сейчас исчерпан — попробуй через минуту"},
+    "stt.e.net": {"en": "no connection to Groq ({why})", "ru": "нет связи с Groq ({why})"},
+    "stt.e.format": {"en": "unknown recording format: {kind}", "ru": "неизвестный формат записи: {kind}"},
+    "stt.e.groq": {"en": "Groq: {msg}", "ru": "Groq: {msg}"},
+    # the vocabulary Whisper is shown: Pult's terms, punctuated, and the project names — it copies the spelling
+    # and the punctuation style (not shown to people)
+    "stt.prompt": {
+        "en": "Pult, Claude Code, VS Code, Telegram, GitHub: deploy, commit, hook, relay, tab, session. Projects: {projects}.",
+        "ru": "Пульт, Claude Code, VS Code, Telegram, GitHub: деплой, коммит, хук, посредник, вкладка, сессия. Проекты: {projects}.",
+    },
     "vehi": {"en": "⏳ {head} · has been working for {dur}", "ru": "⏳ {head} · работает уже {dur}"},
     "vehi.muted": {"en": "\n<i>🔕 no more reminders — only the result will come</i>",
                    "ru": "\n<i>🔕 вех больше не будет — придёт только итог</i>"},
@@ -428,6 +450,7 @@ S = {
               "  pult tab                      writing from Telegram into open VS Code tabs\n"
               "  pult tab setup | on | off | allow VERSION\n"
               "  pult app [off]                the web app on your own server\n"
+              "  pult stt [off]                voice input: a Groq key for speech recognition\n"
               "  pult run -- COMMAND           run a command; its start, progress and end go to Telegram\n"
               "  pult report                   versions and state for a bug report (no tokens, IDs or messages)\n"
               "  pult uninstall                remove Pult from this computer\n\n"
@@ -441,6 +464,7 @@ S = {
               "  pult tab                      запись из Telegram в открытые вкладки VS Code\n"
               "  pult tab setup | on | off | allow ВЕРСИЯ\n"
               "  pult app [off]                веб-приложение на своём сервере\n"
+              "  pult stt [off]                голосовой ввод: ключ Groq для распознавания речи\n"
               "  pult run -- КОМАНДА           выполнить команду; старт, ход и конец — в Telegram\n"
               "  pult report                   версии и состояние для сообщения об ошибке (без токенов, ID и переписки)\n"
               "  pult uninstall                удалить Пульт с этого компьютера\n\n"
@@ -505,9 +529,11 @@ S = {
     },
     "cli.setup.extras": {
         "en": "\nOptional:\n• write from Telegram straight into open VS Code tabs — pult tab setup\n"
-              "• the web app (needs your own server) — deploy/relay/README.md, then pult app\n• all commands — pult help",
+              "• the web app (needs your own server) — deploy/relay/README.md, then pult app\n"
+              "• voice input (a free Groq key) — pult stt\n• all commands — pult help",
         "ru": "\nПо желанию:\n• писать из Telegram прямо в открытые вкладки VS Code — pult tab setup\n"
-              "• веб-приложение (нужен свой сервер) — deploy/relay/README.md, затем pult app\n• все команды — pult help",
+              "• веб-приложение (нужен свой сервер) — deploy/relay/README.md, затем pult app\n"
+              "• голосовой ввод (бесплатный ключ Groq) — pult stt\n• все команды — pult help",
     },
     "cli.step.bot": {"en": "Bot", "ru": "Бот"},
     "cli.step.you": {"en": "You", "ru": "Ты"},
@@ -662,6 +688,26 @@ S = {
     },
     "cli.tab.copy": {"en": "Copy the line to the clipboard?", "ru": "Скопировать строку в буфер обмена?"},
     "cli.tab.copied": {"en": "Copied.", "ru": "Скопировано."},
+    "cli.stt.about": {
+        "en": "Voice input: a voice message in Telegram or the microphone button in the app becomes text for Claude.\n"
+              "Recognition is done by Groq (groq.com, Whisper): the recordings go there. A free key is made at "
+              "console.groq.com; it is kept only in {env}.",
+        "ru": "Голосовой ввод: голосовое в Telegram или кнопка микрофона в приложении становятся текстом для Claude.\n"
+              "Распознаёт Groq (groq.com, Whisper): записи уходят туда. Бесплатный ключ — на console.groq.com; "
+              "хранится только в {env}.",
+    },
+    "cli.stt.key": {"en": "Groq API key (typing is hidden): ", "ru": "Ключ API Groq (ввод скрыт): "},
+    "cli.stt.key_again": {"en": "Groq API key (typing is hidden; Enter — keep the current one): ",
+                          "ru": "Ключ API Groq (ввод скрыт; Enter — оставить нынешний): "},
+    "cli.stt.none": {"en": "No key entered — voice input stays off.", "ru": "Ключ не введён — голосовой ввод выключен."},
+    "cli.stt.kept": {"en": "The key stays as it was.", "ru": "Ключ оставлен прежним."},
+    "cli.stt.checking": {"en": "Checking the key with Groq…", "ru": "Проверяю ключ у Groq…"},
+    "cli.stt.bad": {"en": "✗ Groq doesn't accept the key: {why}", "ru": "✗ Groq не принимает ключ: {why}"},
+    "cli.stt.done": {
+        "en": "✅ Voice input is on: send a voice message in Telegram or tap the microphone in the app. Off: pult stt off",
+        "ru": "✅ Голосовой ввод включён: отправь голосовое в Telegram или нажми микрофон в приложении. Выключить: pult stt off",
+    },
+    "cli.stt.off": {"en": "Voice input is off; the key is removed.", "ru": "Голосовой ввод выключен, ключ убран."},
     "cli.app.about": {
         "en": "The web app opens from Telegram on your phone: every session in full, Claude's questions, new tasks, "
               "usage. It needs your own server with a domain and HTTPS — deploy/relay/README.md.",

@@ -34,6 +34,7 @@ import pult_hook
 import pult_i18n as I
 import pult_os
 import pult_render as R
+import pult_stt as STT
 import pult_web as PW
 
 HOME = Path(os.environ.get("PULT_HOME") or "~/.local/share/pult").expanduser()
@@ -62,8 +63,9 @@ USAGE_NEAR_EVERY = 5 * 60   # …and near the threshold (from 70 %), more often
 WARN_AT = (80, 95)       # % of a limit: a warning with sound in General (decision 2026-10-16)
 UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the app shrinks them to ~200 KB first)
 UPLOADS_MAX = 3                 # pictures per message
+STT_MAX = 4 * 1024 * 1024       # bytes of one recording from the app (5 min at 32 kbit/s ≈ 1.2 MB; base64 must fit the 8 MB frame)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.9.12"
+VERSION = "0.9.13"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -121,6 +123,13 @@ def load_env(path=ENV_FILE):
         pass
     env.update({k: v for k, v in os.environ.items() if k.startswith("PULT_")})
     return env
+
+
+def env_mtime():
+    try:
+        return ENV_FILE.stat().st_mtime
+    except OSError:
+        return None
 
 
 def sanitize(path):
@@ -726,6 +735,8 @@ class Pult:
         self.ctx = store.get("ctx") or {}   # sid → [context window, max output tokens], from each turn's result
         self.ctx_model = store.get("ctx_model") or {}   # model → the same: a session that hasn't reported yet borrows it
         self.choice = store.get("choice") or {}         # sid → {"model", "effort"} the owner picked for a session from Telegram
+        self._env_mt = env_mtime()     # the settings file as of now: a key added later by `pult stt` is picked up (refresh_stt)
+        self.stt = self.make_stt()     # pult_stt.Stt when PULT_STT_KEY is set — voice input
 
     # ----- this computer's environment -----
 
@@ -1686,6 +1697,17 @@ class Pult:
         topic = self.store.topic_by_thread(thread) if thread else None
         log("← %s: %s" % (("topic " + topic["name"]) if topic else ("topic %s (not bound)" % thread) if thread
                           else "General", R.short(text, 80) or "[attachment]"))
+        spoken = m.get("voice") or m.get("audio") or m.get("video_note")
+        heard = None
+        if spoken and (not cmd or cmd == "/new"):
+            # a voice message (an audio file, a video note): its words go on exactly as typed text would
+            heard = await self.hear_message(spoken, mid, here)
+            if heard is None:
+                return
+            if cmd == "/new":
+                rest = (rest + "\n\n" + heard) if rest else heard
+            else:
+                text = (text + "\n\n" + heard) if text else heard       # a caption first, then the words
 
         if cmd in ("/start", "/help"):
             await self.send(None, self.t("help"), here=here, buttons=self.help_buttons())
@@ -1705,7 +1727,7 @@ class Pult:
             await self.cmd_sessions(topic, here)
         elif cmd == "/stop":
             await self.cmd_stop(rep_id, here, topic, mid)
-        elif cmd == "/new" and not rest and not (m.get("photo") or m.get("document")):
+        elif cmd == "/new" and not rest and not (m.get("photo") or m.get("document") or spoken):
             # a bare /new — a tap in the command menu: the next text in this topic starts a new session
             if topic and topic["path"]:
                 self.new_next.add(here)
@@ -1723,6 +1745,8 @@ class Pult:
             await self.send(None, self.t("cmd.unknown"), reply_to=mid, here=here)
         else:
             body = rest if cmd == "/new" else text
+            if heard:
+                body = R.spoken_body(body)       # Claude is told the words were spoken: misheard words are to be expected
             body = await self.with_attachments(m, body)
             if not body.strip():
                 return
@@ -1860,6 +1884,79 @@ class Pult:
         p = d / ("%d.%s" % (m["message_id"], re.sub(r"[^\w]", "", f[1]) or "bin"))
         p.write_bytes(blob)
         return (text or "Have a look at the attachment.") + "\n\n[Attachment from Telegram: %s]" % p
+
+    # ----- voice: words from a recording (pult_stt — Groq Whisper) -----
+
+    def make_stt(self):
+        key = (self.env.get("PULT_STT_KEY") or "").strip()
+        return STT.Stt(key, proxy=self.env.get("PULT_PROXY") or None) if key else None
+
+    def refresh_stt(self):
+        """A key set or removed with `pult stt` while the daemon runs: the settings file changed — read the voice
+        settings again. Nothing else is reloaded this way."""
+        mt = env_mtime()
+        if mt == self._env_mt:
+            return
+        self._env_mt = mt
+        fresh = load_env()
+        for k in ("PULT_STT_KEY", "PULT_STT_LANG"):
+            if fresh.get(k):
+                self.env[k] = fresh[k]
+            else:
+                self.env.pop(k, None)
+        self.stt = self.make_stt()
+        log("voice input: %s (the settings file changed)" % ("on" if self.stt else "off"))
+
+    def stt_lang(self):
+        """The language Whisper is told: Pult's own, unless PULT_STT_LANG says otherwise ("auto" — let it guess)."""
+        v = (self.env.get("PULT_STT_LANG") or "").strip().lower()
+        if v == "auto":
+            return None
+        return v if re.fullmatch(r"[a-z]{2}", v) else self.lang()
+
+    def stt_state(self):
+        self.refresh_stt()
+        return {"on": bool(self.stt), "lang": self.stt_lang() or "auto"}
+
+    def stt_prompt(self):
+        """Vocabulary for Whisper: Pult's terms and the project names, with punctuation — so the words come out
+        spelled right and punctuated (Whisper follows the prompt's style)."""
+        names = [r["name"] for r in self.store.db.execute(
+            "SELECT name FROM topics WHERE name IS NOT NULL ORDER BY name LIMIT 30").fetchall()]
+        return self.t("stt.prompt", projects=", ".join(names) or "—")
+
+    async def hear(self, blob, kind):
+        """A recording → its words. Raises pult_stt.SttError — "no key" and "nothing heard" included."""
+        self.refresh_stt()
+        if not self.stt:
+            raise STT.SttError("stt.nokey")
+        text = await self.stt.transcribe(blob, kind, language=self.stt_lang(), prompt=self.stt_prompt())
+        if not text:
+            raise STT.SttError("stt.empty")
+        return text
+
+    def stt_why(self, e):
+        """An SttError in the owner's words."""
+        return self.t(e.key, **e.kw) if e.key in I.S else str(e)
+
+    async def hear_message(self, spoken, mid, here):
+        """A voice message from Telegram → its words, or None after telling the owner why not (a reply to it).
+        The file is downloaded into memory and kept nowhere."""
+        try:
+            self.refresh_stt()
+            if not self.stt:
+                raise STT.SttError("stt.nokey")
+            if (spoken.get("file_size") or 0) > STT.MAX_BYTES:
+                raise STT.SttError("stt.e.big")
+            name, blob = await self.tg.download(spoken["file_id"])
+            text = await self.hear(blob, spoken.get("mime_type") or name)
+        except (TgError, STT.SttError) as e:
+            why = self.stt_why(e) if isinstance(e, STT.SttError) else R.esc(str(e))
+            await self.send(None, why if why.startswith("🎤") else self.t("stt.failed", err=why),
+                            reply_to=mid, here=here)
+            return None
+        log("🎤 %s s → %s" % (spoken.get("duration") or "?", R.short(text, 80)))
+        return text
 
     def set_ctx(self, sid, window, max_out, model=None):
         """A turn's result said how big the session's context window is: remembered for the app's context gauge —
@@ -2548,6 +2645,43 @@ class Pult:
             raise ValueError(self.t("err.no_transcript"))
         return {"kind": kind, "data": base64.b64encode(blob).decode()}
 
+    async def api_stt(self, data, mime=None):
+        """A recording from the app → its words (the app puts them into the message field). Nothing is kept."""
+        try:
+            blob = base64.b64decode(str(data or ""), validate=True)
+        except (ValueError, binascii.Error):
+            raise ValueError(self.t("stt.e.format", kind="?")) from None
+        if not blob or len(blob) > STT_MAX:
+            raise ValueError(self.t("stt.e.big"))
+        try:
+            text = await self.hear(blob, mime or "audio/webm")
+        except STT.SttError as e:
+            raise ValueError(self.stt_why(e)) from None
+        log("voice from the app: %d KB → %d characters" % (len(blob) // 1024, len(text)))
+        return {"text": text}
+
+    async def api_stt_key(self, key=""):
+        """The Groq key from the app's settings: checked with Groq, then written to the settings file on this
+        computer (never into state the app can read back); "" removes it. Takes effect at once."""
+        key = str(key or "").strip()
+        if key:
+            if not re.fullmatch(STT.KEY_CHARS, key):
+                raise ValueError(self.t("stt.e.key"))
+            try:
+                await STT.Stt(key, proxy=self.env.get("PULT_PROXY") or None).check()
+            except STT.SttError as e:
+                raise ValueError(self.stt_why(e)) from None
+        from pult_setup import write_env           # the same careful writer the command line uses
+        write_env(PULT_STT_KEY=key or None)
+        self._env_mt = env_mtime()
+        if key:
+            self.env["PULT_STT_KEY"] = key
+        else:
+            self.env.pop("PULT_STT_KEY", None)
+        self.stt = self.make_stt()
+        log("voice input from the app: key %s" % ("set" if key else "removed"))
+        return {"on": bool(self.stt)}
+
     async def api_lang(self):
         """The language of the bot and the app — the app asks right after connecting, on any screen."""
         return self.lang()
@@ -2614,6 +2748,7 @@ class Pult:
         return {"version": VERSION, "prefs": dict(self.prefs(), lang=self.lang()), "hooks": sorted(hooks),
                 "mac": {"idle": idle, "away": await self.away(), "mode": self.mode()},
                 "telegram": "proxy" if len(self.tg.clients) > 1 and self.tg.cur == 0 else "direct",
+                "stt": self.stt_state(),
                 "log": [x for x in lines if "Bearer" not in x][-40:]}
 
     async def api_prefs(self, **kw):

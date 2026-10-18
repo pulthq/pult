@@ -151,6 +151,8 @@ def main(argv):
         return cmd_tab(rest)
     elif cmd == "app":
         return S.cmd_app(rest)
+    elif cmd == "stt":
+        return S.cmd_stt(rest)
     elif cmd == "run":
         return cmd_run(rest)
     elif cmd == "report":

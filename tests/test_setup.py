@@ -164,6 +164,16 @@ class Base(unittest.TestCase):
 
 
 class SettingsTest(Base):
+    def test_every_module_installed(self):
+        # a new module in src/ must be copied by install.sh and known to the uninstaller: 0.9.13 forgot pult_stt.py in
+        # install.sh and the daemon crashed at start until the file was put there by hand
+        root = Path(__file__).resolve().parent.parent
+        src = root / "src"
+        inst = (root / "install.sh").read_text()
+        for name in sorted(p.name for p in src.glob("pult*.py")):
+            self.assertIn("src/" + name, inst, name)
+            self.assertIn(name, S.HOME_FILES, name)
+
     def test_write_env(self):
         S.ENV_FILE.parent.mkdir(parents=True)
         S.ENV_FILE.write_text("# mine\nPULT_BOT_TOKEN=old\nOTHER=1\n")
@@ -566,6 +576,33 @@ class AppTest(Base):
         self.assertEqual(S.read_env()["PULT_RELAY_SECRET"], key)
         self.run_cli(S.cmd_app, ["off"])
         self.assertNotIn("PULT_RELAY_URL", S.read_env())
+
+    def test_stt(self):
+        # pult stt: the key is checked with Groq and written; a bad key — refused, nothing written; Enter keeps the
+        # current one; off — removed. No restart: the daemon re-reads the file by itself
+        S.write_env(PULT_BOT_TOKEN=GOOD, PULT_ALLOWED_USER_IDS=str(OWNER))
+        S.sput(chat=CHAT)
+        checked = []
+        with mock.patch.object(S, "stt_check", lambda key, proxy=None: checked.append((key, proxy))):
+            res, out = self.run_cli(S.cmd_stt, [], secrets_=["gsk_live_key_0001"])
+        self.assertEqual((res, checked), (0, [("gsk_live_key_0001", None)]))
+        self.assertEqual(S.read_env()["PULT_STT_KEY"], "gsk_live_key_0001")
+        self.assertIn("console.groq.com", out)
+        self.assertIn("Voice input is on", out)
+
+        def bad(key, proxy=None):
+            raise S.TgError("Groq doesn't accept this key", 401)
+        with mock.patch.object(S, "stt_check", bad):
+            res, out = self.run_cli(S.cmd_stt, [], secrets_=["gsk_bad"])
+        self.assertEqual(res, 1)
+        self.assertIn("doesn't accept", out)
+        self.assertEqual(S.read_env()["PULT_STT_KEY"], "gsk_live_key_0001")
+        res, out = self.run_cli(S.cmd_stt, [], secrets_=[""])
+        self.assertEqual((res, S.read_env()["PULT_STT_KEY"]), (0, "gsk_live_key_0001"))
+        self.assertIn("stays", out)
+        self.run_cli(S.cmd_stt, ["off"])
+        self.assertNotIn("PULT_STT_KEY", S.read_env())
+        self.assertEqual(self.svc.started, 0)
 
 
 class TabTest(Base):

@@ -53,6 +53,7 @@ TAB_VERIFIED = ("2.1.301",)    # Claude Code versions the tab wrapper was checke
 SERVICE_PATH = pult_os.service_path(BIN)
 WAIT_LIMIT = 15 * 60           # s; how long the setup waits for /start and /bind
 TOKEN_RE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{30,}$")
+STT_MODELS = "https://api.groq.com/openai/v1/models"    # the cheapest call that tells whether a Groq key works
 
 
 def say(*a):
@@ -796,6 +797,49 @@ def cmd_app(argv):
     return 0
 
 
+# ---------- voice input ----------
+
+def stt_check(key, proxy=None):
+    """Whether Groq takes the key: GET /models with it. Raises TgError with the reason (the wizard's error class)."""
+    req = urllib.request.Request(STT_MODELS, headers={"Authorization": "Bearer " + key})
+    handlers = [] if proxy is None else [urllib.request.ProxyHandler({"https": proxy} if proxy else {})]
+    try:
+        with urllib.request.build_opener(*handlers).open(req, timeout=20) as r:
+            r.read(4096)
+    except urllib.error.HTTPError as e:
+        raise TgError(T("stt.e.key") if e.code in (401, 403) else "HTTP %s" % e.code, e.code) from None
+    except urllib.error.URLError as e:
+        raise OSError(str(e.reason)) from None
+
+
+def cmd_stt(argv):
+    """pult stt — the Groq key for speech recognition; pult stt off — remove it. The daemon notices the settings
+    file change by itself (Pult.refresh_stt), so the service is not restarted."""
+    env = read_env()
+    if argv[:1] == ["off"]:
+        write_env(PULT_STT_KEY=None)
+        say(T("cli.stt.off"))
+        return 0
+    if not configured(env):
+        say(T("cli.svc.not_ready"))
+        return 1
+    say(T("cli.stt.about", env=tilde(ENV_FILE)))
+    had = bool(env.get("PULT_STT_KEY"))
+    key = secret(T("cli.stt.key_again" if had else "cli.stt.key"))
+    if not key:
+        say(T("cli.stt.kept" if had else "cli.stt.none"))
+        return 0
+    say(T("cli.stt.checking"))
+    try:
+        stt_check(key, env.get("PULT_PROXY") or None)
+    except (TgError, OSError) as e:
+        say(T("cli.stt.bad", why=e))
+        return 1
+    write_env(PULT_STT_KEY=key)
+    say(T("cli.stt.done"))
+    return 0
+
+
 # ---------- report and uninstall ----------
 
 def redactor(env):
@@ -876,9 +920,9 @@ def report_lines():
         "service: %s (%s%s) · socket %s" % (
             st or "not running", "default label" if lbl == DEFAULT_LABEL else "own label",
             "" if linger is None else ", linger " + ("on" if linger else "off"), "answers" if sock_ok() else "no"),
-        "settings: token %s · owner %s · group %s · language %s · proxy %s · app %s" % (
+        "settings: token %s · owner %s · group %s · language %s · proxy %s · app %s · voice %s" % (
             have("PULT_BOT_TOKEN"), have("PULT_ALLOWED_USER_IDS"), "set" if sget("chat") else "—", cli_lang(),
-            have("PULT_PROXY"), have("PULT_RELAY_URL")),
+            have("PULT_PROXY"), have("PULT_RELAY_URL"), have("PULT_STT_KEY")),
         "hooks: %s" % (", ".join(hooks_installed()) or "off"),
         "this computer: desktop %s · keyboard idle from %s · VS Code server %s" % (
             pult_os.desktop() if pult_os.KIND == "linux" else pult_os.NAME, pult_os.idle_source(),
@@ -910,7 +954,7 @@ def cmd_report():
 
 
 # Pult's own files: removal touches only these, never a whole folder it doesn't know
-HOME_FILES = ("pultd.py", "pult_hook.py", "pult_render.py", "pult_web.py", "pult_i18n.py", "pult_os.py", "pult_setup.py",
+HOME_FILES = ("pultd.py", "pult_hook.py", "pult_render.py", "pult_web.py", "pult_i18n.py", "pult_stt.py", "pult_os.py", "pult_setup.py",
               "pultctl.py", "pult_tab.py", "pult-tab.sh", "requirements.txt", "state.db", "state.db-journal", "state.db-wal",
               "state.db-shm", "pult.sock", "venv", "__pycache__")
 CONF_FILES = ("env", "env.tmp", "tab.json", "tab-off")

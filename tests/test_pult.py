@@ -28,6 +28,7 @@ import pult_hook  # noqa: E402
 import pult_i18n as I  # noqa: E402
 import pult_os  # noqa: E402
 import pult_render as R  # noqa: E402
+import pult_stt as STT  # noqa: E402
 import pultd  # noqa: E402
 
 I.set_lang("ru")          # the original checks are in Russian; English ones — EnglishTest
@@ -41,8 +42,11 @@ class FakeTg:
         self.calls = []
         self.next_id = 1000
         self.dead_threads = set()      # topics deleted in Telegram: sending there fails
+        self.file_bytes = b"OggS" + b"\0" * 40      # what getFile + download hand out (a voice message)
 
     def handler(self, req):
+        if "/file/bot" in req.url.path:          # a download of the path getFile gave
+            return httpx.Response(200, content=self.file_bytes)
         method = req.url.path.rsplit("/", 1)[-1]
         ctype = req.headers.get("content-type", "")
         data = {k: v[0] for k, v in urllib.parse.parse_qs(req.content.decode()).items()} \
@@ -54,6 +58,8 @@ class FakeTg:
                                              "description": "Bad Request: message thread not found"})
         if method == "createForumTopic":
             res = {"message_thread_id": 77, "name": data.get("name")}
+        elif method == "getFile":
+            res = {"file_id": data.get("file_id"), "file_path": "voice/file_7.oga", "file_size": len(self.file_bytes)}
         elif method in ("sendMessage", "sendDocument"):
             res = {"message_id": self.next_id}
         else:
@@ -159,6 +165,16 @@ class RenderTest(unittest.TestCase):
         self.assertIn("2 строки", t)
         self.assertIn("Искать в интернете", R.permission_text("WebSearch", {"query": "погода"}))
         self.assertIn("Вызвать <b>tg: send</b>", R.permission_text("mcp__tg__send", {"a": 1}))
+
+    def test_spoken(self):
+        # words that came by voice: a marker for Claude, 🎤 for people; it lives alongside attachment markers
+        body = R.spoken_body("сделай деплой")
+        self.assertTrue(R.is_spoken(body) and body.endswith("]"), body)
+        self.assertEqual(R.attachments(body), ("сделай деплой", []))
+        self.assertEqual(R.prompt_text(body), "🎤 сделай деплой")
+        both = body + "\n\n[Attachment from Telegram: /a/inbox/2026-10/5.jpg]"
+        self.assertEqual(R.prompt_text(both), "🎤 сделай деплой 📎 снимок")
+        self.assertFalse(R.is_spoken("plain"))
 
     def test_attachments(self):
         # the path under the owner's message is for Claude; a person sees "📎 снимок", and the title stays clean
@@ -366,6 +382,69 @@ class HelpersTest(unittest.TestCase):
 def intro_id(fake, data):
     """The message_id the fake gave a sendMessage call (ids go up by one per call, starting at 1001)."""
     return 1001 + next(i for i, (m, d) in enumerate(fake.calls) if d is data)
+
+
+class SttTest(unittest.IsolatedAsyncioTestCase):
+    """pult_stt: the Groq client on a fake transport — the request, the words, the errors, the proxy fallback."""
+
+    @staticmethod
+    def handler(status=200, body=None, raise_=None):
+        seen = []
+
+        def h(req):
+            seen.append(req)
+            if raise_:
+                raise raise_
+            return httpx.Response(status, json=body if body is not None else {"text": "  сделай   деплой "})
+        return seen, httpx.MockTransport(h)
+
+    async def test_transcribe(self):
+        seen, tr = self.handler()
+        stt = STT.Stt("gsk_test_key_0123456789", transport=tr)
+        text = await stt.transcribe(b"OggS" + b"\0" * 50, "audio/ogg", language="ru", prompt="Пульт, деплой.")
+        self.assertEqual(text, "сделай деплой")
+        req = seen[0]
+        self.assertEqual((req.method, str(req.url)), ("POST", STT.BASE + "audio/transcriptions"))
+        self.assertEqual(req.headers["authorization"], "Bearer gsk_test_key_0123456789")
+        for part in (b'name="model"\r\n\r\n' + STT.MODEL.encode(), b'name="language"\r\n\r\nru',
+                     "Пульт, деплой.".encode(), b'filename="voice.ogg"', b"OggS"):
+            self.assertIn(part, req.content)
+        # the MIME types the app and Telegram report → the container name Groq understands
+        self.assertEqual([STT.ext_of(x) for x in ("audio/webm;codecs=opus", "audio/mp4", "voice/file_3.oga", "audio/ogg",
+                                                  "x.mp3", "text/plain", None)],
+                         ["webm", "m4a", "ogg", "ogg", "mp3", None, None])
+
+    async def test_errors(self):
+        async def err(**kw):
+            _, tr = self.handler(**kw)
+            with self.assertRaises(STT.SttError) as cm:
+                await STT.Stt("k" * 24, transport=tr).transcribe(b"x" * 10, "audio/webm")
+            return cm.exception
+        self.assertEqual((await err(status=401, body={"error": {"message": "Invalid API Key"}})).key, "stt.e.key")
+        self.assertEqual((await err(status=429, body={})).key, "stt.e.limit")
+        self.assertEqual((await err(status=413, body={})).key, "stt.e.big")
+        e = await err(status=400, body={"error": {"message": "file too short"}})
+        self.assertEqual((e.key, e.kw), ("stt.e.groq", {"msg": "file too short"}))
+        e = await err(raise_=httpx.ConnectError("boom"))
+        self.assertEqual((e.key, e.kw), ("stt.e.net", {"why": "ConnectError"}))
+        with self.assertRaises(STT.SttError) as cm:
+            await STT.Stt("k" * 24, transport=self.handler()[1]).transcribe(b"x", "text/plain")
+        self.assertEqual(cm.exception.key, "stt.e.format")
+        with self.assertRaises(STT.SttError) as cm:
+            await STT.Stt("k" * 24, transport=self.handler()[1]).transcribe(b"x" * (STT.MAX_BYTES + 1), "audio/ogg")
+        self.assertEqual(cm.exception.key, "stt.e.big")
+        for k in ("stt.e.key", "stt.e.limit", "stt.e.big", "stt.e.groq", "stt.e.net", "stt.e.format"):
+            self.assertIn(k, I.S)                                   # every reason has words in both languages
+
+    async def test_proxy_fallback(self):
+        # the proxy route fails → the direct one answers and stays the first choice afterwards
+        _, dead = self.handler(raise_=httpx.ProxyError("no proxy"))
+        seen, alive = self.handler(status=200, body={"data": []})
+        stt = STT.Stt("k" * 24, transport=[dead, alive])
+        await stt.check()
+        self.assertEqual((stt.cur, len(seen)), (1, 1))
+        await stt.check()
+        self.assertEqual(len(seen), 2)
 
 
 class DaemonTest(unittest.IsolatedAsyncioTestCase):
@@ -839,6 +918,98 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             pultd.CLAUDE_PROJECTS = old
         self.assertEqual([(r["pkey"], r["open"], r["work"], r["ask"]) for r in rows],
                          [(PKEY, 2, 1, 1), ("-Users-x-other", 0, 0, 0)])            # active first, despite recency
+
+    async def test_voice_message(self):
+        # a voice message in a project topic: downloaded, recognized, and on it goes as typed text would — with the
+        # voice marker for Claude; nothing heard, no key, too big — one line back and nothing starts
+        class FakeStt:
+            def __init__(self):
+                self.calls, self.text = [], "сделай деплой"
+
+            async def transcribe(self, blob, kind, language=None, prompt=None):
+                self.calls.append((blob, kind, language, prompt))
+                return self.text
+        self.p.stt = stt = FakeStt()
+        self.store.set_topic(PKEY, "/Users/x/proj", "proj", 77)
+        base = {"from": {"id": OWNER}, "chat": {"id": CHAT}, "message_thread_id": 77, "is_topic_message": True}
+        voice = {"voice": {"file_id": "AwAC", "duration": 4, "mime_type": "audio/ogg", "file_size": 44}}
+        with mock.patch.object(self.p, "drive", mock.AsyncMock()) as drive:
+            await self.p.on_message(dict(base, message_id=21, text="/new"))     # bare /new: the next message starts a session
+            await self.p.on_message(dict(base, message_id=22, **voice))
+            drive.assert_called_once()
+            body = drive.call_args.args[2]
+        self.assertTrue(body.startswith("сделай деплой\n\n[Spoken message"), body)
+        self.assertEqual(R.prompt_text(body), "🎤 сделай деплой")
+        blob, kind, language, prompt = stt.calls[0]
+        self.assertEqual((blob[:4], kind, language), (b"OggS", "audio/ogg", "ru"))
+        self.assertIn("proj", prompt)                           # the project names help Whisper spell them
+        self.assertIn("Пульт", prompt)
+        self.assertEqual(self.fake.of("getFile")[0]["file_id"], "AwAC")
+        stt.text = ""
+        with mock.patch.object(self.p, "drive", mock.AsyncMock()) as drive:
+            await self.p.on_message(dict(base, message_id=23, **voice))
+            drive.assert_not_called()
+        self.assertEqual(self.texts()[-1], I.T("stt.empty", "ru"))
+        self.assertEqual(json.loads(self.fake.of("sendMessage")[-1]["reply_parameters"])["message_id"], 23)
+        self.p.stt = None
+        await self.p.on_message(dict(base, message_id=24, **voice))
+        self.assertIn("Голосовой ввод выключен", self.texts()[-1])
+        self.p.stt = stt
+        await self.p.on_message(dict(base, message_id=25, voice=dict(voice["voice"], file_size=30 * 1024 * 1024)))
+        self.assertIn("слишком большая", self.texts()[-1])
+        self.assertEqual(len(self.fake.of("getFile")), 2)       # no key, too big — nothing was downloaded
+
+    async def test_api_stt(self):
+        # a recording from the app → words; nothing heard, junk, no key — an error in words
+        import base64
+
+        class FakeStt:
+            async def transcribe(self, blob, kind, language=None, prompt=None):
+                return "привет мир" if blob.startswith(b"\x1aE\xdf\xa3") else ""
+        self.p.stt = FakeStt()
+        webm = base64.b64encode(b"\x1aE\xdf\xa3" + b"\0" * 30).decode()
+        self.assertEqual(await self.p.api_stt(webm, "audio/webm;codecs=opus"), {"text": "привет мир"})
+        with self.assertRaises(ValueError) as cm:
+            await self.p.api_stt(base64.b64encode(b"\0" * 30).decode(), "audio/webm")
+        self.assertEqual(str(cm.exception), I.T("stt.empty", "ru"))
+        with self.assertRaises(ValueError):
+            await self.p.api_stt("%%%", "audio/webm")
+        self.p.stt = None
+        with self.assertRaises(ValueError) as cm:
+            await self.p.api_stt(webm, "audio/webm")
+        self.assertIn("pult stt", str(cm.exception))
+        self.assertEqual(self.p.stt_state(), {"on": False, "lang": "ru"})
+
+    async def test_api_stt_key(self):
+        # the key from the app's settings: checked with Groq, written to the settings file (600), in force at once;
+        # "" removes it; a key written by `pult stt` while the daemon runs is noticed by the file's time
+        env = Path(os.environ["PULT_ENV"])
+        env.write_text("PULT_BOT_TOKEN=T\n")
+        good = "gsk_" + "a" * 40
+        with mock.patch.object(STT.Stt, "check", mock.AsyncMock()) as check:
+            self.assertEqual(await self.p.api_stt_key(good), {"on": True})
+        check.assert_awaited_once()
+        self.assertIn("PULT_STT_KEY=" + good, env.read_text())
+        self.assertIn("PULT_BOT_TOKEN=T", env.read_text())
+        self.assertEqual(env.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.p.stt.key, good)
+        with mock.patch.object(STT.Stt, "check", mock.AsyncMock(side_effect=STT.SttError("stt.e.key"))):
+            with self.assertRaises(ValueError) as cm:
+                await self.p.api_stt_key("gsk_" + "b" * 40)
+        self.assertEqual(str(cm.exception), I.T("stt.e.key", "ru"))
+        self.assertIn("PULT_STT_KEY=" + good, env.read_text())          # the old key stays
+        with self.assertRaises(ValueError):
+            await self.p.api_stt_key("short")
+        self.assertEqual(await self.p.api_stt_key(""), {"on": False})
+        self.assertNotIn("PULT_STT_KEY", env.read_text())
+        self.assertIsNone(self.p.stt)
+        env.write_text("PULT_BOT_TOKEN=T\nPULT_STT_KEY=gsk_%s\nPULT_STT_LANG=auto\n" % ("c" * 40))
+        os.utime(env, (time.time() + 5, time.time() + 5))               # the time surely differs
+        self.assertEqual(self.p.stt_state(), {"on": True, "lang": "auto"})
+        self.assertEqual(self.p.stt.key, "gsk_" + "c" * 40)
+        env.unlink()
+        self.p.stt_state()                                              # gone again — off, no error
+        self.assertIsNone(self.p.stt)
 
     async def test_inbox(self):
         # the app may fetch pictures from Pult's inbox only: a real image by its month/name, nothing outside

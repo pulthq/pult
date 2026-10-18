@@ -114,6 +114,13 @@ class TranscriptTest(unittest.TestCase):
         self.assertIsNone(page["before"])
         self.assertEqual(page["end"], self.p.read_bytes().rfind(b"\n") + 1)      # the partial line is not consumed
 
+    def test_spoken(self):
+        # words that came by voice: the marker is for Claude; the chat gets the words and a flag
+        p = T.TMP / "voice.jsonl"
+        p.write_text(T.tline("user", "сделай деплой\n\n[Spoken message, transcribed automatically; some words may be misheard]") + "\n")
+        items = PW.transcript_page(str(p))["items"]
+        self.assertEqual([(i["text"], i.get("voice")) for i in items], [("сделай деплой", True)])
+
     def test_updates(self):
         # Claude's own lines about its progress: the transcript marks the entry thinkingDisplay "updates" (the VS Code
         # tab shows it as "summary"); plain thinking stays private, empty lines are skipped, signatures never leave
