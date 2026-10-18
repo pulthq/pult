@@ -65,7 +65,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 STT_MAX = 4 * 1024 * 1024       # bytes of one recording from the app (5 min at 32 kbit/s ≈ 1.2 MB; base64 must fit the 8 MB frame)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.9.13"
+VERSION = "0.9.14"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -2474,7 +2474,7 @@ class Pult:
                         "path": path, "last": mtime, "open": c.get("open", 0), "work": c.get("work", 0), "ask": c.get("ask", 0)})
         # what needs you or works first, then what is open, then by recency
         out.sort(key=lambda r: (-(r["work"] + r["ask"] > 0), -(r["open"] > 0), -r["last"]))
-        return {"projects": out}
+        return {"projects": out, "stt": self.stt_state()["on"]}      # stt: the app shows the microphone only with a key
 
     async def api_sessions(self, pkey):
         path = self.project_path(pkey)
@@ -2508,7 +2508,7 @@ class Pult:
         switch_effort = ours or (tab is not None and "control" in tab.caps)       # a wrapper from 0.9.9 on
         return {"sid": sid, "title": self.title(lv), "project": self.project_label(lv.pkey), "pkey": lv.pkey,
                 "live": live, "page": page, "stats": stats, "choice": self.choice.get(sid) or {}, "switch": switch,
-                "switch_effort": switch_effort,
+                "switch_effort": switch_effort, "stt": self.stt_state()["on"],
                 "ctx": {"window": ctx[0], "max_out": ctx[1], "usable": ctx_usable(ctx[0], ctx[1])} if ctx else None,
                 "pending": [self.req_item(r) for r in lv.pending.values() if not r.fut.done()]}
 

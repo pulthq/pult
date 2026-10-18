@@ -2,6 +2,11 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.9.14 — 2026-10-18
+
+- The app shows the microphone button only when a Groq key is set; without one the paperclip stands alone, as
+  before 0.9.13.
+
 ## 0.9.13 — 2026-10-18
 
 - Voice input. A voice message in a project topic (an audio file or a video note too) is recognized and goes on

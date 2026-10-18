@@ -979,6 +979,11 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             await self.p.api_stt(webm, "audio/webm")
         self.assertIn("pult stt", str(cm.exception))
         self.assertEqual(self.p.stt_state(), {"on": False, "lang": "ru"})
+        # the app shows the microphone only when there is a key: the flag rides with the projects (and the session)
+        with mock.patch.object(self.p, "list_projects", lambda known: []):
+            self.assertEqual(await self.p.api_projects(), {"projects": [], "stt": False})
+            self.p.stt = FakeStt()
+            self.assertTrue((await self.p.api_projects())["stt"])
 
     async def test_api_stt_key(self):
         # the key from the app's settings: checked with Groq, written to the settings file (600), in force at once;

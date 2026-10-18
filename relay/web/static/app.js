@@ -777,7 +777,7 @@ function Session({ sid }) {
           if (el) setTimeout(() => el.scrollIntoView({ block: "start" }), 60); }}>${t("pin.goto")}</button></div>`}
       <${Thumbs} a=${a}/>
       <textarea ref=${taRef} rows="1" placeholder=${t("write")} value=${text} onKeyDown=${sendKey(() => { if (!busy) sendText(false); })} onInput=${(e) => { setText(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}/>
-      <div class="ctl"><${Attach} a=${a} disabled=${busy}/><${Mic} v=${v} disabled=${busy}/>
+      <div class="ctl"><${Attach} a=${a} disabled=${busy}/>${info.stt ? html`<${Mic} v=${v} disabled=${busy}/>` : ""}
         <div class="status">${line1}${line2}</div>
         ${lv.driven && lv.state === "work" ? html`<button class="btn danger" onClick=${stop}>${t("stop")}</button>` : ""}
         <button class="btn send" aria-label=${t("send")} disabled=${busy || (!text.trim() && !a.files.length)} onClick=${() => sendText(false)}><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button></div>
@@ -811,7 +811,7 @@ function NewTask({ pkey }) {
     <textarea ref=${plainField} rows="6" placeholder=${t("new.placeholder")} value=${text} onKeyDown=${sendKey(() => { if (!busy && p && (text.trim() || a.files.length)) send(); })} onInput=${(e) => setText(e.target.value)}/>
     <${Thumbs} a=${a}/>
     <${Attach} a=${a} disabled=${busy} wide=${true}/>
-    <${Mic} v=${v} disabled=${busy} wide=${true}/>
+    ${d.stt ? html`<${Mic} v=${v} disabled=${busy} wide=${true}/>` : ""}
     <div class="row2">
       <label class="lbl">${t("model")}<select value=${model} onChange=${(e) => setModel(e.target.value)}>
         ${MODELS.map(([m, label]) => html`<option key=${m} value=${m}>${m ? label : t(label)}</option>`)}</select></label>
