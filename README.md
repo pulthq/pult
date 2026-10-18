@@ -183,7 +183,7 @@ Work on the computer as usual. In Telegram:
 | `/help` | everything above, in sections |
 
 In a terminal, `pult help` lists the commands: `status`, `setup`, `start|stop|restart`, `hooks on|off`,
-`tab …`, `app`, `run`, `report`, `uninstall`.
+`tab …`, `app`, `stt`, `run`, `report`, `uninstall`.
 
 ## How it works
 
@@ -195,9 +195,9 @@ Telegram on your phone ───────────────────
 web app (optional): Mini App ──► relay on your server ◄── pultd connects out, no open ports on the computer
 ```
 
-- **Hooks** (`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`, `SessionEnd`, `PermissionRequest`)
-  pass each event to the daemon. The hook never gets in the way. If the daemon isn't running or anything goes
-  wrong, it exits quietly and Claude Code behaves as if it weren't there.
+- **Hooks** (`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `SessionEnd`,
+  `PermissionRequest`) pass each event to the daemon. The hook never gets in the way. If the daemon isn't running
+  or anything goes wrong, it exits quietly and Claude Code behaves as if it weren't there.
 - **Permission requests.** The hook waits for your answer from Telegram while the dialog on the computer stays
   open. Claude Code takes whichever answer comes first and ignores a later one.
 - **Sessions from Telegram** run through the Claude Agent SDK. That is your Claude Code, in the project's

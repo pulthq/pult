@@ -3,8 +3,9 @@
 Pult is a Telegram remote for the Claude Code sessions on a computer (macOS or Linux): a per-user daemon
 (`src/pultd.py`, run by launchd or systemd --user; what differs between systems is in `src/pult_os.py`), a
 Claude Code hook (`src/pult_hook.py`), an optional VS Code tab wrapper (`src/pult_tab.py`, `src/pult-tab.sh`), the
-`pult` command (`src/pultctl.py`, `src/pult_setup.py`) and an optional web app with a relay (`src/pult_web.py`,
-`relay/`). Start with [README.md](README.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
+`pult` command (`src/pultctl.py`, `src/pult_setup.py`), a speech-to-text client used only when a key is set
+(`src/pult_stt.py`, Groq Whisper) and an optional web app with a relay (`src/pult_web.py`, `relay/`). Start with
+[README.md](README.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Before you call it done
 
@@ -26,6 +27,8 @@ Claude Code hook (`src/pult_hook.py`), an optional VS Code tab wrapper (`src/pul
 - **Don't edit the user's settings directly.** `~/.claude/settings.json` changes only through `pult hooks` (with a
   backup); VS Code settings are never edited. Don't touch session transcripts in `~/.claude/projects/`.
 - Before restarting the service, check that no session started from Telegram is running: a restart interrupts it.
+- A new module in `src/` goes into two lists: the `cp` line in `install.sh` and `HOME_FILES` in `src/pult_setup.py`
+  (`test_every_module_installed` checks both); otherwise the installed daemon fails to start.
 
 ## Style
 

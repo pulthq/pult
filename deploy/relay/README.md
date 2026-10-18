@@ -1,23 +1,23 @@
 # The web app server (relay)
 
-Pult works without a server: the bot, the topics and the buttons need only your Mac. The **web app** is an
+Pult works without a server: the bot, the topics and the buttons need only your computer. The **web app** is an
 optional extra — a Telegram Mini App on your phone with every session in full, Claude's questions, new tasks and
 usage. Telegram opens Mini Apps only from a public HTTPS address, so the app needs a small server of yours.
 
 ```
-phone: Telegram → Mini App ──wss /pult/ws──► relay (your server) ◄──wss /pult/agent── Pult on your Mac
+phone: Telegram → Mini App ──wss /pult/ws──► relay (your server) ◄──wss /pult/agent── Pult on your computer
 ```
 
-The relay stores nothing: everything the app shows comes from the Mac at request time. Strangers are cut off at
-the relay by Telegram's signature and your Telegram ID; the Mac checks every login again with the bot token, which
-never leaves the Mac. The Mac connects to the relay by itself, with a shared secret — no ports open on the Mac.
+The relay stores nothing: everything the app shows comes from your computer at request time. Strangers are cut off at
+the relay by Telegram's signature and your Telegram ID; the computer checks every login again with the bot token, which
+never leaves it. The computer connects to the relay by itself, with a shared secret — no ports open on it.
 
 ## What you need
 
 - A Linux server with systemd and Python 3.10+ (any small VPS: the relay takes ~50 MB of memory).
 - A domain name pointing at it, and HTTPS — nginx with a certificate (for example, certbot) or Caddy.
 
-## 1. On the Mac
+## 1. On the computer
 
 ```
 pult app
@@ -25,7 +25,7 @@ pult app
 
 Enter the app's address — `https://your.domain/pult/` — and keep the suggested Mini App link for now
 (`https://t.me/<your bot>/pult`; it starts working after step 4). Pult prints three lines for the server's `.env`:
-`PULT_RELAY_SECRET` (the Mac's key to the relay — keep it private), `PULT_OWNER_ID` and `PULT_BOT_ID`.
+`PULT_RELAY_SECRET` (the computer's key to the relay — keep it private), `PULT_OWNER_ID` and `PULT_BOT_ID`.
 
 ## 2. On the server
 
@@ -56,8 +56,9 @@ then `nginx -t && systemctl reload nginx`.
 
 **Caddy:** see [Caddyfile](Caddyfile) — replace the domain; Caddy gets the certificate by itself.
 
-Check from anywhere: `curl https://your.domain/pult/healthz` → `{"ok": true, "mac": true, …}` once the Mac is
-connected (`mac: false` — see the Mac's log, `~/Library/Logs/pult.log`, lines starting with `web:`).
+Check from anywhere: `curl https://your.domain/pult/healthz` → `{"ok": true, "mac": true, …}` once the computer is
+connected (`mac: false` — see Pult's log, `~/Library/Logs/pult.log` on macOS or `~/.local/state/pult/pult.log` on Linux,
+lines starting with `web:`).
 
 ## 4. The Mini App in @BotFather
 
@@ -65,9 +66,9 @@ connected (`mac: false` — see the Mac's log, `~/Library/Logs/pult.log`, lines 
 `https://your.domain/pult/` → **short name** `pult`. The link is `https://t.me/<your bot>/pult` — the one from step 1
 (if you chose another short name, run `pult app` again and change the link).
 
-In Telegram: `/app`, or **Open Pult** in the pinned panel of the group.
+In Telegram: `/app`, or **📱 Pult** in a topic's pinned bar.
 
 ## Turning it off
 
-On the Mac: `pult app off`. On the server: `systemctl disable --now pult-relay`, remove the nginx include or the
+On the computer: `pult app off`. On the server: `systemctl disable --now pult-relay`, remove the nginx include or the
 Caddy block, `rm -rf /opt/pult-relay`, `userdel pult`.

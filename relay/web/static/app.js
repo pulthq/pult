@@ -133,7 +133,22 @@ const confirmBox = (s) => new Promise((ok) => (tg && tg.showConfirm ? tg.showCon
 // boolean, so the string "off" would switch it on
 const plainField = (el) => { if (el) for (const [k, v] of [["autocapitalize", "none"], ["autocorrect", "off"], ["spellcheck", "false"]]) el.setAttribute(k, v); };
 // Cmd+Enter on the Mac, Ctrl+Enter elsewhere — send, as in Telegram; Enter alone still makes a new line
-const sendKey = (send) => (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); } };
+// the message field's keys, as in Telegram (the owner's check on the Mac, 2026-10-18): with a real keyboard Enter sends,
+// Shift+Enter and Cmd/Ctrl+Enter break the line; on the phone Enter breaks the line and the button sends
+const DESKTOP = tg && tg.platform && tg.platform !== "unknown" ? !/^(android|ios)/.test(tg.platform)
+  : !!(window.matchMedia && matchMedia("(hover: hover) and (pointer: fine)").matches);
+const breakLine = (e, setText) => {           // the browser inserts no newline on Cmd/Ctrl+Enter — do it by hand
+  e.preventDefault();
+  const el = e.target, s = el.selectionStart, n = el.selectionEnd;
+  setText(el.value.slice(0, s) + "\n" + el.value.slice(n));
+  requestAnimationFrame(() => { el.setSelectionRange(s + 1, s + 1);
+    if (el.rows === 1) { el.style.height = "auto"; el.style.height = Math.min(el.scrollHeight, 160) + "px"; } });
+};
+const sendKey = (send, setText) => (e) => {
+  if (e.key !== "Enter" || e.isComposing) return;
+  if (e.metaKey || e.ctrlKey) breakLine(e, setText);
+  else if (DESKTOP && !e.shiftKey && !e.altKey) { e.preventDefault(); send(); }
+};
 const go = (h) => { location.hash = h; };
 
 // links in Claude's answers open outside, through Telegram, not inside the app
@@ -186,6 +201,21 @@ function Thumbs({ a }) {
 // back from the computer (Groq) and land in the message field — to be checked and sent with one more tap
 const REC_MIME = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus", "audio/ogg"];
 const REC_MAX = 5 * 60;      // s; the recording stops by itself
+// Telegram on Android asks "allow the microphone?" at every new getUserMedia, even one already allowed in this very
+// session (the owner saw it at each tap, 2026-10-18). So the microphone is asked for once and kept while the app is on
+// the screen: recordings reuse the stream, muted in between; it is let go when the app goes to the background or after
+// MIC_HOLD without a recording — the next tap asks again, once
+const MIC_HOLD = 10 * 60 * 1000;
+let mic = null, micTimer = 0;
+const dropMic = () => { clearTimeout(micTimer); if (mic) { mic.getTracks().forEach((tr) => tr.stop()); mic = null; } };
+async function getMic() {
+  clearTimeout(micTimer);
+  if (mic && mic.getTracks().some((tr) => tr.readyState === "live")) { mic.getTracks().forEach((tr) => { tr.enabled = true; }); return mic; }
+  mic = await navigator.mediaDevices.getUserMedia({ audio: true });
+  return mic;
+}
+const restMic = () => { if (mic) mic.getTracks().forEach((tr) => { tr.enabled = false; }); clearTimeout(micTimer); micTimer = setTimeout(dropMic, MIC_HOLD); };
+document.addEventListener("visibilitychange", () => { if (document.hidden) dropMic(); });
 function useRecorder(onText) {
   const [st, setSt] = useState("idle");           // idle | rec | busy
   const [secs, setSecs] = useState(0);
@@ -195,16 +225,16 @@ function useRecorder(onText) {
     if (st !== "idle") return stop();
     if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder)) return alertBox(t("rec.unsupported"));
     let stream;
-    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e) { return alertBox(t("rec.denied")); }
+    try { stream = await getMic(); } catch (e) { dropMic(); return alertBox(t("rec.denied")); }
     const mime = REC_MIME.find((m) => MediaRecorder.isTypeSupported(m)) || "";
     let rec;
     try { rec = new MediaRecorder(stream, Object.assign({ audioBitsPerSecond: 32000 }, mime ? { mimeType: mime } : {})); }
-    catch (e) { stream.getTracks().forEach((tr) => tr.stop()); return alertBox(t("rec.unsupported")); }
+    catch (e) { dropMic(); return alertBox(t("rec.unsupported")); }
     const chunks = [], t0 = Date.now();
     const x = (cur.current = { rec, timer: 0 });
     rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
     rec.onstop = async () => {
-      clearInterval(x.timer); stream.getTracks().forEach((tr) => tr.stop()); cur.current = null;
+      clearInterval(x.timer); restMic(); cur.current = null;
       const blob = new Blob(chunks, { type: rec.mimeType || mime || "audio/webm" });
       if (blob.size < 1000) { setSt("idle"); setSecs(0); return alertBox(t("rec.empty")); }
       setSt("busy");
@@ -219,7 +249,7 @@ function useRecorder(onText) {
     rec.start(1000);
     setSt("rec"); setSecs(0);
   };
-  useEffect(() => () => { const x = cur.current; if (x) { clearInterval(x.timer); try { x.rec.stream.getTracks().forEach((tr) => tr.stop()); } catch (e) { /* already gone */ } } }, []);
+  useEffect(() => () => { const x = cur.current; if (x) { clearInterval(x.timer); try { x.rec.stop(); } catch (e) { /* already gone */ } } }, []);
   return { st, secs, toggle };
 }
 const MIC = html`<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg>`;
@@ -776,7 +806,7 @@ function Session({ sid }) {
         <button class="link" onClick=${() => { const el = document.querySelector('.msg.me[data-n="' + full.n + '"]'); closeFull();
           if (el) setTimeout(() => el.scrollIntoView({ block: "start" }), 60); }}>${t("pin.goto")}</button></div>`}
       <${Thumbs} a=${a}/>
-      <textarea ref=${taRef} rows="1" placeholder=${t("write")} value=${text} onKeyDown=${sendKey(() => { if (!busy) sendText(false); })} onInput=${(e) => { setText(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}/>
+      <textarea ref=${taRef} rows="1" placeholder=${t("write")} value=${text} onKeyDown=${sendKey(() => { if (!busy) sendText(false); }, setText)} onInput=${(e) => { setText(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}/>
       <div class="ctl"><${Attach} a=${a} disabled=${busy}/>${info.stt ? html`<${Mic} v=${v} disabled=${busy}/>` : ""}
         <div class="status">${line1}${line2}</div>
         ${lv.driven && lv.state === "work" ? html`<button class="btn danger" onClick=${stop}>${t("stop")}</button>` : ""}
@@ -808,7 +838,7 @@ function NewTask({ pkey }) {
       ${d.projects.map((x) => html`<option value=${x.pkey}>${x.name}</option>`)}
     </select>
     <label class="lbl">${t("new.what")}</label>
-    <textarea ref=${plainField} rows="6" placeholder=${t("new.placeholder")} value=${text} onKeyDown=${sendKey(() => { if (!busy && p && (text.trim() || a.files.length)) send(); })} onInput=${(e) => setText(e.target.value)}/>
+    <textarea ref=${plainField} rows="6" placeholder=${t("new.placeholder")} value=${text} onKeyDown=${sendKey(() => { if (!busy && p && (text.trim() || a.files.length)) send(); }, setText)} onInput=${(e) => setText(e.target.value)}/>
     <${Thumbs} a=${a}/>
     <${Attach} a=${a} disabled=${busy} wide=${true}/>
     ${d.stt ? html`<${Mic} v=${v} disabled=${busy} wide=${true}/>` : ""}

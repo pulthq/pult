@@ -2,6 +2,17 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.9.15 — 2026-10-18
+
+- The message field's keys are Telegram's: with a real keyboard (Telegram on a computer, the web), Enter sends and
+  Shift+Enter or Cmd/Ctrl+Enter breaks the line; on the phone Enter breaks the line and the button sends. Until now
+  Enter always broke the line and Cmd/Ctrl+Enter sent.
+- The microphone is asked for once: Telegram on Android shows its "allow the microphone?" dialog at every new request,
+  even one already allowed, so the app keeps the microphone (muted between recordings) while it is on the screen and
+  lets it go when the app goes to the background or after ten minutes without a recording.
+- Docs: the README names all seven hook events (`PostToolUseFailure` was missing) and lists `pult stt` among the
+  commands; the relay guide says "computer" where it said "Mac".
+
 ## 0.9.14 — 2026-10-18
 
 - The app shows the microphone button only when a Groq key is set; without one the paperclip stands alone, as

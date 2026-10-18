@@ -180,7 +180,7 @@ cd pult
 | `/help` | всё это, по разделам |
 
 В терминале `pult help` перечислит команды: `status`, `setup`, `start|stop|restart`, `hooks on|off`, `tab …`,
-`app`, `run`, `report`, `uninstall`.
+`app`, `stt`, `run`, `report`, `uninstall`.
 
 ## Как устроено
 
@@ -192,9 +192,9 @@ Telegram на телефоне ────────────────�
 веб-приложение (по желанию): Mini App ──► посредник на твоём сервере ◄── pultd подключается сам, портов на компьютере нет
 ```
 
-- **Хуки** (`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`, `SessionEnd`, `PermissionRequest`)
-  передают демону каждое событие. Хук никогда не мешает: если демон не запущен или что-то пошло не так, он молча
-  выходит, и Claude Code ведёт себя так, будто хука нет.
+- **Хуки** (`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `SessionEnd`,
+  `PermissionRequest`) передают демону каждое событие. Хук никогда не мешает: если демон не запущен или что-то
+  пошло не так, он молча выходит, и Claude Code ведёт себя так, будто хука нет.
 - **Разрешения.** Хук ждёт твоего ответа из Telegram, а окно на компьютере остаётся открытым. Claude Code берёт
   первый ответ и пропускает поздний.
 - **Сессии из Telegram** идут через Claude Agent SDK. Это твой Claude Code: в папке проекта, с твоими
