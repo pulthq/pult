@@ -1,6 +1,7 @@
 """Web app test stand: a local relay (127.0.0.1:18097) + the daemon with a fake Telegram and made-up sessions:
 one working, one waiting for a permission, one waiting for an answer, jobs without Claude, a final result. Login
-is signed with test keys (tests/test_web.py). Prints the screen URLs (HOME, SESS, USAGE, SETTINGS, NEW, PROJ, PROJECTS), stays up HOLD s.
+is signed with test keys (tests/test_web.py). Prints the screen URLs (HOME, SESS, USAGE, SETTINGS, NEW, PROJ, PROJECTS,
+LOAD), stays up HOLD s.
 
   HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out &
   ~/.local/share/pult/venv/bin/python tools/shot.py "$(grep ^HOME /tmp/stand.out | cut -d' ' -f2)" home.png 412 4 [dark]
@@ -15,6 +16,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "tests"))
 import test_web as W  # noqa: E402  (keys, relay with the test key)
 T, PW, pultd, relay = W.T, W.PW, W.pultd, W.relay
+import pult_load as L  # noqa: E402
 from aiohttp import web  # noqa: E402
 
 HOLD = float(os.environ.get("HOLD", "90"))
@@ -43,7 +45,7 @@ D = {
         tickets="Sort the new support tickets", question="Which tickets should I start with?", header="Order",
         opt1="Urgent", opt1d="due tonight", opt2="Oldest first",
         tickets_done="Sorted **12 tickets**: 3 urgent, 9 can wait. The list is in the report.",
-        bg_run="Export the tickets to the CRM",
+        bg_run="Export the tickets to the CRM", bg_cmd="python scripts/export_tickets.py --to crm",
         job_last="epoch 27/40 · loss 0.31", user="Sam"),
     "ru": dict(
         title="Оформление заказа: понятные ошибки",
@@ -62,7 +64,7 @@ D = {
         tickets="Разбери новые заявки в поддержку", question="С каких заявок начать?", header="Порядок",
         opt1="Срочные", opt1d="до вечера", opt2="Сначала старые",
         tickets_done="Разобрал **12 заявок**: 3 срочные, 9 подождут. Список — в отчёте.",
-        bg_run="Выгрузка заявок в CRM",
+        bg_run="Выгрузка заявок в CRM", bg_cmd="python scripts/export_tickets.py --to crm",
         job_last="эпоха 27/40 · потери 0,31", user="Саша"),
 }[LANG if LANG in ("en", "ru") else "en"]
 
@@ -198,7 +200,8 @@ async def main():
     await T.run_hook(ev("UserPromptSubmit", SID2, cwd=DESK, prompt=D["tickets"]))
     await T.run_hook(ev("PermissionRequest", SID2, cwd=DESK, tool_name="AskUserQuestion", tool_input=q), wait=False)
     await T.run_hook(ev("Stop", SID2, cwd=DESK, last_assistant_message=D["tickets_done"],
-                        background_tasks=[{"id": "b2", "type": "shell", "status": "running", "description": D["bg_run"]}]))
+                        background_tasks=[{"id": "b2", "type": "shell", "status": "running", "description": D["bg_run"],
+                                           "command": D["bg_cmd"]}]))
     await asyncio.sleep(0.3)
     await T.run_hook(ev("PermissionRequest", SID2, cwd=DESK, tool_name="AskUserQuestion", tool_input=q), wait=False)
     await p.on_run({"op": "start", "id": "j1", "cmd": "python train.py --epochs 40", "cwd": SHOP, "pid": os.getpid()})
@@ -206,6 +209,27 @@ async def main():
     p.jobs["j1"].last = D["job_last"]
     await p.on_run({"op": "start", "id": "j2", "cmd": "npm run build", "cwd": SHOP, "pid": os.getpid()})
     await p.on_run({"op": "end", "id": "j2", "code": 1, "tail": ["src/cart.ts(12,5): error TS2322", "Found 1 error."]})
+    # the load on the computer: made-up processes for the stand's sessions — the Mac's own are never read here
+    await asyncio.sleep(0.5)                  # the hooks above are in: each set its session's process to the stand's
+    claude = "/Users/x/.vscode/extensions/anthropic.claude-code-2.1.301-darwin-arm64/resources/native-binary/claude"
+    def proc(ppid, cmd, cpu, mb, ago, cpu_time, peak_mb=None):
+        return {"ppid": ppid, "cmd": cmd, "cpu": cpu, "mem": mb << 20, "peak": (peak_mb or mb) << 20,
+                "cpu_time": cpu_time, "started": time.time() - ago, "mine": True}
+    def shell(ppid, c, ago):
+        return proc(ppid, "/bin/zsh -c source /Users/x/.claude/shell-snapshots/s.sh 2>/dev/null || true && " +
+                    L.quoted(c) + " < /dev/null && pwd -P >| /tmp/claude-1a2b-cwd", 0.0, 1, ago, 0.1)
+    procs = {1001: proc(1, claude, 6.0, 310, 3 * 3600, 240), 1002: shell(1001, "pytest tests/e2e -n 4", 380),
+             1003: proc(1002, "python -m pytest tests/e2e -n 4", 180.0, 640, 379, 610, 900),
+             1004: proc(1001, "node /Users/x/.mcp/browser/server.js", 9.0, 220, 3 * 3600, 95),
+             2001: proc(1, claude, 1.5, 260, 2 * 3600, 120), 2002: shell(2001, D["bg_cmd"], 1500),
+             2003: proc(2002, D["bg_cmd"], 96.0, 180, 1499, 1380, 410),
+             3001: proc(1, claude, 0.2, 170, 26 * 3600, 60)}
+    p._procs = (time.monotonic() + 1e6, (procs, {"cores": 8, "cpu": 41.0, "mem_total": 16 << 30,
+                                                 "mem_used": int(10.4 * (1 << 30)), "load": 3.6}))
+    p._agents = (time.monotonic() + 1e6, [{"sessionId": SID3, "cwd": "/Users/x/blog", "pid": 3001}])
+    p.live[T.SID].pid, p.live[SID2].pid = 1001, 2001
+    print("LOAD http://127.0.0.1:18097/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
+          urllib.parse.quote(init("load")), flush=True)
     print("SETTINGS http://127.0.0.1:18097/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
           urllib.parse.quote(init("settings")), flush=True)
     print("HOME http://127.0.0.1:18097/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %

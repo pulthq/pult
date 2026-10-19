@@ -2,6 +2,23 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.9.16 — 2026-10-19
+
+- The load on the computer, in the app. Home gets one line under the "where you are" strip: the computer's processor
+  and memory now, and how much memory Claude's sessions hold. A tap opens a screen with the computer's processor
+  (cores, load average) and memory, then every Claude session on it, the busiest first, each with the commands
+  running under it (⚙️ in the background, ▶ in a turn) and any other busy program; resting sessions are folded.
+- A tap on "in the background" (on Home and in a session) shows each background task: how long it has run, the
+  processor now and in total, the memory now and at its peak. A subagent says it thinks on Anthropic's servers.
+- The processor is shown as a share of the whole computer, so the sessions add up to its figure. Memory on macOS is
+  the physical footprint, as Activity Monitor counts it; the peak and the total processor time come from the system
+  (`proc_pid_rusage` on macOS, `/proc` on Linux), finished commands included. Programs that are not Claude's commands
+  (MCP servers) show only their name: their arguments may hold keys.
+- Measured only while the app is open: one process snapshot (about 50 ms) at most every 4 seconds. Windows shows no
+  load yet.
+- `tests/probe_load.py`: how a background task looks among the processes (Claude Code 2.1.301); `tests/e2e_live.py`
+  checks that the load view finds a real background command.
+
 ## 0.9.15 — 2026-10-18
 
 - The message field's keys are Telegram's: with a real keyboard (Telegram on a computer, the web), Enter sends and

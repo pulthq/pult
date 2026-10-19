@@ -59,8 +59,9 @@ function api(op, args = {}) {
   });
 }
 
-// screen data: load when the connection is ready and on "something changed" events (at most every 0.4 s)
-function useLive(load, deps, match) {
+// screen data: load when the connection is ready, on "something changed" events (at most every 0.4 s) and every
+// `every` ms
+function useLive(load, deps, match, every = 30000) {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
   const ref = useRef({ timer: null, alive: true });
@@ -71,7 +72,7 @@ function useLive(load, deps, match) {
     const soon = () => { clearTimeout(ref.current.timer); ref.current.timer = setTimeout(run, 400); };
     if (conn.ready) run();
     const offs = [on("ready", run), on("event", (m) => (!match || match(m)) && soon())];
-    const tick = setInterval(() => conn.ready && run(), 30000);
+    const tick = setInterval(() => conn.ready && run(), every);
     return () => { ref.current.alive = false; offs.forEach((f) => f()); clearInterval(tick); clearTimeout(ref.current.timer); };
   }, deps);
   return [data, err, setData];
@@ -120,6 +121,12 @@ function resetText(ts) {
 }
 const num = (x, digits) => x.toLocaleString(locale(), { maximumFractionDigits: digits });
 const kilo = (n) => (n >= 1e6 ? t("kilo.m", { n: num(n / 1e6, 1) }) : n >= 1000 ? t("kilo.k", { n: Math.round(n / 1000) }) : String(n || 0));
+// a short value that a wrapping line keeps whole: "641 MB", "7 min"
+const nb = (s) => String(s).replace(/ /g, "\u00a0");
+// memory: megabytes up to a gigabyte, then gigabytes with one decimal
+const bytes = (b) => nb(b >= 1024 ** 3 ? t("gb", { n: num(b / 1024 ** 3, 1) }) : t("mb", { n: Math.max(0, Math.round((b || 0) / 1024 ** 2)) }));
+const pct = (x) => (x >= 10 ? Math.round(x) : num(x || 0, 1)) + "\u00a0%";
+const level = (p) => (p >= 90 ? "bad" : p >= 70 ? "warn" : "");
 const modelName = (m) => {
   if (!m) return "";
   const [name, ...ver] = m.replace(/^claude-/, "").split("-");
@@ -366,7 +373,8 @@ function useRoute() {
 const start = tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param;
 if ((!location.hash || tgHash(location.hash)) && start) {
   const h = start.startsWith("s_") ? "#/s/" + start.slice(2) : start.startsWith("p_") ? "#/p/" + encodeURIComponent(start.slice(2))
-    : start === "new" ? "#/new" : start === "usage" ? "#/usage" : start === "settings" ? "#/settings" : start === "projects" ? "#/projects" : null;
+    : start === "new" ? "#/new" : start === "usage" ? "#/usage" : start === "settings" ? "#/settings" : start === "projects" ? "#/projects"
+    : start === "load" ? "#/load" : null;
   if (h) { history.replaceState(null, "", h); stack[0] = h; }
 }
 
@@ -426,17 +434,102 @@ function Req({ r, onDone, showWhere = true }) {
 // Claude's background tasks still running after a turn; when one ends, Claude starts a new turn by itself
 const bgLine = (bg) => t("bg", { list: bg.map(q).join(", ") });
 
-function Row({ s, now, onClick }) {
+function Row({ s, now, onClick, onBg }) {
+  // "in the background" opens what those tasks cost the computer; the rest of the row opens the session
+  const bgTap = onBg && ((e) => { e.stopPropagation(); onBg(s); });
   const st = s.state === "ask" ? html`<span class="chip warn">${t("st.ask")}</span>`
     : s.state === "work" ? html`<span class="chip ok">${t("st.work", { dur: s.started ? dur(now - s.started) : "" })}</span>`
-    : s.bg && s.bg.length ? html`<span class="chip">${t("st.bg")}</span>`
+    : s.bg && s.bg.length ? html`<span class="chip tap" onClick=${bgTap}>${t("st.bg")}</span>`
     : html`<span class="chip">${t("st.open")}</span>`;
   return html`<button class="item" onClick=${onClick}>
     <div class="item-h"><b>${s.driven ? "📱 " : ""}${s.title}</b>${st}</div>
     <div class="dim">${[s.project !== s.title ? s.project : "", s.prompt ? q(s.prompt) : s.note || ""].filter(Boolean).join(" · ")}</div>
     ${s.now && html`<div class="now">💬 ${s.now}</div>`}
-    ${s.bg && s.bg.length > 0 && html`<div class="bg">${bgLine(s.bg)}</div>`}
+    ${s.bg && s.bg.length > 0 && html`<div class="bg tap" onClick=${bgTap}>${bgLine(s.bg)}${onBg ? " ›" : ""}</div>`}
   </button>`;
+}
+
+// ---------- the load on the computer ----------
+
+// cores a process keeps busy: "1 core", "0.3 cores" — "1 ядро", "0,3 ядра", "5 ядер"
+const coresText = (c) => (c >= 0.95 && Math.abs(c - Math.round(c)) < 0.05 ? Math.round(c) + " " + plural(Math.round(c), "core") : num(c, 1) + " " + t("cores.frac"));
+const memPct = (l) => (l.mem_total && l.mem_used != null ? Math.round(l.mem_used * 100 / l.mem_total) : null);
+const stateWord = (st) => (st === "work" ? t("load.st.work") : st === "ask" ? t("st.ask") : st === "bg" ? t("st.bg") : "");
+
+// the Home line: the computer's processor and memory now, and what Claude's sessions hold; a tap — the load screen
+function LoadLine({ l }) {
+  const m = memPct(l);
+  return html`<button class="where-b load-b" onClick=${() => go("#/load")}>
+    <b><span class=${level(l.cpu)}>${t("load.cpu.short", { cpu: pct(l.cpu) })}</span>${m !== null ? html` · <span class=${level(m)}>${t("load.mem.short", { mem: m + " %" })}</span>` : ""}</b>
+    <span class="dim">${t("load.claude", { mem: bytes(l.claude.mem) })}</span><span class="caret">▸</span></button>`;
+}
+
+// what runs under a session: Claude's command in the background (⚙️) or in a turn (▶), another program (·)
+function Cmds({ cmds, now }) {
+  return cmds.length ? html`<div class="cmds">${cmds.map((c, i) => html`<div class="cmd" key=${i}>
+    <div class="mono">${c.bg ? "⚙️ " : c.claude ? "▶ " : "· "}${c.text}</div>
+    <div class="dim">${[pct(c.cpu), bytes(c.mem), t("load.runs", { dur: nb(dur(now - c.started)) })].join(" · ")}</div></div>`)}</div>` : "";
+}
+
+function LoadRow({ s, now }) {
+  return html`<button class="item" onClick=${() => go("#/s/" + s.sid)}>
+    <div class="item-h"><b>${s.driven ? "📱 " : ""}${s.title}</b><b class=${"pct " + level(s.cpu)}>${pct(s.cpu)}</b></div>
+    <div class="dim">${[s.project !== s.title ? s.project : "", stateWord(s.state), bytes(s.mem),
+      s.cpu_time != null ? t("load.total", { dur: nb(dur(s.cpu_time)) }) : "", t("load.opened", { when: ago(s.started) })].filter(Boolean).join(" · ")}</div>
+    <${Cmds} cmds=${s.cmds} now=${now}/>
+  </button>`;
+}
+
+// the computer: processor and memory now, then every Claude session on it, the busiest first; resting ones folded
+function Load() {
+  const now = useNow(5000);
+  const [d, err] = useLive(() => api("load"), [], () => false, 5000);
+  const [rest, setRest] = useState(false);
+  if (!d) return html`<${Loading} err=${err}/>`;
+  if (!d.ok) return html`<div><h2>${t("load.title")}</h2><div class="empty">${t("load.none")}</div></div>`;
+  const l = d.mac, m = memPct(l);
+  const busy = d.sessions.filter((s) => !s.idle), idle = d.sessions.filter((s) => s.idle);
+  return html`<div><h2>${t("load.title")}</h2>
+    <div class="list">
+      <div class="lim"><div class="item-h"><b>${t("load.cpu")}</b><b class=${"pct " + level(l.cpu)}>${pct(l.cpu)}</b></div>
+        <div class="meter"><i class=${level(l.cpu)} style=${"width:" + Math.min(100, l.cpu) + "%"}></i></div>
+        <div class="dim">${t("load.cpu.about", { n: l.cores, cores: plural(l.cores, "core"), load: num(l.load, 1) })}</div></div>
+      ${m !== null && html`<div class="lim"><div class="item-h"><b>${t("load.mem")}</b><b class=${"pct " + level(m)}>${m} %</b></div>
+        <div class="meter"><i class=${level(m)} style=${"width:" + Math.min(100, m) + "%"}></i></div>
+        <div class="dim">${t("load.mem.about", { used: bytes(l.mem_used), total: bytes(l.mem_total), free: bytes(l.mem_total - l.mem_used) })}</div></div>`}
+    </div>
+    <h3>${t("load.sessions", { n: l.claude.n, sessions: plural(l.claude.n, "session"), cpu: pct(l.claude.cpu), mem: bytes(l.claude.mem) })}</h3>
+    ${!d.sessions.length && html`<div class="empty">${t("load.nosessions")}</div>`}
+    ${busy.length > 0 && html`<div class="list">${busy.map((s) => html`<${LoadRow} key=${s.sid} s=${s} now=${now}/>`)}</div>`}
+    ${idle.length > 0 && html`<h3 class="toggle" onClick=${() => setRest(!rest)}>${t("load.resting", { n: idle.length, mem: bytes(idle.reduce((a, s) => a + s.mem, 0)) })} ${rest ? "▾" : "▸"}</h3>
+      ${rest && html`<div class="list">${idle.map((s) => html`<${LoadRow} key=${s.sid} s=${s} now=${now}/>`)}</div>`}`}
+    <div class="dim small">${t("load.about")}</div>
+  </div>`;
+}
+
+// a tap on "in the background": each task and what it costs the computer — now, in total and at its peak
+const TASK_TYPES = { shell: "bgs.shell", monitor: "bgs.monitor", subagent: "bgs.subagent", workflow: "bgs.workflow" };
+function BgSheet({ sid, onClose, fixed }) {
+  const now = useNow(5000);
+  const [d, err] = useLive(() => api("load", { sid }), [sid], (m) => !m.sid || m.sid === sid, 5000);
+  const more = () => { onClose(); setTimeout(() => go("#/load"), 60); };
+  const one = (x) => html`<div class="task" key=${x.id}>
+    <div class="item-h"><b>${x.what}</b><span class="chip">${t(TASK_TYPES[x.type] || "bgs.shell")}</span></div>
+    ${x.cmd && html`<pre class="cmdline">${x.cmd}</pre>`}
+    ${x.remote ? html`<div class="dim">${x.since ? t("bgs.atleast", { dur: dur(now - x.since), hm: hhmm(toDate(x.since)) }) + " · " : ""}${t("bgs.remote")}</div>`
+      : x.found === false ? html`<div class="dim">${t("bgs.gone")}</div>`
+      : html`<div class="kv">
+          <span>${t("bgs.runs")}</span><b>${dur(now - x.since)} <span class="dim">${t("bgs.since", { hm: hhmm(toDate(x.since)) })}</span></b>
+          <span>${t("bgs.cpu")}</span><b>${pct(x.cpu)}${x.cores >= 0.1 ? html` <span class="dim">· ≈ ${coresText(x.cores)}</span>` : ""}</b>
+          ${x.cpu_time != null && html`<span>${t("bgs.cputime")}</span><b>${dur(x.cpu_time)}</b>`}
+          <span>${t("bgs.mem")}</span><b>${bytes(x.mem)}${x.peak ? html` <span class="dim">· ${t("bgs.peak", { mem: bytes(x.peak) })}</span>` : ""}</b>
+        </div>`}</div>`;
+  return html`<div class="backdrop" onClick=${onClose}></div><div class=${"card pick tall" + (fixed ? " fixed" : "")}>
+    <div class="q-t pick-h">${t("bgs.title")}<button class="x" aria-label=${t("close")} onClick=${onClose}>×</button></div>
+    ${!d ? html`<div class="dim">${err || t("loading")}</div>` : !d.ok ? html`<div class="dim">${t("load.none")}</div>` : html`
+      ${!d.tasks.length && html`<div class="dim">${t("bgs.none")}</div>`}${d.tasks.map(one)}
+      ${d.session && html`<div class="dim small">${t("bgs.session", { cpu: pct(d.session.cpu), mem: bytes(d.session.mem) })}</div>`}`}
+    <button class="link" onClick=${more}>${t("bgs.more")}</button></div>`;
 }
 
 // where the owner is: it only changes the sound, messages always arrive
@@ -472,23 +565,28 @@ function Home() {
   const now = useNow(1000);            // "working 14 s" ticks every second: a turn in progress should look alive
   const [d, err, set] = useLive(() => api("overview"), []);
   const [showOpen, setShowOpen] = useState(false);
+  const [bgFor, setBgFor] = useState(null);
+  const [openBg, closeBg] = useOverlay(!!bgFor, (v) => { if (!v) setBgFor(null); });
   if (!d) return html`<${Loading} err=${err}/>`;
   useLang(d.lang);
+  const onBg = (s) => { setBgFor(s.sid); openBg(); };
   const quiet = !d.pending.length && !d.live.length;
   return html`<div>
     <${Where} mac=${d.mac} onSet=${(m) => set(Object.assign({}, d, { mac: Object.assign({}, d.mac, { mode: m }) }))}/>
+    ${d.load && html`<${LoadLine} l=${d.load}/>`}
     ${d.pending.length > 0 && html`<h3>${t("home.pending", { n: d.pending.length })}</h3>${d.pending.map((r) => html`<${Req} key=${r.rid} r=${r}/>`)}`}
     ${d.live.length > 0 && html`<h3>${t("home.live", { n: d.live.length })}</h3>
-      <div class="list">${d.live.map((s) => html`<${Row} key=${s.sid} s=${s} now=${now} onClick=${() => go("#/s/" + s.sid)}/>`)}</div>`}
+      <div class="list">${d.live.map((s) => html`<${Row} key=${s.sid} s=${s} now=${now} onBg=${onBg} onClick=${() => go("#/s/" + s.sid)}/>`)}</div>`}
     ${quiet && html`<div class="empty">${t("home.quiet")}</div>`}
     ${d.open.length > 0 && html`<h3 class="toggle" onClick=${() => setShowOpen(!showOpen)}>${t("home.open", { n: d.open.length })} ${showOpen ? "▾" : "▸"}</h3>
-      ${showOpen && html`<div class="list">${d.open.map((s) => html`<${Row} key=${s.sid} s=${s} now=${now} onClick=${() => go("#/s/" + s.sid)}/>`)}</div>`}`}
+      ${showOpen && html`<div class="list">${d.open.map((s) => html`<${Row} key=${s.sid} s=${s} now=${now} onBg=${onBg} onClick=${() => go("#/s/" + s.sid)}/>`)}</div>`}`}
     ${d.jobs && d.jobs.length > 0 && html`<h3>${t("home.jobs")}</h3><div class="list">${d.jobs.map((j) => html`<${Job} key=${j.id} j=${j} now=${now}/>`)}</div>`}
     ${d.recent.length > 0 && html`<h3>${t("home.recent")}</h3><div class="list">${d.recent.map((x) => html`
       <button class="item" key=${x.sid + x.ts} onClick=${() => go("#/s/" + x.sid)}>
         <div class="item-h"><b>✅ ${x.title}</b><span class="dim">${ago(x.ts)}</span></div>
         <div class="dim">${[x.project !== x.title ? x.project : "", x.dur ? t("home.took", { dur: dur(x.dur) }) : ""].filter(Boolean).join(" · ")}</div>
         <div class="now">${x.text}</div></button>`)}</div>`}
+    ${bgFor && html`<${BgSheet} sid=${bgFor} fixed=${true} onClose=${closeBg}/>`}
   </div>`;
 }
 
@@ -639,6 +737,8 @@ function Session({ sid }) {
   const [openPick, closePick] = useOverlay(pick, setPick);
   const [note, setNote] = useState(null);
   const [openNote, closeNote] = useOverlay(!!note, (v) => { if (!v) setNote(null); });
+  const [bgs, setBgs] = useState(false);
+  const [openBgs, closeBgs] = useOverlay(bgs, setBgs);
   const [unread, setUnread] = useState(false);
   const [far, setFar] = useState(false);          // scrolled up more than a screen: a way straight to the bottom
   // your own message that went up past the top of the screen: pinned there, like a pinned message in Telegram;
@@ -782,7 +882,7 @@ function Session({ sid }) {
     <div class="sess-h"><h2>${info.title}</h2><div class="dim">${info.project !== info.title ? html`<a class="crumb" href=${"#/p/" + encodeURIComponent(info.pkey)}>${info.project}</a>` : ""} ${st}</div>
       ${info.stats && info.stats.model && html`<div class="stats">${[modelName(info.stats.model), info.stats.effort && t("effort.is", { e: effortName(info.stats.effort).toLowerCase() })].filter(Boolean).join(" · ")} · <span class=${pct >= 90 ? "bad" : pct >= 70 ? "warn" : ""}>${t("context", { n: kilo(info.stats.context) })}${pct !== null ? t("context.pct", { pct, win: kilo(info.ctx.window) }) : ""}</span><br/>
         ${t("turn.stats", { n: ts.req, requests: plural(ts.req, "request"), out: kilo(ts.out) })}${ts.think ? t("turn.think", { n: kilo(ts.think) }) : ""}</div>`}
-      ${lv.bg && lv.bg.length > 0 && html`<div class="bg">${bgLine(lv.bg)}</div>`}</div>
+      ${lv.bg && lv.bg.length > 0 && html`<button class="bg tap plain" onClick=${openBgs}>${bgLine(lv.bg)} ›</button>`}</div>
     ${s.before != null && html`<button class="link center earlier" disabled=${early} onClick=${earlier}>${t(early ? "earlier.loading" : "earlier")}</button>`}
     ${pin && html`<button class="pinned" onClick=${() => { setFull(pin); openFull(); }}><span class="pin-in"><span class="pin-bar"></span>
       <span class="pin-body"><span class="pin-h">${t("pin.you")}${pin.ts ? " · " + hhmm(toDate(pin.ts)) : ""}${pin.att && pin.att.length ? " · 📎 " + pin.att.length : ""}</span>
@@ -800,6 +900,7 @@ function Session({ sid }) {
     <div class="composer" ref=${comp}>
       ${pick && html`<${ModelPick} sid=${sid} choice=${info.choice} now=${info.stats || {}} driven=${lv.driven} tab=${lv.tab} canModel=${info.switch} canEffort=${info.switch_effort} onClose=${closePick} onDone=${() => load("after")}/>`}
       ${note && html`<${Sheet} title=${info.title} lines=${note} onClose=${closeNote}/>`}
+      ${bgs && html`<${BgSheet} sid=${sid} onClose=${closeBgs}/>`}
       ${full && html`<div class="backdrop" onClick=${closeFull}></div><div class="card pick"><div class="q-t pick-h">${t("pin.you")}${full.ts ? " · " + hhmm(toDate(full.ts)) : ""}<button class="x" aria-label=${t("close")} onClick=${closeFull}>×</button></div>
         <div class="full-tx">${full.text}</div>
         ${full.att && full.att.length ? html`<div class="atts">${full.att.map((x, k) => html`<${Pic} key=${k} a=${x}/>`)}</div>` : ""}
@@ -863,7 +964,6 @@ function Usage() {
     setBusy(false);
   };
   if (!d) return html`<div><${Loading} err=${err && t("usage.failed", { err })}/><${Today}/></div>`;
-  const level = (p) => (p >= 90 ? "bad" : p >= 70 ? "warn" : "");
   return html`<div><h2>${t("usage")}</h2>
     <div class="dim">${d.plan ? t("usage.plan", { plan: d.plan.charAt(0).toUpperCase() + d.plan.slice(1) }) : ""}</div>
     <div class="list">${d.limits.map((x) => html`<div class="lim" key=${x.name}>
@@ -916,6 +1016,7 @@ function App() {
     : r.name === "projects" ? html`<${Projects}/>`
     : r.name === "new" ? html`<${NewTask} pkey=${r.q.get("pkey")}/>`
     : r.name === "usage" ? html`<${Usage}/>`
+    : r.name === "load" ? html`<${Load}/>`
     : r.name === "settings" ? html`<${Settings}/>`
     : html`<${Home}/>`;
   const tab = (name, h, label) => html`<a class=${r.name === name ? "on" : ""} href=${h}>${label}</a>`;

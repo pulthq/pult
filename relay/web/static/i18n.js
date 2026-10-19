@@ -28,6 +28,9 @@ const S = {
   "reset.at": { en: "at {hm} (in {left})", ru: "в {hm} (через {left})" },
   "kilo.m": { en: "{n}M", ru: "{n} млн" },
   "kilo.k": { en: "{n}k", ru: "{n} тыс." },
+  mb: { en: "{n} MB", ru: "{n} МБ" },
+  gb: { en: "{n} GB", ru: "{n} ГБ" },
+  "cores.frac": { en: "cores", ru: "ядра" },
 
   // questions, permissions, plans
   done: { en: "Done", ru: "Готово" },
@@ -212,6 +215,43 @@ const S = {
   "today.about": { en: "Share — by tokens written. “Read” is context: the model re-reads it on every request.",
     ru: "Доля — по написанным токенам. «Прочитано» — контекст: модель перечитывает его на каждом запросе." },
 
+  // the load on the computer
+  "load.cpu.short": { en: "Processor {cpu}", ru: "Процессор {cpu}" },
+  "load.mem.short": { en: "memory {mem}", ru: "память {mem}" },
+  "load.claude": { en: "Claude {mem}", ru: "Claude {mem}" },
+  "load.title": { en: "Load on the computer", ru: "Нагрузка на компьютер" },
+  "load.cpu": { en: "Processor", ru: "Процессор" },
+  "load.cpu.about": { en: "{n} {cores} · load average {load}", ru: "{n} {cores} · средняя загрузка {load}" },
+  "load.mem": { en: "Memory", ru: "Память" },
+  "load.mem.about": { en: "{used} of {total} in use · {free} available", ru: "занято {used} из {total} · свободно {free}" },
+  "load.sessions": { en: "Claude · {n} {sessions} · {cpu} · {mem}", ru: "Claude · {n} {sessions} · {cpu} · {mem}" },
+  "load.resting": { en: "Resting · {n} · {mem}", ru: "Отдыхают · {n} · {mem}" },
+  "load.st.work": { en: "working", ru: "работает" },
+  "load.runs": { en: "running {dur}", ru: "идёт {dur}" },
+  "load.total": { en: "processor time {dur}", ru: "процессорного времени {dur}" },
+  "load.opened": { en: "opened {when}", ru: "открыта {when}" },
+  "load.none": { en: "Pult can't see the processes on this system.", ru: "На этой системе Пульт не видит процессы." },
+  "load.nosessions": { en: "No Claude session is open on the computer.", ru: "На компьютере не открыта ни одна сессия Claude." },
+  "load.about": { en: "Processor — the share of the whole computer right now, so the sessions add up to its figure. Memory — what each process holds now (on a Mac, as Activity Monitor counts it). Processor time — the work done since the session began, finished commands included. ⚙️ — a command in the background, ▶ — a command in a turn.",
+    ru: "Процессор — доля всего компьютера сейчас, поэтому сессии складываются в его цифру. Память — сколько процесс держит сейчас (на Маке — как в «Мониторинге системы»). Процессорное время — работа с начала сессии, вместе с закончившимися командами. ⚙️ — команда в фоне, ▶ — команда хода." },
+  "bgs.title": { en: "⚙️ In the background", ru: "⚙️ В фоне" },
+  "bgs.shell": { en: "command", ru: "команда" },
+  "bgs.monitor": { en: "monitor", ru: "наблюдатель" },
+  "bgs.subagent": { en: "subagent", ru: "помощник" },
+  "bgs.workflow": { en: "workflow", ru: "сценарий" },
+  "bgs.runs": { en: "Running", ru: "Идёт" },
+  "bgs.since": { en: "since {hm}", ru: "с {hm}" },
+  "bgs.cpu": { en: "Processor", ru: "Процессор" },
+  "bgs.cputime": { en: "Processor time", ru: "Процессорное время" },
+  "bgs.mem": { en: "Memory", ru: "Память" },
+  "bgs.peak": { en: "peak {mem}", ru: "пик {mem}" },
+  "bgs.remote": { en: "thinks on Anthropic's servers — hardly loads the computer", ru: "думает на серверах Anthropic — компьютер почти не нагружает" },
+  "bgs.atleast": { en: "running at least {dur} (seen since {hm})", ru: "идёт не меньше {dur} (видно с {hm})" },
+  "bgs.gone": { en: "No such process now — the task has probably ended.", ru: "Процесса уже нет — задача, видимо, закончилась." },
+  "bgs.none": { en: "Nothing runs in the background now.", ru: "Сейчас в фоне ничего не идёт." },
+  "bgs.session": { en: "The whole session now: processor {cpu} · memory {mem}", ru: "Вся сессия сейчас: процессор {cpu} · память {mem}" },
+  "bgs.more": { en: "Load on the computer ›", ru: "Нагрузка на компьютер ›" },
+
   // tabs
   "tab.home": { en: "Home", ru: "Главная" },
   "tab.projects": { en: "Projects", ru: "Проекты" },
@@ -222,6 +262,8 @@ const S = {
 const P = {
   step: { en: ["step", "steps"], ru: ["шаг", "шага", "шагов"] },
   request: { en: ["request", "requests"], ru: ["запрос", "запроса", "запросов"] },
+  core: { en: ["core", "cores"], ru: ["ядро", "ядра", "ядер"] },
+  session: { en: ["session", "sessions"], ru: ["сессия", "сессии", "сессий"] },
 };
 
 export let LANG = "en";

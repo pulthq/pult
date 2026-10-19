@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 KIND = "mac" if sys.platform == "darwin" else "windows" if sys.platform == "win32" else "linux"
@@ -252,6 +253,180 @@ def _x11_idle_ms():
     if not xss.XScreenSaverQueryInfo(dpy, x11.XDefaultRootWindow(dpy), info):
         return None
     return info.contents.idle
+
+
+# ---------- the load on the computer: processes, processor, memory ----------
+#
+# One snapshot of every process for the app's load view: what Claude's sessions and the commands they run cost the
+# computer. Proc: ppid, cmd (the command line), cpu (% of one core, now), mem (bytes held now), peak (the process's
+# highest mem since it started, or None), cpu_time (seconds of processor since it started, its finished children
+# included, or None), started (epoch seconds), mine (our user's). Machine: cores, cpu (% of the whole computer),
+# mem_total and mem_used (bytes), load (the 1-minute load average).
+
+def processes():
+    """(procs {pid: Proc}, machine), or None when this system can't tell — the app then shows no load."""
+    try:
+        if KIND == "mac":
+            return _mac_processes()
+        if KIND == "linux":
+            return _linux_processes()
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def clock(s):
+    """ps's elapsed and processor time — "[dd-][hh:]mm:ss[.cc]" — as seconds."""
+    days, _, s = s.rpartition("-")
+    parts = s.split(":")
+    sec = float(parts[-1].replace(",", "."))
+    for i, n in enumerate(reversed(parts[:-1])):
+        sec += int(n) * (60, 3600)[min(i, 1)]
+    return sec + (int(days) * 86400 if days else 0)
+
+
+CTRL = re.compile(r"\\(0[0-3][0-7])")       # ps writes a newline or a tab in the arguments as \012, \011
+
+
+def ps_rows(out, now, uid):
+    """`ps -o pid=,ppid=,uid=,pcpu=,rss=,etime=,time=,args=` → {pid: Proc}; rss is in KiB."""
+    procs = {}
+    for line in out.splitlines():
+        p = line.split(None, 7)
+        if len(p) < 7:
+            continue
+        try:
+            procs[int(p[0])] = {"ppid": int(p[1]), "mine": int(p[2]) == uid,
+                                "cmd": CTRL.sub(lambda m: chr(int(m.group(1), 8)), p[7]) if len(p) > 7 else "",
+                                "cpu": float(p[3].replace(",", ".")), "mem": int(p[4]) * 1024, "peak": None,
+                                "cpu_time": clock(p[6]), "started": now - clock(p[5])}
+        except ValueError:
+            continue
+    return procs
+
+
+_rusage = [None]          # macOS: proc_pid_rusage, set up on first use (False — not available)
+
+
+def _mac_usage():
+    """pid → {mem, peak, cpu_time} from proc_pid_rusage (our own processes only): mem is the "Memory" Activity Monitor
+    shows (the physical footprint), peak — the highest footprint since the start, cpu_time — the process's own time
+    plus that of its children which have finished. None — not available."""
+    if _rusage[0] is None:
+        try:
+            import ctypes
+            import ctypes.util
+            names = ("user_time system_time pkg_idle_wkups interrupt_wkups pageins wired_size resident_size "
+                     "phys_footprint proc_start_abstime proc_exit_abstime child_user_time child_system_time "
+                     "child_pkg_idle_wkups child_interrupt_wkups child_pageins child_elapsed_abstime diskio_bytesread "
+                     "diskio_byteswritten qos_default qos_maintenance qos_background qos_utility qos_legacy "
+                     "qos_user_initiated qos_user_interactive billed_system_time serviced_system_time logical_writes "
+                     "lifetime_max_phys_footprint instructions cycles billed_energy serviced_energy "
+                     "interval_max_phys_footprint runnable_time").split()
+
+            class Info(ctypes.Structure):          # struct rusage_info_v4, <sys/resource.h>; room to spare at the end
+                _fields_ = [("uuid", ctypes.c_uint8 * 16)] + [(n, ctypes.c_uint64) for n in names] + \
+                    [("spare", ctypes.c_uint64 * 16)]
+
+            class Timebase(ctypes.Structure):
+                _fields_ = [("numer", ctypes.c_uint32), ("denom", ctypes.c_uint32)]
+            lib = ctypes.CDLL(ctypes.util.find_library("proc") or "/usr/lib/libproc.dylib")
+            tb = Timebase()
+            ctypes.CDLL(None).mach_timebase_info(ctypes.byref(tb))
+            tick = tb.numer / tb.denom / 1e9       # the times are in Mach ticks: 125/3 ns on Apple silicon
+
+            def use(pid):
+                r = Info()
+                if lib.proc_pid_rusage(pid, 4, ctypes.byref(r)) != 0:
+                    return None
+                return {"mem": r.phys_footprint, "peak": max(r.lifetime_max_phys_footprint, r.phys_footprint),
+                        "cpu_time": (r.user_time + r.system_time + r.child_user_time + r.child_system_time) * tick}
+            _rusage[0] = use
+        except (OSError, AttributeError):
+            _rusage[0] = False
+    return _rusage[0] or None
+
+
+def _mac_processes():
+    out = run("ps", "-axww", "-o", "pid=,ppid=,uid=,pcpu=,rss=,etime=,time=,args=", timeout=10)
+    if out is None:
+        return None
+    procs = ps_rows(out, time.time(), os.getuid())
+    use = _mac_usage()
+    for pid, d in procs.items():
+        r = use(pid) if use and d["mine"] else None
+        if r:
+            d.update(r)
+    cores = os.cpu_count() or 1
+    info = (run("sysctl", "-n", "hw.memsize", "kern.memorystatus_level") or "").split()
+    total = int(info[0]) if info and info[0].isdigit() else None
+    # memorystatus_level: the share of memory the system counts as available (what `memory_pressure` prints)
+    free = int(info[1]) if len(info) > 1 and info[1].isdigit() else None
+    return procs, {"cores": cores, "cpu": min(100.0, sum(d["cpu"] for d in procs.values()) / cores),
+                   "mem_total": total, "mem_used": total * (100 - free) // 100 if total and free is not None else None,
+                   "load": os.getloadavg()[0]}
+
+
+_ticks = [None]           # Linux: the previous reading — "now" is the difference between two readings
+
+
+def _linux_read():
+    rows = {}
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        try:
+            with open("/proc/%s/stat" % name, "rb") as f:
+                s = f.read().decode(errors="replace")
+        except OSError:
+            continue
+        f = s[s.rfind(")") + 2:].split()        # the fields after "(comm)": f[0] is field 3, the state
+        rows[int(name)] = (int(f[1]), int(f[11]) + int(f[12]), int(f[13]) + int(f[14]), int(f[19]), int(f[21]))
+    with open("/proc/stat") as f:
+        cpu = [int(x) for x in f.readline().split()[1:]]
+    return time.monotonic(), rows, cpu
+
+
+def _linux_processes():
+    tck, page = os.sysconf("SC_CLK_TCK"), os.sysconf("SC_PAGE_SIZE")
+    prev, cur = _ticks[0], _linux_read()
+    if not prev or not 0.4 <= cur[0] - prev[0] <= 120:
+        time.sleep(0.5)                         # no recent reading to compare with: take a second one
+        prev, cur = cur, _linux_read()
+    _ticks[0] = cur
+    span = cur[0] - prev[0]
+    with open("/proc/stat") as f:
+        btime = next(int(x.split()[1]) for x in f if x.startswith("btime"))
+    uid, procs = os.getuid(), {}
+    for pid, (ppid, own, kids, start, rss) in cur[1].items():
+        was = prev[1].get(pid)
+        d = {"ppid": ppid, "cpu": max(0.0, (own - was[1]) / tck / span * 100) if was and was[3] == start else 0.0,
+             "mem": rss * page, "peak": None, "cpu_time": (own + kids) / tck, "started": btime + start / tck,
+             "cmd": "", "mine": False}
+        try:
+            with open("/proc/%d/cmdline" % pid, "rb") as f:
+                d["cmd"] = f.read().rstrip(b"\0").replace(b"\0", b" ").decode(errors="replace")
+            d["mine"] = os.stat("/proc/%d" % pid).st_uid == uid
+            if d["mine"]:
+                with open("/proc/%d/status" % pid) as f:
+                    hwm = next((x.split()[1] for x in f if x.startswith("VmHWM:")), None)
+                d["peak"] = max(int(hwm) * 1024, d["mem"]) if hwm else None
+        except (OSError, ValueError):
+            pass
+        procs[pid] = d
+    a, b = prev[2], cur[2]
+    busy = sum(b) - sum(a)
+    idle = (b[3] + b[4]) - (a[3] + a[4])            # idle and iowait
+    mem = {}
+    with open("/proc/meminfo") as f:
+        for x in f:
+            k, _, v = x.partition(":")
+            if k in ("MemTotal", "MemAvailable"):
+                mem[k] = int(v.split()[0]) * 1024
+    total = mem.get("MemTotal")
+    return procs, {"cores": os.cpu_count() or 1, "cpu": 100.0 * (busy - idle) / busy if busy > 0 else 0.0,
+                   "mem_total": total, "mem_used": total - mem["MemAvailable"] if total and "MemAvailable" in mem
+                   else None, "load": os.getloadavg()[0]}
 
 
 # ---------- the service that keeps the daemon running ----------

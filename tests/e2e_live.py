@@ -6,7 +6,8 @@ Run (uses a little of the subscription, ~40 s):
 
 A new session from "Telegram" → permission via a button → question via buttons → result;
 continuing the same session; a fork of a session "open on the Mac";
-a background command — "in the background" in the result, a turn when it ends, the next prompt with its own result.
+a background command — "in the background" in the result, the load view finds its process, a turn when it ends,
+the next prompt with its own result.
 """
 import asyncio, json, os, shutil, sys, tempfile, time, urllib.parse
 from pathlib import Path
@@ -137,7 +138,7 @@ async def main():
     mark = len(calls)
     done = lambda after: [t for t in texts(after) if t.startswith("✅")]
     await p.drive(sid4, str(PROJ), "This is a test of background commands. Your first action must be a call to the Bash "
-                  "tool with command `sleep 5; echo bg-done` and the parameter run_in_background: true. After the tool "
+                  "tool with command `sleep 8; echo bg-done` and the parameter run_in_background: true. After the tool "
                   "call returns, do not wait or check on it: reply with one word, STARTED. Later, when you are notified "
                   "that the background command finished, reply with one word: FINISHED.", origin=40)
     await until(lambda: buttons("p:", mark) or done(mark), what="разрешение или итог")
@@ -146,6 +147,12 @@ async def main():
     await until(lambda: done(mark), what="итог с фоном")
     log("итог с фоном:", done(mark)[0].replace("\n", " | "))
     assert "⚙️ Still running in the background" in done(mark)[0], "no “in the background” line"
+    # the load view finds that command among the computer's processes, under this session's claude (0.9.16)
+    ld = await p.api_load(sid=sid4)
+    log("нагрузка:", ld.get("session") and {k: ld["session"][k] for k in ("pid", "cpu", "mem", "n")},
+        [(x["type"], x.get("found"), x.get("cmd") or x.get("what")) for x in ld.get("tasks", [])],
+        "· pid из хука:", p.live[sid4].pid)
+    assert ld["ok"] and ld["session"] and ld["tasks"] and ld["tasks"][0].get("found"), "background command not found"
     await until(lambda: len(done(mark)) >= 2, what="итог хода по концу фоновой задачи")
     note = [t for t in texts(mark) if "Background task" in t and not t.startswith("✅")]
     log("ход по фону:", note[-1].replace("\n", " | ") if note else "НЕТ", "· итог:", done(mark)[1].replace("\n", " | "))

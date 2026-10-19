@@ -32,6 +32,7 @@ import httpx
 
 import pult_hook
 import pult_i18n as I
+import pult_load as L
 import pult_os
 import pult_render as R
 import pult_stt as STT
@@ -58,6 +59,7 @@ TICK = 60                # s; refresh "working N min" this often, even without e
 NOW_LEN = 300            # characters of Claude's reply in the "now" line
 STALE = 20 * 60          # s without events: check whether the session is alive (a tab may close without SessionEnd)
 USAGE_TTL = 60           # s to keep the usage answer: the app window is opened and refreshed often
+LOAD_TTL = 4             # s to keep the snapshot of processes (~50 ms of ps): the app asks on every change
 USAGE_EVERY = 15 * 60    # usage check for warnings, if there was work on the Mac
 USAGE_NEAR_EVERY = 5 * 60   # …and near the threshold (from 70 %), more often
 WARN_AT = (80, 95)       # % of a limit: a warning with sound in General (decision 2026-10-16)
@@ -65,7 +67,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 STT_MAX = 4 * 1024 * 1024       # bytes of one recording from the app (5 min at 32 kbit/s ≈ 1.2 MB; base64 must fit the 8 MB frame)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.9.15"
+VERSION = "0.9.16"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -554,6 +556,8 @@ class Live:
         self.turn = None
         self.pending = {}
         self.bg = []              # background tasks still running after the turn (background_tasks in Stop)
+        self.bg_seen = {}         # task id → when Pult first saw it running
+        self.pid = None           # the session's claude process: the hook's parent (probe_load.py)
 
 
 class Job:
@@ -722,6 +726,7 @@ class Pult:
         self._idle = (0.0, None)
         self.here_seen = time.monotonic()   # the owner's last action in a session here (Pult.idle)
         self._agents = (0.0, [])
+        self._procs = (0.0, None)
         self.web = None                # pult_web.Web — the web app, if a relay is configured
         self.stats = PW.Stats()        # model, thinking, session tokens — for the app
         self.day_tokens = PW.DayTokens(CLAUDE_PROJECTS, skip_pkey)   # today's tokens per project
@@ -1208,6 +1213,7 @@ class Pult:
         self.activity = time.time()
         lv = self.live_of(sid, pkey)
         lv.driven = bool(msg.get("driven"))     # who drives the session now: Pult or the Mac
+        lv.pid = msg.get("pid") or lv.pid
         lv.transcript = ev.get("transcript_path") or lv.transcript
         dr = self.driven.get(sid)
         if dr and not lv.driven:
@@ -1271,6 +1277,8 @@ class Pult:
             self.resolve_all(lv, self.t("req.decided_mac"))
             if "background_tasks" in ev:                 # the field exists since Claude Code 2.1.30x (probe 2026-10-16)
                 lv.bg = [b for b in ev.get("background_tasks") or [] if isinstance(b, dict)]
+                now = time.time()
+                lv.bg_seen = {b.get("id"): lv.bg_seen.get(b.get("id"), now) for b in lv.bg}
             t = self.finish_turn(lv, "✔️")
             asyncio.create_task(self.post_result(lv, t, ev.get("last_assistant_message") or "", R.bg_text(lv.bg)))
         elif name == "SessionEnd":
@@ -2431,12 +2439,89 @@ class Pult:
             if sid and sid not in shown:
                 lv = self.live.get(sid) or self.stub(sid, sanitize(a.get("cwd") or ""))
                 opened.append(dict(self.live_item(lv), project=os.path.basename((a.get("cwd") or "").rstrip("/"))))
+        load = await self.load_state()
         return {"mac": {"idle": idle, "away": await self.away(), "mode": self.mode()}, "now": time.time(),
-                "lang": self.lang(),
+                "lang": self.lang(), "load": self.load_sum(load[2], load[3]) if load else None,
                 "live": [self.live_item(self.live[s]) for s in shown],
                 "pending": [self.req_item(r) for r in self.req_by_rid.values() if not r.fut.done()],
                 "open": opened, "recent": list(self.recent),
                 "jobs": [self.job_item(j) for j in self.jobs.values()] + [self.job_item(j) for j in self.jobs_done]}
+
+    # ----- the load on the computer: the processor and memory Claude's sessions take -----
+
+    async def snapshot(self):
+        """Every process and the computer as a whole (pult_os.processes), kept LOAD_TTL s; None — the system can't
+        tell."""
+        t, v = self._procs
+        if time.monotonic() - t < LOAD_TTL:
+            return v
+        v = await asyncio.to_thread(pult_os.processes)
+        self._procs = (time.monotonic(), v)
+        return v
+
+    async def claude_roots(self, procs):
+        """sid → (claude's pid, folder) for each session with a process here: `claude agents` lists VS Code tabs,
+        terminals and Pult's own sessions (probe_load.py); the hook's parent and Pult's own children cover a miss."""
+        roots = {}
+        for a in await self.agents():
+            sid, pid = a.get("sessionId"), a.get("pid")
+            if sid and pid in procs and sid not in roots:
+                roots[sid] = (pid, a.get("cwd"))
+        for sid, lv in self.live.items():
+            if sid not in roots and lv.pid in procs and L.is_claude(procs[lv.pid]["cmd"]):
+                roots[sid] = (lv.pid, lv.cwd)
+        me = os.getpid()
+        for pid, d in procs.items():
+            sid = L.session_arg(d["cmd"]) if d["ppid"] == me and L.is_claude(d["cmd"]) else None
+            if sid and sid not in roots:
+                roots[sid] = (pid, getattr(self.driven.get(sid), "path", None))
+        return roots
+
+    def load_row(self, sid, pid, cwd, procs, kids, cores):
+        lv = self.live.get(sid)
+        if lv is None:
+            lv = self.stub(sid, self.session_pkey(sid) or sanitize(cwd or ""))
+            lv.cwd = cwd
+        known = self.store.topic(lv.pkey)
+        return dict(L.session(procs, pid, kids, cores, lv.bg), sid=sid, title=self.title(lv),
+                    project=self.project_label(lv.pkey) if known else os.path.basename((cwd or "").rstrip("/"))
+                    or self.project_label(lv.pkey),
+                    state="ask" if lv.pending else "work" if lv.turn else "bg" if lv.bg else "idle",
+                    driven=sid in self.driven)
+
+    async def load_state(self):
+        """(procs, kids, machine, rows — one per session, the busiest first), or None where the system can't tell."""
+        snap = await self.snapshot()
+        if not snap:
+            return None
+        procs, mac = snap
+        kids = L.children(procs)
+        rows = [self.load_row(sid, pid, cwd, procs, kids, mac["cores"])
+                for sid, (pid, cwd) in (await self.claude_roots(procs)).items()]
+        rows.sort(key=lambda r: (-r["cpu"], -r["mem"]))
+        return procs, kids, mac, rows
+
+    @staticmethod
+    def load_sum(mac, rows):
+        return {"cpu": round(mac["cpu"], 1), "cores": mac["cores"], "load": round(mac["load"], 1),
+                "mem_used": mac["mem_used"], "mem_total": mac["mem_total"],
+                "claude": {"n": len(rows), "cpu": round(sum(r["cpu"] for r in rows), 1),
+                           "mem": sum(r["mem"] for r in rows)}}
+
+    async def api_load(self, sid=None):
+        """The load view: the computer and every session on it; with sid — that session and its background tasks."""
+        st = await self.load_state()
+        if not st:
+            return {"ok": False}
+        procs, kids, mac, rows = st
+        out = {"ok": True, "mac": self.load_sum(mac, rows), "now": time.time()}
+        if not sid:
+            return dict(out, sessions=rows)
+        row = next((r for r in rows if r["sid"] == sid), None)
+        lv, used = self.live.get(sid), set()
+        tasks = [L.task(procs, row and row["pid"], kids, mac["cores"], b, lv.bg_seen.get(b.get("id")), used)
+                 for b in (lv.bg if lv else [])]
+        return dict(out, session=row, tasks=tasks)
 
     async def project_counts(self):
         """Per project: sessions open right now (on the computer or from Telegram), working, waiting for an answer."""

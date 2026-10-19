@@ -26,6 +26,7 @@ import httpx  # noqa: E402
 
 import pult_hook  # noqa: E402
 import pult_i18n as I  # noqa: E402
+import pult_load as L  # noqa: E402
 import pult_os  # noqa: E402
 import pult_render as R  # noqa: E402
 import pult_stt as STT  # noqa: E402
@@ -382,6 +383,86 @@ class HelpersTest(unittest.TestCase):
 def intro_id(fake, data):
     """The message_id the fake gave a sendMessage call (ids go up by one per call, starting at 1001)."""
     return 1001 + next(i for i, (m, d) in enumerate(fake.calls) if d is data)
+
+
+CLAUDE = "/x/native-binary/claude --output-format stream-json"
+HEAVY = 'python3 heavy.py --name "it\'s"'
+
+
+def fproc(ppid, cmd, cpu=0.0, mem=10 << 20, peak=None, cpu_time=1.0, ago=600):
+    return {"ppid": ppid, "cmd": cmd, "cpu": cpu, "mem": mem, "peak": peak, "cpu_time": cpu_time,
+            "started": time.time() - ago, "mine": True}
+
+
+def fshell(ppid, cmd, **kw):
+    # a command of Claude's, as Claude Code 2.1.301 starts it (tests/probe_load.py)
+    return fproc(ppid, "/bin/zsh -c source /u/.claude/shell-snapshots/s.sh 2>/dev/null || true && " + L.quoted(cmd)
+                 + " < /dev/null && pwd -P >| /tmp/claude-ab12-cwd", **kw)
+
+
+def fprocs():
+    """A session (claude 100) with a background command and its heavy child, a command of a turn, an MCP server
+    that hardly does anything and a busy one; another session (claude 200) resting."""
+    return {100: fproc(1, CLAUDE, cpu=4.0, mem=300 << 20, cpu_time=50.0, ago=7200),
+            101: fshell(100, HEAVY, ago=900), 102: fproc(101, "python3 heavy.py", cpu=100.0, mem=1 << 30,
+                                                     peak=3 << 29, cpu_time=600.0, ago=899),
+            103: fproc(100, "node /opt/mcp/quiet.js"), 104: fproc(100, "node /secret/server.js --token abc", cpu=20.0),
+            105: fshell(100, "ls -la", ago=1),
+            200: fproc(1, CLAUDE, cpu=0.1, mem=150 << 20, ago=86400)}
+
+
+class LoadTest(unittest.TestCase):
+    def test_ps_rows(self):
+        # macOS ps: a comma as the decimal mark (a locale), days in the elapsed time, minutes past 60 in the processor
+        # time, a newline in the arguments written as \012; a line that isn't a process is skipped
+        out = ("  100     1   501  12,5  2048 04-08:00:09 222:47.19 /x/claude --a\n"
+               "  101   100   501   0.0   512    02:03   0:00.01 /bin/sh -c echo a\\012b\n  oops\n")
+        rows = pult_os.ps_rows(out, 1e6, 501)
+        self.assertEqual(sorted(rows), [100, 101])
+        self.assertEqual((rows[100]["cpu"], rows[100]["mem"], rows[100]["mine"]), (12.5, 2048 * 1024, True))
+        self.assertAlmostEqual(rows[100]["cpu_time"], 222 * 60 + 47.19)
+        self.assertAlmostEqual(rows[100]["started"], 1e6 - (4 * 86400 + 8 * 3600 + 9))
+        self.assertEqual(rows[101]["cmd"], "/bin/sh -c echo a\nb")
+        self.assertEqual(pult_os.clock("1:02:03"), 3723)
+
+    def test_session(self):
+        procs = fprocs()
+        kids = L.children(procs)
+        s = L.session(procs, 100, kids, 8, [{"id": "b1", "type": "shell", "command": HEAVY}])
+        self.assertEqual((s["cpu"], s["cores"], s["n"]), (round(124 / 8, 1), 1.2, 6))
+        self.assertFalse(s["idle"])
+        heavy, mcp, ls = s["cmds"]                        # the busiest first; the quiet MCP server is not listed
+        self.assertEqual((heavy["text"], heavy["bg"], heavy["claude"], heavy["cpu"]), (HEAVY, "b1", True, 12.5))
+        self.assertEqual(heavy["cpu_time"], 601)
+        self.assertEqual((mcp["text"], mcp["claude"]), ("node server.js", False))     # no arguments: they may hold keys
+        self.assertEqual((ls["text"], ls["bg"]), ("ls -la", None))
+        self.assertTrue(L.session(procs, 200, kids, 8)["idle"])
+        # the same command quoted another way is still found; a command that isn't running is not
+        procs[106] = fshell(100, "echo   'all done'")
+        self.assertEqual(L.find(procs, 100, L.children(procs), 'echo "all done"'), 106)
+        self.assertIsNone(L.find(procs, 100, kids, "make all"))
+
+    def test_task(self):
+        procs = fprocs()
+        kids = L.children(procs)
+        b = {"id": "b1", "type": "shell", "description": "Тяжёлый расчёт", "command": HEAVY}
+        x = L.task(procs, 100, kids, 8, b, seen=5.0)
+        self.assertEqual((x["what"], x["cmd"], x["found"]), ("Тяжёлый расчёт", HEAVY, True))
+        self.assertEqual(x["since"], procs[101]["started"])          # the process's own start, not when Pult saw it
+        self.assertEqual((x["cpu"], x["cores"], x["mem"], x["peak"]), (12.5, 1.0, (10 << 20) + (1 << 30),
+                                                                       (10 << 20) + (3 << 29)))
+        self.assertEqual(x["cpu_time"], 601)
+        self.assertFalse(L.task(procs, 100, kids, 8, dict(b, command="make all"))["found"])
+        sub = L.task(procs, 100, kids, 8, {"id": "a1", "type": "subagent", "description": "Обзор кода"}, seen=5.0)
+        self.assertEqual((sub["remote"], sub["since"], sub["what"]), (True, 5.0, "Обзор кода"))
+
+    def test_claude_args(self):
+        self.assertTrue(L.is_claude(CLAUDE))
+        self.assertFalse(L.is_claude("/x/claude-code/node x"))
+        self.assertEqual(L.session_arg(CLAUDE + " --resume=" + SID), SID)
+        self.assertEqual(L.session_arg(CLAUDE + " --session-id " + SID + " --x"), SID)
+        self.assertIsNone(L.session_arg(CLAUDE))
+        self.assertIsNone(L.bash_command("/bin/sh -c eval 'x'"))     # eval, but not Claude's shell
 
 
 class SttTest(unittest.IsolatedAsyncioTestCase):
@@ -1156,6 +1237,43 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await until(lambda: any(t.startswith("✅") and "Сборка прошла" in t for t in self.texts()))
         self.assertNotIn("В фоне", self.texts()[-1])
         self.assertNotIn("task-notification", self.p.live[SID].title or "")
+
+    async def test_load_view(self):
+        # the load view: the computer and each session with a claude process; a background task is found among the
+        # processes by its command; `claude agents` first, then the hook's parent, then Pult's own children
+        await run_hook(ev("UserPromptSubmit", prompt="Посчитай в фоне"))
+        await run_hook(ev("Stop", last_assistant_message="Запустил", background_tasks=[
+            {"id": "b1", "type": "shell", "status": "running", "description": "Тяжёлый расчёт", "command": HEAVY}]))
+        other = "99999999-2222-3333-4444-555555555555"
+        procs = fprocs()
+        mac = {"cores": 8, "cpu": 40.0, "mem_total": 16 << 30, "mem_used": 8 << 30, "load": 3.04}
+        self.p._procs = (time.monotonic() + 1e6, (procs, mac))
+        self.p._agents = (time.monotonic() + 1e6, [{"sessionId": SID, "pid": 100, "cwd": "/Users/x/proj"},
+                                                   {"sessionId": other, "pid": 200, "cwd": "/Users/x/other"}])
+        ov = await self.p.api_overview()
+        self.assertEqual(ov["load"]["claude"], {"n": 2, "cpu": round(124 / 8, 1) + round(0.1 / 8, 1),
+                                                "mem": sum(d["mem"] for d in procs.values())})
+        self.assertEqual((ov["load"]["cpu"], ov["load"]["load"]), (40.0, 3.0))
+        d = await self.p.api_load()
+        self.assertEqual([(r["sid"], r["state"], r["idle"]) for r in d["sessions"]], [(SID, "bg", False), (other, "idle", True)])
+        self.assertEqual((d["sessions"][0]["title"], d["sessions"][1]["project"]), ("proj", "other"))
+        d = await self.p.api_load(sid=SID)
+        self.assertEqual(d["session"]["pid"], 100)
+        self.assertEqual([(x["id"], x["found"], x["cpu"]) for x in d["tasks"]], [("b1", True, 12.5)])
+        # `claude agents` missed them: the hook's parent (here — this test) and a claude Pult itself started
+        self.p._agents = (time.monotonic() + 1e6, [])
+        procs[os.getpid()] = fproc(1, CLAUDE, mem=1 << 20)
+        three = "33333333-2222-3333-4444-555555555555"
+        procs[300] = fproc(os.getpid(), CLAUDE + " --resume " + three)
+        self.p.driven[three] = types.SimpleNamespace(path="/Users/x/three", busy=False, bg=set())
+        try:
+            d = await self.p.api_load()
+        finally:
+            self.p.driven.pop(three)
+        self.assertEqual({r["sid"]: r["pid"] for r in d["sessions"]}, {SID: os.getpid(), three: 300})
+        self.p._procs = (time.monotonic() + 1e6, None)                   # a system Pult can't read
+        self.assertEqual(await self.p.api_load(), {"ok": False})
+        self.assertIsNone((await self.p.api_overview())["load"])
 
     async def test_tab(self):
         # a VS Code tab with Pult's wrapper introduced itself and reported its session → replies from Telegram and

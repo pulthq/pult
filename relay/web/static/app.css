@@ -150,6 +150,26 @@ details.plan summary { cursor: pointer; color: var(--link); }
 .att-chip { display: inline-block; margin-top: 6px; padding: 2px 8px; border-radius: 8px; background: rgba(255, 255, 255, .22); font-size: 13.5px; }
 .day { text-align: center; color: var(--muted); font-size: 13px; font-weight: 600; margin: 16px 0 6px; }
 .bg { color: var(--muted); font-size: 14px; margin-top: 4px; overflow-wrap: anywhere; }
+button.bg.plain { display: block; background: none; border: 0; padding: 0; text-align: left; cursor: pointer; }
+.tap { cursor: pointer; }
+
+/* the load on the computer: a line on Home under the strip, its screen, and a background task's card */
+.load-b { width: 100%; margin: 0 0 6px; }
+.load-b .warn { color: var(--warn); } .load-b .bad { color: var(--danger); }
+.cmds { margin-top: 4px; }
+.cmd { font-size: 13.5px; overflow-wrap: anywhere; margin-top: 6px; }
+.cmd .mono { font-size: 12.5px; }
+.cmd .dim { font-size: 13px; }
+.item-h .pct { flex: none; white-space: nowrap; }
+.card.pick.tall { max-height: 70vh; overflow-y: auto; }
+.card.pick.fixed { position: fixed; left: 12px; right: 12px; bottom: calc(60px + env(safe-area-inset-bottom)); max-width: 696px; margin: 0 auto; }
+.task { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.task:last-of-type { border-bottom: 0; }
+pre.cmdline { background: var(--code); border-radius: 8px; padding: 6px 9px; font-size: 12.5px; white-space: pre-wrap; overflow-wrap: anywhere;
+  margin: 6px 0; max-height: 120px; overflow: auto; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 14px; margin-top: 6px; }
+.kv > span { color: var(--muted); }
+.kv b { font-weight: 600; } .kv b .dim { font-weight: 400; }
 
 /* the composer: the field on top, one line of controls under it — the clip, where the text goes with the model
    and the context gauge (as VS Code keeps them by its field), Stop, Send */

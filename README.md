@@ -72,7 +72,10 @@ A Telegram Mini App on your own server, one tap away from any topic. It is the c
 phone:
 
 - **Home** gathers everything that waits for you: permission requests and Claude's questions from every project,
-  with buttons, and what is running right now.
+  with buttons, and what is running right now. One line says how busy the computer is (processor, memory) and how
+  much Claude's sessions hold; a tap shows every session with the commands it runs, the busiest first. A tap on
+  "in the background" shows what each background task costs: how long it has run, the processor now and in total,
+  the memory now and at its peak.
 - **A session** shows the whole conversation, live. When you scroll up, your own message stays pinned on top, and
   earlier history loads by itself. Under the message field: the model with its effort as five dots (a tap opens
   the menu), where your message will go, and the context gauge as in VS Code. The paperclip sends a screenshot
