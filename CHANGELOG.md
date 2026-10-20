@@ -7,6 +7,13 @@ Versions 0.x come before the first public release. Newest first.
 - The Home strip no longer cuts its text on a phone: the "where you are" and "limit · CPU" chips are now small tiles,
   a label over a value ("🔄 Auto" over "away 12 min", "limit" and "CPU" over their numbers). A style meant only for
   the first chip clipped every piece of the second one — "lim… · CPU 1…".
+- Groundwork for Windows. Windows itself is not released yet: it waits for a check on a real machine. The daemon's
+  link can run over 127.0.0.1 with a key from the link file; the VS Code tab wrapper becomes `pult-tab.exe`, which runs
+  claude without a console window and ends it together with the tab; hooks use Claude Code's exec form (no shell); a
+  Task Scheduler task starts Pult at logon; there is an `install.ps1`. GitHub Actions now run on Windows too, with a
+  real install and removal.
+- `pult run` keeps the last line of output when lines end with CRLF. The tail used to come out empty.
+- Checking whether a process is still there no longer uses `os.kill(pid, 0)`: on Windows that call ends the process.
 
 ## 0.9.25 — 2026-10-20
 
