@@ -414,11 +414,11 @@ def write_launcher():
     if WIN:
         # cmd reads a .cmd file in the console's code page: ASCII only, and the paths come from %USERPROFILE%
         rel = lambda q: "%USERPROFILE%" + str(q)[len(str(Path.home())):] if tilde(q) != str(q) else str(q)
-        # bytes, not text: in text mode Windows would turn each \r\n into \r\r\n. "& exit /b" on the same line:
-        # cmd reads a batch file line by line, and `pult uninstall` deletes this one while it runs; exit /b keeps
-        # the program's exit code
+        # bytes, not text: in text mode Windows would turn each \r\n into \r\r\n. cmd reads a batch file as it goes,
+        # and `pult uninstall` deletes this one while it runs ("The batch file cannot be found"): "(goto) 2>nul" ends
+        # the batch first, and the rest of the line, already read, runs as if typed — with the program's exit code
         p.write_bytes(('@echo off\r\nrem %s — installed by install.ps1, removed by `pult uninstall`\r\n'
-                       '"%s" -X utf8 "%s" %%* & exit /b\r\n' % (LAUNCHER_MARK, rel(PY), rel(HOME / "pultctl.py")))
+                       '(goto) 2>nul & "%s" -X utf8 "%s" %%*\r\n' % (LAUNCHER_MARK, rel(PY), rel(HOME / "pultctl.py")))
                       .encode("ascii", errors="replace"))
         return p
     p.write_text('#!/bin/sh\n%s — installed by install.sh, removed by `pult uninstall`\nexec %s %s "$@"\n'
