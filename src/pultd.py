@@ -76,13 +76,16 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 STT_MAX = 4 * 1024 * 1024       # bytes of one recording from the app (5 min at 32 kbit/s ≈ 1.2 MB; base64 must fit the 8 MB frame)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.9.22"
+VERSION = "0.9.23"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
 EDITOR_DIRS = pult_os.editor_dirs()     # VS Code and its forks (and their remote side): where the tab wrapper is set
 EXT_DIRS = pult_os.extension_dirs()
 TAB_CHECK_EVERY = 3600   # s; check whether a new Claude Code extension version is out
+MENU_CHECK_EVERY = 1800  # s; the app button in the owner's chat is still ours (only the token's holder can change it)
+CONFLICT_WARN_EVERY = 6 * 3600   # s; "someone else reads this bot" at most this often
+WEB_MANIFEST = HOME / "web-manifest.json"   # what the last deploy put on the relay (written by the deploy script)
 PREFS = {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": None}   # owner prefs: milestones, location
 # (auto/mac/phone), language, a model's line for each result, Telegram as a pager (None — on where the app is set up)
 MODES = ("auto", "mac", "phone")
@@ -1006,9 +1009,9 @@ class Pult:
         return self.topic_link(1)
 
     async def send(self, pkey, text, *, reply_to=None, buttons=None, notify=False, prio=5,
-                   sid=None, kind=None, here=None):
+                   sid=None, kind=None, here=None, urgent=False):
         """To the topic of project pkey (creating it if missing) or, if here is given, to where the
-        owner wrote: a topic id, 0 — General."""
+        owner wrote: a topic id, 0 — General. urgent: with sound even when the owner is at the computer (security)."""
         if not self.chat:
             return None
         for attempt in (0, 1):
@@ -1019,7 +1022,7 @@ class Pult:
                 if thread:
                     self.card_check(pkey, thread)
             params = dict(chat_id=self.chat, text=text, parse_mode="HTML",
-                          disable_notification=not notify or self.mode() == "mac",   # at the Mac, everything is silent
+                          disable_notification=not notify or self.mode() == "mac" and not urgent,   # at the Mac — silent
                           link_preview_options={"is_disabled": True})
             if thread:
                 params["message_thread_id"] = thread
@@ -1949,6 +1952,10 @@ class Pult:
             if mid and mid != self.store.get("panel"):
                 self.edit(mid, self.panel_text(), self.panel_buttons(), prio=1)
             note = self.t("mode.set", mode=self.t("mode." + data[2:]))
+        elif data == "k:out":
+            if self.web:
+                await self.web.logout_all()
+            note = self.t("note.logged_out")
         elif data.startswith("h:"):
             sec = data[2:]
             text = self.t("help") if sec == "main" else self.help_section(sec)
@@ -3357,6 +3364,57 @@ class Pult:
         log("settings from the app:", cur)
         return cur
 
+    async def api_logins(self):
+        """The app's recent logins (Settings → Logins) and whether the app is closed by the file check."""
+        if not self.web:
+            return {"logins": [], "locked": None}
+        return {"logins": self.web.logins.recent(), "locked": self.web.locked}
+
+    async def api_logout_all(self):
+        if self.web:
+            asyncio.ensure_future(self.web.logout_all())
+        return {"ok": True}
+
+    async def login_alert(self, net, client, via):
+        """An app login from a network never seen before: told with sound, with a way to log everyone out."""
+        dev = " ".join(str(client.get(k) or "") for k in ("platform", "version")).strip() or "?"
+        await self.send(None, self.t("login.new", net=R.esc(net), dev=R.esc(dev), how=self.t("login.via." + via)),
+                        notify=True, urgent=True, prio=1,
+                        buttons=[[{"text": self.t("btn.logout_all"), "callback_data": "k:out"}]])
+
+    async def files_alert(self, bad):
+        """The app files on the server differ from the deploy (the app is closed) — or match again ([])."""
+        if bad:
+            await self.send(None, self.t("files.differ", files=R.esc(", ".join(bad[:6]))), notify=True, urgent=True, prio=1)
+        else:
+            await self.send(None, self.t("files.match"), notify=True, prio=1)
+
+    async def conflict(self, desc):
+        """getUpdates answered 409: someone else reads this bot — a second Pult on the same token, or the token has
+        leaked. A webhook on Pult's token is never ours (Pult only polls): it is removed. Told at most every 6 h."""
+        now = time.time()
+        self.conflicts = [x for x in getattr(self, "conflicts", []) if now - x < 120] + [now]
+        hook = "webhook" in desc.lower()
+        if hook:
+            try:
+                await self.tg.call("deleteWebhook")
+                log("someone had set a webhook on this bot — removed")
+            except TgError as e:
+                log("deleteWebhook:", e)
+        if (hook or len(self.conflicts) >= 3) and now - (self.store.get("conflict_warned") or 0) > CONFLICT_WARN_EVERY:
+            self.store.put("conflict_warned", now)
+            await self.send(None, self.t("tg.conflict.hook" if hook else "tg.conflict"), notify=True, urgent=True, prio=1)
+
+    async def menu_watch(self):
+        while True:
+            await asyncio.sleep(MENU_CHECK_EVERY)
+            try:
+                if await self.setup_menu_button():
+                    log("the app button in the owner's chat was changed by someone else — put back")
+                    await self.send(None, self.t("menu.changed"), notify=True, urgent=True, prio=1)
+            except Exception as e:
+                log("app button check:", repr(e))
+
     async def api_stop(self, sid):
         dr = self.driven.get(sid)
         if not dr or not dr.client:
@@ -3400,6 +3458,11 @@ class Pult:
                                          allowed_updates=["message", "callback_query"])
             except TgError as e:
                 log("getUpdates:", e, "(409 — someone else is reading this token)" if e.code == 409 else "")
+                if e.code == 409:
+                    try:
+                        await self.conflict(e.desc)
+                    except Exception as e2:
+                        log("409 alert:", repr(e2))
                 await asyncio.sleep(15 if e.code == 409 else 5)
                 continue
             except Exception as e:
@@ -3436,15 +3499,23 @@ class Pult:
     async def setup_menu_button(self):
         """The owner's private chat with the bot: the app button next to the message field (Telegram has such a
         button only in private chats, so in the group the way in is the topic cards and the panel). Without the
-        app — Telegram's default, the command list."""
+        app — Telegram's default, the command list. → True if it had to be put back: rechecked every
+        MENU_CHECK_EVERY, because whoever holds the token could point it at their own page and get a real login."""
         url = self.app_web_url()
         want = {"type": "web_app", "text": self.t("menu.app"), "web_app": {"url": url}} if url else {"type": "default"}
+        changed = False
         for uid in sorted(self.allowed):
             try:
-                if await self.tg.call("getChatMenuButton", chat_id=uid) != want:
+                cur = await self.tg.call("getChatMenuButton", chat_id=uid)
+                if cur != want:
                     await self.tg.call("setChatMenuButton", chat_id=uid, **({"menu_button": want} if url else {}))
+                    # only the kind and the address matter: the label follows Pult's language
+                    cur = cur if isinstance(cur, dict) else {}
+                    changed = changed or cur.get("type") != want["type"] or \
+                        (cur.get("web_app") or {}).get("url") != (want.get("web_app") or {}).get("url")
             except TgError as e:
                 log("menu button:", e)
+        return changed
 
 
 async def amain():
@@ -3471,11 +3542,12 @@ async def amain():
     log("Pult started; group:", p.chat, "; socket:", SOCK)
     await p.setup_commands()
     # the panel is sent via the message queue, so it must run alongside it, or startup hangs (seen 2026-10-16, 0.6.0)
-    jobs = [p.out.run(), p.poll(), p.usage_watch(), p.tab_version_watch(), p.ensure_panel(), p.attention_watch()]
+    jobs = [p.out.run(), p.poll(), p.usage_watch(), p.tab_version_watch(), p.ensure_panel(), p.attention_watch(),
+            p.menu_watch()]
     if env.get("PULT_RELAY_URL") and env.get("PULT_RELAY_SECRET"):
         p.web = PW.Web(p, env["PULT_RELAY_URL"], env["PULT_RELAY_SECRET"], token, p.allowed,
-                       proxy=env.get("PULT_PROXY") or None)
-        jobs.append(p.web.run())
+                       proxy=env.get("PULT_PROXY") or None, manifest=WEB_MANIFEST)
+        jobs += [p.web.run(), p.web.guard()]
     async with server:
         await asyncio.gather(*jobs)
 

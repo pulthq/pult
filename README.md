@@ -230,8 +230,14 @@ web app (optional): Mini App ──► relay on your server ◄── pultd conn
   requests (commands, file names) and questions. Telegram stores it in its cloud like any chat. Bot chats are not
   end-to-end encrypted.
 - **The web app relay** stores nothing. It cuts off strangers by Telegram's signature and your ID. The computer
-  checks every login again with the bot token, which never leaves it. The data passes through your server
-  over TLS.
+  checks every login again with the bot token, which never leaves it: a new login needs an initData Telegram made
+  minutes ago, a reconnect needs the one-time key the computer gave that window. The app's page runs scripts only
+  from your server and Telegram (Content-Security-Policy). The data passes through your server over TLS.
+- **Alerts.** Pult tells you, with sound, about an app login from a network it hasn't seen, and about signs that
+  someone else holds the bot token (another reader of the bot, a webhook, a changed app button). Settings → Logins
+  in the app shows recent logins and logs every window out.
+- **Links show where they lead:** when a link's words don't show its address, the domain follows in brackets —
+  Claude may write a link a web page talked it into, and it comes from your own bot.
 - **No telemetry.** Logs stay on the computer: `~/Library/Logs` on macOS, `~/.local/state/pult` on Linux.
   `pult report` prints versions and state with tokens, IDs, folder names and message text removed, for a bug
   report.

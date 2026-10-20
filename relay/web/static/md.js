@@ -1,16 +1,26 @@
 // Pult: markdown of Claude's replies → HTML. Safe by design: all text is escaped first,
 // only our own tags are inserted; links are http(s) only and open through Telegram (data-ext).
 // The app can give Claude commands, so foreign HTML from a reply must never run inside it.
+// A link's words can't hide where it leads: unless they show that very address, it follows in brackets (a web page
+// may talk Claude into writing a link). Non-Latin names stay in their xn-- form, so a look-alike letter doesn't pass.
 
 const ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 export const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ESC[c]);
+
+export function hostOf(u) {
+  try { const h = new URL(u).hostname; return h.startsWith("www.") ? h.slice(4) : h; } catch (e) { return ""; }
+}
+function link(t, u) {
+  const h = hostOf(u), s = t.trim();
+  const a = '<a href="' + esc(u) + '" data-ext>' + esc(t) + "</a>";
+  return !h || hostOf(s.includes("://") ? s : "http://" + s) === h ? a : a + ' <span class="host">(' + esc(h) + ")</span>";
+}
 
 function inline(s) {
   const keep = [];
   const hold = (h) => "\u0000" + (keep.push(h) - 1) + "\u0000";
   s = s.replace(/`([^`\n]+)`/g, (_, c) => hold("<code>" + esc(c) + "</code>"));
-  s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
-    (_, t, u) => hold('<a href="' + esc(u) + '" data-ext>' + esc(t) + "</a>"));
+  s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, t, u) => hold(link(t, u)));
   // a link to a project file [name](path) can't be opened on the phone: show the name, and the path as code
   s = s.replace(/\[([^\]\n]+)\]\(([^\s)]+)\)/g, (_, t, u) => hold(t === u || u.endsWith("/" + t) ? "<code>" + esc(u) + "</code>" : esc(t) + " <code>" + esc(u) + "</code>"));
   s = esc(s);

@@ -31,6 +31,7 @@ h2 { font-size: 22px; margin: 6px 0 4px; line-height: 1.2; letter-spacing: -.01e
 h3 { font-size: 15px; font-weight: 600; margin: 22px 2px 8px; }
 h3.toggle { cursor: pointer; }
 .dim { color: var(--muted); }
+.md .host { color: var(--muted); font-size: .9em; }
 .small { font-size: 13.5px; margin-top: 10px; }
 .empty { color: var(--muted); text-align: center; padding: 40px 16px; }
 button, a { -webkit-tap-highlight-color: transparent; }
@@ -145,6 +146,9 @@ pre code { background: none; padding: 0; }
 .btn.wide { display: block; width: 100%; margin-top: 8px; }
 .link { background: none; border: 0; color: var(--link); padding: 8px 0 0; cursor: pointer; font-size: 14.5px; }
 .link.center { display: block; margin: 4px auto 8px; }
+.link.danger { color: var(--danger); }
+.login { display: flex; flex-wrap: wrap; gap: 0 8px; padding: 3px 0; font-size: 14.5px; }
+.login .bad { color: var(--danger); } .item .warn { color: var(--warn); margin-bottom: 6px; }
 .q { margin: 6px 0 10px; }
 .q-t { font-weight: 600; margin-bottom: 6px; }
 .opt { display: block; width: 100%; text-align: left; background: var(--code); border: 1px solid transparent; border-radius: 10px;

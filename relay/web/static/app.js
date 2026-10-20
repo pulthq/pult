@@ -17,20 +17,32 @@ const emit = (ev, x) => (bus.get(ev) || []).forEach((fn) => fn(x));
 // the re-render is deferred: a screen may learn the language while rendering, before the app has subscribed
 const useLang = (l) => { if (l && l !== LANG) { setLang(l); setTimeout(() => emit("lang"), 0); } };
 
-const conn = { ws: null, state: "connecting", ready: false, mac: null, seq: 0, wait: new Map(), retry: 0 };
+// the resume key this Mac gave the window at its last login: a reconnect (the network blinked, the Mac restarted)
+// logs in with it, since only a fresh initData opens a new login. sessionStorage — it lives as long as this window
+// (a reload keeps it) and goes nowhere else
+const keyStore = {
+  get() { try { return sessionStorage.getItem("pult.resume"); } catch (e) { return null; } },
+  set(k) { try { k ? sessionStorage.setItem("pult.resume", k) : sessionStorage.removeItem("pult.resume"); } catch (e) {} },
+};
+const conn = { ws: null, state: "connecting", ready: false, mac: null, seq: 0, wait: new Map(), retry: 0,
+  key: keyStore.get(), why: null };
 const setState = (s) => { conn.state = s; emit("conn"); };
+const setKey = (k) => { conn.key = k || null; keyStore.set(k); };
 
 function connect() {
   if (conn.ws && conn.ws.readyState <= 1) return;
   const ws = (conn.ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/pult/ws"));
   setState("connecting");
-  ws.onopen = () => ws.send(JSON.stringify({ t: "hello", init: (tg && tg.initData) || "",
+  ws.onopen = () => ws.send(JSON.stringify({ t: "hello", init: (tg && tg.initData) || "", resume: conn.key,
     client: { platform: tg && tg.platform, version: tg && tg.version } }));
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
     if (m.t === "hello") { conn.mac = m.mac; setState(m.mac ? "auth" : "nomac"); }
-    else if (m.t === "ready") { conn.ready = true; conn.retry = 0; setState("ok"); emit("ready"); api("lang").then(useLang).catch(() => {}); }
-    else if (m.t === "denied") { conn.ready = false; setState("denied"); }
+    else if (m.t === "ready") {
+      if (m.resume) setKey(m.resume);
+      conn.ready = true; conn.retry = 0; setState("ok"); emit("ready"); api("lang").then(useLang).catch(() => {});
+    }
+    else if (m.t === "denied") { conn.ready = false; conn.why = m.why || null; if (m.why === "out") setKey(null); setState("denied"); }
     else if (m.t === "mac") { conn.mac = m.on; if (!m.on) { conn.ready = false; setState("nomac"); } else if (!conn.ready) setState("auth"); }
     else if (m.t === "res") {
       const w = conn.wait.get(m.id);
@@ -771,6 +783,7 @@ function Settings() {
         <button class="btn" disabled=${!key.trim() || kbusy} onClick=${() => saveKey(key)}>${t("voice.save")}</button></div>
       ${d.stt && d.stt.on ? html`<button class="link" disabled=${kbusy} onClick=${() => saveKey("")}>${t("voice.remove")}</button>` : ""}
     </div></div>
+    <${Logins}/>
     <h3>${t("status")}</h3><div class="list"><div class="item static">
       <div>${t("status.pult", { v: d.version, mac: d.mac.away ? t("mac.away", { dur: dur(d.mac.idle) }) : t("mac.here") })}</div>
       <div class="dim">${t("status.tg", { how: t("tg." + (d.telegram === "proxy" ? "proxy" : "direct")) })}</div>
@@ -779,6 +792,24 @@ function Settings() {
     <details class="logbox"><summary>${t("log", { n: d.log.length })}</summary>
       <pre class="log">${d.log.slice().reverse().join("\n")}</pre></details>
   </div>`;
+}
+
+// the app's recent logins: when, from which network and device, how — and a way to log every window out
+function Logins() {
+  const [d] = useLive(() => api("logins"), [], () => false);
+  if (!d) return "";
+  const out = async () => {
+    if (!(await confirmBox(t("logins.confirm")))) return;
+    try { await api("logout_all"); haptic("success"); } catch (e) { alertBox(e.message); }
+  };
+  return html`<h3>${t("logins")}</h3><div class="list"><div class="item static">
+    ${d.locked ? html`<div class="warn">${t("logins.locked", { files: d.locked })}</div>` : ""}
+    ${d.logins.slice(0, 8).map((x, i) => html`<div class="login" key=${i}>
+      <span class=${x.ok ? "" : "bad"}>${x.ok ? "✓" : "✕"} ${ago(x.ts)}</span>
+      <span class="dim">${[t("logins.how." + x.how), x.net, x.dev].filter(Boolean).join(" · ")}</span></div>`)}
+    ${d.logins.length ? "" : html`<div class="dim">${t("logins.none")}</div>`}
+    <button class="link danger" onClick=${out}>${t("logins.out")}</button>
+  </div></div>`;
 }
 
 // every project in one list, in the same grammar as the board: who waits, who works, the latest outcome; quiet ones last
@@ -1192,7 +1223,8 @@ function Loading({ err }) {
 
 function Banner() {
   const c = useConn();
-  const text = ["connecting", "offline", "auth", "nomac", "denied"].includes(c.state) ? t("banner." + c.state) : "";
+  const text = c.state === "denied" ? t(["expired", "out", "locked"].includes(c.why) ? "banner.denied." + c.why : "banner.denied")
+    : ["connecting", "offline", "auth", "nomac"].includes(c.state) ? t("banner." + c.state) : "";
   return text ? html`<div class=${"banner " + c.state}>${text}</div>` : "";
 }
 

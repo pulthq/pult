@@ -8,6 +8,7 @@ import json
 import os
 import re
 import time
+import urllib.parse
 
 import pult_i18n as I
 from pult_i18n import T
@@ -18,6 +19,31 @@ CHUNK = 3500          # a chunk of source markdown; it grows after HTML escaping
 
 def esc(s):
     return html.escape(str(s or ""), quote=False)
+
+
+def host_of(url):
+    """Where a link really leads, as the reader should see it: a non-Latin name in its xn-- form (a look-alike
+    letter doesn't pass), without "www."."""
+    try:
+        h = urllib.parse.urlsplit(url).hostname or ""
+    except ValueError:
+        return ""
+    try:
+        h = h.encode("idna").decode()
+    except UnicodeError:
+        pass
+    return h[4:] if h.startswith("www.") else h
+
+
+def link(text, url):
+    """[text](url) → a link whose words can't hide where it leads: unless they show that very address, the address
+    follows in brackets. Claude may write a link a web page talked it into, and it comes from the owner's own bot."""
+    host = host_of(url)
+    a = '<a href="%s">%s</a>' % (html.escape(url), html.escape(text))
+    t = text.strip()
+    if not host or host_of(t if "://" in t else "http://" + t) == host:
+        return a
+    return "%s (%s)" % (a, html.escape(host))
 
 
 def short(s, n):
@@ -184,8 +210,7 @@ def _inline(s):
         keep.append(h)
         return "\x00%d\x00" % (len(keep) - 1)
     s = re.sub(r"`([^`\n]+)`", lambda m: hold("<code>%s</code>" % html.escape(m.group(1))), s)
-    s = re.sub(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)",
-               lambda m: hold('<a href="%s">%s</a>' % (html.escape(m.group(2)), html.escape(m.group(1)))), s)
+    s = re.sub(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)", lambda m: hold(link(m.group(1), m.group(2))), s)
     # a link to a project file [name](path) won't open in Telegram — keep the name and the path as code
     s = re.sub(r"\[([^\]\n]+)\]\(([^\s)]+)\)",
                lambda m: hold("<code>%s</code>" % html.escape(m.group(2)) if m.group(1) == m.group(2)

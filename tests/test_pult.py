@@ -46,6 +46,7 @@ class FakeTg:
         self.next_id = 1000
         self.dead_threads = set()      # topics deleted in Telegram: sending there fails
         self.file_bytes = b"OggS" + b"\0" * 40      # what getFile + download hand out (a voice message)
+        self.menu_button = {"type": "default"}       # the app button in the owner's chat
 
     def handler(self, req):
         if "/file/bot" in req.url.path:          # a download of the path getFile gave
@@ -65,6 +66,11 @@ class FakeTg:
             res = {"file_id": data.get("file_id"), "file_path": "voice/file_7.oga", "file_size": len(self.file_bytes)}
         elif method in ("sendMessage", "sendDocument"):
             res = {"message_id": self.next_id}
+        elif method == "getChatMenuButton":
+            res = self.menu_button
+        elif method == "setChatMenuButton":
+            self.menu_button = json.loads(data["menu_button"]) if "menu_button" in data else {"type": "default"}
+            res = True
         else:
             res = True
         return httpx.Response(200, json={"ok": True, "result": res})
@@ -718,6 +724,15 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         mb = json.loads(self.fake.of("setChatMenuButton")[-1]["menu_button"])
         self.assertEqual(mb, {"type": "web_app", "text": "Пульт", "web_app": {"url": "https://h.example/pult/"}})
         self.assertEqual(self.fake.of("setChatMenuButton")[-1]["chat_id"], str(OWNER))
+        # rechecked: only whoever holds the bot token can point it elsewhere — put back and told; a label in another
+        # language is just fixed
+        self.assertFalse(await self.p.setup_menu_button())
+        self.fake.menu_button = dict(mb, web_app={"url": "https://evil.example/"})
+        self.assertTrue(await self.p.setup_menu_button())
+        self.assertEqual(self.fake.menu_button, mb)
+        self.fake.menu_button = dict(mb, text="Pult")
+        self.assertFalse(await self.p.setup_menu_button())
+        self.assertEqual(self.fake.menu_button, mb)
         self.p.env.pop("PULT_APP_LINK")
         await self.p.setup_menu_button()
         self.assertNotIn("menu_button", self.fake.of("setChatMenuButton")[-1])

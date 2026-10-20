@@ -2,15 +2,20 @@
 
 The daemon connects to the relay itself (wss …/pult/agent, with a shared secret) and keeps the connection open.
 The app window on the phone comes in through the relay; the login is checked again here, with the bot key
-(HMAC of initData). After that: app requests (overview, projects, session chat, actions) and live events.
-Session transcripts are only read, in chunks from the end.
+(HMAC of initData): a new login takes a fresh initData, a reconnect — the one-time key this Mac gave the window.
+After that: app requests (overview, projects, session chat, actions) and live events.
+Session transcripts are only read, in chunks from the end. The files the relay hands to the phone are checked
+against what was deployed; while they differ, the app is closed.
 """
 import asyncio
+import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
+import secrets
 import threading
 import time
 import urllib.parse
@@ -19,7 +24,20 @@ from datetime import datetime
 import pult_render as R
 from pult_i18n import T
 
-MAX_AGE = 24 * 3600            # reject initData older than one day
+LOGIN_FRESH = 10 * 60          # s: a new login takes an initData at most this old (Telegram makes one on every open)
+SIGNED_MAX = 7 * 24 * 3600     # s: an older initData still proves the owner's Telegram — together with a resume key
+KEY_IDLE = 7 * 24 * 3600       # s: a resume key unused this long is dropped (that window has to be reopened)
+KEY_GRACE = 60                 # s: a replaced key still works this long (a window's reconnect racing the Mac's)
+KEYS_MAX = 20
+LOGINS_MAX = 30                # the app's list of recent logins
+NETS_MAX = 100                 # networks logins came from: a login from a new one is told in Telegram
+GUARD_FIRST = 60               # s after start before the first check of the files the server hands out
+GUARD_EVERY = 15 * 60          # s between the checks
+GUARD_RECHECK = 90             # s: a difference is checked again before it counts (a deploy may be in progress)
+APP_PATH = "/pult/"            # where the relay serves the app (relay.py)
+# why a login was refused → the short code the app's list of logins shows in words
+REFUSED = {"login expired": "expired", "resume key unknown or used up": "badkey", "not the owner": "stranger",
+           "signature mismatch": "forged", "no signature": "forged", "broken fields": "forged"}
 RECONNECT = (1, 2, 5, 10, 30)  # seconds between attempts to connect to the relay server
 PAGE = 1536 * 1024             # transcript bytes per chat chunk
 TEXT_MAX = 20000               # characters of one message in the app
@@ -42,7 +60,7 @@ def why(e):
     return "%s%s" % (type(e).__name__, " %s" % status if status else "")
 
 
-def check_init(init, token, owners, now=None):
+def check_init(init, token, owners, now=None, max_age=LOGIN_FRESH):
     """Telegram initData → (is the bot-key signature valid, user ID, reason if not).
     The check string includes every field except hash, the signature field (Bot API 8.0) included. In case
     Telegram computes it without that field, the second variant is accepted too, and the log says which matched."""
@@ -68,9 +86,127 @@ def check_init(init, token, owners, now=None):
         return False, 0, "broken fields"
     if uid not in owners:
         return False, uid, "not the owner"
-    if age > MAX_AGE:
+    if age > max_age:
         return False, uid, "login expired"
     return True, uid, how
+
+
+def init_age(init, now=None):
+    """Seconds since Telegram made this initData (for the log: is it really fresh on every open)."""
+    try:
+        return int((now or time.time()) - int(dict(urllib.parse.parse_qsl(init or "")).get("auth_date") or 0))
+    except ValueError:
+        return None
+
+
+def net_of(ip):
+    """An address → its network, for "a login from a new place": IPv4 /24 ("203.0.113.x"), IPv6 /48."""
+    try:
+        a = ipaddress.ip_address(str(ip or "").strip())
+    except ValueError:
+        return str(ip or "?")[:64]
+    if a.version == 6 and a.ipv4_mapped:
+        a = a.ipv4_mapped
+    if a.version == 4:
+        return ".".join(str(a).split(".")[:3]) + ".x"
+    return str(ipaddress.ip_network("%s/48" % a, strict=False))
+
+
+class Keys:
+    """Resume keys. A window that reconnects (the network blinked, the Mac or the relay restarted) logs in with the
+    key this Mac gave it at its last login, so a new login needs a fresh initData and an old one alone is worth
+    nothing. A key works once: each use gives the next one (the old one lingers KEY_GRACE s for a racing
+    reconnect). Only hashes are kept, in state.db: a restart of the daemon doesn't log the windows out."""
+
+    def __init__(self, store):
+        self.store = store
+
+    @staticmethod
+    def _h(key):
+        return hashlib.sha256(str(key).encode()).hexdigest()
+
+    def _live(self, now):
+        keys = self.store.get("app_keys") or {}
+        return {h: k for h, k in keys.items() if now - k.get("made", 0) < KEY_IDLE and k.get("dead", now + 1) > now}
+
+    def issue(self, uid, now=None, keys=None):
+        now = now or time.time()
+        keys = self._live(now) if keys is None else keys
+        key = secrets.token_urlsafe(32)
+        keys[self._h(key)] = {"uid": uid, "made": now}
+        if len(keys) > KEYS_MAX:
+            keys = dict(sorted(keys.items(), key=lambda kv: -kv[1]["made"])[:KEYS_MAX])
+        self.store.put("app_keys", keys)
+        return key
+
+    def use(self, key, uid, now=None):
+        """The key a window brought → the next one, or None: unknown, used up, expired or not this user's."""
+        now = now or time.time()
+        keys = self._live(now)
+        k = keys.get(self._h(key)) if isinstance(key, str) and key else None
+        if not k or k.get("uid") != uid:
+            return None
+        k.setdefault("dead", now + KEY_GRACE)
+        return self.issue(uid, now, keys)
+
+    def drop_all(self):
+        self.store.put("app_keys", {})
+
+
+class Logins:
+    """The app's recent logins, for the owner's eyes (Settings), and the networks they came from. A login from a
+    network never seen before is worth a message in Telegram; the first login after an update only learns."""
+
+    def __init__(self, store):
+        self.store = store
+
+    def note(self, ok, how, ip, client, now=None):
+        """Remember a login attempt → True if it got in from a network that is new (and others were known)."""
+        now = now or time.time()
+        net = net_of(ip)
+        rec = {"ts": now, "ok": bool(ok), "how": how, "net": net,
+               "dev": " ".join(str(client.get(k) or "") for k in ("platform", "version")).strip()[:40]}
+        self.store.put("app_logins", [rec] + (self.store.get("app_logins") or [])[:LOGINS_MAX - 1])
+        if not ok:
+            return False
+        nets = self.store.get("app_nets") or {}
+        new = bool(nets) and net not in nets
+        nets[net] = now
+        if len(nets) > NETS_MAX:
+            nets = dict(sorted(nets.items(), key=lambda kv: -kv[1])[:NETS_MAX])
+        self.store.put("app_nets", nets)
+        return new
+
+    def recent(self):
+        return self.store.get("app_logins") or []
+
+
+# ---------- what the server hands to the phone ----------
+
+def expected_page(template, files, v):
+    """The page the relay builds from index.html (relay.Relay.index) for these app files → (page, import map)."""
+    mods = sorted("%sstatic/%s" % (APP_PATH, f) for f in files if f.endswith(".js"))
+    imap = json.dumps({"imports": {k: "%s?v=%s" % (k, v) for k in mods}})
+    return template.replace("{{importmap}}", imap).replace("{{v}}", v), imap
+
+
+def page_csp(importmap, host):
+    """relay.csp, repeated here to check the header the server sends (a test keeps the two equal)."""
+    digest = base64.b64encode(hashlib.sha256(importmap.encode()).digest()).decode()
+    own = " wss://%s ws://%s" % (host, host) if re.fullmatch(r"[A-Za-z0-9.:\[\]-]{1,255}", host or "") else ""
+    return "; ".join(["default-src 'self'", "script-src 'self' https://telegram.org 'sha256-%s'" % digest,
+                      "style-src 'self' 'unsafe-inline'", "img-src 'self' data: blob:", "media-src 'self' data: blob:",
+                      "connect-src 'self'" + own, "object-src 'none'", "base-uri 'none'", "form-action 'none'",
+                      "frame-ancestors 'self' https://web.telegram.org https://*.telegram.org"])
+
+
+def make_manifest(web_dir):
+    """What a deploy puts on the server (relay/web): the page template and a hash of every app file. Written by the
+    deploy script next to the daemon; the daemon compares what the server hands out with it."""
+    static = web_dir / "static"
+    files = {p.relative_to(static).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+             for p in sorted(static.rglob("*")) if p.is_file() and "__pycache__" not in p.parts and p.name != ".DS_Store"}
+    return {"index": (web_dir / "index.html").read_text(), "files": files}
 
 
 # ---------- session chat from the transcript ----------
@@ -383,16 +519,21 @@ class DayTokens:
 # ---------- connection to the relay ----------
 
 class Web:
-    def __init__(self, pult, url, secret, token, owners, proxy=None):
+    def __init__(self, pult, url, secret, token, owners, proxy=None, manifest=None):
         self.p = pult
         self.url = url
         self.secret = secret
         self.token = token
         self.owners = owners
         self.proxy = proxy
+        self.manifest = manifest       # Path of what the last deploy put on the server (None — no file check)
         self.ws = None
         self.clients = set()
         self.how = None                # which signature variant matched — a fact for the project doc
+        self.keys = Keys(pult.store)
+        self.logins = Logins(pult.store)
+        self.locked = None             # what differs on the server, while the app is closed because of it
+        self.checked = False           # the files have matched at least once (said in the log once)
 
     @property
     def on(self):
@@ -441,19 +582,138 @@ class Web:
     async def on_msg(self, msg):
         t, cid = msg.get("t"), msg.get("cid")
         if t == "open":
-            ok, uid, how = check_init(msg.get("init"), self.token, self.owners)
-            if ok and how != self.how:
-                self.how = how
-                log("app login: bot-key signature matched %s" % how)
-            if not ok:
-                log("app login rejected: %s (%s)" % (how, uid))
-            else:
-                self.clients.add(cid)
-            await self.send({"t": "auth", "cid": cid, "ok": ok})
+            await self.login(cid, msg)
         elif t == "close":
             self.clients.discard(cid)
         elif t == "req" and cid in self.clients:
             asyncio.ensure_future(self.answer(cid, msg))
+
+    async def login(self, cid, msg):
+        """A window asks to log in: a fresh initData (a new open of the app) or an older one plus the resume key this
+        Mac gave that window. Either way the window gets the next key; the attempt goes to the logins list."""
+        init, ip = msg.get("init"), str(msg.get("ip") or "")
+        client = msg.get("client") if isinstance(msg.get("client"), dict) else {}
+        ok, uid, how = check_init(init, self.token, self.owners)
+        key, via = None, "open"
+        if ok:
+            if how != self.how:
+                self.how = how
+                log("app login: bot-key signature matched %s" % how)
+            key = self.keys.issue(uid)
+        elif how == "login expired" and msg.get("resume"):
+            # an old initData still proves it's the owner's Telegram; what lets the reconnect in is this Mac's key
+            signed, uid, _ = check_init(init, self.token, self.owners, max_age=SIGNED_MAX)
+            key = self.keys.use(msg["resume"], uid) if signed else None
+            ok, via, how = bool(key), "key", "resume key" if key else "resume key unknown or used up"
+        why = None
+        if ok and self.locked:
+            ok, key, how, why = False, None, "the app is closed: the server hands out other files", "locked"
+        elif not ok and how in ("login expired", "resume key unknown or used up"):
+            why = "expired"
+        age = init_age(init)
+        log("app login %s: %s, %s, %s (initData %s s old)" % ("ok" if ok else "rejected", how, net_of(ip),
+                                                             client.get("platform") or "?", age))
+        new_net = self.logins.note(ok, via if ok else "locked" if why == "locked" else REFUSED.get(how, "forged"), ip, client)
+        if ok:
+            self.clients.add(cid)
+        reply = {"t": "auth", "cid": cid, "ok": ok}
+        if key:
+            reply["resume"] = key
+        if why:
+            reply["why"] = why
+        await self.send(reply)
+        if new_net:
+            await self.p.login_alert(net_of(ip), client, via)
+
+    async def kick_all(self, why):
+        """Close every app window (logged out everywhere; the app closed by the file check)."""
+        for cid in list(self.clients):
+            await self.send({"t": "kick", "cid": cid, "why": why})
+        self.clients.clear()
+
+    async def logout_all(self):
+        """Every resume key is dropped and every window closed: from now on only a fresh open of the app gets in."""
+        self.keys.drop_all()
+        log("app: logged out everywhere")
+        await asyncio.sleep(0.3)               # the answer to the window that asked goes out first
+        await self.kick_all("out")
+
+    # ----- what the server hands to the phone -----
+
+    def app_base(self):
+        """wss://host/pult/agent → https://host/pult/ (http for a ws:// relay — the test stand)."""
+        u = urllib.parse.urlsplit(self.url)
+        return "%s://%s%s" % ("https" if u.scheme == "wss" else "http", u.netloc, APP_PATH)
+
+    async def check_files(self, http):
+        """→ what the server hands out differently from the last deploy ([] — all the same), or None: no manifest,
+        or the server couldn't be asked (that is not a difference)."""
+        try:
+            man = json.loads(self.manifest.read_text()) if self.manifest else None
+        except (OSError, ValueError):
+            man = None
+        if not man:
+            return None
+        base = self.app_base()
+        # what Telegram on a phone looks like: a server that hands the Mac other files than the phone gets them too
+        ua = {"User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 "
+                            "Mobile Safari/537.36 Telegram-Android/11.0"}
+        import aiohttp
+        try:
+            for proxy in ([self.proxy] if self.proxy else []) + [None]:
+                try:
+                    async with http.get(base, proxy=proxy, headers=ua, timeout=aiohttp.ClientTimeout(total=30)) as r:
+                        page, csps = await r.text(), r.headers.getall("Content-Security-Policy", [])
+                    break
+                except (aiohttp.ClientError, asyncio.TimeoutError, OSError):
+                    if proxy is None:
+                        raise
+            m = re.search(re.escape(APP_PATH) + r"static/app\.js\?v=(\d+)", page)
+            want, imap = expected_page(man["index"], man["files"], m.group(1) if m else "?")
+            bad = [] if page == want else ["index.html"]
+            if page_csp(imap, urllib.parse.urlsplit(base).netloc) not in csps:
+                bad.append("Content-Security-Policy")
+            for rel, sha in sorted(man["files"].items()):
+                async with http.get("%sstatic/%s?v=%s" % (base, rel, m.group(1) if m else ""), proxy=proxy, headers=ua,
+                                    timeout=aiohttp.ClientTimeout(total=30)) as r:
+                    if r.status != 200 or hashlib.sha256(await r.read()).hexdigest() != sha:
+                        bad.append(rel)
+            return bad
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+            log("app files check: the server didn't answer (%s)" % why(e))
+            return None
+
+    async def guard(self):
+        """Every GUARD_EVERY: the files the server hands out = the last deploy. A difference that holds after
+        GUARD_RECHECK closes the app — logins refused, windows closed — and is told in Telegram: whoever changed the
+        app on the server would otherwise run in the owner's window. Opens again by itself once the files match."""
+        import aiohttp
+        await asyncio.sleep(GUARD_FIRST)
+        async with aiohttp.ClientSession() as http:
+            while True:
+                try:
+                    await self.guard_once(http)
+                except Exception as e:
+                    log("app files check:", repr(e))
+                await asyncio.sleep(GUARD_EVERY)
+
+    async def guard_once(self, http):
+        bad = await self.check_files(http)
+        if bad == [] and not self.checked:
+            self.checked = True
+            log("app files on the server match the deploy")
+        if bad and not self.locked:
+            await asyncio.sleep(GUARD_RECHECK)
+            again = await self.check_files(http)
+            if again:
+                self.locked = ", ".join(again)
+                log("app files on the server differ from the deploy: %s — the app is closed" % self.locked)
+                await self.kick_all("locked")
+                await self.p.files_alert(again)
+        elif bad == [] and self.locked:
+            log("app files on the server match the deploy again — the app is open")
+            self.locked = None
+            await self.p.files_alert([])
 
     async def answer(self, cid, msg):
         rid, op = msg.get("id"), msg.get("op")

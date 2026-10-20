@@ -10,6 +10,8 @@ import hashlib
 import hmac
 import json
 import os
+import shutil
+import subprocess
 import sys
 import time
 import unittest
@@ -68,6 +70,68 @@ class InitTest(unittest.TestCase):
         self.assertEqual(PW.check_init(init_data(uid=5), TOKEN, owners)[2], "not the owner")
         self.assertEqual(PW.check_init(init_data(age=2 * 86400), TOKEN, owners)[2], "login expired")
         self.assertFalse(PW.check_init("", TOKEN, owners)[0])
+        # a new login takes minutes-fresh initData; an older one still proves the owner — for a resume key
+        self.assertTrue(PW.check_init(init_data(age=5 * 60), TOKEN, owners)[0])
+        self.assertEqual(PW.check_init(init_data(age=11 * 60), TOKEN, owners)[2], "login expired")
+        self.assertTrue(PW.check_init(init_data(age=2 * 86400), TOKEN, owners, max_age=PW.SIGNED_MAX)[0])
+        self.assertAlmostEqual(PW.init_age(init_data(age=300)), 300, delta=2)
+
+    def test_resume_keys(self):
+        k = PW.Keys(pultd.Store(T.TMP / "keys.db"))
+        a = k.issue(42, now=1000)
+        self.assertIsNone(k.use(a, 43, now=1001))                       # someone else's
+        b = k.use(a, 42, now=1001)
+        self.assertTrue(b and b != a)
+        self.assertTrue(k.use(a, 42, now=1001 + PW.KEY_GRACE - 1))      # a racing reconnect still gets in…
+        self.assertIsNone(k.use(a, 42, now=1001 + PW.KEY_GRACE + 1))    # …then the old key is dead
+        self.assertIsNone(k.use(b, 42, now=1001 + PW.KEY_IDLE + 1))     # unused for too long
+        self.assertIsNone(k.use("", 42) or k.use(None, 42) or k.use("nope", 42))
+        c = k.issue(42)
+        self.assertNotIn(c, json.dumps(k.store.get("app_keys")))       # only hashes are kept
+        k.drop_all()
+        self.assertIsNone(k.use(c, 42))
+        for _ in range(PW.KEYS_MAX + 5):
+            k.issue(42)
+        self.assertEqual(len(k.store.get("app_keys")), PW.KEYS_MAX)
+
+    def test_networks(self):
+        self.assertEqual(PW.net_of("203.0.113.77"), "203.0.113.x")
+        self.assertEqual(PW.net_of("::ffff:203.0.113.77"), "203.0.113.x")
+        self.assertEqual(PW.net_of("2001:db8:1:2::5"), "2001:db8:1::/48")
+        self.assertEqual(PW.net_of("garbage"), "garbage")
+        lg = PW.Logins(pultd.Store(T.TMP / "logins.db"))
+        self.assertFalse(lg.note(True, "open", "203.0.113.1", {"platform": "android", "version": "9.6"}))  # learns
+        self.assertFalse(lg.note(True, "key", "203.0.113.9", {}))         # the same network
+        self.assertFalse(lg.note(False, "expired", "198.51.100.1", {}))   # refused: not a new place to tell about
+        self.assertTrue(lg.note(True, "open", "198.51.100.1", {}))
+        self.assertFalse(lg.note(True, "open", "198.51.100.2", {}))
+        rec = lg.recent()
+        self.assertEqual([(r["ok"], r["how"]) for r in rec[:3]], [(True, "open"), (True, "open"), (False, "expired")])
+        self.assertEqual(rec[-1]["dev"], "android 9.6")
+
+    def test_links_show_where_they_lead(self):
+        import pult_render as R
+        self.assertEqual(R.link("docs", "https://example.com/a"), '<a href="https://example.com/a">docs</a> (example.com)')
+        self.assertEqual(R.link("example.com", "https://www.example.com/a"), '<a href="https://www.example.com/a">example.com</a>')
+        self.assertEqual(R.link("https://example.com/x", "https://example.com/y"),
+                         '<a href="https://example.com/y">https://example.com/x</a>')
+        self.assertIn("(evil.example)", R.link("google.com", "https://evil.example/login"))
+        self.assertIn("(evil.example)", R.link("https://google.com/?evil.example", "https://evil.example/"))
+        self.assertIn("(xn--", R.link("Telegram", "https://teleqrаm.org/"))           # a Cyrillic "а" stays visible
+        self.assertIn("(evil.example)", R.md_to_html("[Войти](https://evil.example/x)"))
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_links_in_the_app(self):
+        md = (HERE.parent / "relay" / "web" / "static" / "md.js").as_uri()
+        js = ("import {md} from %s; for (const s of [\"[docs](https://example.com/a)\", \"[example.com](https://www.example.com/)\", "
+              "\"[Telegram](https://teleqrаm.org/)\", \"[x](https://e.example/\\\"onmouseover=1)\"]) console.log(md(s));" % json.dumps(md))
+        out = subprocess.run(["node", "--input-type=module", "-e", js], capture_output=True, text=True, timeout=30)
+        lines = out.stdout.splitlines()
+        self.assertEqual(len(lines), 4, out.stderr)
+        self.assertIn('docs</a> <span class="host">(example.com)</span>', lines[0])
+        self.assertNotIn("host", lines[1])
+        self.assertIn("(xn--", lines[2])
+        self.assertNotIn('"onmouseover', lines[3])                         # the address stays inside its quotes
 
 
 class TranscriptTest(unittest.TestCase):
@@ -241,7 +305,9 @@ class UsageStatsTest(unittest.TestCase):
         self.assertEqual(dt.get(now + 86400)["projects"], [])                    # a new day: old data is not re-read
 
 
-class ChainTest(unittest.IsolatedAsyncioTestCase):
+class ChainBase(unittest.IsolatedAsyncioTestCase):
+    """A daemon with a fake Telegram, a real relay and app windows that log in through it."""
+
     async def asyncSetUp(self):
         self.fake = T.FakeTg()
         tg = pultd.Tg("T", transport=T.httpx.MockTransport(self.fake.handler))
@@ -273,12 +339,23 @@ class ChainTest(unittest.IsolatedAsyncioTestCase):
         await self.srv.close()
         self.sock.close()
 
-    async def phone(self):
-        ws = await self.http.ws_connect(str(self.srv.make_url("/pult/ws")))
-        await ws.send_str(json.dumps({"t": "hello", "init": init_data()}))
+    async def phone(self, init=None, resume=None, ip=None, keyed=False):
+        """An app window logs in → the connection (keyed: and the resume key it got, or the refusal)."""
+        ws = await self.http.ws_connect(str(self.srv.make_url("/pult/ws")), headers={"X-Real-IP": ip} if ip else None)
+        await ws.send_str(json.dumps({"t": "hello", "init": init or init_data(), "resume": resume,
+                                      "client": {"platform": "android", "version": "9.6"}}))
         self.assertEqual(json.loads((await ws.receive(timeout=5)).data)["t"], "hello")
-        self.assertEqual(json.loads((await ws.receive(timeout=5)).data), {"t": "ready"})   # the Mac verified the login
+        m = json.loads((await ws.receive(timeout=5)).data)
+        if keyed:
+            return ws, m
+        self.assertEqual((m["t"], len(m.get("resume") or "")), ("ready", 43))   # the Mac verified it, gave a key
         return ws
+
+    async def until_msg(self, ws, t):
+        while True:
+            m = json.loads((await ws.receive(timeout=5)).data)
+            if m.get("t") == t:
+                return m
 
     async def call(self, ws, op, **args):
         await ws.send_str(json.dumps({"t": "req", "id": op, "op": op, "args": args}))
@@ -287,6 +364,8 @@ class ChainTest(unittest.IsolatedAsyncioTestCase):
             if m.get("t") == "res" and m.get("id") == op:
                 return m
 
+
+class ChainTest(ChainBase):
     async def test_chain(self):
         ws = await self.phone()
         res = await self.call(ws, "overview")
@@ -384,6 +463,101 @@ class ChainTest(unittest.IsolatedAsyncioTestCase):
 
 
 
+class SecurityTest(ChainBase):
+    async def test_resume_and_logout(self):
+        old, PW.KEY_GRACE = PW.KEY_GRACE, 0
+        try:
+            ws, m = await self.phone(keyed=True)
+            key = m["resume"]
+            await ws.close()
+            # an hour later the window reconnects: its initData is old, the key lets it in and is replaced
+            ws, m = await self.phone(init_data(age=3600), resume=key, keyed=True)
+            self.assertEqual(m["t"], "ready")
+            key2 = m["resume"]
+            # an old initData alone, or with a used-up key, is worth nothing
+            for k in (None, key, "made-up"):
+                w, m = await self.phone(init_data(age=3600), resume=k, keyed=True)
+                self.assertEqual(m, {"t": "denied", "by": "mac", "why": "expired"})
+            # the daemon's link to the relay drops: the window is logged in again by its key, by itself
+            await self.p.web.ws.close()
+            m = await self.until_msg(ws, "ready")
+            self.assertNotEqual(m["resume"], key2)
+            self.assertIn("live", (await self.call(ws, "overview"))["data"])
+            # log out everywhere from the app: the window is closed, its key is gone
+            self.assertTrue((await self.call(ws, "logout_all"))["data"]["ok"])
+            self.assertEqual(await self.until_msg(ws, "denied"), {"t": "denied", "by": "mac", "why": "out"})
+            w, m = await self.phone(init_data(age=3600), resume=m.get("resume"), keyed=True)
+            self.assertEqual(m["t"], "denied")
+            hows = [x["how"] for x in (await self.p.api_logins())["logins"]]
+            self.assertEqual(hows[-3:], ["expired", "key", "open"])
+            self.assertIn("badkey", hows)
+        finally:
+            PW.KEY_GRACE = old
+
+    async def test_new_network(self):
+        alerts = lambda: [d for d in self.fake.of("sendMessage") if "новой сети" in d["text"]]  # noqa: E731
+        ws1 = await self.phone(ip="203.0.113.5")            # the first login only learns
+        ws2 = await self.phone(ip="203.0.113.77")           # the same network
+        self.assertEqual(alerts(), [])
+        ws3 = await self.phone(ip="198.51.100.9")
+        await T.until(alerts)
+        a = alerts()[0]
+        self.assertIn("198.51.100.x", a["text"])
+        self.assertIn("android 9.6", a["text"])
+        self.assertEqual(a["disable_notification"], "false")                     # with sound, wherever the owner is
+        self.assertEqual(json.loads(a["reply_markup"])["inline_keyboard"][0][0]["callback_data"], "k:out")
+        # a stranger's tap does nothing; the owner's closes every window
+        await self.p.on_callback({"id": "1", "from": {"id": 5}, "data": "k:out", "message": {"message_id": 1}})
+        await self.p.on_callback({"id": "2", "from": {"id": T.OWNER}, "data": "k:out", "message": {"message_id": 1}})
+        for w in (ws1, ws2, ws3):
+            self.assertEqual((await self.until_msg(w, "denied"))["why"], "out")
+
+    async def test_files_guard(self):
+        self.assertEqual(PW.page_csp("{}", "h.example:1"), relay.csp("{}", "h.example:1"))
+        man = PW.make_manifest(HERE.parent / "relay" / "web")
+        path = T.TMP / "manifest.json"
+        path.write_text(json.dumps(man))
+        self.p.web.manifest = path
+        old, PW.GUARD_RECHECK = PW.GUARD_RECHECK, 0
+        try:
+            async with aiohttp.ClientSession() as http:
+                self.assertEqual(await self.p.web.check_files(http), [])
+                ws = await self.phone()
+                path.write_text(json.dumps(dict(man, files=dict(man["files"], **{"md.js": "0" * 64}))))
+                await self.p.web.guard_once(http)
+                self.assertEqual(self.p.web.locked, "md.js")
+                self.assertEqual((await self.until_msg(ws, "denied"))["why"], "locked")    # the open window is closed
+                await T.until(lambda: [d for d in self.fake.of("sendMessage") if "Приложение закрыто" in d["text"]])
+                w, m = await self.phone(keyed=True)                                         # no new logins
+                self.assertEqual(m, {"t": "denied", "by": "mac", "why": "locked"})
+                path.write_text(json.dumps(dict(man, index=man["index"] + "<!-- -->")))
+                self.assertEqual(await self.p.web.check_files(http), ["index.html"])
+                path.write_text(json.dumps(man))
+                await self.p.web.guard_once(http)
+                self.assertIsNone(self.p.web.locked)
+                await T.until(lambda: [d for d in self.fake.of("sendMessage") if "снова совпадают" in d["text"]])
+                await self.phone()
+            self.p.web.manifest = T.TMP / "none.json"
+            async with aiohttp.ClientSession() as http:
+                self.assertIsNone(await self.p.web.check_files(http))                      # no deploy record — no check
+        finally:
+            PW.GUARD_RECHECK = old
+
+    async def test_token_conflict(self):
+        said = lambda w: [d for d in self.fake.of("sendMessage") if w in d["text"]]  # noqa: E731
+        for _ in range(2):
+            await self.p.conflict("Conflict: terminated by other getUpdates request")
+        self.assertEqual(said("409"), [])                       # a moment's overlap (a restart) is not a leak
+        await self.p.conflict("Conflict: terminated by other getUpdates request")
+        await T.until(lambda: said("409"))
+        await self.p.conflict("Conflict: can't use getUpdates method while webhook is active")
+        self.assertEqual(len(self.fake.of("deleteWebhook")), 1)
+        self.assertEqual(said("вебхук"), [])                    # told at most every 6 h
+        self.store.put("conflict_warned", 0)
+        await self.p.conflict("Conflict: can't use getUpdates method while webhook is active")
+        await T.until(lambda: said("вебхук"))
+
+
 class AppStringsTest(unittest.TestCase):
     def test_app_strings(self):
         # the app's dictionary: every key has both languages with the same {placeholders}, and every key the app
@@ -403,6 +577,10 @@ class AppStringsTest(unittest.TestCase):
         self.assertFalse(used - set(entries), "keys the app uses but the dictionary lacks")
         for e in ("low", "medium", "high", "xhigh", "max"):                  # effortName() builds these
             self.assertIn("effort." + e, entries)
+        for how in set(PW.REFUSED.values()) | {"open", "key", "locked"}:     # the logins list builds these
+            self.assertIn("logins.how." + how, entries)
+        for why in ("expired", "out", "locked"):                            # and the banner these
+            self.assertIn("banner.denied." + why, entries)
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

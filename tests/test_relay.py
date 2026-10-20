@@ -6,8 +6,10 @@ Telegram's, and the phone and the Mac are real WebSocket connections to a real r
 """
 import asyncio
 import base64
+import hashlib
 import json
 import os
+import socket
 import sys
 import tempfile
 import time
@@ -56,16 +58,18 @@ class RelayTest(unittest.IsolatedAsyncioTestCase):
     def url(self, path):
         return str(self.srv.make_url(path))
 
-    async def phone(self, init):
-        ws = await self.http.ws_connect(self.url("/pult/ws"))
-        await ws.send_str(json.dumps({"t": "hello", "init": init, "client": {"platform": "test", "version": "9"}}))
+    async def phone(self, init, resume=None, ip=None):
+        ws = await self.http.ws_connect(self.url("/pult/ws"), headers={"X-Real-IP": ip} if ip else None)
+        await ws.send_str(json.dumps({"t": "hello", "init": init, "resume": resume,
+                                      "client": {"platform": "test", "version": "9"}}))
         return ws, json.loads((await ws.receive(timeout=5)).data)
 
     def test_check_init(self):
         self.assertEqual(relay.check_init(init_data())[:3], (True, True, True))
         self.assertEqual(relay.check_init(init_data(tamper=True))[:3], (False, True, True))   # forged
         self.assertEqual(relay.check_init(init_data(uid=5))[:3], (True, False, True))          # not the owner
-        self.assertEqual(relay.check_init(init_data(age=2 * 86400))[:3], (True, True, False))  # stale
+        self.assertEqual(relay.check_init(init_data(age=2 * 86400))[:3], (True, True, True))   # the Mac decides
+        self.assertEqual(relay.check_init(init_data(age=8 * 86400))[:3], (True, True, False))  # stale
         self.assertEqual(relay.check_init("")[:3], (False, False, False))
 
     async def test_page_and_health(self):
@@ -81,14 +85,25 @@ class RelayTest(unittest.IsolatedAsyncioTestCase):
         async with self.http.get(self.url("/pult/static/i18n.js")) as r:
             self.assertEqual((r.status, r.headers.get("Cache-Control")), (200, "no-cache"))
         async with self.http.get(self.url("/pult/healthz")) as r:
-            self.assertEqual((await r.json())["mac"], False)
+            self.assertEqual(await r.json(), {"ok": True, "mac": False})       # not how many windows are open
+        # the page's CSP: scripts only from here, telegram.org and the import map by its hash; connections only here
+        async with self.http.get(self.url("/pult/")) as r:
+            policy = r.headers["Content-Security-Policy"]
+        raw = page.split('<script type="importmap">')[1].split("</script>")[0]
+        self.assertIn("'sha256-%s'" % base64.b64encode(hashlib.sha256(raw.encode()).digest()).decode(), policy)
+        self.assertIn("script-src 'self' https://telegram.org ", policy)
+        self.assertIn("connect-src 'self' wss://%s" % self.srv.make_url("/").host, policy)
+        self.assertNotIn("unsafe-eval", policy)
+        self.assertNotIn("wss://", relay.csp(raw, "evil.example\r\nX: y"))   # a strange Host header adds nothing
 
     async def test_strangers(self):
+        # a stranger learns nothing about why; only the owner's own week-old window is told to reopen
         ws, m = await self.phone(init_data(tamper=True))
-        self.assertEqual(m["t"], "denied")
-        self.assertFalse(m["signature_ok"])
+        self.assertEqual(m, {"t": "denied"})
         ws, m = await self.phone(init_data(uid=5))
-        self.assertEqual((m["t"], m["owner"]), ("denied", False))
+        self.assertEqual(m, {"t": "denied"})
+        ws, m = await self.phone(init_data(age=8 * 86400))
+        self.assertEqual(m, {"t": "denied", "why": "expired"})
         with self.assertRaises(aiohttp.WSServerHandshakeError):
             await self.http.ws_connect(self.url("/pult/agent"), headers={"Authorization": "Bearer wrong"})
         self.assertNotIn("init", m)                                              # a refusal never echoes the login
@@ -102,6 +117,7 @@ class RelayTest(unittest.IsolatedAsyncioTestCase):
         opened = json.loads((await mac.receive(timeout=5)).data)
         self.assertEqual(opened["t"], "open")
         self.assertIn("signature=", opened["init"])                  # the Mac checks the login with its own bot token
+        self.assertEqual((opened["client"], opened["resume"]), ({"platform": "test", "version": "9"}, None))
         cid = opened["cid"]
         await ws.send_str(json.dumps({"t": "req", "id": 1, "op": "overview"}))     # not forwarded before confirmation
         await mac.send_str(json.dumps({"t": "auth", "cid": cid, "ok": True}))
@@ -122,9 +138,72 @@ class RelayTest(unittest.IsolatedAsyncioTestCase):
         ws, m = await self.phone(init_data())
         self.assertTrue(m["mac"])
         cid = json.loads((await mac.receive(timeout=5)).data)["cid"]
-        await mac.send_str(json.dumps({"t": "auth", "cid": cid, "ok": False}))
-        self.assertEqual(json.loads((await ws.receive(timeout=5)).data), {"t": "denied", "by": "mac"})
+        await mac.send_str(json.dumps({"t": "auth", "cid": cid, "ok": False, "why": "expired"}))
+        self.assertEqual(json.loads((await ws.receive(timeout=5)).data), {"t": "denied", "by": "mac", "why": "expired"})
         await mac.close()
+
+    async def test_resume_key(self):
+        # the window's key and address reach the Mac; the Mac's next key reaches the window and is what the relay
+        # hands the Mac when the Mac reconnects (it restarted: the window logs in again without a fresh initData)
+        mac = await self.http.ws_connect(self.url("/pult/agent"), headers={"Authorization": "Bearer s3cret"})
+        ws, m = await self.phone(init_data(), resume="k1", ip="203.0.113.7")
+        opened = json.loads((await mac.receive(timeout=5)).data)
+        self.assertEqual((opened["resume"], opened["ip"]), ("k1", "203.0.113.7"))
+        await mac.send_str(json.dumps({"t": "auth", "cid": opened["cid"], "ok": True, "resume": "k2"}))
+        self.assertEqual(json.loads((await ws.receive(timeout=5)).data), {"t": "ready", "resume": "k2"})
+        await mac.close()
+        self.assertEqual(json.loads((await ws.receive(timeout=5)).data), {"t": "mac", "on": False})
+        mac = await self.http.ws_connect(self.url("/pult/agent"), headers={"Authorization": "Bearer s3cret"})
+        again = json.loads((await mac.receive(timeout=5)).data)
+        self.assertEqual((again["t"], again["cid"], again["resume"]), ("open", opened["cid"], "k2"))
+        # the owner logged out everywhere: the Mac closes the window
+        await mac.send_str(json.dumps({"t": "auth", "cid": opened["cid"], "ok": True, "resume": "k3"}))
+        while json.loads((await ws.receive(timeout=5)).data).get("t") != "ready":
+            pass
+        await mac.send_str(json.dumps({"t": "kick", "cid": opened["cid"], "why": "out"}))
+        self.assertEqual(json.loads((await ws.receive(timeout=5)).data), {"t": "denied", "by": "mac", "why": "out"})
+        self.assertEqual((await ws.receive(timeout=5)).type, aiohttp.WSMsgType.CLOSE)
+        await mac.close()
+
+    async def test_waiting_cap(self):
+        # connections that don't say who they are: at most WAITING_PER_IP from one address hold a place
+        held = [await self.http.ws_connect(self.url("/pult/ws"), headers={"X-Real-IP": "198.51.100.1"})
+                for _ in range(relay.WAITING_PER_IP)]
+        extra = await self.http.ws_connect(self.url("/pult/ws"), headers={"X-Real-IP": "198.51.100.1"})
+        self.assertEqual((await extra.receive(timeout=5)).type, aiohttp.WSMsgType.CLOSE)
+        self.assertEqual(extra.close_code, 4429)
+        ws, m = await self.phone(init_data(), ip="198.51.100.2")                  # another address gets in
+        self.assertEqual(m["t"], "hello")
+        for h in held:
+            await h.close()
+        await ws.close()
+
+    async def test_unix_socket(self):
+        """PULT_RELAY_SOCKET: the relay listens on a socket, a socket left by a crash is replaced, other files stay."""
+        self.assertEqual(relay.listen(), {"host": "127.0.0.1", "port": relay.PORT})
+        path = TMP / "relay.sock"
+        s = socket.socket(socket.AF_UNIX)
+        s.bind(str(path))                              # a socket left behind by a crash
+        s.close()
+        relay.SOCKET = str(path)
+        try:
+            where = relay.listen()
+            self.assertEqual(where, {"path": str(path)})
+            self.assertFalse(path.exists())
+            runner = aiohttp.web.AppRunner(relay.app())
+            await runner.setup()
+            await aiohttp.web.UnixSite(runner, where["path"]).start()
+            async with aiohttp.ClientSession(connector=aiohttp.UnixConnector(path=str(path))) as http:
+                async with http.get("http://relay/pult/healthz") as r:
+                    self.assertEqual((await r.json())["ok"], True)
+            await runner.cleanup()
+            path.unlink(missing_ok=True)
+            path.write_text("not a socket")
+            relay.listen()
+            self.assertEqual(path.read_text(), "not a socket")
+        finally:
+            relay.SOCKET = ""
+            path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

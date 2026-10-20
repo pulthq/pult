@@ -2,6 +2,32 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.9.23 — 2026-10-20
+
+Security, after a review of how someone could get in without the owner's Telegram account.
+
+- A new app login takes an initData Telegram made minutes ago (it used to be a day). A reconnect — the network blinked,
+  the computer or the relay restarted — logs in with a one-time key the computer gave that window; each use gives the
+  next one, and the computer keeps only hashes. An initData that leaked from somewhere is no longer a day-long pass.
+- An app login from a network Pult hasn't seen is told in Telegram, with sound and a "Log out everywhere" button.
+  Settings → Logins in the app lists recent logins (when, network, device, how) and logs every window out.
+- Someone else holding the bot token is told: the app button in your chat is rechecked every 30 minutes and put
+  back if changed (a changed button would hand a real login to another page); a webhook on Pult's token is removed;
+  Telegram's 409 that persists ("someone else reads this bot") is reported. Each alert says how to change the token.
+- The computer can check that the relay hands the phone exactly the files that were deployed: when
+  `~/.local/share/pult/web-manifest.json` exists (`pult_web.make_manifest(relay/web)`, written by a deploy script), a
+  difference that holds for 90 seconds closes the app — logins refused, windows closed — until the files match
+  again, and is told in Telegram.
+- Links show where they lead: when a link's words don't show its address, the domain follows in brackets, in
+  Telegram and in the app (non-Latin names in their `xn--` form, so a look-alike letter doesn't pass).
+- The app's page has a Content-Security-Policy: scripts only from the relay and telegram.org, connections only back
+  to the relay.
+- The relay tells a stranger nothing about why a login was refused, no longer says in `/healthz` how many windows are
+  open, and holds at most 3 unidentified connections per address (30 in all) for at most 10 seconds.
+- The relay can listen on a unix socket (`PULT_RELAY_SOCKET`) instead of a port. On a server shared with other
+  programs, any of them could take a free port while the relay restarts, and the web server would hand the phone that
+  program's page; a socket in a folder only the relay and the web server can enter can't be taken.
+
 ## 0.9.22 — 2026-10-20
 
 - The README opens with Home of the web app next to the topic animation: what waits for you, with ready replies,

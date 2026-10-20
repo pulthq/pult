@@ -419,6 +419,36 @@ S = {
                    "ru": "🔄 Вышло обновление Claude Code <b>{v}</b>. Писать из Telegram прямо во вкладки на нём пока "
                          "нельзя — сначала проверка. До неё сообщения в открытые вкладки уходят копией, как раньше.\n"
                          "После проверки: <code>pult tab allow {v}</code> (см. README)."},
+    # security (0.9.23): a login from a new network, the app files on the server, someone else holding the bot token
+    "login.new": {"en": "🔐 App login from a new network: {net} · {dev} · {how}.\nNot you? Log everyone out.",
+                  "ru": "🔐 Вход в приложение из новой сети: {net} · {dev} · {how}.\nЕсли это не ты — выйди везде."},
+    "login.via.open": {"en": "the app was opened", "ru": "приложение открыли"},
+    "login.via.key": {"en": "a window reconnected", "ru": "окно переподключилось"},
+    "btn.logout_all": {"en": "Log out everywhere", "ru": "Выйти везде"},
+    "note.logged_out": {"en": "logged out everywhere: app windows closed", "ru": "вышел везде: окна приложения закрыты"},
+    "files.differ": {"en": "⚠️ <b>The app is closed.</b> The server hands out other files than you deployed: {files}. "
+                           "That's what it looks like when someone changes the app on the server. Until the files "
+                           "match, the computer doesn't answer the app.\nJust updated the server yourself? Deploy "
+                           "again. Otherwise check the server.",
+                     "ru": "⚠️ <b>Приложение закрыто.</b> Сервер отдаёт не те файлы, что ты выкладывал: {files}. Так "
+                           "бывает, если приложение на сервере подменили. Пока файлы не совпадут, компьютер не "
+                           "отвечает приложению.\nСам только что обновлял сервер — выложи ещё раз. Иначе проверь сервер."},
+    "files.match": {"en": "✅ The app files on the server match your deploy again — the app is open.",
+                    "ru": "✅ Файлы приложения на сервере снова совпадают с выложенными — приложение открыто."},
+    "tg.conflict": {"en": "⚠️ Someone else receives this bot's messages (Telegram answers 409). If no second Pult runs "
+                          "with this bot, the bot token has leaked: @BotFather → /revoke, then <code>pult setup</code> "
+                          "asks for the new one.",
+                    "ru": "⚠️ Сообщения этого бота получает кто-то ещё (Telegram отвечает 409). Если второй Пульт с "
+                          "этим ботом не запущен — токен бота утёк: @BotFather → /revoke, затем <code>pult setup</code> "
+                          "попросит новый."},
+    "tg.conflict.hook": {"en": "⚠️ Someone set a webhook on this bot — only whoever holds the bot token can. Removed. "
+                               "Change the token: @BotFather → /revoke, then <code>pult setup</code>.",
+                         "ru": "⚠️ Кто-то поставил этому боту вебхук — так может только тот, у кого есть токен. Убрал. "
+                               "Смени токен: @BotFather → /revoke, затем <code>pult setup</code>."},
+    "menu.changed": {"en": "⚠️ Someone changed the app button of this bot — only whoever holds the bot token can. Put it "
+                           "back. Change the token: @BotFather → /revoke, then <code>pult setup</code>.",
+                     "ru": "⚠️ Кто-то поменял кнопку приложения у бота — так может только тот, у кого есть токен бота. "
+                           "Вернул как было. Смени токен: @BotFather → /revoke, затем <code>pult setup</code>."},
     "status.head": {"en": "<b>On the computer now</b> · {state}", "ru": "<b>Сейчас на компьютере</b> · {state}"},
     "status.at_mac": {"en": "you're at the computer", "ru": "ты за компьютером"},
     "status.idle": {"en": "the computer has been idle for {dur}", "ru": "компьютер простаивает {dur}"},

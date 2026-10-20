@@ -56,7 +56,7 @@ then `nginx -t && systemctl reload nginx`.
 
 **Caddy:** see [Caddyfile](Caddyfile) — replace the domain; Caddy gets the certificate by itself.
 
-Check from anywhere: `curl https://your.domain/pult/healthz` → `{"ok": true, "mac": true, …}` once the computer is
+Check from anywhere: `curl https://your.domain/pult/healthz` → `{"ok": true, "mac": true}` once the computer is
 connected (`mac: false` — see Pult's log, `~/Library/Logs/pult.log` on macOS or `~/.local/state/pult/pult.log` on Linux,
 lines starting with `web:`).
 
