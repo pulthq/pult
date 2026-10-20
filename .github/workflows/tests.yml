@@ -9,12 +9,13 @@ permissions:
 
 jobs:
   test:
-    # Pult runs on macOS and Linux; a Windows runner comes with it (stage K)
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest]
+        os: [macos-latest, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      PYTHONUTF8: "1"          # as Pult runs: the daemon and the pult command use -X utf8 on Windows
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -31,4 +32,39 @@ jobs:
       - name: Relay
         run: python tests/test_relay.py
       - name: Shell scripts parse
+        if: runner.os != 'Windows'
         run: bash -n install.sh && bash -n deploy/relay/install.sh && sh -n src/pult-tab.sh
+      - name: install.ps1 parses
+        shell: pwsh
+        run: |
+          $errs = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD/install.ps1", [ref]$null, [ref]$errs)
+          if ($errs) { $errs; exit 1 }
+      - name: Install, start, remove — for real (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1: $LASTEXITCODE" }
+          $pult = "$HOME\.local\share\pult"
+          $cmd = "$HOME\.local\bin\pult.cmd"
+          foreach ($f in 'venv\Scripts\pythonw.exe', 'pult-tab.exe', 'Pult.task.xml', 'pultd.py') {
+            if (-not (Test-Path "$pult\$f")) { throw "missing: $f" }
+          }
+          & $cmd status
+          if ($LASTEXITCODE -ne 0) { throw "pult status: $LASTEXITCODE" }
+          # the user's PATH has ~\.local\bin now
+          if (-not ([Environment]::GetEnvironmentVariable('Path', 'User') -split ';' -contains "$HOME\.local\bin")) { throw "PATH" }
+          # Task Scheduler takes the task definition as written
+          schtasks /Create /TN PultCI /XML "$pult\Pult.task.xml" /F
+          if ($LASTEXITCODE -ne 0) { throw "schtasks /Create: $LASTEXITCODE" }
+          schtasks /Query /TN PultCI /XML | Out-Null
+          schtasks /Delete /TN PultCI /F
+          # the daemon under pythonw writes its own log (no settings: it says so and stops)
+          Start-Process -Wait -FilePath "$pult\venv\Scripts\pythonw.exe" -ArgumentList '-X', 'utf8', "`"$pult\pultd.py`""
+          $log = Get-Content -Raw "$HOME\.local\state\pult\pult.log"
+          if ($log -notmatch 'no PULT_BOT_TOKEN') { $log; throw "no daemon log" }
+          "y`ny" | & $cmd uninstall
+          if (Test-Path $cmd) { throw "pult.cmd is still there" }
+          if (Test-Path "$pult\Pult.task.xml") { throw "the task definition is still there" }

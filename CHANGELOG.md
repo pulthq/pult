@@ -2,6 +2,12 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## Unreleased
+
+- The Home strip no longer cuts its text on a phone: the "where you are" and "limit · CPU" chips are now small tiles,
+  a label over a value ("🔄 Auto" over "away 12 min", "limit" and "CPU" over their numbers). A style meant only for
+  the first chip clipped every piece of the second one — "lim… · CPU 1…".
+
 ## 0.9.25 — 2026-10-20
 
 - A Telegram message with choice buttons says what was chosen once it's done: "Which session?", "Which project

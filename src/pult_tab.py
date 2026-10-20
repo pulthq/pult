@@ -7,7 +7,11 @@ Installed by the owner via the `claudeCode.claudeProcessWrapper` setting in VS C
 
 The main rule is the same as for the hook: the wrapper never gets in the way. Off switch set, not a tab chat,
 unverified Claude Code version, folder not in the list, any error before start — exec the real claude at once:
-the process is replaced and the wrapper is gone.
+the process is replaced and the wrapper is gone. Windows has no exec: there claude runs as the wrapper's child with
+the wrapper's own stdin and stdout, without a window, in a job object that ends it together with the wrapper (the
+extension closes a tab by killing the process it started — no signal on Windows). On Windows the wrapper is
+pult-tab.exe: a GUI launcher with pythonw and this file inside (pult_setup.make_exe), because the extension starts
+it with pipes and windowsHide, and a console program would get a console window of its own.
 
 In the selected folders the wrapper stays in between as a proxy: extension lines → Claude Code and the output
 back, byte for byte; between extension lines it slips in a user message from the daemon. Claude Code echoes it
@@ -17,6 +21,7 @@ system/init, the end from result). If the link to the daemon breaks, the tab wor
 """
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -45,7 +50,7 @@ def log(*a):
 
 def version_of(path):
     """…/anthropic.claude-code-2.1.301-darwin-arm64/resources/native-binary/claude → '2.1.301'."""
-    for part in str(path).split(os.sep):
+    for part in re.split(r"[\\/]", str(path)):
         if part.startswith("anthropic.claude-code-"):
             return part[len("anthropic.claude-code-"):].split("-")[0]
     return None
@@ -70,10 +75,10 @@ def why_direct(argv, conf, cwd):
         return "not a chat session"
     if version_of(argv[0]) not in (conf.get("versions") or []):
         return "version %s is not verified" % version_of(argv[0])
-    real = os.path.realpath(cwd)
+    real = os.path.normcase(os.path.realpath(cwd))             # Windows: any case of the same folder
     for folder in conf.get("folders") or []:
-        f = os.path.realpath(os.path.expanduser(folder))
-        if real == f or real.startswith(f.rstrip("/") + "/"):
+        f = os.path.normcase(os.path.realpath(os.path.expanduser(folder)))
+        if real == f or real.startswith(f.rstrip(os.sep) + os.sep):
             return None
     return "folder not in the list"
 
@@ -101,6 +106,68 @@ def write_all(fd, data):
         view = view[os.write(fd, view):]
 
 
+# ---------- Windows ----------
+
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)     # what the extension's windowsHide gives claude: no console
+_jobs = []                                                 # job handles: kept open until this process ends
+
+
+def binary(*fds):
+    """Windows: bytes pass as they are (no \\n → \\r\\n on the way); elsewhere nothing to do."""
+    if os.name == "nt":
+        import msvcrt
+        for fd in fds:
+            msvcrt.setmode(fd, os.O_BINARY)
+
+
+def die_with_me(proc):
+    """Windows: the child (and whatever it starts) ends when this process ends, however it ends — a job object with
+    KILL_ON_JOB_CLOSE whose only handle is ours and is never closed."""
+    import ctypes
+    from ctypes import wintypes as t
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateJobObjectW.restype, k.CreateJobObjectW.argtypes = t.HANDLE, [ctypes.c_void_p, t.LPCWSTR]
+    k.SetInformationJobObject.restype = t.BOOL
+    k.SetInformationJobObject.argtypes = [t.HANDLE, ctypes.c_int, ctypes.c_void_p, t.DWORD]
+    k.AssignProcessToJobObject.restype, k.AssignProcessToJobObject.argtypes = t.BOOL, [t.HANDLE, t.HANDLE]
+
+    class Basic(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", t.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", t.DWORD),
+                    ("Affinity", ctypes.c_size_t), ("PriorityClass", t.DWORD), ("SchedulingClass", t.DWORD)]
+
+    class Extended(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", Basic), ("IoInfo", ctypes.c_uint64 * 6),
+                    ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+    job = k.CreateJobObjectW(None, None)
+    info = Extended()
+    info.BasicLimitInformation.LimitFlags = 0x2000                  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if not job or not k.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info)) \
+            or not k.AssignProcessToJobObject(job, int(proc._handle)):
+        log("job object:", ctypes.get_last_error())                  # the tab still works; only a kill leaves it
+        return
+    _jobs.append(job)
+
+
+def direct(argv):
+    """The real claude with nothing in between: exec where there is exec; on Windows — a child with our stdin,
+    stdout and stderr (the extension's pipes) that ends with us, and its exit code as ours."""
+    if os.name != "nt":
+        os.execv(argv[0], argv)
+
+    def ours(fd):                              # pythonw without one of the three: claude gets nothing there
+        try:
+            os.fstat(fd)
+            return fd
+        except OSError:
+            return subprocess.DEVNULL
+    child = subprocess.Popen(argv, stdin=ours(0), stdout=ours(1), stderr=ours(2), creationflags=NO_WINDOW)
+    die_with_me(child)
+    sys.exit(child.wait())
+
+
 class Tab:
     def __init__(self, argv):
         self.argv = argv
@@ -109,8 +176,12 @@ class Tab:
         self.lock = threading.Lock()           # lines go into Claude Code's stdin whole, never interleaved
         self.sock = None
         self.slock = threading.Lock()
-        self.child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
+        self.child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0,
+                                      creationflags=NO_WINDOW)
+        if os.name == "nt":
+            die_with_me(self.child)
         self.cin, self.cout = self.child.stdin.fileno(), self.child.stdout.fileno()
+        binary(0, 1, self.cin, self.cout)
         self.drop = {}                         # our own control requests, id → subtype: their responses don't reach the extension
 
     def to_claude(self, line):
@@ -230,9 +301,10 @@ class Tab:
     def link(self):
         """Link to the daemon: introduce ourselves, receive messages. No daemon — retry; the tab does not wait."""
         while self.child.poll() is None:
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s = None
             try:
-                s.connect(SOCK)
+                s = connect()
+                s.settimeout(None)
                 with self.slock:
                     self.sock = s
                 self.tell({"op": "hello", "pid": os.getpid(), "cwd": self.cwd, "sid": self.sid,
@@ -254,12 +326,14 @@ class Tab:
             finally:
                 with self.slock:
                     self.sock = None
-                s.close()
+                if s:
+                    s.close()
             time.sleep(3)
 
     def run(self):
-        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-            signal.signal(sig, lambda n, f: self.child.send_signal(n))
+        if os.name != "nt":                    # Windows: no signals reach us; the job object ends claude with us
+            for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+                signal.signal(sig, lambda n, f: self.child.send_signal(n))
         threading.Thread(target=self.up, daemon=True).start()
         threading.Thread(target=self.link, daemon=True).start()
         self.down()
@@ -285,17 +359,39 @@ def main(argv):
     except Exception as e:
         why = "no wrapper config (%s)" % type(e).__name__
     if why:
-        os.execv(argv[0], argv)
+        direct(argv)
     log("proxying a tab:", os.getcwd(), version_of(argv[0]))
     try:
         tab = Tab(argv)
     except Exception as e:
         log("failed to start, going direct:", repr(e))
-        os.execv(argv[0], argv)
+        direct(argv)
     sys.exit(tab.run())
 
 
-if __name__ == "__main__":
+def connect():
+    """The daemon's link, as in pult_os.link_connect."""
+    if os.name != "nt" and os.environ.get("PULT_LINK") != "tcp":
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            s.connect(SOCK)
+        except OSError:
+            s.close()
+            raise
+        return s
+    with open(SOCK, encoding="utf-8") as f:
+        link = json.load(f)
+    s = socket.create_connection(("127.0.0.1", int(link["port"])), timeout=5)
+    s.sendall(str(link["key"]).encode() + b"\n")
+    return s
+
+
+def entry():
+    """pult_tab.py <claude> <arguments>, or pult-tab.exe <claude> <arguments> on Windows."""
     if len(sys.argv) < 2:
         sys.exit("pult_tab.py: the path to claude is required")
     main(sys.argv[1:])
+
+
+if __name__ == "__main__":
+    entry()

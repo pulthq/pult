@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Pult: Claude Code hook — forwards session events to the pultd daemon over a unix socket.
+"""Pult: Claude Code hook — forwards session events to the pultd daemon over its link: a unix socket, or on
+Windows 127.0.0.1 with the port and the key from the link file (pult_os.link_connect, repeated here).
 
 Installed into ~/.claude/settings.json by `pult hooks on`. Standard library only:
-it runs on every event of every session and must start fast.
+it runs on every event of every session and must start fast. On Windows it runs in exec form — pythonw and this
+file as arguments, no shell — and `--injected` stands for PULT_INJECTED=1 (an environment prefix is shell syntax).
 
 The main rule: the hook never gets in the way of a session. No daemon, no socket, any error —
 exit 0 with no output, and Claude Code behaves as if there were no hook.
@@ -16,7 +18,8 @@ import os
 import socket
 import sys
 
-SOCK = os.environ.get("PULT_SOCK") or os.path.expanduser("~/.local/share/pult/pult.sock")
+SOCK = next((a[len("--sock="):] for a in sys.argv[1:] if a.startswith("--sock=")), None) \
+    or os.environ.get("PULT_SOCK") or os.path.expanduser("~/.local/share/pult/pult.sock")
 TRACKED = {"claude-vscode", "cli"}       # `claude -p` (sdk-cli) and other SDK runs are skipped
 
 EVENTS = ["SessionStart", "UserPromptSubmit", "PostToolUse", "PostToolUseFailure",
@@ -24,12 +27,15 @@ EVENTS = ["SessionStart", "UserPromptSubmit", "PostToolUse", "PostToolUseFailure
 WAIT_TIMEOUT = 6 * 3600 + 60             # wait up to 6 h for a Telegram answer; the Mac dialog stays open meanwhile
 
 
-def hooks_config(command):
-    """The hooks block for settings.json: both the global one (pult hooks on) and the one for Telegram sessions."""
+def hooks_config(command, args=None):
+    """The hooks block for settings.json: both the global one (pult hooks on) and the one for Telegram sessions.
+    With args — exec form: Claude Code starts command with these arguments, no shell (Windows)."""
     out = {}
     for ev in EVENTS:
-        h = {"type": "command", "command": command,
-             "timeout": WAIT_TIMEOUT if ev == "PermissionRequest" else 10}
+        h = {"type": "command", "command": command}
+        if args is not None:
+            h["args"] = list(args)
+        h["timeout"] = WAIT_TIMEOUT if ev == "PermissionRequest" else 10
         out[ev] = [{"matcher": "*", "hooks": [h]}] if ev in ("PostToolUse", "PostToolUseFailure",
                                                              "PermissionRequest") else [{"hooks": [h]}]
     return out
@@ -41,8 +47,21 @@ def wanted():
     if os.environ.get("PULT_DRIVEN") == "1":
         # the session was started by Pult itself: its events come from the hook Pult injected into it,
         # and the global hook stays silent to avoid duplicates
-        return os.environ.get("PULT_INJECTED") == "1"
+        return os.environ.get("PULT_INJECTED") == "1" or "--injected" in sys.argv[1:]
     return os.environ.get("CLAUDE_CODE_ENTRYPOINT", "") in TRACKED
+
+
+def connect():
+    if os.name != "nt" and os.environ.get("PULT_LINK") != "tcp":
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(1.0)
+        s.connect(SOCK)
+        return s
+    with open(SOCK, encoding="utf-8") as f:
+        link = json.load(f)
+    s = socket.create_connection(("127.0.0.1", int(link["port"])), timeout=1.0)
+    s.sendall(str(link["key"]).encode() + b"\n")
+    return s
 
 
 def main():
@@ -52,9 +71,7 @@ def main():
     wait = ev.get("hook_event_name") == "PermissionRequest"
     msg = {"event": ev, "pid": os.getppid(), "entry": os.environ.get("CLAUDE_CODE_ENTRYPOINT", ""),
            "driven": os.environ.get("PULT_DRIVEN") == "1", "wait": wait}
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(1.0)
-    s.connect(SOCK)
+    s = connect()
     s.sendall(json.dumps(msg, ensure_ascii=False).encode() + b"\n")
     if not wait:
         return

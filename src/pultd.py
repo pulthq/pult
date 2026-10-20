@@ -12,6 +12,7 @@ import asyncio
 import base64
 import binascii
 import collections
+import hmac
 import importlib.util
 import json
 import os
@@ -43,7 +44,12 @@ import pult_web as PW
 HOME = Path(os.environ.get("PULT_HOME") or "~/.local/share/pult").expanduser()
 ENV_FILE = Path(os.environ.get("PULT_ENV") or "~/.config/pult/env").expanduser()
 SOCK = os.environ.get("PULT_SOCK") or str(HOME / "pult.sock")
-HOOK_PY = os.environ.get("PULT_HOOK_PY") or sys.executable      # Pult's own Python: the hook needs nothing else
+HOOK_PY = os.environ.get("PULT_HOOK_PY") or (
+    # Windows: the base pythonw, not the venv's — the venv's python is a redirector that would be the hook's parent
+    # instead of claude, and a console program would open a console window for every hook call
+    str(Path(getattr(sys, "_base_executable", sys.executable)).with_name("pythonw.exe")) if os.name == "nt"
+    else sys.executable)                                      # Pult's own Python: the hook needs nothing else
+SEPS = os.sep + "/"                                           # trailing separators of a folder path: / (Windows: \ and /)
 HOOK = str(HOME / "pult_hook.py")
 CLAUDE_PROJECTS = Path("~/.claude/projects").expanduser()
 
@@ -117,9 +123,10 @@ def find_claude():
         return found
     spec = importlib.util.find_spec("claude_agent_sdk")
     for d in (spec.submodule_search_locations or []) if spec else []:
-        p = os.path.join(d, "_bundled", "claude")
-        if os.access(p, os.X_OK):
-            return p
+        for name in ("claude.exe", "claude") if os.name == "nt" else ("claude",):
+            p = os.path.join(d, "_bundled", name)
+            if os.path.isfile(p) and os.access(p, os.X_OK):
+                return p
     return "claude"
 
 
@@ -152,7 +159,10 @@ def sanitize(path):
 
 
 def decode_pkey(pkey, root="/"):
-    """Folder name ~/.claude/projects/<pkey> → the real path (by searching the disk; '-' is ambiguous)."""
+    """Folder name ~/.claude/projects/<pkey> → the real path (by searching the disk; '-' is ambiguous). Windows:
+    the drive letter first, and names in any case (VS Code may give claude the folder as c:\\…)."""
+    fold = str.lower if os.name == "nt" else str
+
     def walk(d, rest, depth):
         if depth > 10:
             return None
@@ -161,15 +171,27 @@ def decode_pkey(pkey, root="/"):
         except OSError:
             return None
         for e in sorted(entries):
-            s = sanitize(e)
-            if rest == s:
+            s = fold(sanitize(e))
+            if fold(rest) == s:
                 return os.path.join(d, e)
-            if rest.startswith(s + "-") and os.path.isdir(os.path.join(d, e)):
+            if fold(rest).startswith(s + "-") and os.path.isdir(os.path.join(d, e)):
                 r = walk(os.path.join(d, e), rest[len(s) + 1:], depth + 1)
                 if r:
                     return r
         return None
+    if os.name == "nt":
+        m = re.match(r"([A-Za-z])--(.*)$", pkey)          # C:\Users\x\proj → C--Users-x-proj
+        return walk(m.group(1).upper() + ":\\", m.group(2), 0) if m else None
     return walk(root, pkey[1:], 0) if pkey.startswith("-") else None
+
+
+def injected_hooks(windows=os.name == "nt"):
+    """The hooks Pult puts into the sessions it runs. They run beside the global hook, which stays silent there: this
+    one says it is the injected one with PULT_INJECTED=1 in front of the shell command — on Windows, where hooks run
+    in exec form without a shell, with --injected among the arguments."""
+    if windows:
+        return pult_hook.hooks_config(HOOK_PY, [HOOK, "--injected"])
+    return pult_hook.hooks_config("PULT_INJECTED=1 %s %s" % (shlex.quote(HOOK_PY), shlex.quote(HOOK)))
 
 
 def skip_pkey(pkey):
@@ -309,13 +331,7 @@ def when(ts):
 
 
 def pid_alive(pid):
-    try:
-        os.kill(int(pid), 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except (PermissionError, ValueError, TypeError):
-        return True
+    return pult_os.pid_alive(pid)            # not os.kill(pid, 0): on Windows that ends the process
 
 
 def vehi_marks():
@@ -632,7 +648,7 @@ class Driven:
 
     def options(self):
         from claude_agent_sdk import ClaudeAgentOptions
-        hooks = pult_hook.hooks_config("PULT_INJECTED=1 %s %s" % (shlex.quote(HOOK_PY), shlex.quote(HOOK)))
+        hooks = injected_hooks()
         # system_prompt — Claude Code's standard one: without it the SDK starts the session with an empty system
         # prompt, and Claude behaves differently than in the VS Code tab (seen 2026-10-15)
         kw = dict(cwd=self.path, system_prompt={"type": "preset", "preset": "claude_code"},
@@ -898,7 +914,7 @@ class Pult:
         return decode_pkey(pkey)
 
     def project_name(self, pkey, path):
-        return os.path.basename(path.rstrip("/")) if path else pkey.lstrip("-")
+        return os.path.basename(path.rstrip(SEPS)) if path else pkey.lstrip("-")
 
     async def thread_for(self, pkey, path=None):
         row = self.store.topic(pkey)
@@ -1164,7 +1180,7 @@ class Pult:
             return lv.title
         row = self.store.topic(lv.pkey)
         return (row["name"] if row and row["name"] else
-                os.path.basename((lv.cwd or "").rstrip("/")) or lv.pkey.rsplit("-", 1)[-1] or self.t("session.default"))
+                os.path.basename((lv.cwd or "").rstrip(SEPS)) or lv.pkey.rsplit("-", 1)[-1] or self.t("session.default"))
 
     def head(self, lv):
         return "<b>%s</b>" % R.esc(self.title(lv))
@@ -1682,10 +1698,10 @@ class Pult:
     def pkey_for_cwd(self, cwd):
         """The topic of the project whose folder the task runs in (the most nested one), otherwise General (None)."""
         best = None
-        cwd = os.path.realpath(cwd or "/")          # /var → /private/var and other symlinks
+        cwd = os.path.normcase(os.path.realpath(cwd or os.sep))     # /var → /private/var; Windows: any case
         for r in self.store.db.execute("SELECT pkey, path FROM topics WHERE path IS NOT NULL"):
-            p = os.path.realpath(r["path"]).rstrip("/")
-            if (cwd == p or cwd.startswith(p + "/")) and (best is None or len(p) > len(best[1])):
+            p = os.path.normcase(os.path.realpath(r["path"])).rstrip(os.sep)
+            if (cwd == p or cwd.startswith(p + os.sep)) and (best is None or len(p) > len(best[1])):
                 best = (r["pkey"], p)
         return best[0] if best else None
 
@@ -2593,7 +2609,7 @@ class Pult:
         if not by:
             lines.append(self.t("status.none"))
         for cwd, items in sorted(by.items()):
-            lines.append("\n<b>%s</b>" % R.esc(os.path.basename(cwd.rstrip("/")) or cwd))
+            lines.append("\n<b>%s</b>" % R.esc(os.path.basename(cwd.rstrip(SEPS)) or cwd))
             for a in items:
                 sid = a.get("sessionId") or ""
                 lv = self.live.get(sid)
@@ -2737,7 +2753,7 @@ class Pult:
         if sec == "trouble":
             home = str(Path.home())
             log_path = str(LOG_FILE)
-            return self.t("help.trouble", log=R.esc("~" + log_path[len(home):] if log_path.startswith(home + "/")
+            return self.t("help.trouble", log=R.esc("~" + log_path[len(home):] if log_path.startswith(home + os.sep)
                                                     else log_path))
         return self.t("help." + sec) if sec in self.HELP_SECTIONS else self.t("help")
 
@@ -2844,7 +2860,7 @@ class Pult:
             sid = a.get("sessionId")
             if sid and sid not in shown:
                 lv = self.live.get(sid) or self.stub(sid, sanitize(a.get("cwd") or ""))
-                opened.append(dict(self.live_item(lv), project=os.path.basename((a.get("cwd") or "").rstrip("/"))))
+                opened.append(dict(self.live_item(lv), project=os.path.basename((a.get("cwd") or "").rstrip(SEPS))))
         load = await self.load_state()
         return {"mac": {"idle": idle, "away": await self.away(), "mode": self.mode()}, "now": time.time(),
                 "lang": self.lang(), "load": self.load_sum(load[2], load[3]) if load else None,
@@ -2908,7 +2924,7 @@ class Pult:
         """A project's name: its topic's, else its folder's."""
         cwd = next((r["cwd"] for r in rows if r.get("cwd")), None) or self.project_path(pkey)
         return self.project_label(pkey) if self.store.topic(pkey) else \
-            os.path.basename((cwd or "").rstrip("/")) or self.project_label(pkey)
+            os.path.basename((cwd or "").rstrip(SEPS)) or self.project_label(pkey)
 
     def limit_reset(self):
         """When the 5-hour usage window resets, from the last usage reading (no new request), or None."""
@@ -3018,7 +3034,7 @@ class Pult:
             lv.cwd = cwd
         known = self.store.topic(lv.pkey)
         return dict(L.session(procs, pid, kids, cores, lv.bg), sid=sid, title=self.title(lv),
-                    project=self.project_label(lv.pkey) if known else os.path.basename((cwd or "").rstrip("/"))
+                    project=self.project_label(lv.pkey) if known else os.path.basename((cwd or "").rstrip(SEPS))
                     or self.project_label(lv.pkey),
                     state="ask" if lv.pending else "work" if lv.turn else "bg" if lv.bg else "idle",
                     driven=sid in self.driven)
@@ -3559,6 +3575,73 @@ class Pult:
         return changed
 
 
+LINK_LIMIT = 8 * 1024 * 1024      # the longest line on the link
+
+
+async def start_link(handle, path):
+    """The daemon's end of the link (pult_os.link_connect is the other end): a unix socket with mode 600, or on
+    Windows (and with PULT_LINK=tcp) 127.0.0.1 on a free port — the port, a fresh key and the pid go into the link
+    file, mode 600 (Windows: the user's own folder). A connection that doesn't open with the key is dropped."""
+    if not pult_os.link_tcp():
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        server = await asyncio.start_unix_server(handle, path=path, limit=LINK_LIMIT)
+        os.chmod(path, 0o600)
+        return server
+    key = secrets.token_urlsafe(32).encode()
+
+    async def keyed(reader, writer):
+        try:
+            line = await asyncio.wait_for(reader.readline(), 5)
+        except (asyncio.TimeoutError, ConnectionError, ValueError):
+            line = b""
+        if not hmac.compare_digest(line.rstrip(b"\r\n"), key):
+            writer.close()
+            return
+        await handle(reader, writer)
+    server = await asyncio.start_server(keyed, "127.0.0.1", 0, limit=LINK_LIMIT)
+    tmp = path + ".tmp"
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as f:
+        json.dump({"port": server.sockets[0].getsockname()[1], "key": key.decode(), "pid": os.getpid()}, f)
+    os.replace(tmp, path)
+    return server
+
+
+async def open_link(path):
+    """The client's end for asyncio (checks, probes): (reader, writer), the key already sent."""
+    if not pult_os.link_tcp():
+        return await asyncio.open_unix_connection(path, limit=LINK_LIMIT)
+    link = json.loads(Path(path).read_text(encoding="utf-8"))
+    r, w = await asyncio.open_connection("127.0.0.1", int(link["port"]), limit=LINK_LIMIT)
+    w.write(link["key"].encode() + b"\n")
+    return r, w
+
+
+def windows_service():
+    """Windows, under pythonw from the Task Scheduler: no console, so the log is the daemon's own file, and the
+    programs it starts (claude for sessions from Telegram, the result-line model) get no console window either —
+    as when the VS Code extension starts claude (windowsHide)."""
+    if sys.stdout is None:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        sys.stdout = sys.stderr = open(LOG_FILE, "a", encoding="utf-8", buffering=1)
+    import subprocess
+    if getattr(subprocess.Popen.__init__, "pult_no_window", False):
+        return
+    init = subprocess.Popen.__init__
+
+    def no_window(self, *a, **kw):
+        kw["creationflags"] = kw.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
+        init(self, *a, **kw)
+    no_window.pult_no_window = True
+    subprocess.Popen.__init__ = no_window
+
+
 async def amain():
     env = load_env()
     token = env.get("PULT_BOT_TOKEN")
@@ -3574,13 +3657,9 @@ async def amain():
     p = Pult(env, tg, store)
     if not p.allowed:
         log("no PULT_ALLOWED_USER_IDS — letting nobody in")
-    try:
-        os.unlink(SOCK)
-    except FileNotFoundError:
-        pass
-    server = await asyncio.start_unix_server(p.handle_conn, path=SOCK, limit=8 * 1024 * 1024)
-    os.chmod(SOCK, 0o600)
-    log("Pult started; group:", p.chat, "; socket:", SOCK)
+    server = await start_link(p.handle_conn, SOCK)
+    log("Pult started; group:", p.chat, "; link: 127.0.0.1:%d" % server.sockets[0].getsockname()[1]
+        if pult_os.link_tcp() else "; socket: " + SOCK)
     await p.setup_commands()
     # the panel is sent via the message queue, so it must run alongside it, or startup hangs (seen 2026-10-16, 0.6.0)
     jobs = [p.out.run(), p.poll(), p.usage_watch(), p.tab_version_watch(), p.ensure_panel(), p.attention_watch(),
@@ -3594,6 +3673,8 @@ async def amain():
 
 
 if __name__ == "__main__":
+    if os.name == "nt":
+        windows_service()
     try:
         asyncio.run(amain())
     except KeyboardInterrupt:

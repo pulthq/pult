@@ -538,8 +538,8 @@ S = {
     "cli.yn.y": {"en": "[Y/n]", "ru": "[Д/н]"},
     "cli.yn.n": {"en": "[y/N]", "ru": "[д/Н]"},
     "cli.backup": {"en": "backup: {path}", "ru": "копия: {path}"},
-    "cli.not_installed": {"en": "Pult isn't installed: ./install.sh in the Pult folder.",
-                          "ru": "Пульт не установлен: ./install.sh в папке Пульта."},
+    "cli.not_installed": {"en": "Pult isn't installed: ./install.sh in the Pult folder (Windows: install.ps1).",
+                          "ru": "Пульт не установлен: ./install.sh в папке Пульта (Windows: install.ps1)."},
     "cli.lang.en": {"en": "English", "ru": "английский"},
     "cli.lang.ru": {"en": "Russian", "ru": "русский"},
     "cli.install.done": {"en": "Pult {version} is installed in {home}.", "ru": "Пульт {version} установлен в {home}."},
@@ -815,6 +815,11 @@ S = {
               "Remove the claudeCode.claudeProcessWrapper line from those settings, then delete {home}.",
         "ru": "Вкладки Claude всё ещё запускаются через {path} ({settings}): там оставлена заглушка, которая просто "
               "запускает Claude. Убери строку claudeCode.claudeProcessWrapper из этих настроек, потом удали {home}.",
+    },
+    "cli.un.left": {
+        "en": "Not removed — Windows holds them while this window runs Pult's Python: {paths}. Close the window and "
+              "delete them.",
+        "ru": "Не удалились — Windows держит их, пока это окно работает на Python Пульта: {paths}. Закрой окно и удали.",
     },
     "cli.un.done": {
         "en": "Pult is removed. The bot and the group stay in Telegram: @BotFather → /deletebot if you don't need the bot.",

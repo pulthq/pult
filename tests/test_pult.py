@@ -107,6 +107,24 @@ def tline(kind, text=None, ago=0.0, side=False, tool=False):
                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - ago))})
 
 
+ECHO = ("import os, sys\nif os.name == 'nt':\n    import msvcrt\n    msvcrt.setmode(0, os.O_BINARY)\n"
+        "    msvcrt.setmode(1, os.O_BINARY)\nsys.stdout.buffer.write(sys.stdin.buffer.read())\nsys.stdout.flush()\n"
+        "sys.exit(3)\n")                     # a claude that echoes its input and exits with 3
+
+
+def fake_claude(folder, script):
+    """A stand-in for claude in folder that runs this Python script: on macOS and Linux a script with #!, on Windows
+    an .exe made the way pult-tab.exe is (the wrapper starts claude without a shell, and Windows starts only .exe)."""
+    folder.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        import pult_setup
+        return pult_setup.make_exe(folder / "claude.exe", pult_setup.base_pythonw(), {"__main__.py": script})
+    p = folder / "claude"
+    p.write_text("#!%s\n%s" % (sys.executable, script), encoding="utf-8")
+    p.chmod(0o755)
+    return p
+
+
 def ev(name, **kw):
     return dict(hook_event_name=name, session_id=SID, transcript_path=TP, cwd="/Users/x/proj", **kw)
 
@@ -319,8 +337,39 @@ class HelpersTest(unittest.TestCase):
                 mock.patch.object(pultd, "HOOK", "/x y/pult_hook.py"):
             me = types.SimpleNamespace(path="/x", sid=SID, resume=None, fork=False, _wait_hook=None)
             opts = pultd.Driven.options(me)
-        cmd = json.loads(opts.settings)["hooks"]["Stop"][0]["hooks"][0]["command"]
-        self.assertEqual(cmd, "PULT_INJECTED=1 '/x y/venv/bin/python' '/x y/pult_hook.py'")
+        h = json.loads(opts.settings)["hooks"]["Stop"][0]["hooks"][0]
+        if os.name == "nt":                          # exec form: no shell to read an environment prefix
+            self.assertEqual((h["command"], h["args"]), ("/x y/venv/bin/python", ["/x y/pult_hook.py", "--injected"]))
+        else:
+            self.assertEqual(h["command"], "PULT_INJECTED=1 '/x y/venv/bin/python' '/x y/pult_hook.py'")
+        with mock.patch.object(pultd, "HOOK_PY", r"C:\Py\pythonw.exe"), mock.patch.object(pultd, "HOOK", r"C:\P\pult_hook.py"):
+            h = pultd.injected_hooks(windows=True)["PermissionRequest"][0]["hooks"][0]
+        self.assertEqual(list(h), ["type", "command", "args", "timeout"])
+        self.assertEqual(h["args"], [r"C:\P\pult_hook.py", "--injected"])
+
+    def test_injected_flag(self):
+        # Windows: the injected hook says so with an argument (no shell for PULT_INJECTED=1); the global one is quiet
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_ENTRYPOINT": "sdk-py", "PULT_DRIVEN": "1"}):
+            os.environ.pop("PULT_INJECTED", None)
+            with mock.patch.object(sys, "argv", ["pult_hook.py"]):
+                self.assertFalse(pult_hook.wanted())
+            with mock.patch.object(sys, "argv", ["pult_hook.py", "--injected"]):
+                self.assertTrue(pult_hook.wanted())
+
+    def test_pid_alive(self):
+        # Windows: os.kill(pid, 0) ends the process — the check must only look
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            self.assertTrue(pultd.pid_alive(p.pid))
+            self.assertIn(p.pid, pult_os.children(os.getpid()))
+            time.sleep(0.3)
+            self.assertIsNone(p.poll())                               # still running
+        finally:
+            p.kill()
+            p.wait()
+        self.assertFalse(pult_os.pid_alive(p.pid))
+        self.assertTrue(pult_os.pid_alive(os.getpid()))
+        self.assertTrue(pult_os.pid_alive("not a pid"))              # unknown is not "gone"
 
     def test_input_idle(self):
         v = pult_os.input_idle()
@@ -385,6 +434,29 @@ class HelpersTest(unittest.TestCase):
         self.assertNotIn("matcher", c["Stop"][0])
         self.assertNotIn("matcher", c["StopFailure"][0])            # an API error ended the turn (stage V)
 
+    def test_make_exe(self):
+        # a Windows program the way pip makes them: the launcher, "#!<python>", a zip with __main__.py right after
+        import zipfile
+        import pult_setup as S
+        (TMP / "exe").mkdir(exist_ok=True)
+        p = S.make_exe(TMP / "exe" / "x.exe", "C:/Py thon/pythonw.exe", {"__main__.py": "print(1)", "m.py": "x = 1"})
+        data = p.read_bytes()
+        self.assertTrue(data.startswith(b"MZ"))
+        self.assertIn(b'#!"C:/Py thon/pythonw.exe"\nPK\x03\x04', data)          # quoted: the path has a space
+        with zipfile.ZipFile(p) as z:
+            self.assertEqual((z.read("__main__.py"), z.read("m.py")), (b"print(1)", b"x = 1"))
+        S.make_exe(p, "C:/Py/pythonw.exe", {"__main__.py": "print(2)"})          # made again over the same file
+        with zipfile.ZipFile(p) as z:
+            self.assertEqual(z.read("__main__.py"), b"print(2)")
+        self.assertEqual(sorted(x.name for x in p.parent.iterdir()), ["x.exe"])
+
+    def test_hooks_config_exec_form(self):
+        # Windows: exec form — the program and its arguments, no shell
+        c = pult_hook.hooks_config("C:/Py/pythonw.exe", ["C:/P/pult_hook.py"])
+        h = c["PermissionRequest"][0]["hooks"][0]
+        self.assertEqual((h["command"], h["args"]), ("C:/Py/pythonw.exe", ["C:/P/pult_hook.py"]))
+        self.assertNotIn("args", pult_hook.hooks_config("CMD")["Stop"][0]["hooks"][0])
+
     def test_hook_without_daemon(self):
         async def go():
             t = time.monotonic()
@@ -431,6 +503,172 @@ def fprocs():
             103: fproc(100, "node /opt/mcp/quiet.js"), 104: fproc(100, "node /secret/server.js --token abc", cpu=20.0),
             105: fshell(100, "ls -la", ago=1),
             200: fproc(1, CLAUDE, cpu=0.1, mem=150 << 20, ago=86400)}
+
+
+class LinkTest(unittest.IsolatedAsyncioTestCase):
+    """The daemon's link the Windows way — 127.0.0.1, a port, a key in the link file — on every system (PULT_LINK)."""
+
+    async def test_tcp_link(self):
+        import pult_tab
+        path = str(TMP / "link-test.sock")
+        got = []
+
+        async def handle(reader, writer):
+            got.append(await reader.readline())
+            writer.write(b"ok\n")
+            await writer.drain()
+            writer.close()
+
+        def sync(connect):
+            sock = connect()
+            try:
+                sock.settimeout(5)
+                sock.sendall(b'{"b": 1}\n')
+                return sock.recv(16)
+            finally:
+                sock.close()
+        with mock.patch.dict(os.environ, {"PULT_LINK": "tcp"}):
+            server = await pultd.start_link(handle, path)
+            try:
+                link = json.loads(Path(path).read_text(encoding="utf-8"))
+                self.assertEqual((sorted(link), link["pid"]), (["key", "pid", "port"], os.getpid()))
+                if os.name != "nt":
+                    self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+                r, w = await pultd.open_link(path)
+                w.write(b'{"a": 1}\n')
+                await w.drain()
+                self.assertEqual(await asyncio.wait_for(r.readline(), 5), b"ok\n")
+                w.close()
+                # without the key: dropped before the handler sees a byte
+                r, w = await asyncio.open_connection("127.0.0.1", link["port"])
+                w.write(b'not-the-key\n{"a": 2}\n')
+                await w.drain()
+                self.assertEqual(await asyncio.wait_for(r.read(), 5), b"")
+                w.close()
+                # the blocking clients: pult_os (the pult command, install) and the hook's and the wrapper's own copies
+                with mock.patch.object(pult_hook, "SOCK", path), mock.patch.object(pult_tab, "SOCK", path):
+                    for name, connect in (("pult_os", lambda: pult_os.link_connect(path)),
+                                          ("hook", pult_hook.connect), ("tab", pult_tab.connect)):
+                        self.assertEqual(await asyncio.to_thread(sync, connect), b"ok\n", name)
+                self.assertEqual(got, [b'{"a": 1}\n'] + [b'{"b": 1}\n'] * 3)
+            finally:
+                server.close()
+                await server.wait_closed()
+        # a broken link file is "no daemon", not a crash
+        Path(path).write_text("{}", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"PULT_LINK": "tcp"}):
+            with self.assertRaises(ValueError):
+                pult_os.link_connect(path)
+
+
+@unittest.skipUnless(os.name == "nt", "Windows")
+class WindowsTest(unittest.IsolatedAsyncioTestCase):
+    """What only a real Windows shows: programs made from pip's launcher, pipes byte for byte, the job object that
+    ends claude with its tab, the hook on pythonw, the system calls. The wrapper is started as the VS Code extension
+    starts it: pipes and windowsHide (CREATE_NO_WINDOW)."""
+
+    def setUp(self):
+        import pult_setup
+        self.S = pult_setup
+        self.d = Path(tempfile.mkdtemp(prefix="win-", dir=str(TMP)))
+        self.tab = pult_setup.make_exe(self.d / "pult-tab.exe", pult_setup.base_pythonw(), {
+            "pult_tab.py": (HERE / "pult_tab.py").read_bytes(), "__main__.py": pult_setup.TAB_MAIN})
+        self.env = dict(os.environ, PULT_TAB_CONF=str(self.d / "tab.json"), PULT_SOCK=str(self.d / "no.sock"),
+                        PULT_TAB_LOG=str(self.d / "tab.log"))
+        self.claude_dir = self.d / "anthropic.claude-code-2.1.301-win32-x64"
+
+    def conf(self, proxy):
+        """proxy — the wrapper stays in between (the folder and the version are listed); else it runs claude as is."""
+        c = self.d / "tab.json"
+        if proxy:
+            c.write_text(json.dumps({"folders": [str(self.d)], "versions": ["2.1.301"]}), encoding="utf-8")
+        else:
+            c.unlink(missing_ok=True)
+
+    def argv(self, claude):
+        return [str(self.tab), str(claude), "--input-format", "stream-json", "--output-format", "stream-json"]
+
+    def test_bytes_through(self):
+        claude = fake_claude(self.claude_dir, ECHO)
+        data = "".join('{"type":"user","n":%d,"t":"%s"}\n' % (i, "ж" * i) for i in range(200)).encode() \
+            + b"a\r\nb\x1a c\n"                                     # no \n → \r\n, and ^Z is not an end
+        for proxy in (False, True):
+            self.conf(proxy)
+            p = subprocess.run(self.argv(claude), input=data, capture_output=True, timeout=60, cwd=str(self.d),
+                               env=self.env, creationflags=subprocess.CREATE_NO_WINDOW)
+            self.assertEqual((p.stdout, p.returncode), (data, 3), "proxy" if proxy else "direct")
+
+    def test_claude_ends_with_the_tab(self):
+        # the extension closes a tab by killing the program it started — no signal on Windows; claude must go too
+        pid_file = self.d / "claude.pid"
+        claude = fake_claude(self.claude_dir, "import os, time\nopen(%r, 'w').write(str(os.getpid()))\n"
+                                              "time.sleep(120)\n" % str(pid_file))
+        for proxy in (False, True):
+            self.conf(proxy)
+            pid_file.unlink(missing_ok=True)
+            p = subprocess.Popen(self.argv(claude), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, cwd=str(self.d), env=self.env,
+                                 creationflags=subprocess.CREATE_NO_WINDOW)
+            pid = None
+            try:
+                end = time.monotonic() + 30
+                while not (pid_file.exists() and pid_file.read_text()) and time.monotonic() < end:
+                    time.sleep(0.2)
+                pid = int(pid_file.read_text())
+                self.assertTrue(pult_os.pid_alive(pid))
+                p.kill()
+                p.wait(10)
+                end = time.monotonic() + 10
+                while pult_os.pid_alive(pid) and time.monotonic() < end:
+                    time.sleep(0.2)
+                self.assertFalse(pult_os.pid_alive(pid), "proxy" if proxy else "direct")
+            finally:
+                if pid and pult_os.pid_alive(pid):
+                    pult_os.kill(pid)
+                for f in (p.stdin, p.stdout, p.stderr):
+                    f.close()
+
+    async def test_hook_on_pythonw(self):
+        # the hook runs on pythonw in exec form: stdin and stdout are pipes, no console; the answer comes back whole
+        path = str(self.d / "h.sock")
+
+        async def daemon(reader, writer):
+            msg = json.loads(await reader.readline())
+            writer.write((json.dumps({"output": {"got": msg["event"]["hook_event_name"], "ж": "ё"}},
+                                     ensure_ascii=False) + "\n").encode())
+            await writer.drain()
+            writer.close()
+        server = await pultd.start_link(daemon, path)
+        try:
+            env = dict(os.environ, CLAUDE_CODE_ENTRYPOINT="claude-vscode", PULT_SOCK=path)
+            env.pop("PULT_DRIVEN", None)
+            p = await asyncio.create_subprocess_exec(
+                str(self.S.base_pythonw()), str(HERE / "pult_hook.py"), env=env, stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
+            out, _ = await asyncio.wait_for(p.communicate(json.dumps(ev("PermissionRequest", tool_name="Bash"),
+                                                                     ensure_ascii=False).encode()), 30)
+            self.assertEqual((json.loads(out.decode()), p.returncode), ({"got": "PermissionRequest", "ж": "ё"}, 0))
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    def test_system(self):
+        self.assertTrue(pult_os.describe().startswith("Windows "))
+        self.assertIsInstance(pult_os.system_lang(), str)
+        self.assertEqual(pult_os.win_procs()[os.getpid()][1].lower(), os.path.basename(sys.executable).lower())
+        v = pult_os.win_idle()
+        self.assertTrue(v is None or v >= 0)
+        self.assertIn(pult_os.win_locked(), (None, True, False))
+        self.assertIsInstance(pult_os.service_manager(), pult_os.Schtasks)
+        self.assertEqual(R.under(r"c:/users/A/proj/x.py", "C:\\Users\\a\\proj"), "x.py")    # either slash, any case
+
+    def test_project_folder(self):
+        # ~/.claude/projects/C--Users-…: the drive first, then the folders; a lower-case drive letter too
+        where = self.d / "Проект A" / "sub dir"
+        where.mkdir(parents=True)
+        path = str(where.resolve())
+        self.assertEqual(pultd.decode_pkey(pultd.sanitize(path)), path)
+        self.assertEqual(pultd.decode_pkey(pultd.sanitize(path[0].lower() + path[1:])), path)
 
 
 class LoadTest(unittest.TestCase):
@@ -659,11 +897,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.p.out = pultd.Outbox(rate=60000, burst=1000)
         self.p._agents = (time.monotonic() + 1e6, [])
         pultd.EDIT_EVERY = 0.05
-        try:
-            os.unlink(os.environ["PULT_SOCK"])
-        except FileNotFoundError:
-            pass
-        self.server = await asyncio.start_unix_server(self.p.handle_conn, path=os.environ["PULT_SOCK"])
+        self.server = await pultd.start_link(self.p.handle_conn, os.environ["PULT_SOCK"])
         self.tasks = [asyncio.create_task(self.p.out.run())]
 
     async def asyncTearDown(self):
@@ -973,7 +1207,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.p.live_of(SID, PKEY).transcript = TP
         Path(TP).parent.mkdir(parents=True, exist_ok=True)
         Path(TP).write_text("")
-        r, w = await asyncio.open_unix_connection(os.environ["PULT_SOCK"])
+        r, w = await pultd.open_link(os.environ["PULT_SOCK"])
         w.write(('{"op": "hello", "pid": 4343, "cwd": "/Users/x/proj", "sid": "%s", "version": "2.1.301"}\n'
                  '{"op": "ctx", "window": 200000, "max_out": 32000}\n' % SID).encode())
         await w.drain()
@@ -1042,7 +1276,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.p.set_choice(SID, "", "")
         # a VS Code tab with the wrapper: the wrapper gets the request (probe_model.py: it switches the tab)
         del self.p.driven[SID]
-        r, w = await asyncio.open_unix_connection(os.environ["PULT_SOCK"])
+        r, w = await pultd.open_link(os.environ["PULT_SOCK"])
         w.write(('{"op": "hello", "pid": 4545, "cwd": "/Users/x/proj", "sid": "%s", "version": "2.1.301"}\n' % SID).encode())
         await w.drain()
         await until(lambda: self.p.tab_for(SID))
@@ -1053,7 +1287,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         w.close()
         await until(lambda: not self.p.tab_for(SID))
         # a 0.9.8 wrapper: the model, not the effort — and a refused effort isn't kept as the choice
-        r, w = await asyncio.open_unix_connection(os.environ["PULT_SOCK"])
+        r, w = await pultd.open_link(os.environ["PULT_SOCK"])
         w.write(('{"op": "hello", "pid": 4546, "cwd": "/Users/x/proj", "sid": "%s", "version": "2.1.301", "caps": ["model", "ctx"]}\n' % SID).encode())
         await w.drain()
         await until(lambda: self.p.tab_for(SID))
@@ -1068,7 +1302,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         w.close()
         await until(lambda: not self.p.tab_for(SID))
         # a wrapper from 0.9.9: the effort goes as a control request for this process only
-        r, w = await asyncio.open_unix_connection(os.environ["PULT_SOCK"])
+        r, w = await pultd.open_link(os.environ["PULT_SOCK"])
         w.write(('{"op": "hello", "pid": 4547, "cwd": "/Users/x/proj", "sid": "%s", "version": "2.1.301", "caps": ["model", "ctx", "control"]}\n' % SID).encode())
         await w.drain()
         await until(lambda: self.p.tab_for(SID))
@@ -1660,7 +1894,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         # from the app go straight into it; the turn for that message replies to the owner's message
         self.store.touch_session(SID, PKEY, path="/Users/x/proj")
         self.store.set_topic(PKEY, "/Users/x/proj", "proj", 77)
-        r, w = await asyncio.open_unix_connection(os.environ["PULT_SOCK"])
+        r, w = await pultd.open_link(os.environ["PULT_SOCK"])
         w.write(b'{"op": "hello", "pid": 4242, "cwd": "/Users/x/proj", "sid": null, "version": "2.1.301"}\n')
         w.write(('{"op": "sid", "sid": "%s"}\n' % SID).encode())
         await w.drain()
@@ -1706,7 +1940,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         base = {"from": {"id": OWNER}, "chat": {"id": CHAT}, "message_thread_id": 77, "is_topic_message": True}
 
         async def tab(pid, sid):
-            r, w = await asyncio.open_unix_connection(os.environ["PULT_SOCK"])
+            r, w = await pultd.open_link(os.environ["PULT_SOCK"])
             w.write(('{"op": "hello", "pid": %d, "cwd": "/Users/x/proj", "sid": "%s", "version": "2.1.301"}\n'
                      % (pid, sid)).encode())
             await w.drain()
@@ -1796,10 +2030,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pult_tab.why_direct([v, "--claude-in-chrome-mcp"], conf, str(TMP / "sandbox")), "not a chat session")
         self.assertIn("version", pult_tab.why_direct([v.replace("301", "302")] + chat[1:], conf, str(TMP / "sandbox")))
         # no daemon — the wrapper still passes data byte for byte and exits with claude's exit code
-        fake = TMP / "anthropic.claude-code-2.1.301-darwin-arm64" / "claude"
-        fake.parent.mkdir(exist_ok=True)
-        fake.write_text("#!/bin/sh\ncat\nexit 3\n")
-        fake.chmod(0o755)
+        fake = fake_claude(TMP / "anthropic.claude-code-2.1.301-darwin-arm64", ECHO)
         (TMP / "tab.json").write_text(json.dumps(conf))
         data = "".join('{"type":"user","n":%d,"t":"%s"}\n' % (i, "ж" * i) for i in range(300)).encode()
         p = subprocess.run([sys.executable, str(HERE / "pult_tab.py"), str(fake), "--input-format",
@@ -1818,16 +2049,15 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         # a control request from Pult goes into Claude Code; its answer is held back from the extension, the rest of
         # the output passes unchanged; the wrapper says it can do it ("control" in hello)
         d = TMP / "ctl"
-        fake = d / "anthropic.claude-code-2.1.301-darwin-arm64" / "claude"
-        fake.parent.mkdir(parents=True, exist_ok=True)
         seen = d / "seen.jsonl"
-        fake.write_text("#!%s\nimport json, sys\nlog = open(%r, 'a')\nfor line in sys.stdin:\n"
-                        "    log.write(line); log.flush()\n    o = json.loads(line)\n"
-                        "    if o.get('type') == 'control_request':\n"
-                        "        print(json.dumps({'type': 'control_response', 'response': {'subtype': 'success', "
-                        "'request_id': o['request_id'], 'response': {}}}), flush=True)\n"
-                        "    else:\n        print(line.strip(), flush=True)\n" % (sys.executable, str(seen)))
-        fake.chmod(0o755)
+        fake = fake_claude(d / "anthropic.claude-code-2.1.301-darwin-arm64",
+                           "import json, sys\nlog = open(%r, 'a', encoding='utf-8')\n"
+                           "for line in sys.stdin.buffer:\n    line = line.decode()\n"
+                           "    log.write(line); log.flush()\n    o = json.loads(line)\n"
+                           "    if o.get('type') == 'control_request':\n"
+                           "        print(json.dumps({'type': 'control_response', 'response': {'subtype': 'success', "
+                           "'request_id': o['request_id'], 'response': {}}}), flush=True)\n"
+                           "    else:\n        print(line.strip(), flush=True)\n" % str(seen))
         (d / "tab.json").write_text(json.dumps({"folders": [str(d)], "versions": ["2.1.301"]}))
         sock = str(d / "d.sock")
         hello, conn = asyncio.get_running_loop().create_future(), []
@@ -1836,7 +2066,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             conn.append(writer)
             hello.set_result(json.loads(await reader.readline()))
             await reader.read()
-        server = await asyncio.start_unix_server(daemon, path=sock)
+        server = await pultd.start_link(daemon, sock)
         proc = await asyncio.create_subprocess_exec(
             sys.executable, str(HERE / "pult_tab.py"), str(fake), "--input-format", "stream-json", "--output-format",
             "stream-json", stdin=subprocess.PIPE, stdout=subprocess.PIPE, cwd=str(d),

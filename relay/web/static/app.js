@@ -559,8 +559,9 @@ function ModePick({ mode, onSet, pager }) {
     <div class="dim small">${t("mode." + cur + (pager ? ".pager" : ".about"))}</div></div>`;
 }
 
-// the Home strip: where you are in one line (tap — the mode picker), and the way to the settings. The strip is a
-// setting, not the news: what waits for an answer comes right under it
+// the Home strip: two small tiles and the way to the settings — where you are (tap — the mode picker) and the limit
+// with the load (tap — Resources). A label over a value, so nothing is cut on a narrow phone. The strip is a setting,
+// not the news: what waits for an answer comes right under it
 const GEAR = html`<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`;
 // the top line stays grey while all is well: a colour means look here
 const quiet = (v, bad) => (v >= bad ? "bad" : v >= bad - 10 ? "warn" : "dim");
@@ -570,10 +571,11 @@ function Top({ mac, load, usagePct, pager, onSet }) {
   const line = cur === "auto" ? (mac.away ? t("mac.away.short", { dur: durShort(mac.idle) }) : t("mac.here.short")) : t("mode." + cur + ".short");
   const m = load ? memPct(load) : null;
   const lim = usagePct;
+  const stat = (k, v, cls) => html`<span class="tl-c"><span class="tl-l">${t(k)}</span><span class=${"tl-v " + cls}>${v}</span></span>`;
   return html`<div class="where">
     <div class="where-h">
-      <button class="where-b" aria-expanded=${open} onClick=${() => setOpen(!open)}><b>${t("mode." + cur + ".btn").split(" ")[0]}</b><span class="dim">${line}</span></button>
-      ${(load || lim != null) && html`<button class="where-b top-load" onClick=${() => go("#/usage")}>${lim != null ? html`<span class=${quiet(lim, 80)}>${t("top.lim", { v: lim + "\u00a0%" })}</span><span class="dim"> · </span>` : ""}${load ? html`<span class=${quiet(load.cpu, 90)}>${t("top.cpu", { v: pct(load.cpu) })}</span>` : ""}${m !== null && m >= 90 ? html`<span class="dim"> · </span><span class="bad">${t("top.mem", { v: m + "\u00a0%" })}</span>` : ""}</button>`}
+      <button class="where-b" aria-expanded=${open} onClick=${() => setOpen(!open)}><span class="tl-l">${t("mode." + cur + ".btn")}</span><span class="tl-v">${line}</span></button>
+      ${(load || lim != null) && html`<button class="where-b top-load" onClick=${() => go("#/usage")}>${lim != null && stat("top.lim", lim + "\u00a0%", quiet(lim, 80))}${load && stat("top.cpu", pct(load.cpu), quiet(load.cpu, 90))}${m !== null && m >= 90 && stat("top.mem", m + "\u00a0%", "bad")}</button>`}
       <a class="gear" href="#/settings" aria-label=${t("settings")}>${GEAR}</a>
     </div>
     ${open && html`<${ModePick} mode=${cur} onSet=${onSet} pager=${pager}/>`}

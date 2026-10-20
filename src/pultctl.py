@@ -9,7 +9,6 @@ import collections
 import json
 import os
 import shlex
-import socket
 import subprocess
 import sys
 import time
@@ -85,12 +84,10 @@ RUN_TICK = 30           # seconds; the last output line goes to the daemon at mo
 def tell(msg):
     """Task event to the daemon; no daemon — silently skip: the task runs without Pult too."""
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(1.0)
-        s.connect(S.SOCK)
+        s = S.pult_os.link_connect(S.SOCK)
         s.sendall(json.dumps({"run": msg}, ensure_ascii=False).encode() + b"\n")
         s.close()
-    except OSError:
+    except (OSError, ValueError):
         pass
 
 
@@ -103,7 +100,8 @@ def cmd_run(argv):
         print(T("cli.run.usage"))
         return 2
     rid = uuid.uuid4().hex[:8]
-    tell({"op": "start", "id": rid, "cmd": " ".join(shlex.quote(a) for a in argv), "cwd": os.getcwd(),
+    line = subprocess.list2cmdline(argv) if os.name == "nt" else " ".join(shlex.quote(a) for a in argv)
+    tell({"op": "start", "id": rid, "cmd": line, "cwd": os.getcwd(),
           "pid": os.getpid()})
     try:
         p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)

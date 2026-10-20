@@ -322,12 +322,24 @@ def split_md(s, limit=CHUNK):
 
 # ---------- turn steps ----------
 
+def under(path, root):
+    """The rest of path inside the folder root, or None. Windows: either slash, any case."""
+    if not root:
+        return None
+    if os.name == "nt":
+        p, r = path.replace("/", "\\"), root.replace("/", "\\").rstrip("\\")
+        return path[len(r) + 1:] if p.lower().startswith(r.lower() + "\\") else None
+    r = root.rstrip("/")
+    return path[len(r) + 1:] if path.startswith(r + "/") else None
+
+
 def _rel(path, cwd):
     path = str(path or "")
-    if cwd and path.startswith(cwd.rstrip("/") + "/"):
-        return path[len(cwd.rstrip("/")) + 1:]
-    home = os.path.expanduser("~")
-    return "~" + path[len(home):] if path.startswith(home + "/") else path
+    rest = under(path, cwd)
+    if rest is not None:
+        return rest
+    rest = under(path, os.path.expanduser("~"))
+    return "~" + os.sep + rest if rest is not None else path
 
 
 def tool_step(name, inp, cwd=None, failed=False, sub=False):

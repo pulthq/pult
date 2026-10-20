@@ -45,19 +45,22 @@ button:focus-visible, a:focus-visible, label:focus-visible { outline: 2px solid 
   background: var(--card); border-bottom: 1px solid var(--line); color: var(--muted); }
 .banner.nomac, .banner.denied { color: var(--danger); }
 
-/* the Home strip: where you are, in one line; tap — the mode picker; the gear — settings */
+/* the Home strip: two tiles, a small label over a value, and the gear — nothing is cut on a 360 px phone */
 .where { margin: 2px 0 6px; }
 .where-h { display: flex; gap: 8px; }
-.where-b { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 8px 12px;
-  background: var(--card); border: 0; border-radius: 12px; text-align: left; cursor: pointer; }
-.where-b b { font-weight: 600; white-space: nowrap; }
-.where-b .dim { flex: 1; min-width: 0; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.where-b .caret { flex: none; color: var(--muted); font-size: 12px; }
-.gear { flex: none; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center;
+.where-b { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; min-height: 48px;
+  padding: 6px 12px; background: var(--card); border: 0; border-radius: 12px; text-align: left; cursor: pointer; }
+.tl-l, .tl-v { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl-l { font-size: 12.5px; line-height: 16px; color: var(--muted); }
+.tl-v { font-size: 14.5px; line-height: 19px; }
+.gear { flex: none; width: 44px; min-height: 44px; display: flex; align-items: center; justify-content: center;
   border-radius: 12px; background: var(--card); color: var(--muted); text-decoration: none; }
 .where .modes { margin: 8px 0 0; }
-.where-b.top-load { flex: none; font-size: 14px; font-weight: 600; white-space: nowrap; }
-.top-load .warn { color: var(--warn); } .top-load .bad { color: var(--danger); }
+/* the limit and the load: short columns side by side, never cut — the "where" tile gives way instead */
+.where-b.top-load { flex: none; flex-direction: row; align-items: center; gap: 14px; }
+.tl-c { display: flex; flex-direction: column; }
+.top-load .tl-v.dim { color: inherit; }
+.top-load .warn { color: var(--warn); font-weight: 600; } .top-load .bad { color: var(--danger); font-weight: 600; }
 
 /* Home after stage V: "Your move" cards (a red bar — the one loud thing), then the projects board, a line per session */
 .card.mine { border-left: 3px solid var(--danger); }
