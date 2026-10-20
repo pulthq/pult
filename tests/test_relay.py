@@ -174,9 +174,14 @@ class RelayTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(extra.close_code, 4429)
         ws, m = await self.phone(init_data(), ip="198.51.100.2")                  # another address gets in
         self.assertEqual(m["t"], "hello")
-        for h in held:
+        # behind a proxy that hides the client every phone is 127.0.0.1: only the overall limit applies
+        local = [await self.http.ws_connect(self.url("/pult/ws"), headers={"X-Real-IP": "127.0.0.1"})
+                 for _ in range(relay.WAITING_PER_IP)]
+        w2, m = await self.phone(init_data(), ip="127.0.0.1")
+        self.assertEqual(m["t"], "hello")
+        self.assertFalse(relay.known("::1") or relay.known("") or relay.known("garbage"))
+        for h in held + local + [ws, w2]:
             await h.close()
-        await ws.close()
 
     async def test_unix_socket(self):
         """PULT_RELAY_SOCKET: the relay listens on a socket, a socket left by a crash is replaced, other files stay."""

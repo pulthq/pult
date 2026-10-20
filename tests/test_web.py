@@ -99,6 +99,8 @@ class InitTest(unittest.TestCase):
         self.assertEqual(PW.net_of("::ffff:203.0.113.77"), "203.0.113.x")
         self.assertEqual(PW.net_of("2001:db8:1:2::5"), "2001:db8:1::/48")
         self.assertEqual(PW.net_of("garbage"), "garbage")
+        self.assertEqual(PW.net_of("127.0.0.1"), "")                     # the web server's own hop: unknown
+        self.assertEqual(PW.net_of("::1"), "")
         lg = PW.Logins(pultd.Store(T.TMP / "logins.db"))
         self.assertFalse(lg.note(True, "open", "203.0.113.1", {"platform": "android", "version": "9.6"}))  # learns
         self.assertFalse(lg.note(True, "key", "203.0.113.9", {}))         # the same network
@@ -108,6 +110,12 @@ class InitTest(unittest.TestCase):
         rec = lg.recent()
         self.assertEqual([(r["ok"], r["how"]) for r in rec[:3]], [(True, "open"), (True, "open"), (False, "expired")])
         self.assertEqual(rec[-1]["dev"], "android 9.6")
+        self.assertFalse(lg.note(True, "open", "127.0.0.1", {}))           # unknown: never "new", never learned
+        self.assertNotIn("", lg.store.get("app_nets"))
+        old = PW.Logins(pultd.Store(T.TMP / "logins-0923.db"))
+        old.store.put("app_nets", {"127.0.0.x": 1})                       # what 0.9.23 learned behind the stream
+        self.assertFalse(old.note(True, "open", "203.0.113.1", {}))        # the first real network: learned quietly
+        self.assertEqual(list(old.store.get("app_nets")), ["203.0.113.x"])
 
     def test_links_show_where_they_lead(self):
         import pult_render as R

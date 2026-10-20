@@ -426,6 +426,7 @@ S = {
     "login.via.key": {"en": "a window reconnected", "ru": "окно переподключилось"},
     "btn.logout_all": {"en": "Log out everywhere", "ru": "Выйти везде"},
     "note.logged_out": {"en": "logged out everywhere: app windows closed", "ru": "вышел везде: окна приложения закрыты"},
+    "mark.logged_out": {"en": "logged out everywhere at {hm}", "ru": "вышел везде в {hm}"},
     "files.differ": {"en": "⚠️ <b>The app is closed.</b> The server hands out other files than you deployed: {files}. "
                            "That's what it looks like when someone changes the app on the server. Until the files "
                            "match, the computer doesn't answer the app.\nJust updated the server yourself? Deploy "

@@ -76,7 +76,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 STT_MAX = 4 * 1024 * 1024       # bytes of one recording from the app (5 min at 32 kbit/s ≈ 1.2 MB; base64 must fit the 8 MB frame)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.9.23"
+VERSION = "0.9.25"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -734,6 +734,7 @@ class Pult:
         self.tabs = {}                 # wrapper pid → a VS Code tab we can write into (stage 2)
         self.tab_expect = {}           # sid → (owner's message, text) sent into the tab
         self.offers = {}               # button token → data (session copy, open a session, project)
+        self.decided_msgs = {}         # messages whose choice was made with a button: a second tap does nothing
         self.req_by_rid = {}
         self.req_by_msg = {}
         self.topic_locks = {}
@@ -1314,9 +1315,10 @@ class Pult:
         if name == "UserPromptSubmit":
             self.resolve_all(lv, self.t("req.decided_mac"))
             self.finish_turn(lv, "⏹")
-            self.mark_seen(sid)                                # a new turn: the last outcome is behind
-            await self.refresh_title(lv)
             notes = R.task_notes(ev.get("prompt"))
+            # a new turn: the last outcome is behind; the owner's prompt (not a background task's note) answered it
+            self.mark_seen(sid, None if notes else ev.get("prompt"))
+            await self.refresh_title(lv)
             if notes:
                 # the turn was started by Claude Code itself (a background task finished); it's not the owner's prompt
                 ended = {n["id"] for n in notes}
@@ -1441,17 +1443,28 @@ class Pult:
         except TgError as e:
             log("message %s not deleted: %s" % (mid, e))
 
-    def mark_seen(self, sid):
+    def mark_seen(self, sid, said=None):
         """The owner saw a session's outcome (opened it, answered it, "Got it", a new turn): it rests, and a call
-        about it in Telegram folds into "✓ … · line" without buttons."""
+        about it in Telegram folds into "✓ … · line" without buttons. said — their answer, from wherever it came:
+        the call shows it too."""
         r = self.attn.rec.get(sid)
-        if not self.attn.seen(sid):
-            return False
-        if r and r.get("page"):
-            lv = self.live.get(sid) or self.stub(sid, r["pkey"])
-            self.edit(r["page"], "✓ <b>%s</b> · %s" % (R.esc(lv.title or self.title(lv)), R.esc(r["line"] or "")), [], prio=6)
-        self.changed(sid)
-        return True
+        fresh = self.attn.seen(sid)
+        said = R.short(R.prompt_text(said), 80) if said else ""
+        if r and r.get("page") and (fresh or said):
+            self.fold_page(sid, r, R.esc(I.q(said)) if said else None)
+        if fresh:
+            self.changed(sid)
+        return fresh
+
+    def fold_page(self, sid, r, mark=None):
+        """A call in Telegram the owner has dealt with: one line "✓ title · line" without buttons; with mark (HTML) —
+        "→ what they answered or decided", and the call stays so for good."""
+        lv = self.live.get(sid) or self.stub(sid, r["pkey"])
+        text = "✓ <b>%s</b> · %s" % (R.esc(lv.title or self.title(lv)), R.esc(r["line"] or ""))
+        self.edit(r["page"], text + ("\n→ " + mark if mark else ""), [], prio=3 if mark else 6)
+        if mark:
+            r["page"] = None
+            self.attn.save()
 
     async def attention_watch(self):
         """Every 10 s (stage V): say "continue" where the usage limit has reset, call the owner in Telegram about a
@@ -1520,12 +1533,7 @@ class Pult:
         res = await self.api_send(sid, replies[i])
         if res.get("need") == "fork":
             return self.t("note.reply_open")
-        if r.get("page"):
-            lv = self.live.get(sid) or self.stub(sid, r["pkey"])
-            self.edit(r["page"], "✓ <b>%s</b> · %s\n→ %s" % (R.esc(lv.title or self.title(lv)), R.esc(r["line"] or ""),
-                                                            R.esc(I.q(replies[i]))), [], prio=3)
-            r["page"] = None
-            self.attn.save()
+        self.mark_seen(sid, replies[i])
         return self.t("note.reply_sent")
 
     async def api_resume_at(self, sid, at=None):
@@ -1550,6 +1558,9 @@ class Pult:
         at = max(at, time.time()) + 60
         self.attn.resume[sid] = at
         self.attn.save()
+        r = self.attn.rec.get(sid)
+        if r and r.get("page"):                    # from the call's button or from the app — decided either way
+            self.fold_page(sid, r, R.esc(self.t("note.resume", hm=time.strftime("%H:%M", time.localtime(at)))))
         self.changed(sid)
         log("continue %s at %s" % (sid[:8], time.strftime("%H:%M", time.localtime(at))))
         return {"ok": True, "at": at}
@@ -1955,6 +1966,7 @@ class Pult:
         elif data == "k:out":
             if self.web:
                 await self.web.logout_all()
+                self.mark_choice(cq.get("message"), data, self.t("mark.logged_out", hm=time.strftime("%H:%M")))
             note = self.t("note.logged_out")
         elif data.startswith("h:"):
             sec = data[2:]
@@ -1971,7 +1983,7 @@ class Pult:
                 note = str(e)
         elif data.startswith(("s:", "f:", "o:", "t:")):
             cm = cq.get("message") or {}
-            note = await self.on_offer(data, cm.get("message_thread_id") if cm.get("is_topic_message") else 0)
+            note = await self.on_offer(data, cm.get("message_thread_id") if cm.get("is_topic_message") else 0, cm)
         log("button %s from %s → %s" % (data[:14], uid, note or "ok"))
         try:
             await self.tg.call("answerCallbackQuery", callback_query_id=cq["id"], text=note)
@@ -1987,11 +1999,37 @@ class Pult:
         self.offers[tok] = value
         return tok
 
-    async def on_offer(self, data, here=0):
+    def mark_choice(self, cm, data, label=None):
+        """A choice made with a button (cm — the message, as the button's callback brings it): the message keeps
+        its text, says "→ what was picked" (the tapped button's words, unless label says it) and loses its buttons —
+        the chat shows what was done, and nothing in it can be done twice."""
+        mid = (cm or {}).get("message_id")
+        if not mid:
+            return
+        if len(self.decided_msgs) > 500:
+            for k in list(self.decided_msgs)[:250]:
+                del self.decided_msgs[k]
+        self.decided_msgs[mid] = True
+        if label is None:
+            label = next((b.get("text") for row in (cm.get("reply_markup") or {}).get("inline_keyboard") or []
+                          for b in row if b.get("callback_data") == data), None)
+        if cm.get("text"):           # an old message Telegram no longer hands over keeps its text and buttons
+            self.edit(mid, R.entities_html(cm["text"], cm.get("entities")) +
+                      ("\n→ <b>%s</b>" % R.esc(label) if label else ""), [], prio=3)
+
+    async def on_offer(self, data, here=0, cm=None):
         kind, tok = data.split(":", 1)
+        if (cm or {}).get("message_id") in self.decided_msgs:
+            return self.t("note.decided")       # one of its other buttons was tapped already
         o = self.offers.pop(tok, None)
         if not o:
             return self.t("note.stale_retry")
+        note = await self.use_offer(kind, o, here)
+        if kind in ("t", "f") or kind == "o" and o[0] != "open":
+            self.mark_choice(cm, data)          # a menu (projects to open, sessions to look at) stays a menu
+        return note
+
+    async def use_offer(self, kind, o, here):
         if kind == "o":
             mode, pkey, path, pending = o
             name = self.project_name(pkey, path)
@@ -3138,22 +3176,25 @@ class Pult:
         cwd = (row["path"] if row else None) or self.project_path(pkey)
         if not cwd:
             raise ValueError(self.t("err.no_folder_short"))
-        self.mark_seen(sid)                        # answered from a card: the outcome is behind
-        if sid in self.driven:
-            self.driven[sid].q.put_nowait((self.with_uploads(text, files), None))
-            return {"ok": True, "how": "session"}
         tab = self.tab_for(sid)
-        if tab:
-            await self.to_tab(tab, self.with_uploads(text, files), None)
-            return {"ok": True, "how": "tab"}
-        seen = sid in self.live and not self.live[sid].driven and self.live[sid].turn is not None
-        if seen or any(a.get("sessionId") == sid for a in await self.agents()):
-            if not fork:
+        if sid in self.driven:
+            how = "session"
+        elif tab:
+            how = "tab"
+        else:
+            seen = sid in self.live and not self.live[sid].driven and self.live[sid].turn is not None
+            how = "fork" if seen or any(a.get("sessionId") == sid for a in await self.agents()) else "resume"
+            if how == "fork" and not fork:
                 return {"ok": False, "need": "fork"}
-            await self.drive(sid, cwd, self.with_uploads(text, files), None, fork=True, pkey=pkey)
-            return {"ok": True, "how": "fork"}
-        await self.drive(sid, cwd, self.with_uploads(text, files), None, resume=sid, pkey=pkey)
-        return {"ok": True, "how": "resume"}
+        body = self.with_uploads(text, files)
+        if how == "session":
+            self.driven[sid].q.put_nowait((body, None))
+        elif how == "tab":
+            await self.to_tab(tab, body, None)
+        else:
+            await self.drive(sid, cwd, body, None, resume=sid if how == "resume" else None, fork=how == "fork", pkey=pkey)
+        self.mark_seen(sid, body)                  # answered: the outcome is behind, and a call about it says with what
+        return {"ok": True, "how": how}
 
     @staticmethod
     def check_choice(model, effort):

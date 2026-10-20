@@ -217,6 +217,19 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(R.bg_text(many + [{"id": "x", "status": "completed", "description": "старая"}]),
                          "⚙️ В фоне ещё 5: «з0», «з1», «з2» и ещё 2")
 
+    def test_entities_html(self):
+        # a message as a button's callback brings it (offsets in UTF-16: the emoji takes two) back into its HTML
+        text = "Копией 😀 <да> & ссылка\nкод"
+        ents = [{"type": "bold", "offset": 0, "length": 6}, {"type": "italic", "offset": 0, "length": 6},
+                {"type": "text_link", "offset": 17, "length": 6, "url": 'https://x.y/?a=1&b="2"'},
+                {"type": "pre", "offset": 24, "length": 3, "language": "py"}, {"type": "url", "offset": 0, "length": 3},
+                {"type": "bold", "offset": 3, "length": 0}]
+        self.assertEqual(R.entities_html(text, ents),
+                         '<b><i>Копией</i></b> 😀 &lt;да&gt; &amp; <a href="https://x.y/?a=1&amp;b=&quot;2&quot;">ссылка</a>'
+                         '\n<pre><code class="language-py">код</code></pre>')
+        self.assertEqual(R.entities_html("a 😀 b", [{"type": "code", "offset": 5, "length": 1}]), "a 😀 <code>b</code>")
+        self.assertEqual(R.entities_html("x", None), "x")
+
 
 class EnglishTest(unittest.TestCase):
     """English is the default language; the original checks above run in Russian."""
@@ -1529,6 +1542,8 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         # a dialog in the topic: the owner's message → one message per turn (the turn's own message goes away)
         self.p.expect[SID] = 555
         await run_hook(ev("UserPromptSubmit", prompt="Как дела?"))
+        # a call that was only seen is answered by the next prompt, from wherever it came — it says with what
+        await until(lambda: "✓ <b>Сделай кэш</b> · Готово, жду решения.\n→ «Как дела?»" in self.texts("editMessageText"))
         replies_555 = lambda: [d for d in self.fake.of("sendMessage") if '"message_id": 555' in d.get("reply_parameters", "")]
         await until(lambda: replies_555())                                            # the turn's message, under theirs
         await run_hook(ev("Stop", last_assistant_message="Всё хорошо.", background_tasks=[]))
@@ -1568,6 +1583,10 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"z:%s"' % SID, page["reply_markup"])
         await self.p.on_callback({"id": "c3", "from": {"id": OWNER}, "data": "z:" + SID})
         self.assertAlmostEqual(self.p.attn.resume[SID], reset + 60, delta=1)
+        hm = time.strftime("%H:%M", time.localtime(self.p.attn.resume[SID]))
+        await until(lambda: any(t.startswith("✓ <b>Дальше</b> · ") and t.endswith("\n→ Продолжу в " + hm)
+                                for t in self.texts("editMessageText")))
+        self.assertIsNone(self.p.attn.rec[SID]["page"])          # decided: "continue" later won't redo the call
         self.assertEqual((await self.p.api_overview())["usage_pct"], 100)
         sent = []
 
@@ -2057,6 +2076,51 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(o.system_prompt, {"type": "preset", "preset": "claude_code"})
         self.assertEqual(o.env["CLAUDE_CODE_ENTRYPOINT"], "claude-vscode")        # otherwise VS Code hides the session
         self.assertEqual(o.setting_sources, ["user", "project", "local"])
+
+    async def test_choice_marks(self):
+        # a choice made with a button: the message keeps its text, says what was picked and loses its buttons; its
+        # other buttons do nothing after that; a menu (projects to open) stays as it is; "Log out everywhere" says when
+        runs = []
+
+        async def drive(sid, path, text, origin, **kw):
+            runs.append(text)
+        self.p.drive = drive
+        self.store.set_topic(PKEY, "/Users/x/proj", "proj", 77)
+        self.store.touch_session(SID, PKEY, path="/Users/x/proj", title="Отчёт")
+        await self.p.ask_target(self.store.topic(PKEY), "Новая задача", 10, 77)
+        q = self.fake.of("sendMessage")[-1]
+        cm = {"message_id": 4242, "text": q["text"], "reply_markup": json.loads(q["reply_markup"]),
+              "message_thread_id": 77, "is_topic_message": True}
+        sess, new = self.fake.buttons("t:")
+        await self.p.on_callback({"id": "c1", "from": {"id": OWNER}, "data": new, "message": cm})
+        self.assertEqual(runs, ["Новая задача"])
+        await until(lambda: self.fake.of("editMessageText"))
+        e = self.fake.of("editMessageText")[-1]
+        self.assertEqual((e["message_id"], e["text"]), ("4242", R.esc(q["text"]) + "\n→ <b>▶️ Новая сессия</b>"))
+        self.assertEqual(json.loads(e["reply_markup"]), {"inline_keyboard": []})
+        await self.p.on_callback({"id": "c2", "from": {"id": OWNER}, "data": sess, "message": cm})
+        self.assertEqual(runs, ["Новая задача"])
+        self.assertEqual(self.fake.of("answerCallbackQuery")[-1]["text"], "уже решено")
+        # a menu: a link to a project's topic, and the list stays for another tap
+        tok = self.p.offer(("open", PKEY, "/Users/x/proj", None))
+        menu = {"message_id": 4243, "text": "Проекты", "reply_markup": {"inline_keyboard": [[
+            {"text": "proj", "callback_data": "o:" + tok}]]}}
+        n = len(self.fake.of("editMessageText"))
+        await self.p.on_callback({"id": "c3", "from": {"id": OWNER}, "data": "o:" + tok, "message": menu})
+        self.assertIn("t.me/c/123/77", self.fake.of("sendMessage")[-1]["text"])
+        await asyncio.sleep(0.05)
+        self.assertEqual(len(self.fake.of("editMessageText")), n)
+        # "Log out everywhere" under a login alert: the alert keeps its words and says when
+        alert = {"message_id": 4244, "text": "🔐 Вход в приложение из новой сети: 10.0.0.0/24 · android 8.0 · "
+                                             "приложение открыли.\nЕсли это не ты — выйди везде.",
+                 "reply_markup": {"inline_keyboard": [[{"text": "Выйти везде", "callback_data": "k:out"}]]}}
+        web = types.SimpleNamespace(logout_all=mock.AsyncMock())
+        with mock.patch.object(self.p, "web", web):
+            await self.p.on_callback({"id": "c4", "from": {"id": OWNER}, "data": "k:out", "message": alert})
+        web.logout_all.assert_awaited_once()
+        await until(lambda: self.fake.of("editMessageText")[-1]["message_id"] == "4244")
+        self.assertRegex(self.fake.of("editMessageText")[-1]["text"],
+                         r"^🔐 Вход .*\nЕсли это не ты — выйди везде\.\n→ <b>вышел везде в \d\d:\d\d</b>$")
 
     async def test_routing(self):
         calls = []

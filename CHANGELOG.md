@@ -2,6 +2,23 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.9.25 — 2026-10-20
+
+- A Telegram message with choice buttons says what was chosen once it's done: "Which session?", "Which project
+  should it run in?", "Continue as a copy" and "Log out everywhere" keep their text, gain "→ the choice" and lose
+  their buttons, so the other buttons of a decided question can't start a second session. Menus (projects to open,
+  sessions to look at) stay as they are.
+- A "your move" call shows the answer from wherever it came — the app, a VS Code tab, a reply in the topic — not only
+  from its own buttons; "Continue at …" folds it with the time. A reply that can't go in (the session is open on the
+  computer without Pult's wrapper) no longer folds the call.
+
+## 0.9.24 — 2026-10-20
+
+- Behind a TCP proxy that passes no client address (nginx `stream` without PROXY protocol) every phone reaches the
+  relay as 127.0.0.1. The relay no longer applies its per-address limit to such an address (one stranger's three idle
+  connections would have locked everyone out), and the computer treats it as unknown: never a "new network", never
+  learned as one.
+
 ## 0.9.23 — 2026-10-20
 
 Security, after a review of how someone could get in without the owner's Telegram account.

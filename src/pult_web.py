@@ -100,13 +100,16 @@ def init_age(init, now=None):
 
 
 def net_of(ip):
-    """An address → its network, for "a login from a new place": IPv4 /24 ("203.0.113.x"), IPv6 /48."""
+    """An address → its network, for "a login from a new place": IPv4 /24 ("203.0.113.x"), IPv6 /48. "" — unknown:
+    the relay saw the web server's own hop (127.0.0.1), as behind a TCP proxy that passes no client address."""
     try:
         a = ipaddress.ip_address(str(ip or "").strip())
     except ValueError:
         return str(ip or "?")[:64]
     if a.version == 6 and a.ipv4_mapped:
         a = a.ipv4_mapped
+    if a.is_loopback:
+        return ""
     if a.version == 4:
         return ".".join(str(a).split(".")[:3]) + ".x"
     return str(ipaddress.ip_network("%s/48" % a, strict=False))
@@ -167,9 +170,11 @@ class Logins:
         rec = {"ts": now, "ok": bool(ok), "how": how, "net": net,
                "dev": " ".join(str(client.get(k) or "") for k in ("platform", "version")).strip()[:40]}
         self.store.put("app_logins", [rec] + (self.store.get("app_logins") or [])[:LOGINS_MAX - 1])
-        if not ok:
-            return False
-        nets = self.store.get("app_nets") or {}
+        if not ok or not net:
+            return False                       # refused, or the address is unknown: nothing to learn or tell
+        # 0.9.23 learned the web server's own hop ("127.0.0.x") as a network: dropped, so the first real one is
+        # learned quietly instead of being "new"
+        nets = {k: v for k, v in (self.store.get("app_nets") or {}).items() if not k.startswith("127.")}
         new = bool(nets) and net not in nets
         nets[net] = now
         if len(nets) > NETS_MAX:
@@ -611,7 +616,7 @@ class Web:
         elif not ok and how in ("login expired", "resume key unknown or used up"):
             why = "expired"
         age = init_age(init)
-        log("app login %s: %s, %s, %s (initData %s s old)" % ("ok" if ok else "rejected", how, net_of(ip),
+        log("app login %s: %s, %s, %s (initData %s s old)" % ("ok" if ok else "rejected", how, net_of(ip) or "address unknown",
                                                              client.get("platform") or "?", age))
         new_net = self.logins.note(ok, via if ok else "locked" if why == "locked" else REFUSED.get(how, "forged"), ip, client)
         if ok:

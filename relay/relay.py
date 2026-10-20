@@ -13,6 +13,7 @@ import base64
 import collections
 import hashlib
 import hmac
+import ipaddress
 import itertools
 import json
 import os
@@ -56,6 +57,16 @@ def client_ip(request):
     if fwd:
         return fwd.split(",")[-1].strip()[:64]
     return request.remote or ""
+
+
+def known(ip):
+    """A real address, not the web server's own hop: behind a TCP proxy that passes no client address (nginx stream
+    without PROXY protocol) every phone looks like 127.0.0.1 — no per-address limit on that, or one stranger's
+    three idle connections would lock everyone out."""
+    try:
+        return not ipaddress.ip_address(ip).is_loopback
+    except ValueError:
+        return False
 
 
 def csp(importmap, host):
@@ -128,7 +139,7 @@ class Relay:
         ws = web.WebSocketResponse(heartbeat=25, max_msg_size=8 * 1024 * 1024)   # a message may carry pictures
         await ws.prepare(request)
         ip = client_ip(request)
-        if len(self.clients) + len(self.pending) >= MAX_CLIENTS or self.waiting[ip] >= WAITING_PER_IP \
+        if len(self.clients) + len(self.pending) >= MAX_CLIENTS or known(ip) and self.waiting[ip] >= WAITING_PER_IP \
                 or sum(self.waiting.values()) >= WAITING_MAX:
             await ws.close(code=4429, message=b"too many")
             return ws

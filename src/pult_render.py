@@ -248,6 +248,42 @@ def html_to_plain(h):
     return html.unescape(re.sub(r"<[^>]+>", "", h or ""))
 
 
+_ENTITY_TAGS = {"bold": "b", "italic": "i", "underline": "u", "strikethrough": "s", "spoiler": "tg-spoiler",
+                "code": "code", "pre": "pre", "blockquote": "blockquote", "expandable_blockquote": "blockquote"}
+
+
+def entities_html(text, entities):
+    """A message as Telegram hands it back (text and entities, offsets in UTF-16 units) → the HTML it was sent as,
+    to edit the message without losing its formatting. Links Telegram finds by itself (url, mention) stay text."""
+    u = str(text or "").encode("utf-16-le")
+    opens, closes = {}, {}
+    for k, e in enumerate(entities or []):
+        kind = e.get("type")
+        if kind == "text_link":
+            tag, attr = "a", ' href="%s"' % html.escape(e.get("url") or "", quote=True)
+        elif kind in _ENTITY_TAGS:
+            tag = _ENTITY_TAGS[kind]
+            attr = " expandable" if kind == "expandable_blockquote" else ""
+        else:
+            continue
+        start, n = e.get("offset", 0), e.get("length", 0)
+        if n <= 0:
+            continue
+        lang = e.get("language") if kind == "pre" else None
+        o, c = "<%s%s>" % (tag, attr), "</%s>" % tag
+        if lang:
+            o, c = o + '<code class="language-%s">' % html.escape(lang, quote=True), "</code>" + c
+        opens.setdefault(start, []).append((-n, k, o))            # the outer one opens first…
+        closes.setdefault(start + n, []).append((n, -k, c))       # …and closes last
+    out, last = [], 0
+    for p in sorted(set(opens) | set(closes)):
+        out.append(esc(u[2 * last:2 * p].decode("utf-16-le")))
+        out += [c for *_, c in sorted(closes.get(p, []))] + [o for *_, o in sorted(opens.get(p, []))]
+        last = p
+    out.append(esc(u[2 * last:].decode("utf-16-le")))
+    return "".join(out)
+
+
 def split_md(s, limit=CHUNK):
     """Split markdown into chunks by paragraph without breaking ```code``` blocks."""
     blocks = re.split(r"(```.*?```)", s or "", flags=re.S)
