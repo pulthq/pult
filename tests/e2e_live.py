@@ -83,7 +83,7 @@ async def main():
     p = pultd.Pult({"PULT_ALLOWED_USER_IDS": str(OWNER), "PULT_FORCE_AWAY": "1"}, tg, store)
     p.out = pultd.Outbox(rate=6000, burst=100)
     p._agents = (time.monotonic() + 1e6, [])
-    server = await asyncio.start_unix_server(p.handle_conn, path=os.environ["PULT_SOCK"])
+    server = await pultd.start_link(p.handle_conn, os.environ["PULT_SOCK"])
     asyncio.create_task(p.out.run())
     t0 = time.monotonic()
     log = lambda *a: print("%6.1f" % (time.monotonic() - t0), *a, flush=True)

@@ -23,6 +23,7 @@ CLI = sys.argv[1] if len(sys.argv) > 1 else str(max(
     key=lambda p: [int(x) for x in p.parts[-4].split("-")[2].split(".")]))
 sys.path.insert(0, str(SRC))
 import pult_tab  # noqa: E402
+import pultd  # noqa: E402
 
 VER = pult_tab.version_of(CLI)
 print("Claude Code:", VER, flush=True)
@@ -60,7 +61,7 @@ async def main():
             m = json.loads(line)
             if m.get("op") == "sid":
                 t["sid"] = m["sid"]
-    server = await asyncio.start_unix_server(daemon, path=SOCK)
+    server = await pultd.start_link(daemon, SOCK)
 
     opts = ClaudeAgentOptions(cli_path=str(SHIM), cwd=str(PROJ), model="claude-haiku-5-5", permission_mode="default",
                               can_use_tool=allow, setting_sources=[], env=ENV, stderr=lambda s: None,

@@ -81,6 +81,11 @@ def cmd_tab(argv):
 RUN_TICK = 30           # seconds; the last output line goes to the daemon at most this often
 
 
+def last_state(line):
+    """What a line of output shows in the end: after the last \\r that rewrote it, without the \\r of \\r\\n."""
+    return line.rstrip(b"\r").split(b"\r")[-1].decode(errors="replace").rstrip()[-300:]
+
+
 def tell(msg):
     """Task event to the daemon; no daemon — silently skip: the task runs without Pult too."""
     try:
@@ -119,8 +124,9 @@ def cmd_run(argv):
             sys.stdout.buffer.flush()
             lines = (part + chunk).split(b"\n")
             part = lines.pop()
-            # progress bars rewrite the line with \r — keep the line's last state
-            tail.extend(x for x in (ln.split(b"\r")[-1].decode(errors="replace").rstrip()[-300:] for ln in lines) if x)
+            # progress bars rewrite the line with \r — keep the line's last state; a line's own \r (Windows ends lines
+            # with \r\n) is not a rewrite
+            tail.extend(x for x in (last_state(ln) for ln in lines) if x)
             if time.time() - tick >= RUN_TICK and tail:
                 tell({"op": "tick", "id": rid, "last": tail[-1]})
                 tick = time.time()
@@ -128,7 +134,7 @@ def cmd_run(argv):
         pass                                   # the command got Ctrl+C too; wait for it to finish
     code = p.wait()
     if part.strip():
-        tail.append(part.split(b"\r")[-1].decode(errors="replace").rstrip()[-300:])
+        tail.append(last_state(part))
     tell({"op": "end", "id": rid, "code": code, "tail": list(tail)[-30:]})
     return code
 

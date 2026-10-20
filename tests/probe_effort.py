@@ -67,7 +67,7 @@ async def main():
         tabs.append({"hello": json.loads(await reader.readline()), "w": writer})
         while await reader.readline():
             pass
-    server = await asyncio.start_unix_server(daemon, path=SOCK)
+    server = await pultd.start_link(daemon, SOCK)
     env = {"PULT_TAB_CONF": str(TMP / "tab.json"), "PULT_SOCK": SOCK, "PULT_OFF": "1", "PULT_TAB_LOG": str(LOG)}
     opts = ClaudeAgentOptions(cli_path=str(SHIM), cwd=str(PROJ), model="claude-haiku-5-5", permission_mode="default",
                               can_use_tool=allow, setting_sources=["project"], env=env, stderr=lambda s: None,

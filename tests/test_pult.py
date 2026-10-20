@@ -288,6 +288,7 @@ class EnglishTest(unittest.TestCase):
 
 
 class HelpersTest(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "a drive letter on Windows: WindowsTest.test_project_folder")
     def test_decode_pkey(self):
         root = TMP / "fs"
         (root / "Users" / "x y" / "my_proj").mkdir(parents=True)
@@ -375,6 +376,9 @@ class HelpersTest(unittest.TestCase):
         v = pult_os.input_idle()
         if pult_os.KIND == "mac":
             self.assertIsInstance(v, float)
+        if pult_os.KIND == "windows":                               # GetLastInputInfo: no program to run
+            self.assertTrue(v is None or v >= 0)
+            return
         with mock.patch.object(pult_os.subprocess, "run", side_effect=FileNotFoundError):
             self.assertIsNone(pult_os.input_idle())                 # no ioreg (or no such system): "don't know"
 
@@ -466,6 +470,13 @@ class HelpersTest(unittest.TestCase):
         out, dt = asyncio.run(go())
         self.assertEqual(out, "")
         self.assertLess(dt, 3)
+
+    def test_run_line_state(self):
+        # pult run: a progress bar rewrites its line with \r — the last state counts; Windows ends a line with \r\n
+        import pultctl
+        self.assertEqual(pultctl.last_state("шаг 1\r".encode()), "шаг 1")
+        self.assertEqual(pultctl.last_state(b"10%\r50%\r100%"), "100%")
+        self.assertEqual(pultctl.last_state(b"10%\r100%\r\r"), "100%")
 
     def test_ctl_strip(self):
         import pultctl
@@ -1146,7 +1157,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("pult stop", self.fake.of("editMessageText")[-1]["text"])
         await self.p.on_callback({"id": "c3", "from": {"id": OWNER}, "data": "h:trouble", "message": {"message_id": 1000}})
         await until(lambda: "Журнал:" in self.fake.of("editMessageText")[-1].get("text", ""))
-        self.assertIn("<code>%s</code>" % str(pultd.LOG_FILE).replace(str(Path.home()) + "/", "~/", 1),
+        self.assertIn("<code>%s</code>" % str(pultd.LOG_FILE).replace(str(Path.home()) + os.sep, "~" + os.sep, 1),
                       self.fake.of("editMessageText")[-1]["text"])                    # this system's log
         await self.p.api_prefs(lang="en")                                            # language chosen in the settings
         await self.p.on_message(dict(base, message_id=4, text="/help"))
@@ -1439,7 +1450,8 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         check.assert_awaited_once()
         self.assertIn("PULT_STT_KEY=" + good, env.read_text())
         self.assertIn("PULT_BOT_TOKEN=T", env.read_text())
-        self.assertEqual(env.stat().st_mode & 0o777, 0o600)
+        if os.name != "nt":                                           # Windows: the user's own folder keeps it private
+            self.assertEqual(env.stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.p.stt.key, good)
         with mock.patch.object(STT.Stt, "check", mock.AsyncMock(side_effect=STT.SttError("stt.e.key"))):
             with self.assertRaises(ValueError) as cm:
@@ -2051,7 +2063,8 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         d = TMP / "ctl"
         seen = d / "seen.jsonl"
         fake = fake_claude(d / "anthropic.claude-code-2.1.301-darwin-arm64",
-                           "import json, sys\nlog = open(%r, 'a', encoding='utf-8')\n"
+                           "import json, sys\nsys.stdout.reconfigure(newline='\\n')\n"   # claude ends lines with LF on Windows too
+                           "log = open(%r, 'a', encoding='utf-8')\n"
                            "for line in sys.stdin.buffer:\n    line = line.decode()\n"
                            "    log.write(line); log.flush()\n    o = json.loads(line)\n"
                            "    if o.get('type') == 'control_request':\n"
@@ -2065,7 +2078,10 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         async def daemon(reader, writer):
             conn.append(writer)
             hello.set_result(json.loads(await reader.readline()))
-            await reader.read()
+            try:
+                await reader.read()
+            except ConnectionError:                    # Windows: a closed wrapper is a reset, not an end of data
+                pass
         server = await pultd.start_link(daemon, sock)
         proc = await asyncio.create_subprocess_exec(
             sys.executable, str(HERE / "pult_tab.py"), str(fake), "--input-format", "stream-json", "--output-format",
