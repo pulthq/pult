@@ -2,6 +2,11 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.9.22 — 2026-10-20
+
+- The README opens with Home of the web app next to the topic animation: what waits for you, with ready replies,
+  and every project's live sessions.
+
 ## 0.9.21 — 2026-10-20
 
 - A result's line is no longer cut in the middle of a word: the model often writes a little more than asked, so up

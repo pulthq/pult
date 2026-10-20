@@ -3,6 +3,8 @@
   ~/.local/share/pult/venv/bin/python tools/media.py          # both languages, about two minutes
 
   media/demo.{en,ru}.gif         the opening animation: a project's topic in Telegram, turn by turn (tools/chat_shot.py)
+  media/app-home.{en,ru}.png     Home of the web app next to the animation at the top: "Your move" with ready replies,
+                                 then the projects board — 412×740, the animation's own shape
   media/app-session.{en,ru}.png  the session screen of the web app: your message pinned on top, the status by the field
   media/app.{en,ru}.png          three app screens in phone frames: Home ("Your move" with ready replies and the board),
                                  a project's screen, a session ending in its outcome card
@@ -52,10 +54,11 @@ def screens(lang):
             if "PROJECTS" in urls:
                 break
             time.sleep(0.5)
-        out = {k: TMP / ("%s.%s.png" % (k, lang)) for k in ("home", "project", "outcome", "session")}
+        out = {k: TMP / ("%s.%s.png" % (k, lang)) for k in ("home", "top", "project", "outcome", "session")}
         # Home from the "Your move" card that waits for a choice: its ready replies, then the projects board
-        shot(urls["HOME"], out["home"], SHOT_HEIGHT="860", SHOT_JS="const c = document.querySelector('.card.mine'); "
-             "window.scrollTo(0, c.getBoundingClientRect().top + window.scrollY - 14)")
+        mine = "const c = document.querySelector('.card.mine'); window.scrollTo(0, c.getBoundingClientRect().top + window.scrollY - 14)"
+        shot(urls["HOME"], out["home"], SHOT_HEIGHT="860", SHOT_JS=mine)
+        shot(urls["HOME"], out["top"], SHOT_HEIGHT="740", SHOT_JS=mine)
         shot(urls["PROJ"], out["project"], SHOT_HEIGHT="860")
         # opened once, so its outcome card is still red: it waited for you when you opened it
         shot(urls["SESS4"], out["outcome"], SHOT_HEIGHT="860")
@@ -104,6 +107,7 @@ def main():
     for lang in ("en", "ru"):
         s = screens(lang)
         shutil.copy(s["session"], MEDIA / ("app-session.%s.png" % lang))
+        shutil.copy(s["top"], MEDIA / ("app-home.%s.png" % lang))
         phones([s["home"], s["project"], s["outcome"]], MEDIA / ("app.%s.png" % lang))
         env = dict(os.environ, STAND_LANG=lang)
         subprocess.run([PY, str(REPO / "tools" / "chat_shot.py"), str(MEDIA / ("demo.%s.gif" % lang))], check=True, env=env,

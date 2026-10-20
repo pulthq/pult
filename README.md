@@ -9,9 +9,9 @@
 <p align="center">
   <img src="media/demo.en.gif" width="330" alt="A project's topic in Telegram: Claude works, asks for permission to run a command, the phone shows a notification, a tap on Allow, the turn goes on and its result arrives">
   &nbsp;
-  <img src="media/app-session.en.png" width="330" alt="The same session in the web app: your message pinned on top, Claude's summary, the model with its effort and the context gauge by the message field">
+  <img src="media/app-home.en.png" width="330" alt="Home in the web app: a session that waits for your choice, with ready replies taken from Claude's message, then the projects board — who works, who waits, what each session is doing">
 </p>
-<p align="center"><sub>Left: a project's topic in Telegram. Right: the same session in the web app. A made-up project, drawn from Pult's own output on the test stand.</sub></p>
+<p align="center"><sub>Left: a project's topic in Telegram. Right: Home in the web app — what waits for you, with ready replies, and every project's live sessions. Made-up projects, drawn from Pult's own output on the test stand.</sub></p>
 
 You give Claude Code a task in VS Code or a terminal and walk away. Claude keeps going, then stops to ask a
 question or wait for a permission, and the work stalls until you're back. Pult puts every Claude Code session on
