@@ -342,7 +342,7 @@ class SettingsTest(Base):
             self.assertIsNotNone(S.write_launcher())
             text = (S.BIN / LAUNCHER).read_text(encoding="utf-8")
             if WIN:                                    # pult.cmd: ASCII, the paths through %USERPROFILE%
-                self.assertIn("pultctl.py\" %*", text)
+                self.assertIn('pultctl.py" %* & exit /b', text)
                 self.assertIn(S.LAUNCHER_MARK, text)
             else:
                 self.assertIn(str(S.HOME / "pultctl.py"), text)
@@ -363,7 +363,8 @@ class SettingsTest(Base):
         data = p.read_bytes()
         data.decode("ascii")
         self.assertIn(b'"%USERPROFILE%' + os.sep.encode() + b'venv' + os.sep.encode() + b'python.exe" -X utf8 ', data)
-        self.assertTrue(data.endswith(b" %*\r\n"))
+        self.assertTrue(data.endswith(b" %* & exit /b\r\n"))           # uninstall deletes the file while it runs
+        self.assertNotIn(b"\r\r", data)
 
     def test_cli_lang(self):
         with mock.patch.dict(os.environ, {"PULT_LANG": ""}), mock.patch.object(S, "system_lang", lambda: "en"):

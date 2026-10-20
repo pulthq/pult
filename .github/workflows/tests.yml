@@ -49,8 +49,10 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
+          $out = powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 | Out-String
+          $out
           if ($LASTEXITCODE -ne 0) { throw "install.ps1: $LASTEXITCODE" }
+          if ($out -notmatch 'Installing dependencies') { throw "install.ps1 should speak the system's language (English here)" }
           $pult = "$HOME\.local\share\pult"
           $cmd = "$HOME\.local\bin\pult.cmd"
           foreach ($f in 'venv\Scripts\pythonw.exe', 'pult-tab.exe', 'Pult.task.xml', 'pultd.py') {
@@ -58,6 +60,9 @@ jobs:
           }
           & $cmd status
           if ($LASTEXITCODE -ne 0) { throw "pult status: $LASTEXITCODE" }
+          # the installed wrapper: a run that isn't a tab chat goes straight to the program, output and all
+          $tab = & "$pult\pult-tab.exe" "$env:ComSpec" /c echo pult-tab-ok | Out-String
+          if ($tab -notmatch 'pult-tab-ok') { "[$tab]"; throw "pult-tab.exe didn't pass the program through" }
           # the user's PATH has ~\.local\bin now
           if (-not ([Environment]::GetEnvironmentVariable('Path', 'User') -split ';' -contains "$HOME\.local\bin")) { throw "PATH" }
           # Task Scheduler takes the task definition as written
@@ -70,5 +75,6 @@ jobs:
           $log = Get-Content -Raw "$HOME\.local\state\pult\pult.log"
           if ($log -notmatch 'no PULT_BOT_TOKEN') { $log; throw "no daemon log" }
           "y`ny" | & $cmd uninstall
+          if ($LASTEXITCODE -ne 0) { throw "pult uninstall: $LASTEXITCODE" }
           if (Test-Path $cmd) { throw "pult.cmd is still there" }
           if (Test-Path "$pult\Pult.task.xml") { throw "the task definition is still there" }

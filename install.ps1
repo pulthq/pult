@@ -10,9 +10,10 @@ $ErrorActionPreference = 'Stop'
 $Src = $PSScriptRoot
 $Dst = if ($env:PULT_HOME) { $env:PULT_HOME } else { Join-Path $HOME '.local\share\pult' }
 $Bin = Join-Path $HOME '.local\bin'
-$Ru = (Get-UICulture).TwoLetterISOLanguageName -eq 'ru'
+$IsRu = (Get-UICulture).TwoLetterISOLanguageName -eq 'ru'
 
-function Say($en, $ru) { if ($Ru) { Write-Host $ru } else { Write-Host $en } }
+# PowerShell names ignore case: the parameters must not be called $en and $ru next to a global $Ru
+function Say($textEn, $textRu) { if ($IsRu) { Write-Host $textRu } else { Write-Host $textEn } }
 
 function Good($py, $pre) {
     # Python 3.10 to 3.x, real (not the Microsoft Store stub, which runs sandboxed and redirects AppData)
