@@ -414,9 +414,10 @@ def write_launcher():
     if WIN:
         # cmd reads a .cmd file in the console's code page: ASCII only, and the paths come from %USERPROFILE%
         rel = lambda q: "%USERPROFILE%" + str(q)[len(str(Path.home())):] if tilde(q) != str(q) else str(q)
-        p.write_text('@echo off\r\nrem %s — installed by install.ps1, removed by `pult uninstall`\r\n'
-                     '"%s" -X utf8 "%s" %%*\r\n' % (LAUNCHER_MARK, rel(PY), rel(HOME / "pultctl.py")),
-                     encoding="ascii", errors="replace")
+        # bytes, not text: in text mode Windows would turn each \r\n into \r\r\n
+        p.write_bytes(('@echo off\r\nrem %s — installed by install.ps1, removed by `pult uninstall`\r\n'
+                       '"%s" -X utf8 "%s" %%*\r\n' % (LAUNCHER_MARK, rel(PY), rel(HOME / "pultctl.py")))
+                      .encode("ascii", errors="replace"))
         return p
     p.write_text('#!/bin/sh\n%s — installed by install.sh, removed by `pult uninstall`\nexec %s %s "$@"\n'
                  % (LAUNCHER_MARK, shlex.quote(str(PY)), shlex.quote(str(HOME / "pultctl.py"))), encoding="utf-8")

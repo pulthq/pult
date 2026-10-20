@@ -26,22 +26,26 @@ jobs:
       - name: Daemon, hook, tab wrapper, rendering, both languages
         run: python tests/test_pult.py
       - name: Install, setup wizard, report, uninstall
+        if: success() || failure()          # every check runs, whatever failed before
         run: python tests/test_setup.py
       - name: Web app data and the phone → relay → computer chain
+        if: success() || failure()          # every check runs, whatever failed before
         run: python tests/test_web.py
       - name: Relay
+        if: success() || failure()          # every check runs, whatever failed before
         run: python tests/test_relay.py
       - name: Shell scripts parse
-        if: runner.os != 'Windows'
+        if: (success() || failure()) && runner.os != 'Windows'
         run: bash -n install.sh && bash -n deploy/relay/install.sh && sh -n src/pult-tab.sh
       - name: install.ps1 parses
+        if: success() || failure()          # every check runs, whatever failed before
         shell: pwsh
         run: |
           $errs = $null
           [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD/install.ps1", [ref]$null, [ref]$errs)
           if ($errs) { $errs; exit 1 }
       - name: Install, start, remove — for real (Windows)
-        if: runner.os == 'Windows'
+        if: (success() || failure()) && runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
