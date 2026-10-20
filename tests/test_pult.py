@@ -24,6 +24,8 @@ sys.path.insert(0, str(HERE))
 
 import httpx  # noqa: E402
 
+import pult_attn as A  # noqa: E402
+import pult_brief as B  # noqa: E402
 import pult_hook  # noqa: E402
 import pult_i18n as I  # noqa: E402
 import pult_load as L  # noqa: E402
@@ -362,6 +364,7 @@ class HelpersTest(unittest.TestCase):
         self.assertEqual(c["PermissionRequest"][0]["matcher"], "*")
         self.assertGreater(c["PermissionRequest"][0]["hooks"][0]["timeout"], 3600)
         self.assertNotIn("matcher", c["Stop"][0])
+        self.assertNotIn("matcher", c["StopFailure"][0])            # an API error ended the turn (stage V)
 
     def test_hook_without_daemon(self):
         async def go():
@@ -463,6 +466,102 @@ class LoadTest(unittest.TestCase):
         self.assertEqual(L.session_arg(CLAUDE + " --session-id " + SID + " --x"), SID)
         self.assertIsNone(L.session_arg(CLAUDE))
         self.assertIsNone(L.bash_command("/bin/sh -c eval 'x'"))     # eval, but not Claude's shell
+
+
+class AttnTest(unittest.TestCase):
+    """Whose move (pult_attn) and the model's reading of a result (pult_brief) — without the daemon."""
+
+    class Store(dict):
+        def put(self, k, v):
+            self[k] = json.loads(json.dumps(v))
+
+    def test_state(self):
+        rec = {"seen": False, "you": True, "fail": None}
+        self.assertEqual(A.state(["q"], True, [], rec), "ask")             # a question beats everything
+        self.assertEqual(A.state([], True, [], rec), "work")
+        self.assertEqual(A.state([], False, [{"id": "b"}], rec), "bg")     # Claude goes on by itself
+        self.assertEqual(A.state([], False, [], rec), "you")
+        self.assertEqual(A.state([], False, [], dict(rec, you=False)), "done")
+        self.assertEqual(A.state([], False, [], dict(rec, fail="rate_limit")), "fail")
+        self.assertEqual(A.state([], False, [{"id": "b"}], dict(rec, fail="rate_limit")), "fail")
+        self.assertEqual(A.state([], False, [], dict(rec, seen=True)), "idle")
+        self.assertEqual(A.state([], False, [], None), "idle")
+
+    def test_outcomes(self):
+        st = self.Store()
+        a = A.Attn(st)
+        r = a.finished("s1", "-p", 30, "Готово.", "Готово.", waits=True)
+        self.assertEqual((r["you"], r["seen"], r["model"]), (True, False, False))
+        self.assertIsNone(a.briefed("s1", r["ts"] - 1, {"line": "x", "you": False, "need": ""}, True))   # an older result
+        a.briefed("s1", r["ts"], {"line": "Отчёт готов", "you": False, "need": ""}, True)
+        self.assertEqual(A.state([], False, [], a.rec["s1"]), "done")
+        a.briefed("s1", r["ts"], {"line": "Нужен выбор", "you": True, "need": "Выбери А или Б"}, True)
+        self.assertEqual((a.rec["s1"]["need"], A.state([], False, [], a.rec["s1"])), ("Выбери А или Б", "you"))
+        r2 = a.finished("s2", "-p", 10, "Жду ревью.", "Жду ревью.", waits=False)       # a background task runs
+        a.briefed("s2", r2["ts"], {"line": "Жду ревью", "you": True, "need": "?"}, False)
+        self.assertEqual((a.rec["s2"]["you"], a.rec["s2"]["need"]), (False, ""))
+        self.assertTrue(a.seen("s1"))
+        self.assertFalse(a.seen("s1"))                                               # once
+        self.assertEqual(a.day_of("-p"), [2, 40])
+        b = A.Attn(st)                                                                # a restart keeps it all
+        self.assertTrue(b.rec["s1"]["seen"])
+        self.assertEqual(b.day_of("-p"), [2, 40])
+        b.finished("s3", "-p", 5, "", "", True, now=time.time() + A.KEEP + 10)       # three days later: old ones go
+        self.assertEqual(set(b.rec), {"s3"})
+        self.assertEqual([e[2] for e in b.log], ["s3"])                               # the log forgets the same way
+
+    def test_log_and_replies(self):
+        a = A.Attn(self.Store())
+        r = a.finished("s1", "-p", 30, "", "Готово.", waits=True, now=1000)
+        a.finished("s2", "-q", 10, "", "Отчёт.", waits=False, now=1010)
+        a.briefed("s1", r["ts"], {"line": "Два варианта", "you": True, "need": "Выбери", "replies": ["А", "Б"]}, True)
+        self.assertEqual(a.rec["s1"]["replies"], ["А", "Б"])
+        self.assertEqual([(e[2], e[3], e[4]) for e in a.since(999)], [("s1", "Два варианта", True), ("s2", "Отчёт.", False)])
+        self.assertEqual(a.since(1005), [a.log[1]])
+        a.resume["s1"] = 2000
+        a.finished("s1", "-p", 5, "", "Дальше.", waits=True, now=1020)               # a new outcome: the old plan is moot
+        self.assertNotIn("s1", a.resume)
+
+    def test_order(self):
+        rows = [{"state": "idle", "ts": 5}, {"state": "work", "since": 9}, {"state": "you", "since": 7},
+                {"state": "you", "since": 3}, {"state": "done", "ts": 8}, {"state": "fail", "since": 6}]
+        self.assertEqual([(r["state"], r.get("since") or r.get("ts")) for r in A.sort_rows(rows)],
+                         [("fail", 6), ("you", 3), ("you", 7), ("work", 9), ("done", 8), ("idle", 5)])
+        self.assertTrue(A.resting({"state": "idle", "ts": time.time() - A.RECENT - 1}))
+        self.assertFalse(A.resting({"state": "idle", "ts": time.time()}))
+        self.assertFalse(A.resting({"state": "done", "ts": 0}))
+
+    def test_brief_parse(self):
+        res = types.SimpleNamespace(is_error=False, structured_output={"line": "  Готово:  всё  ", "you": False, "need": "x"})
+        self.assertEqual(B.parse(res), {"line": "Готово: всё", "you": False, "need": "", "replies": []})
+        res = types.SimpleNamespace(is_error=False, structured_output=None,
+                                    result='Вот: {"line": "Нужен ключ", "you": true, "need": "pult stt"}')
+        self.assertEqual(B.parse(res), {"line": "Нужен ключ", "you": True, "need": "pult stt", "replies": []})
+        for bad in (None, types.SimpleNamespace(is_error=True), types.SimpleNamespace(is_error=False, structured_output={"line": "", "you": True}),
+                    types.SimpleNamespace(is_error=False, structured_output={"line": "a", "you": "да"}, result="")):
+            self.assertIsNone(B.parse(bad))
+        self.assertLessEqual(len(B.parse(types.SimpleNamespace(is_error=False, structured_output={"line": "я" * 300, "you": False, "need": ""}))["line"]), B.KEEP_MAX)
+        # a line a little over the asked length stays whole; a much longer one ends after a whole word
+        line = "Проверка блокировки прошла: Пульт зовёт туда, где ты. Оба случая подтверждены вживую, факт записан в документ."
+        self.assertEqual(B.parse(types.SimpleNamespace(is_error=False, structured_output={"line": line, "you": False, "need": ""}))["line"], line)
+        self.assertEqual(B.clip("один два три четыре пять шесть", 20), "один два три четыре…")   # ends at a word: kept
+        self.assertEqual(B.clip("один два три четыре пять", 17), "один два три…")                 # inside a word: back
+        self.assertEqual(B.first_sentence("**Готово.** Отчёт `report.md` собран. Дальше…"), "Готово.")
+        self.assertEqual(B.first_sentence("```\ncode\n```\nНет точки"), "Нет точки")
+        req = B.request("сделай", "н" * 4000 + "КОНЕЦ" + "к" * 4000, ["Сборка"])
+        self.assertNotIn("КОНЕЦ", req)                                  # a long message: its start and its end
+        self.assertIn("…", req)
+        self.assertTrue(req.rstrip().endswith("</background_tasks_running>"))
+        self.assertLess(len(req), B.REPLY_MAX + 1000)
+        res = types.SimpleNamespace(is_error=False, structured_output={"line": "Два варианта", "you": True, "need": "Выбери",
+                                    "replies": ["А — в памяти", "А — в памяти", "  ", "Б — " + "в" * 80, "В", "Г"]})
+        self.assertEqual(B.parse(res)["replies"], ["А — в памяти", "Б — " + "в" * 35 + "…", "В"])   # clipped, no repeats, three
+        res.structured_output["you"] = False
+        self.assertEqual(B.parse(res)["replies"], [])                     # only when Claude waits for the owner
+        o = B.options("ru", TMP)
+        self.assertEqual((o.model, o.tools, o.setting_sources), ("haiku", [], []))
+        self.assertIn("Russian", o.system_prompt)
+        self.assertIn("no-session-persistence", o.extra_args)
 
 
 class SttTest(unittest.IsolatedAsyncioTestCase):
@@ -732,12 +831,13 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             pultd.TICK = old
 
     async def test_prefs(self):
-        self.assertEqual(self.p.prefs(), {"vehi": True, "mode": "auto", "lang": None})
+        self.assertEqual(self.p.prefs(), {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": None})
         self.p.env["PULT_FORCE_AWAY"] = "0"                                           # you are at the Mac
         self.assertFalse(await self.p.loud())
         self.assertTrue(await self.p.loud(driven=True))                     # auto: a session from Telegram — with sound
-        res = await self.p.api_prefs(mode="phone", vehi="да", lang="xx", evil=True)  # garbage is rejected
-        self.assertEqual(res, {"vehi": True, "mode": "phone", "lang": None})
+        res = await self.p.api_prefs(mode="phone", vehi="да", lang="xx", brief="да", evil=True)  # garbage is rejected
+        self.assertEqual(res, {"vehi": True, "mode": "phone", "lang": None, "brief": False, "pager": None})
+        self.assertTrue((await self.p.api_prefs(brief=True))["brief"])
         self.assertTrue(await self.p.loud())                                      # "with the phone" — always with sound
         await self.p.api_prefs(mode="mac")
         self.p.env["PULT_FORCE_AWAY"] = "1"
@@ -1237,6 +1337,252 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await until(lambda: any(t.startswith("✅") and "Сборка прошла" in t for t in self.texts()))
         self.assertNotIn("В фоне", self.texts()[-1])
         self.assertNotIn("task-notification", self.p.live[SID].title or "")
+
+    async def test_whose_move(self):
+        # stage V: a turn typed here ends while the owner is away → "Your move" with the result's first sentence;
+        # opening the session puts it to rest; at the computer it is seen at once; a background task — Claude's
+        # move; an API error — a failure; "Got it"; the model's line (when allowed) can say "only a report"
+        self.p._procs = (time.monotonic() + 1e6, None)
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        Path(TP).write_text(tline("user", "Сделай отчёт") + "\n" + tline("assistant", "Отчёт готов.") + "\n")
+        await run_hook(ev("SessionStart", source="startup"))
+        await run_hook(ev("UserPromptSubmit", prompt="Сделай отчёт"))
+        await run_hook(ev("Stop", last_assistant_message="**Отчёт готов.** Какой формат дальше — PDF или таблица?"))
+        await until(lambda: SID in self.p.attn.rec)
+        ov = await self.p.api_overview()
+        self.assertEqual([(r["sid"], r["state"], r["line"]) for r in ov["mine"]], [(SID, "you", "Отчёт готов.")])
+        proj = ov["board"][0]
+        self.assertEqual((proj["name"], proj["mine"], proj["rows"], proj["turns"]), ("proj", 1, [], 1))
+        await self.p.api_session(SID)                                                # opened in the app → seen
+        ov = await self.p.api_overview()
+        self.assertEqual(ov["mine"], [])
+        self.assertEqual([(r["state"], r["line"]) for r in ov["board"][0]["rows"]], [("idle", "Отчёт готов.")])
+        # at the computer: the owner watched the turn end
+        self.p.env["PULT_FORCE_AWAY"] = "0"
+        await run_hook(ev("UserPromptSubmit", prompt="Ещё раз"))
+        await run_hook(ev("Stop", last_assistant_message="Сделано."))
+        await until(lambda: self.p.attn.day_of(PKEY)[0] == 2)
+        self.assertEqual((await self.p.api_overview())["mine"], [])
+        self.p.env["PULT_FORCE_AWAY"] = "1"
+        # a background task still runs: Claude goes on by itself
+        await run_hook(ev("UserPromptSubmit", prompt="Собери в фоне"))
+        await run_hook(ev("Stop", last_assistant_message="Запустил сборку.", background_tasks=[
+            {"id": "b1", "type": "shell", "status": "running", "description": "Сборка", "command": "make"}]))
+        await until(lambda: self.p.attn.day_of(PKEY)[0] == 3)
+        ov = await self.p.api_overview()
+        self.assertEqual(ov["mine"], [])
+        self.assertEqual([(r["state"], r["bg"]) for r in ov["board"][0]["rows"]], [("bg", ["Сборка"])])
+        # an API error ends the turn: a failure, in Telegram too
+        await run_hook(ev("UserPromptSubmit", prompt="Дальше"))
+        await run_hook(ev("StopFailure", error="rate_limit", last_assistant_message="Usage limit reached"))
+        await until(lambda: any(t.startswith("⚠️ <b>proj</b> · упёрся в лимит подписки") for t in self.texts()))
+        await until(lambda: any("⚠️ <b>proj</b> · оборвался через" in t for t in self.texts("editMessageText")))
+        ov = await self.p.api_overview()
+        self.assertEqual([(r["state"], r["line"]) for r in ov["mine"]], [("fail", "упёрся в лимит подписки")])
+        self.assertEqual(self.p.fail_text("weird_new"), "оборвался: weird_new")
+        await self.p.api_seen(SID)                                                   # "Got it"
+        self.assertEqual((await self.p.api_overview())["mine"], [])
+        # the model's line, when allowed: "only a report" is not the owner's move
+        await self.p.api_prefs(brief=True)
+        asked = []
+
+        async def fake_brief(prompt, reply, bg, lang, cwd):
+            asked.append((prompt, lang))
+            return {"line": "Отчёт собран, всё зелёное", "you": False, "need": ""}
+        with mock.patch.object(pultd.B, "brief", fake_brief):
+            await run_hook(ev("UserPromptSubmit", prompt="Проверь"))
+            await run_hook(ev("Stop", last_assistant_message="Проверил: все тесты зелёные, можно выкладывать?",
+                              background_tasks=[]))                                  # the build is over
+            await until(lambda: self.p.attn.rec[SID].get("model"))
+        self.assertEqual(asked, [("Проверь", "ru")])
+        ov = await self.p.api_overview()
+        self.assertEqual(ov["mine"], [])
+        self.assertEqual([(r["state"], r["line"], r["model"]) for r in ov["board"][0]["rows"]],
+                         [("done", "Отчёт собран, всё зелёное", True)])
+
+    async def test_away(self):
+        # away from the computer: a locked screen at once; where the lock can be read, 5 min without input (watching
+        # Claude work is still "here"), else 2 min; without input data — the owner's last action in a session
+        self.p.env.pop("PULT_FORCE_AWAY", None)
+        cases = [(True, 10, True), (False, 200, False), (False, 400, True), (None, 200, True), (None, 60, False)]
+        for locked, idle, away in cases:
+            self.p._locked, self.p._idle = (time.monotonic(), locked), (time.monotonic(), idle)
+            self.assertEqual(await self.p.away(), away, (locked, idle))
+        self.p._locked, self.p._idle = (time.monotonic(), False), (time.monotonic(), 400)
+        self.assertEqual(await self.p.where(), "away")
+        await self.p.api_presence(True)
+        self.assertEqual(await self.p.where(), "app")                                 # the app is on the screen
+        await self.p.api_presence(False)
+        self.assertEqual(await self.p.where(), "away")
+        await self.p.api_presence(True)                                               # then silence: off after APP_ON
+        self.p.app_on -= pultd.APP_ON + 1
+        await self.p.presence_check()
+        self.assertFalse(self.p.app_vis)
+
+    async def test_project_and_outcome(self):
+        # the project's screen: what waits for the owner, what runs, today's outcomes; the session shows its outcome
+        # as it was found (red), and a second look finds it seen; "Got it" from a card; ready replies kept
+        self.p._procs = (time.monotonic() + 1e6, None)
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        Path(TP).write_text(tline("user", "Сделай кэш") + "\n" + tline("assistant", "Два варианта. Какой?") + "\n")
+        await self.p.api_prefs(brief=True)
+
+        async def fake_brief(prompt, reply, bg, lang, cwd):
+            return {"line": "Два варианта кэша", "you": True, "need": "Выбери А или Б", "replies": ["А", "Б"]}
+        with mock.patch.object(pultd.B, "brief", fake_brief):
+            await run_hook(ev("UserPromptSubmit", prompt="Сделай кэш"))
+            await run_hook(ev("Stop", last_assistant_message="Два варианта. Какой?", background_tasks=[]))
+            await until(lambda: self.p.attn.rec.get(SID, {}).get("model"))
+        d = await self.p.api_project(PKEY)
+        self.assertEqual([(r["sid"], r["state"], r["replies"]) for r in d["mine"]], [(SID, "you", ["А", "Б"])])
+        self.assertEqual((d["name"], d["live"], d["turns"]), ("proj", [], 1))
+        with self.assertRaises(ValueError):
+            await self.p.api_project("-nowhere-at-all")
+        info = await self.p.api_session(SID)
+        self.assertEqual((info["outcome"]["state"], info["outcome"]["need"], info["outcome"]["replies"]), ("you", "Выбери А или Б", ["А", "Б"]))
+        self.assertEqual((await self.p.api_session(SID))["outcome"]["state"], "idle")     # opened — seen
+        d = await self.p.api_project(PKEY)
+        self.assertEqual(([r["sid"] for r in d["today"]], d["mine"]), ([SID], []))
+        with mock.patch.object(self.p, "list_projects", lambda known: [(time.time(), PKEY, "/Users/x/proj")]):
+            rows = (await self.p.api_projects())["projects"]
+        self.assertEqual([(r["pkey"], r["line"], r["mine"], r["turns"]) for r in rows], [(PKEY, "Два варианта кэша", 0, 1)])
+
+    async def test_pager(self):
+        # Telegram as a pager (stage V, Q22 «а», on where the app is set up): no turn or result messages for work
+        # the owner drives from the app or the computer; a "your move" they can't see is paged once — line, need,
+        # ready replies, the way into the app; a reply button sends into the session and folds the call; seen in
+        # the app — folded too; at the computer or in the app — nothing; a dialog in a topic — one message per turn
+        self.p.env.update(PULT_APP_LINK="https://t.me/b/pult", PULT_RELAY_URL="wss://h.example/pult/agent")
+        self.p._procs = (time.monotonic() + 1e6, None)
+        self.assertTrue(self.p.pager())
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        Path(TP).write_text(tline("user", "Сделай кэш") + "\n")
+        await self.p.api_prefs(brief=True)
+
+        async def fake_brief(prompt, reply, bg, lang, cwd):
+            return {"line": "Два варианта кэша", "you": True, "need": "Выбери А или Б", "replies": ["А — память", "Б — SQLite"]}
+        with mock.patch.object(pultd.B, "brief", fake_brief):
+            await run_hook(ev("UserPromptSubmit", prompt="Сделай кэш"))
+            await run_hook(ev("PostToolUse", tool_name="Read", tool_input={"file_path": "/Users/x/proj/a.py"}))
+            await run_hook(ev("Stop", last_assistant_message="Два варианта. Какой?", background_tasks=[]))
+            await until(lambda: self.p.attn.rec.get(SID, {}).get("model"))
+        await asyncio.sleep(0.2)
+        self.assertEqual([t for t in self.texts() if "Сделай кэш" in t or t.startswith("✅")], [])   # no turn, no result
+        await self.p.page_due()
+        page = self.fake.of("sendMessage")[-1]
+        # the session's own title (its first prompt until it has a name) — the topic already says the project
+        self.assertEqual(page["text"], "🔴 <b>Сделай кэш</b>\nДва варианта кэша\n<b>Выбери А или Б</b>")
+        self.assertEqual(page["disable_notification"], "false")
+        kb = json.loads(page["reply_markup"])["inline_keyboard"]
+        self.assertEqual(kb[0], [{"text": "А — память", "callback_data": "r:%s:0" % SID}, {"text": "Б — SQLite", "callback_data": "r:%s:1" % SID}])
+        self.assertIn("startapp=s_" + SID, json.dumps(kb))
+        n = len(self.fake.of("sendMessage"))
+        await self.p.page_due()
+        self.assertEqual(len(self.fake.of("sendMessage")), n)                         # once
+        sent = []
+
+        async def fake_send(sid, text, fork=False, files=None):
+            sent.append((sid, text))
+            return {"ok": True, "how": "tab"}
+        with mock.patch.object(self.p, "api_send", fake_send):
+            await self.p.on_callback({"id": "c1", "from": {"id": OWNER}, "data": "r:%s:1" % SID})
+        self.assertEqual(sent, [(SID, "Б — SQLite")])
+        await until(lambda: any("→ «Б — SQLite»" in t for t in self.texts("editMessageText")))
+        # the next outcome: seen in the app before the pager runs — no call; at the computer — no call either
+        await run_hook(ev("UserPromptSubmit", prompt="Дальше"))
+        await run_hook(ev("Stop", last_assistant_message="Готово, жду решения.", background_tasks=[]))
+        await until(lambda: self.p.attn.rec[SID]["line"] == "Готово, жду решения.")
+        self.p.attn.rec[SID]["model"] = True
+        self.p.env["PULT_FORCE_AWAY"] = "0"
+        await self.p.page_due()
+        self.assertEqual(len(self.fake.of("sendMessage")), n)
+        self.p.env["PULT_FORCE_AWAY"] = "1"
+        await self.p.api_presence(True)
+        await self.p.page_due()
+        self.assertEqual(len(self.fake.of("sendMessage")), n)                         # in the app
+        await self.p.api_presence(False)
+        await self.p.page_due()
+        self.assertEqual(len(self.fake.of("sendMessage")), n + 1)                     # away now — paged
+        await self.p.api_seen(SID)
+        await until(lambda: any(t.startswith("✓ <b>Сделай кэш</b> · Готово, жду решения.") for t in self.texts("editMessageText")))
+        # a restart: outcomes from before it are not paged again in a burst
+        self.p.attn.rec[SID].update(seen=False, paged=False)
+        self.p.attn.rec[SID].pop("paged")
+        self.p.attn.save()
+        p2 = pultd.Pult(self.p.env, self.p.tg, self.store)
+        self.assertTrue(p2.attn.rec[SID]["paged"])
+        # a dialog in the topic: the owner's message → one message per turn (the turn's own message goes away)
+        self.p.expect[SID] = 555
+        await run_hook(ev("UserPromptSubmit", prompt="Как дела?"))
+        replies_555 = lambda: [d for d in self.fake.of("sendMessage") if '"message_id": 555' in d.get("reply_parameters", "")]
+        await until(lambda: replies_555())                                            # the turn's message, under theirs
+        await run_hook(ev("Stop", last_assistant_message="Всё хорошо.", background_tasks=[]))
+        await until(lambda: any(t.startswith("✅") and "Всё хорошо." in t for t in self.texts()))
+        await until(lambda: self.fake.of("deleteMessage"))
+        res = next(d for d in self.fake.of("sendMessage") if d["text"].startswith("✅"))
+        self.assertEqual(json.loads(res["reply_parameters"])["message_id"], 555)
+        self.assertEqual(self.fake.of("deleteMessage")[-1]["message_id"], str(intro_id(self.fake, replies_555()[0])))
+        await self.p.page_due()
+        self.assertFalse(any("Всё хорошо" in t and t.startswith("🔴") for t in self.texts()))   # the answer was the call
+
+    async def test_pager_requests_and_limit(self):
+        # as a pager, a permission request waits in the app while the owner is at the computer and is posted once
+        # they leave; a turn broken off by the usage limit is paged with "continue at …", which schedules the
+        # word "continue" for the reset and says it then
+        self.p.env.update(PULT_APP_LINK="https://t.me/b/pult", PULT_RELAY_URL="wss://h.example/pult/agent",
+                          PULT_FORCE_AWAY="0")
+        self.p._procs = (time.monotonic() + 1e6, None)
+        hook = await run_hook(ev("PermissionRequest", tool_name="Bash", tool_input={"command": "make deploy"}), wait=False)
+        await until(lambda: self.p.req_by_rid)
+        await asyncio.sleep(0.2)
+        self.assertFalse(any("make deploy" in t for t in self.texts()))
+        self.p.env["PULT_FORCE_AWAY"] = "1"
+        await self.p.page_due()
+        self.assertTrue(any("make deploy" in t for t in self.texts()))
+        rid = next(iter(self.p.req_by_rid))
+        await self.p.on_callback({"id": "c2", "from": {"id": OWNER}, "data": "p:%s:y" % rid})
+        await hook.wait()
+        reset = time.time() + 3600
+        self.p._usage = {"limits": [{"kind": "session", "percent": 100, "resets_at": reset}], "ts": time.time()}
+        await run_hook(ev("UserPromptSubmit", prompt="Дальше"))
+        await run_hook(ev("StopFailure", error="rate_limit", last_assistant_message="Limit reached"))
+        await until(lambda: (self.p.attn.rec.get(SID) or {}).get("fail") == "rate_limit")
+        await self.p.page_due()
+        page = self.fake.of("sendMessage")[-1]
+        self.assertTrue(page["text"].startswith("⚠️ <b>Дальше</b>\nупёрся в лимит подписки"), page["text"])
+        self.assertIn('"z:%s"' % SID, page["reply_markup"])
+        await self.p.on_callback({"id": "c3", "from": {"id": OWNER}, "data": "z:" + SID})
+        self.assertAlmostEqual(self.p.attn.resume[SID], reset + 60, delta=1)
+        self.assertEqual((await self.p.api_overview())["usage_pct"], 100)
+        sent = []
+
+        async def fake_send(sid, text, fork=False, files=None):
+            sent.append((sid, text))
+            return {"ok": True, "how": "resume"}
+        self.p.attn.resume[SID] = time.time() - 1
+        with mock.patch.object(self.p, "api_send", fake_send):
+            await self.p.resume_due()
+        self.assertEqual(sent, [(SID, pultd.CONTINUE)])
+        self.assertEqual(self.p.attn.resume, {})
+        # the topic's pinned card shows who waits
+        self.store.set_topic(PKEY, "/Users/x/proj", "proj", 77)
+        self.p.attn.rec[SID]["seen"] = False
+        await self.p.cards_status()
+        await until(lambda: any(t.startswith("<b>🔴 ждут тебя: 1") for t in self.sent()))
+
+    async def test_catchup(self):
+        # "While you were away": the app comes back after an hour or more — the turns since, what is done, what waits
+        self.p._procs = (time.monotonic() + 1e6, None)
+        self.p.app_seen = time.time() - 2 * 3600
+        self.p.attn.finished(SID, PKEY, 30, "", "Отчёт готов.", waits=False, now=time.time() - 3000)
+        self.p.attn.finished("99999999-2222-3333-4444-555555555555", PKEY, 30, "", "Нужен выбор.", waits=True)
+        self.assertIsNone((await self.p.api_overview())["catchup"])
+        await self.p.api_presence(True)
+        c = (await self.p.api_overview())["catchup"]
+        self.assertEqual((c["turns"], c["projects"], c["done"], c["mine"]), (2, 1, 1, 1))
+        self.assertEqual([(x["name"], x["line"], x["you"]) for x in c["lines"]], [("proj", "Нужен выбор.", True)])
+        await self.p.api_presence(False)                                               # the visit is over
+        self.assertIsNone((await self.p.api_overview())["catchup"])
 
     async def test_load_view(self):
         # the load view: the computer and each session with a claude process; a background task is found among the

@@ -55,6 +55,60 @@ button:focus-visible, a:focus-visible, label:focus-visible { outline: 2px solid 
 .gear { flex: none; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center;
   border-radius: 12px; background: var(--card); color: var(--muted); text-decoration: none; }
 .where .modes { margin: 8px 0 0; }
+.where-b.top-load { flex: none; font-size: 14px; font-weight: 600; white-space: nowrap; }
+.top-load .warn { color: var(--warn); } .top-load .bad { color: var(--danger); }
+
+/* Home after stage V: "Your move" cards (a red bar — the one loud thing), then the projects board, a line per session */
+.card.mine { border-left: 3px solid var(--danger); }
+.card.mine .now { font-weight: 500; }
+.ln { margin-top: 3px; font-size: 14.5px; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ln.dim { font-size: 14px; -webkit-line-clamp: 1; }
+.row.compact { margin-top: 8px; }
+.row.compact .btn { min-height: 36px; padding: 6px 12px; font-size: 14.5px; }
+.nowrap { white-space: nowrap; flex: none; }
+.small0 { font-size: 13.5px; }
+.list.proj { margin-bottom: 10px; }
+.proj-h { padding-top: 10px; padding-bottom: 10px; }
+.proj-h b { font-size: 16px; }
+.proj-h .dim { font-size: 13.5px; text-align: right; }
+.brow { padding: 9px 14px 10px; }
+.brow .item-h b { font-weight: 500; }
+.brow.fresh .item-h b { font-weight: 700; }
+.brow.rest .item-h b, .brow.rest .ln { color: var(--muted); }
+.brow .meta { flex: none; display: flex; align-items: baseline; gap: 8px; font-size: 13.5px; }
+.brow .meta .pct { font-size: 12.5px; color: var(--muted); } .brow .meta .pct.warn { color: var(--warn); } .brow .meta .pct.bad { color: var(--danger); }
+.item.more { padding: 9px 14px; font-size: 14px; }
+.okmark { color: var(--ok); font-weight: 700; }
+/* ready replies: one tap sends (with a few seconds to undo); your own words right in the card */
+.qr { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.qr button { border: 1px solid var(--accent); color: var(--accent); background: none; border-radius: 99px; padding: 6px 12px;
+  font-size: 14px; font-weight: 600; cursor: pointer; min-height: 34px; }
+.qr button:active { opacity: .7; }
+.qr.wait { align-items: center; gap: 12px; font-size: 14px; color: var(--muted); min-height: 34px; }
+.qr.wait button.link { border: 0; border-radius: 0; padding: 0; min-height: 0; font-weight: 600; color: var(--link); }
+.reply { display: flex; gap: 8px; margin-top: 9px; align-items: center; }
+.reply input { flex: 1; min-width: 0; border-radius: 99px; padding: 8px 14px; font-size: 15px; }
+.reply .clip, .reply .btn.send { flex: none; }
+.foot { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; }
+.foot .link { padding: 8px 0 0; }
+/* "While you were away" — the one card in the accent colour */
+.card.catch { border-left: 3px solid var(--accent); }
+.card.catch .ln { -webkit-line-clamp: 1; }
+.card .x { background: none; border: 0; color: var(--muted); font-size: 20px; line-height: 1; padding: 0 0 0 8px; cursor: pointer; vertical-align: middle; }
+/* the session's outcome, at the end of the chat right above the field */
+.card.outcome .k { color: var(--muted); font-size: 13.5px; font-weight: 600; }
+.card.outcome .o-l { margin-top: 4px; overflow-wrap: anywhere; }
+.card.outcome .o-l b { font-weight: 600; }
+/* a long message that is not the last: folded to a few lines */
+.md.fold { max-height: 9.5em; overflow: hidden; position: relative;
+  -webkit-mask-image: linear-gradient(#000 60%, transparent); mask-image: linear-gradient(#000 60%, transparent); }
+.more2 { padding: 4px 0 0; }
+/* the project screen: its summary under the name, a new task under the thumb */
+.project .sum { font-size: 14px; margin: 2px 2px 4px; }
+.stick { position: sticky; bottom: calc(52px + env(safe-area-inset-bottom)); padding: 12px 0 6px; margin-top: 8px;
+  background: linear-gradient(transparent, var(--bg) 35%); }
+/* pictures Claude shows (mock-ups, screenshots): bigger than the owner's thumbnails, a tap opens them full screen */
+.atts.shown img.att { width: 100%; max-width: 320px; height: auto; max-height: 420px; object-fit: contain; object-position: left top; }
 
 .list { background: var(--card); border-radius: 14px; overflow: hidden; }
 .item { display: block; width: 100%; text-align: left; background: none; border: 0; border-bottom: 1px solid var(--line);

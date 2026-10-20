@@ -121,6 +121,17 @@ class TranscriptTest(unittest.TestCase):
         items = PW.transcript_page(str(p))["items"]
         self.assertEqual([(i["text"], i.get("voice")) for i in items], [("сделай деплой", True)])
 
+    def test_shown_pictures(self):
+        # a picture Claude shows: a path into Pult's inbox in its reply → under the message, the path out of the text;
+        # a picture anywhere else stays plain text
+        p = T.TMP / "shown.jsonl"
+        pic = "/Users/x/.local/share/pult/inbox/2026-10/claude-mock-home.png"
+        p.write_text(T.tline("assistant", "Вот макет «Главной»:\n\n`%s`\n\nи ещё раз %s. Чужой: /tmp/a.png" % (pic, pic)) + "\n")
+        item = PW.transcript_page(str(p))["items"][0]
+        self.assertEqual(item["att"], [{"name": "2026-10/claude-mock-home.png", "image": True, "inbox": True}])
+        self.assertNotIn("inbox", item["text"])
+        self.assertIn("/tmp/a.png", item["text"])
+
     def test_updates(self):
         # Claude's own lines about its progress: the transcript marks the entry thinkingDisplay "updates" (the VS Code
         # tab shows it as "summary"); plain thinking stays private, empty lines are skipped, signatures never leave

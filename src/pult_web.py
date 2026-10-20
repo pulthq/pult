@@ -26,6 +26,9 @@ TEXT_MAX = 20000               # characters of one message in the app
 IO_MAX = 1500                  # characters of tool input and output
 
 _NOISE = re.compile(r"<(system-reminder|ide_opened_file|ide_selection|ide_diagnostics)>.*?</\1>", re.S)
+# a picture Claude shows: a path into Pult's inbox in its reply (a screenshot, a mock-up it rendered). The app shows
+# it under the message, the bare path leaves the text; only the inbox can be shown (api_inbox checks it again)
+_SHOWN = re.compile(r"`?(/[^\s`'\"<>()\[\]]*/inbox/\d{4}-\d{2}/[\w.-]+\.(?:png|jpe?g|webp|gif))`?", re.I)
 
 
 def log(*a):
@@ -179,7 +182,11 @@ def transcript_page(path, before=None, after=None, cwd=None, page=PAGE):
             if not isinstance(b, dict):
                 continue
             if b.get("type") == "text" and b.get("text", "").strip():
-                items.append({"k": "text", "text": _short(b["text"], TEXT_MAX), "ts": ts})
+                shown = _SHOWN.findall(b["text"])
+                item = {"k": "text", "text": _short(_SHOWN.sub("", b["text"]) if shown else b["text"], TEXT_MAX), "ts": ts}
+                if shown:
+                    item["att"] = [inbox_name(p) for p in dict.fromkeys(shown)]
+                items.append(item)
             elif updates and b.get("type") == "thinking" and (b.get("thinking") or "").strip():
                 items.append({"k": "update", "text": _short(b["thinking"].strip(), TEXT_MAX), "ts": ts})
             elif b.get("type") == "tool_use":

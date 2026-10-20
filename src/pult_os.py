@@ -166,6 +166,24 @@ def input_idle():
     return None
 
 
+def screen_locked():
+    """Whether the screen is locked: True / False, or None where the system can't tell. macOS — the console session's
+    CGSSessionScreenIsLocked in the IORegistry (the key is there only while locked); Linux — logind's LockedHint."""
+    if KIND == "mac":
+        out = subprocess.run(["ioreg", "-n", "Root", "-d1", "-a"], capture_output=True, timeout=5).stdout \
+            if shutil.which("ioreg") else b""
+        try:
+            users = plistlib.loads(out).get("IOConsoleUsers") or []
+        except Exception:
+            return None
+        console = [u for u in users if u.get("kCGSSessionOnConsoleKey")]
+        return any(bool(u.get("CGSSessionScreenIsLocked")) for u in console) if console else None
+    if KIND == "linux" and os.environ.get("XDG_SESSION_ID") and shutil.which("loginctl"):
+        out = run("loginctl", "show-session", os.environ["XDG_SESSION_ID"], "-p", "LockedHint", "--value") or ""
+        return {"yes": True, "no": False}.get(out.strip())
+    return None
+
+
 def _dbus(dest, path, method):
     """A call on the session bus with no arguments: gdbus (GLib), else dbus-send. Its output, or None."""
     if shutil.which("gdbus"):

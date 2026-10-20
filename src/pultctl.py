@@ -32,7 +32,10 @@ def cmd_status():
     state, pid = S.service(lbl)
     row("cli.st.daemon", T("cli.st.running", state=state, pid=pid) if state else T("cli.st.not_loaded", label=lbl))
     row("cli.st.sock", T("cli.st.answers") if S.sock_ok() else T("cli.st.no"))
-    row("cli.st.hooks", ", ".join(S.hooks_installed()) or T("cli.hooks.off"))
+    hooks = S.hooks_installed()
+    missing = [e for e in S.pult_hook.EVENTS if e not in hooks] if hooks else []     # a newer Pult added an event
+    row("cli.st.hooks", ", ".join(hooks) + (T("cli.hooks.missing", events=", ".join(missing)) if missing else "")
+        if hooks else T("cli.hooks.off"))
     row("cli.st.settings", S.tilde(S.ENV_FILE) if env.get("PULT_BOT_TOKEN") else T("cli.st.no_token"))
     if env.get("PULT_BOT_TOKEN"):
         routes = ([("cli.st.via_proxy", env["PULT_PROXY"])] if env.get("PULT_PROXY") else []) + [("cli.st.direct", "")]

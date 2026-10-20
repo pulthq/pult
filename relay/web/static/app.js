@@ -78,6 +78,19 @@ function useLive(load, deps, match, every = 30000) {
   return [data, err, setData];
 }
 
+// where you are, for Pult (stage V): the app says "on screen" while it is visible — every 20 s and at once on a change
+// (the page's visibility and Telegram's own activated / deactivated). Pult then calls you in the app, not in Telegram
+let shownTimer = 0;
+const sayShown = () => {
+  const on_ = document.visibilityState === "visible" && !(tg && tg.isActive === false);
+  if (conn.ready) api("presence", { on: on_ }).catch(() => {});
+  clearInterval(shownTimer);
+  if (on_) shownTimer = setInterval(() => conn.ready && api("presence", { on: true }).catch(() => {}), 20000);
+};
+document.addEventListener("visibilitychange", sayShown);
+if (tg && tg.onEvent) { tg.onEvent("activated", sayShown); tg.onEvent("deactivated", sayShown); }
+on("ready", sayShown);
+
 function useConn() {
   const [, set] = useState(0);
   // subscribe, then re-read once: the connection may have changed between the first render and this effect
@@ -113,6 +126,18 @@ function ago(ts) {
   if (new Date(now - 86400000).toDateString() === d.toDateString()) return t("ago.yesterday", { hm: hhmm(d) });
   return d.toLocaleDateString(locale(), { day: "2-digit", month: "2-digit" }) + " " + hhmm(d);
 }
+// the board's short time: "now", "12 min", "14:05" today, "yesterday", "18.10" — a row keeps its title on one line
+function agoShort(ts) {
+  if (!ts) return "";
+  const d = toDate(ts), now = new Date(), s = (now - d) / 1000;
+  if (s < 60) return t("ago.s.now");
+  if (s < 3600) return t("dur.m", { n: Math.floor(s / 60) });
+  if (d.toDateString() === now.toDateString()) return hhmm(d);
+  if (new Date(now - 86400000).toDateString() === d.toDateString()) return t("ago.s.yesterday");
+  return d.toLocaleDateString(locale(), { day: "2-digit", month: "2-digit" });
+}
+// a duration at a glance: whole hours past the first one ("2 h"), minutes before
+const durShort = (sec) => (sec >= 3600 ? t("dur.h", { n: Math.floor(sec / 3600) }) : dur(sec));
 function resetText(ts) {
   if (!ts) return "—";
   const d = new Date(ts * 1000), left = ts - Date.now() / 1000;
@@ -284,7 +309,7 @@ function Pic({ a }) {
 }
 
 // the model of a session from Telegram: aliases Claude Code accepts, plus whatever the settings say
-const MODELS = [["", "model.default"], ["opus", "Opus"], ["sonnet", "Sonnet"], ["haiku", "Haiku"]];
+const MODELS = [["", "model.default"], ["fable", "Fable"], ["opus", "Opus"], ["sonnet", "Sonnet"], ["haiku", "Haiku"]];
 const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
 const effortName = (e) => (!e ? t("pick.default") : EFFORT_N[e] ? t("effort." + e) : e);
 // effort as VS Code draws it by its model name: five dots, as many lit as the level
@@ -380,7 +405,7 @@ if ((!location.hash || tgHash(location.hash)) && start) {
 
 // ---------- cards: question, permission request, plan ----------
 
-function Req({ r, onDone, showWhere = true }) {
+function Req({ r, onDone, showWhere = true, showProject = true }) {
   const [busy, setBusy] = useState(false);
   const [why, setWhy] = useState(null);
   const [picks, setPicks] = useState({});
@@ -395,7 +420,7 @@ function Req({ r, onDone, showWhere = true }) {
     } catch (e) { alertBox(e.message); }
     setBusy(false);
   };
-  const where = showWhere && html`<div class="card-h"><b>${r.title}</b>${r.project !== r.title ? html`<span class="dim"> · ${r.project}</span>` : ""}</div>`;
+  const where = showWhere && html`<div class="card-h"><b>${r.title}</b>${showProject && r.project !== r.title ? html`<span class="dim"> · ${r.project}</span>` : ""}</div>`;
   if (r.kind === "ask") {
     return html`<div class="card ask">${where}
       ${r.questions.map((qn, i) => r.chosen && r.chosen[i] ? html`<div class="q done"><div class="q-t">${qn.question}</div>→ <b>${r.chosen[i].join(", ")}</b></div>` : html`
@@ -434,35 +459,12 @@ function Req({ r, onDone, showWhere = true }) {
 // Claude's background tasks still running after a turn; when one ends, Claude starts a new turn by itself
 const bgLine = (bg) => t("bg", { list: bg.map(q).join(", ") });
 
-function Row({ s, now, onClick, onBg }) {
-  // "in the background" opens what those tasks cost the computer; the rest of the row opens the session
-  const bgTap = onBg && ((e) => { e.stopPropagation(); onBg(s); });
-  const st = s.state === "ask" ? html`<span class="chip warn">${t("st.ask")}</span>`
-    : s.state === "work" ? html`<span class="chip ok">${t("st.work", { dur: s.started ? dur(now - s.started) : "" })}</span>`
-    : s.bg && s.bg.length ? html`<span class="chip tap" onClick=${bgTap}>${t("st.bg")}</span>`
-    : html`<span class="chip">${t("st.open")}</span>`;
-  return html`<button class="item" onClick=${onClick}>
-    <div class="item-h"><b>${s.driven ? "📱 " : ""}${s.title}</b>${st}</div>
-    <div class="dim">${[s.project !== s.title ? s.project : "", s.prompt ? q(s.prompt) : s.note || ""].filter(Boolean).join(" · ")}</div>
-    ${s.now && html`<div class="now">💬 ${s.now}</div>`}
-    ${s.bg && s.bg.length > 0 && html`<div class="bg tap" onClick=${bgTap}>${bgLine(s.bg)}${onBg ? " ›" : ""}</div>`}
-  </button>`;
-}
-
 // ---------- the load on the computer ----------
 
 // cores a process keeps busy: "1 core", "0.3 cores" — "1 ядро", "0,3 ядра", "5 ядер"
 const coresText = (c) => (c >= 0.95 && Math.abs(c - Math.round(c)) < 0.05 ? Math.round(c) + " " + plural(Math.round(c), "core") : num(c, 1) + " " + t("cores.frac"));
 const memPct = (l) => (l.mem_total && l.mem_used != null ? Math.round(l.mem_used * 100 / l.mem_total) : null);
 const stateWord = (st) => (st === "work" ? t("load.st.work") : st === "ask" ? t("st.ask") : st === "bg" ? t("st.bg") : "");
-
-// the Home line: the computer's processor and memory now, and what Claude's sessions hold; a tap — the load screen
-function LoadLine({ l }) {
-  const m = memPct(l);
-  return html`<button class="where-b load-b" onClick=${() => go("#/load")}>
-    <b><span class=${level(l.cpu)}>${t("load.cpu.short", { cpu: pct(l.cpu) })}</span>${m !== null ? html` · <span class=${level(m)}>${t("load.mem.short", { mem: m + " %" })}</span>` : ""}</b>
-    <span class="dim">${t("load.claude", { mem: bytes(l.claude.mem) })}</span><span class="caret">▸</span></button>`;
-}
 
 // what runs under a session: Claude's command in the background (⚙️) or in a turn (▶), another program (·)
 function Cmds({ cmds, now }) {
@@ -481,15 +483,15 @@ function LoadRow({ s, now }) {
 }
 
 // the computer: processor and memory now, then every Claude session on it, the busiest first; resting ones folded
-function Load() {
+function Load({ embedded }) {
   const now = useNow(5000);
   const [d, err] = useLive(() => api("load"), [], () => false, 5000);
   const [rest, setRest] = useState(false);
   if (!d) return html`<${Loading} err=${err}/>`;
-  if (!d.ok) return html`<div><h2>${t("load.title")}</h2><div class="empty">${t("load.none")}</div></div>`;
+  if (!d.ok) return embedded ? "" : html`<div><h2>${t("load.title")}</h2><div class="empty">${t("load.none")}</div></div>`;
   const l = d.mac, m = memPct(l);
   const busy = d.sessions.filter((s) => !s.idle), idle = d.sessions.filter((s) => s.idle);
-  return html`<div><h2>${t("load.title")}</h2>
+  return html`<div>${embedded ? html`<h3>${t("load.title")}</h3>` : html`<h2>${t("load.title")}</h2>`}
     <div class="list">
       <div class="lim"><div class="item-h"><b>${t("load.cpu")}</b><b class=${"pct " + level(l.cpu)}>${pct(l.cpu)}</b></div>
         <div class="meter"><i class=${level(l.cpu)} style=${"width:" + Math.min(100, l.cpu) + "%"}></i></div>
@@ -534,7 +536,7 @@ function BgSheet({ sid, onClose, fixed }) {
 
 // where the owner is: it only changes the sound, messages always arrive
 const MODES = ["auto", "mac", "phone"];
-function ModePick({ mode, onSet }) {
+function ModePick({ mode, onSet, pager }) {
   const pick = async (m) => {
     if (m === mode) return;
     try { await api("prefs", { mode: m }); onSet(m); haptic("success"); } catch (e) { alertBox(e.message); }
@@ -542,50 +544,180 @@ function ModePick({ mode, onSet }) {
   const cur = MODES.includes(mode) ? mode : "auto";
   return html`<div class="modes"><div class="seg">${MODES.map((k) =>
     html`<button key=${k} class=${k === cur ? "on" : ""} onClick=${() => pick(k)}>${t("mode." + k + ".btn")}</button>`)}</div>
-    <div class="dim small">${t("mode." + cur + ".about")}</div></div>`;
+    <div class="dim small">${t("mode." + cur + (pager ? ".pager" : ".about"))}</div></div>`;
 }
 
 // the Home strip: where you are in one line (tap — the mode picker), and the way to the settings. The strip is a
 // setting, not the news: what waits for an answer comes right under it
 const GEAR = html`<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`;
-function Where({ mac, onSet }) {
+// the top line stays grey while all is well: a colour means look here
+const quiet = (v, bad) => (v >= bad ? "bad" : v >= bad - 10 ? "warn" : "dim");
+function Top({ mac, load, usagePct, pager, onSet }) {
   const [open, setOpen] = useState(false);
   const cur = MODES.includes(mac.mode) ? mac.mode : "auto";
-  const line = cur === "auto" ? (mac.away ? t("mac.away.short", { dur: dur(mac.idle) }) : t("mac.here.short")) : t("mode." + cur + ".short");
+  const line = cur === "auto" ? (mac.away ? t("mac.away.short", { dur: durShort(mac.idle) }) : t("mac.here.short")) : t("mode." + cur + ".short");
+  const m = load ? memPct(load) : null;
+  const lim = usagePct;
   return html`<div class="where">
     <div class="where-h">
-      <button class="where-b" aria-expanded=${open} onClick=${() => setOpen(!open)}><b>${t("mode." + cur + ".btn")}</b><span class="dim">${line}</span><span class="caret">${open ? "▾" : "▸"}</span></button>
+      <button class="where-b" aria-expanded=${open} onClick=${() => setOpen(!open)}><b>${t("mode." + cur + ".btn").split(" ")[0]}</b><span class="dim">${line}</span></button>
+      ${(load || lim != null) && html`<button class="where-b top-load" onClick=${() => go("#/usage")}>${lim != null ? html`<span class=${quiet(lim, 80)}>${t("top.lim", { v: lim + "\u00a0%" })}</span><span class="dim"> · </span>` : ""}${load ? html`<span class=${quiet(load.cpu, 90)}>${t("top.cpu", { v: pct(load.cpu) })}</span>` : ""}${m !== null && m >= 90 ? html`<span class="dim"> · </span><span class="bad">${t("top.mem", { v: m + "\u00a0%" })}</span>` : ""}</button>`}
       <a class="gear" href="#/settings" aria-label=${t("settings")}>${GEAR}</a>
     </div>
-    ${open && html`<${ModePick} mode=${cur} onSet=${onSet}/>`}
+    ${open && html`<${ModePick} mode=${cur} onSet=${onSet} pager=${pager}/>`}
   </div>`;
 }
 
+// a message from a card or a ready reply into the session: the same ways as the session's own field — straight in,
+// into the tab, or a copy when it is open on the computer without Pult (asked first)
+async function sendTo(sid, text) {
+  let r = await api("send", { sid, text });
+  if (r.need === "fork") {
+    if (!(await confirmBox(t("fork.ask")))) return false;
+    r = await api("send", { sid, text, fork: true });
+    if (r.how === "fork") alertBox(t("fork.started"));
+  }
+  haptic("success");
+  return true;
+}
+
+// ready replies the model took from Claude's message: one tap sends, with three seconds to change your mind
+const UNDO = 3;
+function Replies({ sid, replies, onSent }) {
+  const [wait, setWait] = useState(null);         // {text, left}
+  const timer = useRef(0);
+  useEffect(() => () => clearInterval(timer.current), []);
+  if (!replies || !replies.length) return "";
+  const pick = (text, e) => {
+    e && e.stopPropagation();
+    clearInterval(timer.current);
+    setWait({ text, left: UNDO });
+    timer.current = setInterval(() => setWait((w) => {
+      if (!w) return w;
+      if (w.left > 1) return Object.assign({}, w, { left: w.left - 1 });
+      clearInterval(timer.current);
+      sendTo(sid, w.text).then((ok) => ok && onSent && onSent(w.text)).catch((err) => alertBox(err.message));
+      return null;
+    }), 1000);
+  };
+  const undo = (e) => { e.stopPropagation(); clearInterval(timer.current); setWait(null); };
+  return wait ? html`<div class="qr wait"><span>${t("reply.will", { text: wait.text })} · ${wait.left}</span><button class="link" onClick=${undo}>${t("undo")}</button></div>`
+    : html`<div class="qr">${replies.map((x) => html`<button key=${x} onClick=${(e) => pick(x, e)}>${x}</button>`)}</div>`;
+}
+
+// your own words right in the card: a line and the microphone, Enter or the arrow sends
+function QuickReply({ sid, stt, onSent }) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const v = useRecorder((w) => setText((c) => (c ? c.replace(/\s+$/, "") + " " : "") + w));
+  const send = async () => {
+    if (!text.trim() || busy) return;
+    setBusy(true);
+    try { if (await sendTo(sid, text.trim())) { setText(""); onSent && onSent(text.trim()); } } catch (e) { alertBox(e.message); }
+    setBusy(false);
+  };
+  return html`<div class="reply" onClick=${(e) => e.stopPropagation()}>
+    <input ref=${plainField} placeholder=${t("reply.own")} value=${text} onInput=${(e) => setText(e.target.value)}
+      onKeyDown=${(e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); send(); } }}/>
+    ${stt ? html`<${Mic} v=${v} disabled=${busy}/>` : ""}
+    ${text.trim() ? html`<button class="btn send" aria-label=${t("send")} disabled=${busy} onClick=${send}>↑</button>` : ""}</div>`;
+}
+
+// "continue when the usage limit resets": Pult says "continue" in the session itself at that time
+function ResumeAt({ sid, resume, reset, onSet }) {
+  const set = async (at) => {
+    try { const r = await api("resume_at", { sid, at }); haptic("success"); onSet && onSet(r.at); } catch (e) { alertBox(e.message); }
+  };
+  if (resume) return html`<div class="qr wait"><span>${t("resume.set", { hm: hhmm(toDate(resume)) })}</span><button class="link" onClick=${(e) => { e.stopPropagation(); set(null); }}>${t("resume.cancel")}</button></div>`;
+  return html`<div class="qr"><button onClick=${(e) => { e.stopPropagation(); set(reset || 0); }}>${reset ? t("resume.at", { hm: hhmm(toDate(reset)) }) : t("resume.after")}</button></div>`;
+}
+
+// "Your move": a session that ended and waits for you — how long, what came out, what is needed; ready replies,
+// your own words, "Got it" to put it to rest; the title opens the session
+function Mine({ r, now, onGot, stt, showProject = true }) {
+  const [busy, setBusy] = useState(false);
+  const [resume, setResume] = useState(r.resume);
+  const got = async (e) => {
+    e && e.stopPropagation();
+    setBusy(true);
+    try { await api("seen", { sid: r.sid }); haptic("success"); onGot && onGot(r.sid); } catch (err) { alertBox(err.message); }
+    setBusy(false);
+  };
+  const open = () => go("#/s/" + r.sid);
+  const sent = () => onGot && onGot(r.sid);
+  return html`<div class=${"card mine" + (r.state === "fail" ? " fail" : "")}>
+    <div class="item-h tap" onClick=${open}><b>${r.state === "fail" ? "⚠️ " : ""}${r.title}</b><span class="dim nowrap">${t("mine.waits", { dur: nb(dur(now - r.since)) })}</span></div>
+    ${showProject && r.project && r.project !== r.title && html`<div class="dim small0 tap" onClick=${open}>${r.project}</div>`}
+    ${r.need ? html`<div class="ln dim tap" onClick=${open}>${r.line}</div><div class="now tap" onClick=${open}>${r.need}</div>` : html`<div class="now tap" onClick=${open}>${r.line}</div>`}
+    ${r.fail === "rate_limit" ? html`<${ResumeAt} sid=${r.sid} resume=${resume} reset=${r.reset} onSet=${setResume}/>` : html`<${Replies} sid=${r.sid} replies=${r.replies} onSent=${sent}/>`}
+    <${QuickReply} sid=${r.sid} stt=${stt} onSent=${sent}/>
+    <div class="foot"><button class="link" disabled=${busy} onClick=${got}>${t("mine.got")}</button><button class="link" onClick=${open}>${t("mine.session")}</button></div>
+  </div>`;
+}
+
+// "While you were away": what happened since you last had the app open (an hour or more ago) — turns, what is done,
+// what waits; a line per project. Gone with the next long break, or with ×
+function Catchup({ c, onClose }) {
+  return html`<div class="card catch"><div class="item-h"><b>${t("catch.title")}</b><span class="dim nowrap">${t("catch.since", { hm: agoShort(c.from) })}
+    <button class="x" aria-label=${t("close")} onClick=${onClose}>×</button></span></div>
+    <div class="dim">${[t("catch.turns", { n: c.turns, turns: plural(c.turns, "turn"), p: c.projects }), c.done ? "✓ " + c.done : "", c.mine ? "🔴 " + c.mine : ""].filter(Boolean).join(" · ")}</div>
+    ${c.lines.map((x) => html`<div class="ln tap" key=${x.pkey} onClick=${() => go("#/p/" + encodeURIComponent(x.pkey))}>${x.you ? "🔴" : x.fail ? "⚠️" : "✓"} ${x.name} — ${x.line}</div>`)}</div>`;
+}
+
+// one session on the board: what it does now or how its last turn ended, in a line or two
+function BoardRow({ r, now, onBg }) {
+  const bgTap = (e) => { e.stopPropagation(); onBg(r); };
+  const right = r.state === "work" ? html`<span class="chip ok">${t("st.work", { dur: r.since ? dur(now - r.since) : "" })}</span>`
+    : r.state === "bg" ? html`<span class="chip tap" onClick=${bgTap}>${t("st.bg")}</span>`
+    : html`<span class="dim nowrap">${agoShort(r.ts)}</span>`;
+  const icon = r.state === "done" ? html`<span class="okmark">✓ </span>` : r.driven ? "📱 " : "";
+  return html`<button class=${"item brow" + (r.state === "idle" ? " rest" : "") + (r.state === "done" ? " fresh" : "")} onClick=${() => go("#/s/" + r.sid)}>
+    <div class="item-h"><b>${icon}${r.title}</b><span class="meta">${r.ctx != null ? html`<span class=${"pct " + level(r.ctx)}>${r.ctx} %</span>` : ""}${right}</span></div>
+    ${r.line && html`<div class="ln">${r.state === "work" ? "💬 " : ""}${r.line}</div>`}
+    ${r.bg && r.bg.length > 0 && html`<div class="bg tap" onClick=${bgTap}>${bgLine(r.bg)} ›</div>`}
+  </button>`;
+}
+
+// a project on the board: who works and who waits for you, today's turns; its live sessions; the resting folded
+function ProjectBlock({ p, now, onBg }) {
+  const open = () => go("#/p/" + encodeURIComponent(p.pkey));
+  const meta = [p.work ? "🟢 " + p.work : "", p.mine ? "🔴 " + p.mine : "",
+    p.turns ? t("proj.turns", { n: p.turns, turns: plural(p.turns, "turn") }) : "",
+    !p.rows.length && p.resting ? t("proj.resting", { n: p.resting }) : ""].filter(Boolean).join(" · ");
+  return html`<div class="list proj">
+    <button class="item proj-h" onClick=${open}><div class="item-h"><b>${p.name}</b><span class="dim">${meta || t("proj.quiet")}</span></div></button>
+    ${p.rows.map((r) => html`<${BoardRow} key=${r.sid} r=${r} now=${now} onBg=${onBg}/>`)}
+    ${p.rows.length > 0 && p.resting > 0 && html`<button class="item more dim" onClick=${open}>${t("row.resting", { n: p.resting, rest: plural(p.resting, "rest") })}</button>`}
+  </div>`;
+}
+
+// Home (stage V, "whose move"): one line on top — where you are, the computer's load, settings; then what waits for
+// you (questions and permissions to answer right here, sessions that ended and need you), then every project with
+// its live sessions. Nothing repeats: a session is either in "Your move" or on the board
 function Home() {
   const now = useNow(1000);            // "working 14 s" ticks every second: a turn in progress should look alive
   const [d, err, set] = useLive(() => api("overview"), []);
-  const [showOpen, setShowOpen] = useState(false);
   const [bgFor, setBgFor] = useState(null);
   const [openBg, closeBg] = useOverlay(!!bgFor, (v) => { if (!v) setBgFor(null); });
+  const seenN = useRef(-1);
   if (!d) return html`<${Loading} err=${err}/>`;
+  if (seenN.current < 0) seenN.current = (d.pending || []).length + (d.mine || []).length;     // no buzz on opening
   useLang(d.lang);
   const onBg = (s) => { setBgFor(s.sid); openBg(); };
-  const quiet = !d.pending.length && !d.live.length;
+  const mine = d.mine || [], board = d.board || [];
+  const n = d.pending.length + mine.length;
+  if (n > seenN.current) haptic("warning");             // a new "your move" while you look at Home — a buzz
+  seenN.current = n;
+  const gone = (sid) => set(Object.assign({}, d, { mine: mine.filter((r) => r.sid !== sid) }));
   return html`<div>
-    <${Where} mac=${d.mac} onSet=${(m) => set(Object.assign({}, d, { mac: Object.assign({}, d.mac, { mode: m }) }))}/>
-    ${d.load && html`<${LoadLine} l=${d.load}/>`}
-    ${d.pending.length > 0 && html`<h3>${t("home.pending", { n: d.pending.length })}</h3>${d.pending.map((r) => html`<${Req} key=${r.rid} r=${r}/>`)}`}
-    ${d.live.length > 0 && html`<h3>${t("home.live", { n: d.live.length })}</h3>
-      <div class="list">${d.live.map((s) => html`<${Row} key=${s.sid} s=${s} now=${now} onBg=${onBg} onClick=${() => go("#/s/" + s.sid)}/>`)}</div>`}
-    ${quiet && html`<div class="empty">${t("home.quiet")}</div>`}
-    ${d.open.length > 0 && html`<h3 class="toggle" onClick=${() => setShowOpen(!showOpen)}>${t("home.open", { n: d.open.length })} ${showOpen ? "▾" : "▸"}</h3>
-      ${showOpen && html`<div class="list">${d.open.map((s) => html`<${Row} key=${s.sid} s=${s} now=${now} onBg=${onBg} onClick=${() => go("#/s/" + s.sid)}/>`)}</div>`}`}
+    <${Top} mac=${d.mac} load=${d.load} usagePct=${d.usage_pct} pager=${d.pager} onSet=${(m) => set(Object.assign({}, d, { mac: Object.assign({}, d.mac, { mode: m }) }))}/>
+    ${d.catchup && html`<${Catchup} c=${d.catchup} onClose=${() => { api("catchup_off").catch(() => {}); set(Object.assign({}, d, { catchup: null })); }}/>`}
+    ${n > 0 && html`<h3>${t("home.mine", { n })}</h3>
+      ${d.pending.map((r) => html`<${Req} key=${r.rid} r=${r}/>`)}
+      ${mine.map((r) => html`<${Mine} key=${r.sid} r=${Object.assign({ reset: d.reset }, r)} now=${now} onGot=${gone} stt=${d.stt}/>`)}`}
+    ${board.length > 0 && html`<h3>${t("home.projects")}</h3>${board.map((p) => html`<${ProjectBlock} key=${p.pkey} p=${p} now=${now} onBg=${onBg}/>`)}`}
+    ${!n && !board.length && html`<div class="empty">${t("home.quiet")}</div>`}
     ${d.jobs && d.jobs.length > 0 && html`<h3>${t("home.jobs")}</h3><div class="list">${d.jobs.map((j) => html`<${Job} key=${j.id} j=${j} now=${now}/>`)}</div>`}
-    ${d.recent.length > 0 && html`<h3>${t("home.recent")}</h3><div class="list">${d.recent.map((x) => html`
-      <button class="item" key=${x.sid + x.ts} onClick=${() => go("#/s/" + x.sid)}>
-        <div class="item-h"><b>✅ ${x.title}</b><span class="dim">${ago(x.ts)}</span></div>
-        <div class="dim">${[x.project !== x.title ? x.project : "", x.dur ? t("home.took", { dur: dur(x.dur) }) : ""].filter(Boolean).join(" · ")}</div>
-        <div class="now">${x.text}</div></button>`)}</div>`}
     ${bgFor && html`<${BgSheet} sid=${bgFor} fixed=${true} onClose=${closeBg}/>`}
   </div>`;
 }
@@ -626,9 +758,9 @@ function Settings() {
     setKbusy(false);
   };
   return html`<div><h2>${t("settings")}</h2>
-    <h3>${t("notifications")}</h3><div class="list">${sw("vehi", t("vehi"), t("vehi.about"))}</div>
+    <h3>${t("notifications")}</h3><div class="list">${sw("pager", t("pager"), t("pager.about"))}${d.prefs.pager ? "" : sw("vehi", t("vehi"), t("vehi.about"))}${sw("brief", t("brief"), t("brief.about"))}</div>
     <h3>${t("where")}</h3>
-    <${ModePick} mode=${d.prefs.mode} onSet=${(m) => set(Object.assign({}, d, { prefs: Object.assign({}, d.prefs, { mode: m }) }))}/>
+    <${ModePick} mode=${d.prefs.mode} pager=${d.prefs.pager} onSet=${(m) => set(Object.assign({}, d, { prefs: Object.assign({}, d.prefs, { mode: m }) }))}/>
     <h3>${t("language")}</h3>
     <div class="seg">${[["en", "English"], ["ru", "Русский"]].map(([k, label]) => html`<button key=${k}
       class=${d.prefs.lang === k ? "on" : ""} onClick=${() => setLangPref(k)}>${label}</button>`)}</div>
@@ -649,29 +781,47 @@ function Settings() {
   </div>`;
 }
 
+// every project in one list, in the same grammar as the board: who waits, who works, the latest outcome; quiet ones last
 function Projects() {
   const [d, err] = useLive(() => api("projects"), []);          // live: the counts change with every turn
   if (!d) return html`<${Loading} err=${err}/>`;
   if (!d.projects.length) return html`<div><h3>${t("projects")}</h3><div class="empty">${t("projects.none")}</div></div>`;
   return html`<div><h3>${t("projects")}</h3><div class="list">${d.projects.map((p) => html`
-    <button class="item" key=${p.pkey} onClick=${() => go("#/p/" + encodeURIComponent(p.pkey))}>
-      <div class="item-h"><b>${p.name}</b><span class="dim">${ago(p.last)}</span></div>
-      ${(p.open || p.work || p.ask) ? html`<div class="chips">
-        ${p.work ? html`<span class="chip ok">${t("pj.work", { n: p.work })}</span>` : ""}
-        ${p.ask ? html`<span class="chip warn">${t("pj.ask", { n: p.ask })}</span>` : ""}
-        ${p.open ? html`<span class="chip">${t("pj.open", { n: p.open })}</span>` : ""}</div>` : ""}
-      <div class="dim path">${p.path}</div></button>`)}</div></div>`;
+    <button class=${"item brow" + (p.mine || p.work || p.open ? "" : " rest")} key=${p.pkey} onClick=${() => go("#/p/" + encodeURIComponent(p.pkey))}>
+      <div class="item-h"><b>${p.name}</b><span class="meta dim">${[p.work ? "🟢 " + p.work : "", p.mine ? "🔴 " + p.mine : "",
+        p.turns ? t("proj.turns", { n: p.turns, turns: plural(p.turns, "turn") }) : agoShort(p.last)].filter(Boolean).join(" · ")}</span></div>
+      <div class="ln">${p.line || html`<span class="dim path">${p.path}</span>`}</div></button>`)}</div></div>`;
 }
 
+// a project's screen — its board, large: what waits for you (answer right here), what runs, today's outcomes, then
+// the earlier sessions folded; a new task at the bottom, under the thumb. A red mark anywhere leads here or deeper
 function Project({ pkey }) {
-  const [d, err] = useLive(() => api("sessions", { pkey }), [pkey]);
+  const now = useNow(1000);
+  const [d, err, set] = useLive(() => api("project", { pkey }), [pkey]);
+  const [more, setMore] = useState(false);
+  const [bgFor, setBgFor] = useState(null);
+  const [openBg, closeBg] = useOverlay(!!bgFor, (v) => { if (!v) setBgFor(null); });
   if (!d) return html`<${Loading} err=${err}/>`;
-  return html`<div><h2>${d.name}</h2>
-    <button class="btn wide" onClick=${() => go("#/new?pkey=" + encodeURIComponent(pkey))}>${t("project.new")}</button>
-    <h3>${t("sessions")}</h3>${!d.sessions.length && html`<div class="empty">${t("sessions.none")}</div>`}<div class="list">${d.sessions.map((s) => html`
-      <button class="item" key=${s.sid} onClick=${() => go("#/s/" + s.sid)}>
-        <div class="item-h"><b>${s.driven ? "📱 " : ""}${s.title}</b><span class="dim">${ago(s.last)}</span></div>
-        ${s.open && html`<div class="dim">${t("open.mac")}</div>`}</button>`)}</div></div>`;
+  const onBg = (s) => { setBgFor(s.sid); openBg(); };
+  const gone = (sid) => set(Object.assign({}, d, { mine: d.mine.filter((r) => r.sid !== sid) }));
+  const waits = d.pending.length + d.mine.length;
+  const sum = [d.live.length ? "🟢 " + d.live.length : "", waits ? "🔴 " + waits : "",
+    d.turns ? t("sum.today", { n: d.turns, turns: plural(d.turns, "turn"), dur: dur(d.secs) }) : t("proj.quiet")].filter(Boolean).join(" · ");
+  return html`<div class="project">
+    <h2>${d.name}</h2><div class="sum dim">${sum}</div>
+    ${waits > 0 && html`<h3>${t("proj.waits", { n: waits })}</h3>
+      ${d.pending.map((r) => html`<${Req} key=${r.rid} r=${r} showProject=${false}/>`)}
+      ${d.mine.map((r) => html`<${Mine} key=${r.sid} r=${Object.assign({ reset: d.reset }, r)} now=${now} onGot=${gone} stt=${d.stt} showProject=${false}/>`)}`}
+    ${d.live.length > 0 && html`<h3>${t("proj.live", { n: d.live.length })}</h3><div class="list">${d.live.map((r) => html`<${BoardRow} key=${r.sid} r=${r} now=${now} onBg=${onBg}/>`)}</div>`}
+    ${d.today.length > 0 && html`<h3>${t("proj.today")}</h3><div class="list">${d.today.map((r) => html`<${BoardRow} key=${r.sid} r=${r} now=${now} onBg=${onBg}/>`)}</div>`}
+    ${!waits && !d.live.length && !d.today.length && html`<div class="empty small">${t("proj.nothing")}</div>`}
+    ${d.earlier.length > 0 && html`<h3 class="toggle" onClick=${() => setMore(!more)}>${t("proj.earlier", { n: d.earlier.length })} ${more ? "▾" : "▸"}</h3>
+      ${more && html`<div class="list">${d.earlier.map((x) => html`<button class="item brow rest" key=${x.sid} onClick=${() => go("#/s/" + x.sid)}>
+        <div class="item-h"><b>${x.driven ? "📱 " : ""}${x.title}</b><span class="meta"><span class="dim nowrap">${agoShort(x.last)}</span></span></div>
+        ${x.line ? html`<div class="ln">${x.line}</div>` : x.open ? html`<div class="ln">${t("open.mac")}</div>` : ""}</button>`)}</div>`}`}
+    <div class="stick"><button class="btn wide" onClick=${() => go("#/new?pkey=" + encodeURIComponent(pkey))}>${t("project.new")}</button></div>
+    ${bgFor && html`<${BgSheet} sid=${bgFor} fixed=${true} onClose=${closeBg}/>`}
+  </div>`;
 }
 
 // consecutive steps — one "N steps" block that expands; Claude's own lines about its progress (what the VS Code
@@ -722,6 +872,31 @@ function group(items) {
 }
 const At = ({ ts, mid }) => (ts ? html`<span class="t">${mid ? t("mid.turn") : ""}${hhmm(toDate(ts))}</span>` : "");
 
+// one of Claude's messages; a long one that is not the last is folded to a few lines — "Show all" opens it
+const LONG = 900;
+function TextMsg({ i, fold }) {
+  const [open, setOpen] = useState(false);
+  const folded = fold && !open;
+  return html`<div class="msg"><div class=${"md" + (folded ? " fold" : "")} dangerouslySetInnerHTML=${{ __html: md(i.text) }}/>
+    ${fold ? html`<button class="link more2" onClick=${() => setOpen(!open)}>${t(open ? "msg.less" : "msg.more")}</button>` : ""}
+    ${i.att && i.att.length ? html`<div class="atts shown">${i.att.map((a, k) => html`<${Pic} key=${k} a=${a}/>`)}</div>` : ""}<${At} ts=${i.ts}/></div>`;
+}
+
+// how the session's last turn ended, at the end of the chat right above the field: what came out, what is needed,
+// ready replies (or "continue after the reset"). Red while it waited for you when you opened it; a plain report gets
+// no card — the whole answer is right above
+function Outcome({ sid, out, state, now }) {
+  const [resume, setResume] = useState(out.resume);
+  const mine = state === "you" || state === "fail";
+  const head = state === "fail" ? "⚠️ " + (out.line || t("out.failed")) : state === "you" ? "🔴 " + t("out.waits", { dur: dur(now - out.ts) }) : "✓ " + t("out.done");
+  return html`<div class=${"card outcome" + (mine ? " mine" : "") + (state === "fail" ? " fail" : "")}>
+    <div class="k">${head}${out.dur ? " · " + t("home.took", { dur: dur(out.dur) }) : ""}</div>
+    ${state !== "fail" && out.line && html`<div class="o-l"><b>${t("out.line")}</b> ${out.line}</div>`}
+    ${out.need && html`<div class="o-l"><b>${t("out.need")}</b> ${out.need}</div>`}
+    ${out.fail === "rate_limit" ? html`<${ResumeAt} sid=${sid} resume=${resume} reset=${out.reset} onSet=${setResume}/>` : html`<${Replies} sid=${sid} replies=${out.replies}/>`}
+  </div>`;
+}
+
 function Session({ sid }) {
   const now = useNow(1000);
   const [s, setS] = useState({ items: [], before: null, end: null, info: null, err: null });
@@ -747,6 +922,7 @@ function Session({ sid }) {
   const [full, setFull] = useState(null);
   const [openFull, closeFull] = useOverlay(!!full, (v) => { if (!v) setFull(null); });
   const shown = useRef([]);
+  const firstOut = useRef(null);       // the outcome as you found it: opening the session marks it seen, the card stays red
   // earlier history loads by itself as the top comes near — no button to hunt for; the place being read stays put
   const [early, setEarly] = useState(false);
   const earlyRef = useRef(false);
@@ -821,6 +997,7 @@ function Session({ sid }) {
   useEffect(() => {
     setS({ items: [], before: null, end: null, info: null, err: null });
     ref.current = { items: [], before: null, end: null, info: null, err: null };
+    firstOut.current = null;
     let timer;
     if (conn.ready) load("full");
     const offs = [on("ready", () => load("full")),
@@ -854,6 +1031,9 @@ function Session({ sid }) {
   const info = s.info;
   if (!info) return html`<${Loading} err=${s.err && (/not found|не найден/.test(s.err) ? t("sess.starting") : s.err)}/>`;
   const lv = info.live;
+  const out = info.outcome;
+  if (out && (!firstOut.current || firstOut.current.ts !== out.ts)) firstOut.current = { ts: out.ts, state: out.state };
+  const outState = out ? (["you", "fail"].includes(firstOut.current.state) ? firstOut.current.state : out.state) : null;
   const st = lv.state === "ask" ? html`<span class="chip warn">${t("st.ask")}</span>`
     : lv.state === "work" ? html`<span class="chip ok">${t("st.work", { dur: lv.started ? dur(now - lv.started) : "" })}</span>` : "";
   const ts = info.stats && info.stats.turn;
@@ -887,13 +1067,15 @@ function Session({ sid }) {
     ${pin && html`<button class="pinned" onClick=${() => { setFull(pin); openFull(); }}><span class="pin-in"><span class="pin-bar"></span>
       <span class="pin-body"><span class="pin-h">${t("pin.you")}${pin.ts ? " · " + hhmm(toDate(pin.ts)) : ""}${pin.att && pin.att.length ? " · 📎 " + pin.att.length : ""}</span>
       <span class="pin-tx">${pin.text}</span></span></span></button>`}
-    ${(shown.current = group(s.items)).map((i, n) => i.k === "day" ? html`<div class="day" key=${i.key}>${i.label}</div>`
+    ${(shown.current = group(s.items)).map((i, n, all) => i.k === "day" ? html`<div class="day" key=${i.key}>${i.label}</div>`
       : i.k === "steps" ? html`<${Steps} key=${i.key} steps=${i.steps}/>`
       : i.k === "user" ? html`<div class="msg me" key=${n} data-n=${n}>${i.voice ? html`<span class="mic-i">🎤</span>` : ""}${i.text}${i.att && i.att.length ? html`<div class="atts">${i.att.map((a, k) => html`<${Pic} key=${k} a=${a}/>`)}</div>` : ""}<${At} ts=${i.ts} mid=${i.mid}/></div>`
       : i.k === "note" ? html`<div class="note" key=${n}>${i.text}${i.ts ? " · " + hhmm(toDate(i.ts)) : ""}</div>`
       : i.k === "update" ? html`<div class="upd solo" key=${n}>${i.text}</div>`
-      : html`<div class="msg" key=${n}><div class="md" dangerouslySetInnerHTML=${{ __html: md(i.text) }}/><${At} ts=${i.ts}/></div>`)}
+      : html`<${TextMsg} key=${n} i=${i} fold=${i.text.length > LONG && all.slice(n + 1).some((x) => x.k === "text")}/>`)}
     ${lv.state === "work" && html`<div class="working">${t("working")}</div>`}
+    ${out && lv.state !== "work" && !info.pending.length && (outState === "you" || outState === "fail" || out.need || (out.replies && out.replies.length) || out.resume)
+      && html`<${Outcome} key=${out.ts} sid=${sid} out=${out} state=${outState} now=${now}/>`}
     ${info.pending.map((r) => html`<${Req} key=${r.rid} r=${r} showWhere=${false}/>`)}
     <div ref=${bottom}></div>
     ${(unread || far) && html`<button class=${"tobottom" + (unread ? " fresh" : "")} aria-label=${t("to.bottom")} onClick=${() => { toBottom(); setUnread(false); }}>${unread ? t("new.msgs") : "↓"}</button>`}
@@ -925,6 +1107,7 @@ function NewTask({ pkey }) {
   const [effort, setEffort] = useState("");
   const a = useAttach();
   const v = useRecorder((w) => setText((c) => (c ? c.replace(/\s+$/, "") + " " : "") + w));
+  useEffect(() => { if (d && !p && d.projects.length) setP(d.projects[0].pkey); }, [d]);   // the busiest, most recent first
   if (!d) return html`<${Loading} err=${err}/>`;
   const send = async () => {
     setBusy(true);
@@ -954,6 +1137,18 @@ function NewTask({ pkey }) {
   </div>`;
 }
 
+// Resources: can I keep working — the plan's limits, the computer's load, Pult itself
+function Resources() {
+  const [st] = useLive(() => api("settings"), [], () => false);
+  return html`<div><${Usage}/><${Load} embedded=${true}/>
+    ${st && html`<h3>${t("res.pult")}</h3><div class="list"><div class="item static">
+      <div>${t("status.pult", { v: st.version, mac: st.mac.away ? t("mac.away", { dur: dur(st.mac.idle) }) : t("mac.here") })}</div>
+      <div class="dim">${t("status.tg", { how: t("tg." + (st.telegram === "proxy" ? "proxy" : "direct")) })}</div>
+      <div class="dim">${st.hooks.length ? t("status.hooks", { n: st.hooks.length }) : t("status.nohooks")}${st.hooks_missing && st.hooks_missing.length ? " · " + t("status.hooks_missing", { list: st.hooks_missing.join(", ") }) : ""}</div>
+    </div></div>`}
+  </div>`;
+}
+
 function Usage() {
   const [d, err, set] = useLive(() => api("usage"), [], () => false);
   const [busy, setBusy] = useState(false);
@@ -964,7 +1159,7 @@ function Usage() {
     setBusy(false);
   };
   if (!d) return html`<div><${Loading} err=${err && t("usage.failed", { err })}/><${Today}/></div>`;
-  return html`<div><h2>${t("usage")}</h2>
+  return html`<div><h2>${t("res.title")}</h2><h3>${t("usage")}</h3>
     <div class="dim">${d.plan ? t("usage.plan", { plan: d.plan.charAt(0).toUpperCase() + d.plan.slice(1) }) : ""}</div>
     <div class="list">${d.limits.map((x) => html`<div class="lim" key=${x.name}>
       <div class="item-h"><b>${x.name}</b><b class=${"pct " + level(x.percent)}>${x.percent} %</b></div>
@@ -1015,13 +1210,13 @@ function App() {
     : r.name === "p" ? html`<${Project} pkey=${r.id}/>`
     : r.name === "projects" ? html`<${Projects}/>`
     : r.name === "new" ? html`<${NewTask} pkey=${r.q.get("pkey")}/>`
-    : r.name === "usage" ? html`<${Usage}/>`
+    : r.name === "usage" ? html`<${Resources}/>`
     : r.name === "load" ? html`<${Load}/>`
     : r.name === "settings" ? html`<${Settings}/>`
     : html`<${Home}/>`;
   const tab = (name, h, label) => html`<a class=${r.name === name ? "on" : ""} href=${h}>${label}</a>`;
   return html`<${Banner}/><main class=${r.name === "s" ? "with-composer" : ""}>${screen}</main>
-    ${r.name !== "s" && html`<nav class="tabs">${tab("home", "#/", t("tab.home"))}${tab("projects", "#/projects", t("tab.projects"))}${tab("usage", "#/usage", t("tab.usage"))}${tab("new", "#/new", "＋")}</nav>`}`;
+    ${r.name !== "s" && html`<nav class="tabs">${tab("home", "#/", t("tab.home"))}${tab("projects", "#/projects", t("tab.projects"))}${tab("usage", "#/usage", t("tab.res"))}${tab("new", "#/new", "＋")}</nav>`}`;
 }
 
 render(html`<${App}/>`, document.getElementById("app"));

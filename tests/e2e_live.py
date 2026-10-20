@@ -7,7 +7,8 @@ Run (uses a little of the subscription, ~40 s):
 A new session from "Telegram" → permission via a button → question via buttons → result;
 continuing the same session; a fork of a session "open on the Mac";
 a background command — "in the background" in the result, the load view finds its process, a turn when it ends,
-the next prompt with its own result.
+the next prompt with its own result; that result is the owner's move on Home until the session is opened.
+With Telegram as a pager: a task from the app makes no turn or result message; its question is paged once.
 """
 import asyncio, json, os, shutil, sys, tempfile, time, urllib.parse
 from pathlib import Path
@@ -163,6 +164,30 @@ async def main():
     await until(lambda: not p.driven[sid4].busy, what="сессия свободна")
     log("следующий запрос:", done(mark2)[0].replace("\n", " | "), "· bg процесса:", p.driven[sid4].bg)
     assert "PONG" in done(mark2)[0].upper(), "the result of another turn"
+    # whose move (stage V): a real Stop leaves an outcome; nothing runs after PONG and nobody opened it — the owner's
+    # move, with the result's first sentence as its line; opening the session puts it to rest
+    ov = await p.api_overview()
+    mine = {r["sid"]: (r["state"], r["line"]) for r in ov["mine"]}
+    log("твой ход:", mine.get(sid4), "· проектов на доске:", len(ov["board"]))
+    assert mine.get(sid4) and mine[sid4][0] == "you" and "PONG" in mine[sid4][1].upper(), "no outcome for a real turn"
+    await p.api_session(sid4)
+    assert sid4 not in {r["sid"] for r in (await p.api_overview())["mine"]}, "opening the session didn't put it to rest"
+    # Telegram as a pager (stage V): a task from the app gets no turn or result message; Claude's question to the
+    # owner, who is away, comes once — the session's title, the line, the way into the app
+    p.env.update(PULT_APP_LINK="https://t.me/b/pult", PULT_RELAY_URL="wss://h.example/pult/agent")
+    pkey5 = pultd.sanitize(str(PROJ))
+    store.set_topic(pkey5, str(PROJ), "proj", 9)
+    mark3 = len(calls)
+    sid5 = (await p.api_new(pkey5, "Reply with exactly one line: a yes/no question asking me whether to continue."))["sid"]
+    await until(lambda: (p.attn.rec.get(sid5) or {}).get("ts"), what="итог задачи из приложения")
+    quiet = [t for t in texts(mark3) if t.startswith(("⏳", "✅"))]
+    await p.page_due()
+    mine5 = lambda: [t for t in texts(mark3) if t.startswith("🔴 <b>Reply with exactly")]   # earlier sessions wait too
+    page = mine5()
+    log("пейджер: ход и итог в Telegram —", len(quiet), "· вызов:", page[-1].replace("\n", " | ") if page else "НЕТ")
+    assert not quiet and len(page) == 1, "the pager posted the wrong things"
+    await p.page_due()
+    assert len(mine5()) == 1, "paged twice"
     log("тем создано:", len([1 for m, _ in calls if m == "createForumTopic"]), "· вызовов Telegram:", len(calls))
     for d in list(p.driven.values()):
         d.task.cancel()

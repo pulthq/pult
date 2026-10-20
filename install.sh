@@ -84,7 +84,7 @@ if ! good "$DST/venv/bin/python"; then
 fi
 
 cp "$SRC"/src/pultd.py "$SRC"/src/pult_hook.py "$SRC"/src/pult_render.py "$SRC"/src/pult_web.py "$SRC"/src/pult_i18n.py "$SRC"/src/pult_stt.py \
-   "$SRC"/src/pult_load.py "$SRC"/src/pult_os.py "$SRC"/src/pult_setup.py "$SRC"/src/pultctl.py "$SRC"/requirements.txt "$DST"/
+   "$SRC"/src/pult_load.py "$SRC"/src/pult_attn.py "$SRC"/src/pult_brief.py "$SRC"/src/pult_os.py "$SRC"/src/pult_setup.py "$SRC"/src/pultctl.py "$SRC"/requirements.txt "$DST"/
 # VS Code tab wrapper: takes effect only after the claudeCode.claudeProcessWrapper setting (pult tab setup)
 cp "$SRC"/src/pult_tab.py "$SRC"/src/pult-tab.sh "$DST"/
 chmod 755 "$DST"/pult_tab.py "$DST"/pult-tab.sh

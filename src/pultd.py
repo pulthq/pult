@@ -30,6 +30,8 @@ from types import SimpleNamespace
 
 import httpx
 
+import pult_attn as A
+import pult_brief as B
 import pult_hook
 import pult_i18n as I
 import pult_load as L
@@ -58,6 +60,13 @@ VEHI = (10 * 60, 30 * 60, 60 * 60)   # long-turn milestones; with sound if the o
 TICK = 60                # s; refresh "working N min" this often, even without events
 NOW_LEN = 300            # characters of Claude's reply in the "now" line
 STALE = 20 * 60          # s without events: check whether the session is alive (a tab may close without SessionEnd)
+BRIEF_DIR = HOME / "brief"   # an empty folder the result-reading model runs in (pult_brief): no project, no settings
+APP_ON = 45              # s: the app said "on screen" this recently — the owner is looking at it (stage V)
+AWAY_LOCKABLE = 300      # s: where the screen lock can be read, away after this long without input (locked — at once)
+PAGE_WAIT = 20           # s: a "your move" waits this long for the model's line before Telegram gets it
+PAGE_OLD = 12 * 3600     # s: older outcomes are never paged (say, after a restart)
+CATCH_GAP = 3600         # s: the app was closed this long — "While you were away" on the next open
+CONTINUE = "Continue where you stopped: the usage limit has reset."   # said for the owner when the limit resets
 USAGE_TTL = 60           # s to keep the usage answer: the app window is opened and refreshed often
 LOAD_TTL = 4             # s to keep the snapshot of processes (~50 ms of ps): the app asks on every change
 USAGE_EVERY = 15 * 60    # usage check for warnings, if there was work on the Mac
@@ -67,14 +76,15 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 STT_MAX = 4 * 1024 * 1024       # bytes of one recording from the app (5 min at 32 kbit/s ≈ 1.2 MB; base64 must fit the 8 MB frame)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.9.16"
+VERSION = "0.9.21"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
 EDITOR_DIRS = pult_os.editor_dirs()     # VS Code and its forks (and their remote side): where the tab wrapper is set
 EXT_DIRS = pult_os.extension_dirs()
 TAB_CHECK_EVERY = 3600   # s; check whether a new Claude Code extension version is out
-PREFS = {"vehi": True, "mode": "auto", "lang": None}   # owner prefs: milestones, location (auto/mac/phone), language
+PREFS = {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": None}   # owner prefs: milestones, location
+# (auto/mac/phone), language, a model's line for each result, Telegram as a pager (None — on where the app is set up)
 MODES = ("auto", "mac", "phone")
 REPO_URL = os.environ.get("PULT_REPO_URL") or "https://github.com/pulthq/pult"   # where /feedback sends bugs and ideas
 MODEL_RE = re.compile(r"[A-Za-z0-9][\w.\-\[\]]{0,63}")        # a model alias or id for a session from Telegram
@@ -526,6 +536,7 @@ class Turn:
         self.muted = False        # 🔕 — no milestones until the turn ends
         self.vehi = None
         self.note = None          # the turn was started by Claude itself: "⚙️ Background task finished …"
+        self.here = False         # the owner typed the prompt at this computer (not from Telegram or the app)
 
 
 class Req:
@@ -542,6 +553,8 @@ class Req:
         self.msgs = []            # [(message_id, question index or None)]
         self.chosen = {}          # question → [answers]
         self.picks = {}           # multi-select question → checked options
+        self.ts = time.time()     # since when it waits for the owner
+        self.paged = False        # posted to Telegram (as a pager, only when the owner is neither in the app nor here)
 
 
 class Live:
@@ -734,6 +747,15 @@ class Pult:
         self._usage = None
         self._usage_lock = asyncio.Lock()
         self.recent = collections.deque(maxlen=20)   # latest results — for the app's Home screen
+        self.attn = A.Attn(store)      # whose move: each session's last outcome and whether the owner has seen it
+        for r in self.attn.rec.values():
+            r.setdefault("paged", True)    # outcomes from before this start were announced then: no burst of calls now
+        self.brief_sem = asyncio.Semaphore(1)        # the result-reading model: one request at a time
+        self.app_on, self.app_vis = 0.0, False       # the app's last "on screen" and whether it is visible now
+        self.app_seen = store.get("app_seen") or 0.0     # the app was last on the screen (kept across restarts)
+        self.catch_from = store.get("catch_from")    # "While you were away" counts from here during this visit
+        self._locked = (0.0, None)
+        self._status = {}                           # pkey → the first line of its topic's pinned card (cards_status)
         self.jobs = {}                 # tasks without Claude: running
         self.jobs_done = collections.deque(maxlen=10)
         self.new_next = set()          # topics where a bare /new was sent: the next text there starts a new session
@@ -777,10 +799,49 @@ class Pult:
         if not lv.driven:
             self.here_seen = time.monotonic()
 
+    async def screen_locked(self):
+        """The screen is locked: True / False, or None where the system can't tell (pult_os); asked every 5 s at most."""
+        t, v = self._locked
+        if time.monotonic() - t < 5:
+            return v
+        v = await asyncio.to_thread(pult_os.screen_locked)
+        self._locked = (time.monotonic(), v)
+        return v
+
     async def away(self):
+        """The owner is away from this computer: the screen is locked, or no keyboard and mouse for a while — 2 min,
+        or 5 min where the lock can be read (someone watching Claude work without touching anything is still here:
+        the owner's remark 2026-10-18, Q20); without input data — no action of theirs in a session for 2 min."""
         if "PULT_FORCE_AWAY" in self.env:
             return self.env["PULT_FORCE_AWAY"] == "1"
-        return await self.idle() >= AWAY_IDLE
+        locked = await self.screen_locked()
+        if locked:
+            return True
+        idle = await self.input_idle()
+        if idle is None:
+            return time.monotonic() - self.here_seen >= AWAY_IDLE
+        return idle >= (AWAY_LOCKABLE if locked is False else AWAY_IDLE)
+
+    async def where(self):
+        """Where the owner is (stage V): "app" — the app is on their screen, "mac" — at this computer, "away"."""
+        if self.app_vis and time.time() - self.app_on < APP_ON:
+            return "app"
+        return "away" if await self.away() else "mac"
+
+    def pager(self):
+        """Telegram as a pager (stage V, Q22 «а»): new messages only for "your move" the owner doesn't see and for their
+        own dialog in a topic. On by default where the app is set up; without the app Telegram is the only screen and
+        keeps the whole feed."""
+        v = self.prefs()["pager"]
+        return bool(self.app_web_url()) if v is None else bool(v)
+
+    async def page_now(self):
+        """Whether a "your move" goes to Telegram now: 📱 always, 💻 never, 🔄 only when the owner is neither in the
+        app nor at the computer."""
+        m = self.mode()
+        if m != "auto":
+            return m == "phone"
+        return await self.where() == "away"
 
     def prefs(self):
         stored = self.store.get("prefs") or {}
@@ -877,6 +938,10 @@ class Pult:
         text = self.t("topic.intro", name=R.esc(name), path=R.esc(path or "?"))
         buttons = self.card_buttons(pkey)
         sig = "%s|%s" % (self.lang(), buttons[0][0]["url"] if buttons else "")
+        status = self._status.get(pkey) if buttons and self.pager() else None
+        if status:                                  # stage V: the pinned bar shows who works and who waits
+            text = "<b>%s</b>\n%s" % (R.esc(status), text)
+            sig += "|" + status
         focus = self.focus_of(pkey)
         if focus:
             title = R.short(self.session_label(focus), 60)
@@ -1106,7 +1171,7 @@ class Pult:
         secs = (time.time() if not t.done else t.done[1]) - t.started
         dur = R.human_dur(secs)
         if t.done:
-            icon, state = t.done[0], self.t("turn.done" if t.done[0] == "✔️" else "turn.stopped", dur=dur)
+            icon, state = t.done[0], self.t({"✔️": "turn.done", "⚠️": "turn.failed"}.get(t.done[0], "turn.stopped"), dur=dur)
         else:
             icon, state = "⏳", self.t("turn.running", dur=dur) if secs >= 60 else self.t("turn.fresh")
         lines = ["%s %s · %s" % (icon, self.head(lv), state)]
@@ -1132,15 +1197,20 @@ class Pult:
             t.now = now or t.now
 
     async def turn_updater(self, lv, t):
+        # as a pager (stage V) Telegram gets a turn message only for the owner's own dialog in a topic — a turn that
+        # answers their message there; the rest is in the app and on the computer. The loop runs either way: it closes
+        # a turn whose session is gone and keeps the app's "now" line fresh
+        quiet = self.pager() and not t.reply_to
         try:
             text = self.render_turn(lv, t)
-            t.msg = await self.send(lv.pkey, text, reply_to=t.reply_to, sid=lv.sid, kind="turn", prio=4,
-                                    buttons=self.with_app(None, lv.sid))
+            if not quiet:
+                t.msg = await self.send(lv.pkey, text, reply_to=t.reply_to, sid=lv.sid, kind="turn", prio=4,
+                                        buttons=self.with_app(None, lv.sid))
             shown = text
         finally:
             if not t.created.done():
                 t.created.set_result(t.msg)
-        while t.msg:
+        while t.msg or quiet:
             try:
                 # even without events: "working N min" must keep ticking while a long command runs
                 await asyncio.wait_for(t.changed.wait(), TICK)
@@ -1155,7 +1225,8 @@ class Pult:
                 await self.refresh_now(lv, t)
             text = self.render_turn(lv, t)
             if text != shown:
-                self.edit(t.msg, text, self.with_app(None, lv.sid), prio=8 if not t.done else 4)
+                if t.msg:
+                    self.edit(t.msg, text, self.with_app(None, lv.sid), prio=8 if not t.done else 4)
                 shown = text
                 self.changed(lv.sid)
             if t.done:
@@ -1173,6 +1244,8 @@ class Pult:
     async def vehi(self, lv, t):
         """A long turn: at milestones, a short message with sound if the owner is away from the Mac or the
         session is from Telegram. At the Mac the owner sees the tab anyway, so stay quiet."""
+        if self.pager():
+            return                                 # stage V: the app shows how long it runs; Telegram doesn't ring
         for mark in vehi_marks():
             if t.started + mark < time.time() - 5:
                 continue                           # already passed when Pult learned of the turn: no burst of reminders
@@ -1233,11 +1306,12 @@ class Pult:
             self.store.touch_session(sid, pkey, path=path, driven=lv.driven)
             if not self.store.topic(pkey) and path:
                 self.store.set_topic(pkey, path, self.project_name(pkey, path), None)
-        if name in ("UserPromptSubmit", "Stop"):
+        if name in ("UserPromptSubmit", "Stop", "StopFailure"):
             self.store.touch_session(sid, pkey)          # the topic's recent sessions, for the "where to send" question
         if name == "UserPromptSubmit":
             self.resolve_all(lv, self.t("req.decided_mac"))
             self.finish_turn(lv, "⏹")
+            self.mark_seen(sid)                                # a new turn: the last outcome is behind
             await self.refresh_title(lv)
             notes = R.task_notes(ev.get("prompt"))
             if notes:
@@ -1253,7 +1327,8 @@ class Pult:
                 lv.title = lv.title or R.short(R.attachments(ev.get("prompt"))[0], 60) or None
                 if not origin:
                     self.seen_here(lv)                         # typed here
-                self.start_turn(lv, None if origin else ev.get("prompt"), reply_to=origin)
+                t = self.start_turn(lv, None if origin else ev.get("prompt"), reply_to=origin)
+                t.here = not origin and not lv.driven
         elif name in ("PostToolUse", "PostToolUseFailure"):
             tool, inp = ev.get("tool_name"), ev.get("tool_input")
             for r in list(lv.pending.values()):
@@ -1281,6 +1356,13 @@ class Pult:
                 lv.bg_seen = {b.get("id"): lv.bg_seen.get(b.get("id"), now) for b in lv.bg}
             t = self.finish_turn(lv, "✔️")
             asyncio.create_task(self.post_result(lv, t, ev.get("last_assistant_message") or "", R.bg_text(lv.bg)))
+        elif name == "StopFailure":
+            # an API error ended the turn (rate limit, sign-in, overload…): Claude Code sends this instead of Stop
+            # (2.1.301, probe 2026-10-20 — fields error, error_details, last_assistant_message)
+            self.resolve_all(lv, self.t("req.decided_mac"))
+            t = self.finish_turn(lv, "⚠️")
+            asyncio.create_task(self.post_result(lv, t, ev.get("last_assistant_message") or "",
+                                                 fail=str(ev.get("error") or "unknown")))
         elif name == "SessionEnd":
             self.resolve_all(lv, self.t("req.session_closed"))
             self.finish_turn(lv, "⏹")
@@ -1291,12 +1373,14 @@ class Pult:
             return await self.on_permission(lv, ev, reader)
         return None
 
-    async def post_result(self, lv, t, text, bg=""):
+    async def post_result(self, lv, t, text, bg="", fail=None):
         """bg — the line "⚙️ Still running in the background: …" under the result header: Claude has finished the
-        turn, but its background task is still running; when it ends, Claude starts a new turn by itself."""
+        turn, but its background task is still running; when it ends, Claude starts a new turn by itself.
+        fail — the API error that ended the turn (StopFailure)."""
         if t is not None:
             await t.created
         notify = await self.loud(lv.driven)
+        self.outcome(lv, t, text, fail, seen=bool(t and t.here) and not await self.away())
         reply_to = t.msg if t else None
         # a message written from Telegram into a tab that was busy: Claude Code absorbs it into the running turn
         # (queued_command, absorbed_mid_turn — 2.1.301, 2026-10-18) and the tab doesn't show it, so no UserPromptSubmit
@@ -1307,12 +1391,277 @@ class Pult:
         if not text.strip():
             text = self.t("result.empty")
         when = self.t("result.done_in", dur=R.human_dur(t.done[1] - t.started)) if t and t.done else self.t("result.done")
+        if fail:
+            when = " · " + R.esc(self.fail_text(fail))
         self.recent.appendleft({"sid": lv.sid, "title": self.title(lv), "project": self.project_label(lv.pkey),
                                 "ts": time.time(), "dur": (t.done[1] - t.started) if t and t.done else None,
                                 "text": R.plain(text, 400)})
         self.changed(lv.sid)
-        await self.send_long(lv.pkey, "✅ %s%s\n%s" % (self.head(lv), when, R.esc(bg) + "\n" if bg else ""), text,
+        if self.pager():
+            if not (t and t.reply_to) and not (sent and sent[0]):
+                return                         # not a dialog in a topic: the app has it, a "your move" gets paged
+            if t and t.msg:                    # one message per turn: the answer takes the place of the turn message
+                asyncio.create_task(self.drop(t.msg))
+            reply_to = sent[0] if sent and sent[0] else t.reply_to        # under the owner's own message
+            r = self.attn.rec.get(lv.sid)
+            if r:
+                r["paged"] = True              # the answer itself is the call
+                self.attn.save()
+        await self.send_long(lv.pkey, "%s %s%s\n%s" % ("⚠️" if fail else "✅", self.head(lv), when,
+                                                        R.esc(bg) + "\n" if bg else ""), text,
                              notify=notify, sid=lv.sid, reply_to=reply_to)
+
+    # ----- whose move (stage V): each session's last outcome, the model's line, the Home board -----
+
+    def fail_text(self, code):
+        """The API error that ended a turn, for a human: StopFailure's error (2.1.301 knows rate_limit, overloaded,
+        server_error, authentication_failed, billing_error, invalid_request, max_output_tokens, model_not_found)."""
+        key = "fail." + code
+        return self.t(key) if key in I.S else self.t("fail.other", code=R.esc(code))
+
+    def outcome(self, lv, t, text, fail=None, seen=False):
+        """A turn ended: remember how (pult_attn) and, if the owner allowed it, let the model read the result.
+        seen — the owner typed this turn here and is still at the computer: they watched it end."""
+        waits = not lv.bg                                  # nothing else runs: the next step is the owner's
+        line = self.fail_text(fail) if fail else B.first_sentence(text)
+        dur = (t.done[1] - t.started) if t and t.done else None
+        rec = self.attn.finished(lv.sid, lv.pkey, dur, R.plain(text, 600), line, waits, fail=fail, seen=seen)
+        self.changed(lv.sid)
+        if not fail and text.strip() and self.prefs()["brief"]:
+            bg = [b.get("description") or b.get("command") or "" for b in lv.bg]
+            asyncio.create_task(self.brief_result(lv, rec["ts"], t.prompt if t else None, text, bg, waits))
+
+    async def drop(self, mid):
+        """Delete one of Pult's messages (Telegram allows it for 48 h); a refusal only goes to the log."""
+        try:
+            await self.out.submit(6, lambda: self.tg.call("deleteMessage", chat_id=self.chat, message_id=mid))
+        except TgError as e:
+            log("message %s not deleted: %s" % (mid, e))
+
+    def mark_seen(self, sid):
+        """The owner saw a session's outcome (opened it, answered it, "Got it", a new turn): it rests, and a call
+        about it in Telegram folds into "✓ … · line" without buttons."""
+        r = self.attn.rec.get(sid)
+        if not self.attn.seen(sid):
+            return False
+        if r and r.get("page"):
+            lv = self.live.get(sid) or self.stub(sid, r["pkey"])
+            self.edit(r["page"], "✓ <b>%s</b> · %s" % (R.esc(lv.title or self.title(lv)), R.esc(r["line"] or "")), [], prio=6)
+        self.changed(sid)
+        return True
+
+    async def attention_watch(self):
+        """Every 10 s (stage V): say "continue" where the usage limit has reset, call the owner in Telegram about a
+        "your move" they don't see, keep the topics' pinned cards showing who works and who waits."""
+        n = 0
+        while True:
+            await asyncio.sleep(10)
+            n += 1
+            try:
+                await self.presence_check()
+                await self.resume_due()
+                if self.pager() and self.chat:
+                    await self.page_due()
+                    if n % 6 == 0:
+                        await self.cards_status()
+            except Exception as e:
+                log("attention:", repr(e))
+
+    async def page_due(self):
+        """Telegram as a pager: requests and outcomes that wait for the owner and that they can't see — not in the app,
+        not at the computer (page_now). An outcome waits up to PAGE_WAIT for the model's line, so the call says
+        what is needed and offers the ready replies; "only a report" is never paged."""
+        if not await self.page_now():
+            return
+        for req in list(self.req_by_rid.values()):
+            if not req.fut.done() and not req.paged:
+                await self.post_request(self.live.get(req.sid) or self.stub(req.sid), req, True)
+        now = time.time()
+        for sid, r in list(self.attn.rec.items()):
+            if r.get("seen") or r.get("paged") or not (r.get("you") or r.get("fail")) or now - r["ts"] > PAGE_OLD:
+                continue
+            if not r.get("fail") and self.prefs()["brief"] and not r.get("model") and now - r["ts"] < PAGE_WAIT:
+                continue
+            lv = self.live.get(sid)
+            if lv and (lv.turn or lv.pending):
+                continue                                   # it has moved on
+            await self.page(sid, r)
+
+    async def page(self, sid, r):
+        """One call in the project's topic: what came out, what is needed, ready replies (or "continue after the
+        reset"), the way into the app right at that session. With sound: the owner isn't looking."""
+        lv = self.live.get(sid) or self.stub(sid, r["pkey"])
+        text = "%s <b>%s</b>\n%s" % ("⚠️" if r.get("fail") else "🔴", R.esc(lv.title or self.title(lv)), R.esc(r["line"] or ""))
+        if r.get("need"):
+            text += "\n<b>%s</b>" % R.esc(r["need"])
+        rows = []
+        replies = r.get("replies") or []
+        for i in range(0, len(replies), 2):
+            rows.append([{"text": x, "callback_data": "r:%s:%d" % (sid, i + k)} for k, x in enumerate(replies[i:i + 2])])
+        if r.get("fail") == "rate_limit":
+            at = self.limit_reset()
+            rows.append([{"text": self.t("btn.resume", hm=time.strftime("%H:%M", time.localtime(at))) if at
+                          else self.t("btn.resume_after"), "callback_data": "z:" + sid}])
+        m = await self.send(r["pkey"], text, buttons=self.with_app(rows or None, sid), notify=True, prio=2, sid=sid,
+                            kind="page")
+        r["paged"], r["page"] = True, m
+        self.attn.save()
+        log("page %s: %s" % (sid[:8], "fail" if r.get("fail") else "your move"))
+
+    async def on_reply_button(self, sid, i):
+        """A ready reply tapped under a call in Telegram: it goes into the session as the owner's message."""
+        r = self.attn.rec.get(sid) or {}
+        replies = r.get("replies") or []
+        if not (0 <= i < len(replies)):
+            return self.t("note.stale")
+        res = await self.api_send(sid, replies[i])
+        if res.get("need") == "fork":
+            return self.t("note.reply_open")
+        if r.get("page"):
+            lv = self.live.get(sid) or self.stub(sid, r["pkey"])
+            self.edit(r["page"], "✓ <b>%s</b> · %s\n→ %s" % (R.esc(lv.title or self.title(lv)), R.esc(r["line"] or ""),
+                                                            R.esc(I.q(replies[i]))), [], prio=3)
+            r["page"] = None
+            self.attn.save()
+        return self.t("note.reply_sent")
+
+    async def api_resume_at(self, sid, at=None):
+        """"Continue when the usage limit resets": at that time (a minute after it) Pult says CONTINUE in the session,
+        the way the owner's own message would go; at=None cancels. at=0 — the 5-hour window's reset, as last read."""
+        if not SID_RE.fullmatch(sid or ""):
+            raise ValueError(self.t("err.bad_sid"))
+        if at is None:
+            self.attn.resume.pop(sid, None)
+            self.attn.save()
+            self.changed(sid)
+            return {"ok": True, "at": None}
+        at = float(at or 0) or self.limit_reset()
+        if not at:
+            try:
+                await self.usage(force=True)
+            except Exception as e:
+                log("usage for the reset time:", repr(e))
+            at = self.limit_reset()
+        if not at:
+            raise ValueError(self.t("err.no_reset"))
+        at = max(at, time.time()) + 60
+        self.attn.resume[sid] = at
+        self.attn.save()
+        self.changed(sid)
+        log("continue %s at %s" % (sid[:8], time.strftime("%H:%M", time.localtime(at))))
+        return {"ok": True, "at": at}
+
+    async def resume_due(self):
+        now = time.time()
+        for sid, at in list(self.attn.resume.items()):
+            if at > now:
+                continue
+            self.attn.resume.pop(sid, None)
+            self.attn.save()
+            try:
+                res = await self.api_send(sid, CONTINUE)
+                log("continue %s after the reset: %s" % (sid[:8], res.get("how") or res.get("need")))
+            except Exception as e:
+                log("continue %s after the reset failed: %r" % (sid[:8], e))
+
+    def card_status(self, pkey, rows):
+        """The first line of a topic's pinned card (stage V): who works, who waits since when — the topic's pinned bar
+        shows it; editing it never rings."""
+        work = sum(1 for r in rows if r["state"] in ("work", "bg"))
+        mine = [r for r in rows if r["state"] in A.MINE]
+        parts = [self.t("card.st.work", n=work)] if work else []
+        if mine:
+            since = min(r["since"] or time.time() for r in mine)
+            parts.append(self.t("card.st.mine", n=len(mine), hm=time.strftime("%H:%M", time.localtime(since))))
+        return " · ".join(parts) or self.t("card.st.quiet")
+
+    async def cards_status(self):
+        """The pinned cards follow their projects (only edits that change something; at most once a minute)."""
+        by = {}
+        for r in self.session_rows(await self.agents()):
+            by.setdefault(r["pkey"], []).append(r)
+        self._status = {pkey: self.card_status(pkey, rows) for pkey, rows in by.items()}
+        for row in self.store.db.execute("SELECT pkey, thread FROM topics WHERE thread IS NOT NULL").fetchall():
+            try:
+                await self.topic_card(row["pkey"], row["thread"])
+            except Exception as e:
+                log("topic card:", repr(e))
+
+    async def presence_check(self):
+        """The app stopped saying "on screen" without a word (Telegram closed it, the phone froze its page): after
+        APP_ON s it counts as off the screen. The log tells which way it went — the Android check of stage V."""
+        if self.app_vis and time.time() - self.app_on > APP_ON:
+            await self.api_presence(False, quiet=True)
+
+    async def api_presence(self, on=True, quiet=False):
+        """The app is on the owner's screen (or not): where to call them (stage V). A visit after a long break opens
+        "While you were away"; the end of the visit closes it."""
+        now = time.time()
+        if on:
+            if not self.app_vis:
+                log("app: on the screen")
+                if self.app_seen and now - self.app_seen > CATCH_GAP:
+                    self.catch_from = self.app_seen
+                    self.store.put("catch_from", self.catch_from)
+            self.app_vis, self.app_on = True, now
+            if now - self.app_seen > 60:
+                self.store.put("app_seen", now)
+            self.app_seen = now
+        elif self.app_vis:
+            log("app: no word for %d s — off the screen" % APP_ON if quiet else "app: off the screen")
+            self.app_vis = False
+            self.store.put("app_seen", now)
+            self.app_seen = now
+            if self.catch_from:
+                self.catch_from = None
+                self.store.put("catch_from", None)
+        return {"ok": True}
+
+    async def api_catchup_off(self):
+        self.catch_from = None
+        self.store.put("catch_from", None)
+        return {"ok": True}
+
+    def catchup(self):
+        """"While you were away": the turns since the app was last on the screen, what is done, what waits for the
+        owner now, the latest line per project."""
+        if not self.catch_from:
+            return None
+        es = self.attn.since(self.catch_from)
+        if not es:
+            return None
+        last = {}
+        for e in es:
+            last[e[1]] = e
+        lines = []
+        for pkey, e in sorted(last.items(), key=lambda x: -x[1][0])[:4]:
+            r = self.attn.rec.get(e[2]) or {}
+            lines.append({"pkey": pkey, "name": self.name_of(pkey), "line": e[3],
+                          "you": bool(e[4] and not r.get("seen")), "fail": e[5]})
+        return {"from": self.catch_from, "turns": len(es), "projects": len(last),
+                "done": sum(1 for e in es if not e[4] and not e[5]), "lines": lines,
+                "mine": sum(1 for r in self.attn.rec.values() if not r["seen"] and (r["you"] or r["fail"]))}
+
+    def limit_pct(self):
+        """The 5-hour window, % used, from the last usage reading (no new request), or None."""
+        for lim in (self._usage or {}).get("limits") or []:
+            if lim.get("kind") in ("session", "five_hour"):
+                return lim.get("percent")
+        return None
+
+    async def brief_result(self, lv, ts, prompt, text, bg, waits):
+        """The model's line for a finished turn (pult_brief: haiku, the owner's subscription), one request at a
+        time; a newer outcome of the same session makes the request moot."""
+        async with self.brief_sem:
+            r = self.attn.rec.get(lv.sid)
+            if not r or r["ts"] != ts:
+                return
+            BRIEF_DIR.mkdir(parents=True, exist_ok=True)
+            b = await B.brief(R.prompt_text(prompt) if prompt else None, text, bg, self.lang(), BRIEF_DIR)
+            if b is None:
+                log("brief %s: no answer from the model — the first sentence stays" % lv.sid[:8])
+            elif self.attn.briefed(lv.sid, ts, b, waits):
+                self.changed(lv.sid)
 
     # ----- tasks without Claude: pult run -- command -----
 
@@ -1427,6 +1776,9 @@ class Pult:
                 self.req_by_msg.pop(m, None)
 
     async def post_request(self, lv, req, notify):
+        if self.pager() and not await self.page_now():
+            return              # the app and the computer show it; posted later if the owner leaves while it waits
+        req.paged = True
         rid = req.rid
         if req.kind == "ask":
             for i, q in enumerate(req.inp.get("questions") or []):
@@ -1601,6 +1953,15 @@ class Pult:
             sec = data[2:]
             text = self.t("help") if sec == "main" else self.help_section(sec)
             self.edit((cq.get("message") or {}).get("message_id"), text, self.help_buttons(sec), prio=1)
+        elif data.startswith("r:") and data.count(":") == 2:
+            _, sid, i = data.split(":")
+            note = await self.on_reply_button(sid, int(i)) if i.isdigit() else self.t("note.stale")
+        elif data.startswith("z:"):
+            try:
+                at = (await self.api_resume_at(data[2:], 0))["at"]
+                note = self.t("note.resume", hm=time.strftime("%H:%M", time.localtime(at)))
+            except ValueError as e:
+                note = str(e)
         elif data.startswith(("s:", "f:", "o:", "t:")):
             cm = cq.get("message") or {}
             note = await self.on_offer(data, cm.get("message_thread_id") if cm.get("is_topic_message") else 0)
@@ -2273,7 +2634,7 @@ class Pult:
 
     def panel_text(self):
         m = self.mode()
-        return self.t("panel", mode=self.t("mode." + m), about=self.t("mode.%s.about" % m)) + \
+        return self.t("panel", mode=self.t("mode." + m), about=self.t("mode.%s.%s" % (m, "pager" if self.pager() else "about"))) + \
             (self.t("panel.app") if self.app_url() else "")
 
     def panel_buttons(self):
@@ -2445,7 +2806,135 @@ class Pult:
                 "live": [self.live_item(self.live[s]) for s in shown],
                 "pending": [self.req_item(r) for r in self.req_by_rid.values() if not r.fut.done()],
                 "open": opened, "recent": list(self.recent),
-                "jobs": [self.job_item(j) for j in self.jobs.values()] + [self.job_item(j) for j in self.jobs_done]}
+                "jobs": [self.job_item(j) for j in self.jobs.values()] + [self.job_item(j) for j in self.jobs_done],
+                **await self.board(agents)}
+
+    async def api_seen(self, sid):
+        """"Got it" on a card of "Your move": the outcome is seen without opening the session."""
+        self.mark_seen(sid)
+        return {"ok": True}
+
+    async def ctx_pct(self, sid):
+        """How full the session's context is, % — the number VS Code shows; None if unknown."""
+        try:
+            path, _ = self.transcript_of(sid)
+        except ValueError:
+            return None
+        st = await asyncio.to_thread(self.stats.get, path)
+        ctx = self.ctx_of(sid, (st or {}).get("model"))
+        if not st or not st.get("context") or not ctx:
+            return None
+        return min(100, round(st["context"] * 100 / ctx_usable(ctx[0], ctx[1])))
+
+    def session_rows(self, agents):
+        """Every session worth a look — running, waiting, open on the computer, or with an outcome in the last days
+        (pult_attn.KEEP) — one row each: its state (pult_attn.state), a line (what it does now or how its last turn
+        ended), what the owner has to do, ready replies, the times."""
+        opened = {a.get("sessionId"): a for a in agents if a.get("sessionId")}
+        sids = set(self.live) | set(self.driven) | set(opened) | set(self.attn.rec)
+        rows = []
+        for sid in sids:
+            rec = self.attn.rec.get(sid) or {}
+            lv = self.live.get(sid)
+            if lv is None:
+                row = self.store.session(sid)
+                cwd = (opened.get(sid) or {}).get("cwd")
+                lv = self.stub(sid, rec.get("pkey") or (row["pkey"] if row else None) or sanitize(cwd or ""))
+                lv.cwd = cwd or (row["path"] if row else None)
+            if skip_pkey(lv.pkey):
+                continue
+            t = lv.turn
+            pending = [r for r in lv.pending.values() if not r.fut.done()]
+            st = A.state(pending, t is not None, lv.bg or (sid in self.driven and self.driven[sid].bg), rec or None)
+            since = min(getattr(r, "ts", 0) or time.time() for r in pending) if pending else t.started if t else rec.get("ts")
+            line = (R.plain(t.now, NOW_LEN) if t.now else R.short(R.prompt_text(t.prompt), 160) if t.prompt
+                    else t.note or "") if t else rec.get("line") or ""
+            # on the board a session sits under its project: its own title, or its first prompt, never the project again
+            rows.append({"sid": sid, "pkey": lv.pkey, "title": lv.title or self.title(lv), "state": st, "since": since,
+                         "ts": rec.get("ts"), "line": line, "need": rec.get("need") or "", "replies": rec.get("replies") or [],
+                         "fail": rec.get("fail"), "resume": self.attn.resume.get(sid),
+                         "dur": rec.get("dur"), "driven": sid in self.driven, "tab": bool(self.tab_for(sid)),
+                         "open": sid in opened, "model": bool(rec.get("model")),
+                         "bg": [R.short(b.get("description") or b.get("command") or self.t("task.default"), 80) for b in lv.bg],
+                         "cwd": lv.cwd})
+        return rows
+
+    def name_of(self, pkey, rows=()):
+        """A project's name: its topic's, else its folder's."""
+        cwd = next((r["cwd"] for r in rows if r.get("cwd")), None) or self.project_path(pkey)
+        return self.project_label(pkey) if self.store.topic(pkey) else \
+            os.path.basename((cwd or "").rstrip("/")) or self.project_label(pkey)
+
+    def limit_reset(self):
+        """When the 5-hour usage window resets, from the last usage reading (no new request), or None."""
+        for lim in (self._usage or {}).get("limits") or []:
+            if lim.get("kind") in ("session", "five_hour") and lim.get("resets_at"):
+                return lim["resets_at"]
+        return None
+
+    async def board(self, agents):
+        """The Home board (stage V): every session worth a look grouped by project; and "mine": the outcomes that
+        wait for the owner. Requests waiting for an answer are not repeated here: the app shows them as answerable
+        cards (overview.pending)."""
+        now = time.time()
+        by = {}
+        for r in self.session_rows(agents):
+            by.setdefault(r["pkey"], []).append(r)
+        projects = []
+        for pkey, rs in by.items():
+            turns, secs = self.attn.day_of(pkey)
+            shown = [r for r in A.sort_rows(rs) if r["state"] not in A.MINE and not A.resting(r, now)]
+            for r in shown:
+                r["ctx"] = await self.ctx_pct(r["sid"])
+            projects.append({"pkey": pkey, "name": self.name_of(pkey, rs), "rows": shown, "rows_all": rs,
+                             "resting": sum(1 for r in rs if A.resting(r, now)),
+                             "work": sum(1 for r in rs if r["state"] in ("work", "bg")),
+                             "mine": sum(1 for r in rs if r["state"] in A.MINE), "turns": turns, "secs": secs})
+        mine = A.sort_rows([dict(r, project=p["name"]) for p in projects for r in p["rows_all"] if r["state"] in ("you", "fail")])
+        projects = A.sort_projects(projects)
+        for p in projects:
+            del p["rows_all"]
+        return {"board": projects, "mine": mine, "brief": self.prefs()["brief"], "reset": self.limit_reset(),
+                "usage_pct": self.limit_pct(), "catchup": self.catchup(), "stt": self.stt_state()["on"],
+                "pager": self.pager()}
+
+    async def api_project(self, pkey):
+        """A project's screen — its board, large: what waits for the owner (requests to answer here, sessions that
+        need them), what runs, today's outcomes, then the earlier sessions."""
+        rows = [r for r in self.session_rows(await self.agents()) if r["pkey"] == pkey]
+        path = self.project_path(pkey) or next((r["cwd"] for r in rows if r["cwd"]), None)
+        if not path and not rows:
+            raise ValueError(self.t("err.no_project"))
+        midnight = time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1))
+        pending = [self.req_item(r) for r in self.req_by_rid.values()
+                   if not r.fut.done() and (self.live.get(r.sid) or self.stub(r.sid)).pkey == pkey]
+        mine = A.sort_rows([r for r in rows if r["state"] in ("you", "fail")])
+        live = A.sort_rows([r for r in rows if r["state"] in ("work", "bg")])
+        today = sorted([r for r in rows if r["state"] in ("done", "idle") and (r["ts"] or 0) >= midnight],
+                       key=lambda r: -(r["ts"] or 0))
+        for r in live + today:
+            r["ctx"] = await self.ctx_pct(r["sid"])
+        shown = {r["sid"] for r in mine + live + today} | {r["sid"] for r in pending}
+        earlier = []
+        if path and os.path.isdir(path):
+            from claude_agent_sdk import list_sessions
+            try:
+                items = await asyncio.to_thread(list_sessions, path, 40)
+            except Exception as e:
+                log("project sessions not listed:", repr(e))
+                items = []
+            known = {r["sid"]: r for r in rows}
+            for x in items:
+                if x.session_id in shown:
+                    continue
+                r = known.get(x.session_id) or {}
+                earlier.append({"sid": x.session_id, "title": R.short(x.custom_title or x.summary or "—", 80),
+                                "last": x.last_modified / 1000, "line": r.get("line") or "", "open": bool(r.get("open")),
+                                "driven": x.session_id in self.driven})
+        turns, secs = self.attn.day_of(pkey)
+        return {"pkey": pkey, "name": self.name_of(pkey, rows), "path": path, "pending": pending, "mine": mine,
+                "live": live, "today": today, "earlier": earlier, "turns": turns, "secs": secs,
+                "reset": self.limit_reset(), "stt": self.stt_state()["on"]}
 
     # ----- the load on the computer: the processor and memory Claude's sessions take -----
 
@@ -2552,13 +3041,20 @@ class Pult:
     async def api_projects(self):
         known = {r["pkey"]: r["path"] for r in self.store.db.execute("SELECT pkey, path FROM topics") if r["path"]}
         counts = await self.project_counts()
+        by = {}
+        for r in self.session_rows(await self.agents()):
+            by.setdefault(r["pkey"], []).append(r)
         out = []
         for mtime, pkey, path in (await asyncio.to_thread(self.list_projects, known))[:40]:
             c = counts.get(pkey) or {}
+            rs = by.get(pkey) or []
+            last = max((r for r in rs if r["ts"]), key=lambda r: r["ts"], default=None)
             out.append({"pkey": pkey, "name": self.project_label(pkey) if pkey in known else self.project_name(pkey, path),
-                        "path": path, "last": mtime, "open": c.get("open", 0), "work": c.get("work", 0), "ask": c.get("ask", 0)})
-        # what needs you or works first, then what is open, then by recency
-        out.sort(key=lambda r: (-(r["work"] + r["ask"] > 0), -(r["open"] > 0), -r["last"]))
+                        "path": path, "last": mtime, "open": c.get("open", 0), "work": c.get("work", 0), "ask": c.get("ask", 0),
+                        "mine": sum(1 for r in rs if r["state"] in A.MINE), "line": last["line"] if last else "",
+                        "turns": self.attn.day_of(pkey)[0]})
+        # what needs you first, then what works, then what is open, then by recency
+        out.sort(key=lambda r: (-(r["mine"] > 0), -(r["work"] + r["ask"] > 0), -(r["open"] > 0), -r["last"]))
         return {"projects": out, "stt": self.stt_state()["on"]}      # stt: the app shows the microphone only with a key
 
     async def api_sessions(self, pkey):
@@ -2577,6 +3073,16 @@ class Pult:
         path, lv = self.transcript_of(sid)
         row = self.store.session(sid)
         lv = lv or self.stub(sid, row["pkey"] if row else Path(path).parent.name)
+        # the session's last outcome, as the owner found it (before opening it marks it seen): the app shows it at
+        # the end of the chat — what came out, what is needed, ready replies — until the next turn
+        rec = self.attn.rec.get(sid)
+        pending = [r for r in lv.pending.values() if not r.fut.done()]
+        outcome = None
+        if rec and lv.turn is None:
+            outcome = {k: rec.get(k) for k in ("line", "need", "replies", "fail", "ts", "dur")}
+            outcome.update(state=A.state(pending, False, lv.bg, rec), resume=self.attn.resume.get(sid),
+                           reset=self.limit_reset() if rec.get("fail") == "rate_limit" else None)
+        self.mark_seen(sid)                        # the owner opened it: its outcome no longer calls them
         page = await asyncio.to_thread(PW.transcript_page, path, before, after, lv.cwd)
         stats = await asyncio.to_thread(self.stats.get, path)
         live = self.live_item(lv)
@@ -2591,7 +3097,9 @@ class Pult:
         ours = sid in self.driven or not (live["open"] or live["tab"])
         switch = ours or (tab is not None and "model" in tab.caps)
         switch_effort = ours or (tab is not None and "control" in tab.caps)       # a wrapper from 0.9.9 on
-        return {"sid": sid, "title": self.title(lv), "project": self.project_label(lv.pkey), "pkey": lv.pkey,
+        # the session's own title, as on the board (its first prompt until it has a name), the project beside it
+        return {"sid": sid, "title": lv.title or self.title(lv), "project": self.project_label(lv.pkey), "pkey": lv.pkey,
+                "outcome": outcome,
                 "live": live, "page": page, "stats": stats, "choice": self.choice.get(sid) or {}, "switch": switch,
                 "switch_effort": switch_effort, "stt": self.stt_state()["on"],
                 "ctx": {"window": ctx[0], "max_out": ctx[1], "usable": ctx_usable(ctx[0], ctx[1])} if ctx else None,
@@ -2623,6 +3131,7 @@ class Pult:
         cwd = (row["path"] if row else None) or self.project_path(pkey)
         if not cwd:
             raise ValueError(self.t("err.no_folder_short"))
+        self.mark_seen(sid)                        # answered from a card: the outcome is behind
         if sid in self.driven:
             self.driven[sid].q.put_nowait((self.with_uploads(text, files), None))
             return {"ok": True, "how": "session"}
@@ -2830,7 +3339,8 @@ class Pult:
         except OSError:
             lines = []
         idle = await self.idle()
-        return {"version": VERSION, "prefs": dict(self.prefs(), lang=self.lang()), "hooks": sorted(hooks),
+        return {"version": VERSION, "prefs": dict(self.prefs(), lang=self.lang(), pager=self.pager()), "hooks": sorted(hooks),
+                "hooks_missing": [e for e in pult_hook.EVENTS if e not in hooks] if hooks else [],
                 "mac": {"idle": idle, "away": await self.away(), "mode": self.mode()},
                 "telegram": "proxy" if len(self.tg.clients) > 1 and self.tg.cur == 0 else "direct",
                 "stt": self.stt_state(),
@@ -2839,7 +3349,7 @@ class Pult:
     async def api_prefs(self, **kw):
         cur = self.prefs()
         for k, v in kw.items():
-            if k == "vehi" and isinstance(v, bool) or k == "mode" and v in MODES or k == "lang" and v in I.LANGS:
+            if k in ("vehi", "brief", "pager") and isinstance(v, bool) or k == "mode" and v in MODES or k == "lang" and v in I.LANGS:
                 cur[k] = v
         self.store.put("prefs", cur)
         if "mode" in kw:
@@ -2961,7 +3471,7 @@ async def amain():
     log("Pult started; group:", p.chat, "; socket:", SOCK)
     await p.setup_commands()
     # the panel is sent via the message queue, so it must run alongside it, or startup hangs (seen 2026-10-16, 0.6.0)
-    jobs = [p.out.run(), p.poll(), p.usage_watch(), p.tab_version_watch(), p.ensure_panel()]
+    jobs = [p.out.run(), p.poll(), p.usage_watch(), p.tab_version_watch(), p.ensure_panel(), p.attention_watch()]
     if env.get("PULT_RELAY_URL") and env.get("PULT_RELAY_SECRET"):
         p.web = PW.Web(p, env["PULT_RELAY_URL"], env["PULT_RELAY_SECRET"], token, p.allowed,
                        proxy=env.get("PULT_PROXY") or None)

@@ -2,6 +2,71 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.9.21 — 2026-10-20
+
+- A result's line is no longer cut in the middle of a word: the model often writes a little more than asked, so up
+  to 180 characters stay whole and a longer line ends after a whole word. In a session, the outcome card shows up
+  only when there is something to do (a question, ready replies, a broken-off turn); a plain report needs no card —
+  the whole answer is right above it.
+
+## 0.9.20 — 2026-10-20
+
+- Every signal leads to its cause. A project's screen is its board, large: what waits for you (answer right there),
+  what runs, today's outcomes, the earlier sessions folded, a new task under the thumb. A session opens at its
+  outcome: a card at the end of the chat says what came out and what is needed, red while it waited for you; long
+  messages that are not the last are folded. The Projects tab uses the same rows: who waits, who works, the latest
+  outcome.
+- Ready replies: the small model that writes the result's line also picks up to three replies from Claude's own
+  message ("By popularity", "Yes, go ahead"). One tap sends one, with three seconds to undo — on Home, on the project
+  screen, in the session and under a call in Telegram. A "Your move" card also takes your own words and the
+  microphone without opening the session.
+- Telegram is a pager where the app is set up (Settings → "Telegram: only what needs me"; off — the whole feed as
+  before; without the app nothing changes). New messages only for what waits for you while you are neither in the
+  app nor at the computer, and for your own messages in a topic — one message per turn. Each call has the line,
+  what is needed, the ready replies and a button straight into that session; seen or answered anywhere, it folds
+  into "✓ …". Milestones stay in the app. A topic's pinned card shows who works and who waits.
+- Where you are: the app tells Pult while it is on your screen; at the computer, a locked screen means away at once,
+  and a still keyboard after 5 minutes (2 where the lock can't be read). The modes keep their meaning: 📱 always
+  calls, 💻 never, 🔄 only when you are away.
+- "While you were away": back in the app after an hour or more, a card on top says how many turns ran, what is
+  done and what waits, a line per project.
+- A turn broken off by the usage limit offers "▶ Continue at 04:10": Pult says "continue" in the session a minute
+  after the 5-hour window resets (cancel any time before).
+- Resources: the Usage tab now holds the plan's limits, the computer's load and Pult's own state. The top line of
+  Home stays grey while all is well and takes colour only when a limit or the processor runs high.
+- A new task starts in the project you were busiest in. `tests/e2e_live.py` checks the pager with a real Claude.
+
+## 0.9.19 — 2026-10-20
+
+- Claude can show you a picture in the app: when its reply names an image in Pult's inbox
+  (`~/.local/share/pult/inbox/<month>/…`), the session shows the picture under the message (a tap opens it full
+  screen) and the bare path leaves the text. Only the inbox can be shown, as with your own screenshots.
+
+## 0.9.18 — 2026-10-20
+
+- Home is built around whose move it is. On top, "Your move": permission requests and questions to answer right
+  there, then sessions that ended and need you, the longest waiting first; "Got it" puts one to rest, and so does
+  opening it. Below, "Projects": each project with who works and who waits, today's turns, and a line per live
+  session — what Claude is doing now or how its last turn ended, with the context gauge; resting sessions are
+  folded. The separate "Recent results" and "Open on the computer" lists are gone: nothing repeats. The "where you
+  are" strip and the load line are one line now.
+- Whose move: a session is Claude's while a turn runs or a background task will wake it, and yours when it waits
+  for an answer, broke off, or ended a turn you haven't seen. A turn you typed at the computer and watched end is
+  seen at once. Each session's last outcome and today's turns per project survive a restart.
+- An API error that ends a turn (the usage limit, a sign-in problem, an overload) now ends it as a failure: Claude
+  Code sends `StopFailure` instead of `Stop` (2.1.301, checked). The result in Telegram says what happened, the
+  session waits for you on Home. A new hook event: run `pult hooks on` to add it to your VS Code tabs; sessions
+  started from Telegram get it right away.
+- Optional (Settings → "A plain line for each result", off by default): a small model reads each result — haiku,
+  on your own subscription, no tools, no settings, nothing saved as a session — and writes one plain line for Home
+  and whether Claude waits for you. About 5 seconds and 260 MB for a moment per result; when it can't answer, the
+  first sentence stays. `tests/probe_brief.py` measures it.
+
+## 0.9.17 — 2026-10-20
+
+- Fable in the model menu: a new session and a session's model switch offer Fable, Opus, Sonnet and Haiku. Claude
+  Code 2.1.300 and 2.1.301 take the `fable` alias and run Claude Fable 5.1 (checked with one request).
+
 ## 0.9.16 — 2026-10-19
 
 - The load on the computer, in the app. Home gets one line under the "where you are" strip: the computer's processor

@@ -5,7 +5,8 @@ Pult is a Telegram remote for the Claude Code sessions on a computer (macOS or L
 Claude Code hook (`src/pult_hook.py`), an optional VS Code tab wrapper (`src/pult_tab.py`, `src/pult-tab.sh`), the
 `pult` command (`src/pultctl.py`, `src/pult_setup.py`), a speech-to-text client used only when a key is set
 (`src/pult_stt.py`, Groq Whisper), the load view's counting (`src/pult_load.py`; the process snapshot is in
-`pult_os`) and an optional web app with a relay (`src/pult_web.py`, `relay/`). Start with
+`pult_os`), whose move it is on Home (`src/pult_attn.py`) with an optional small model reading each result
+(`src/pult_brief.py`) and an optional web app with a relay (`src/pult_web.py`, `relay/`). Start with
 [README.md](README.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Before you call it done

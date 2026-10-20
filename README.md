@@ -55,7 +55,7 @@ next. *Pult* is Russian for a remote control.
 - **Straight into an open VS Code tab** (optional). Your message appears in the tab as if typed there, and the
   turn runs in it. If Claude is busy in that tab, it gets your message in the middle of its turn: the tab doesn't
   show it as a separate message, and the answer comes with that turn's result, as a reply to your message.
-- **The model and the effort, from the phone.** Pick Opus, Sonnet or Haiku and how hard Claude thinks, for one
+- **The model and the effort, from the phone.** Pick Fable, Opus, Sonnet or Haiku and how hard Claude thinks, for one
   session: a running one switches at once, an open VS Code tab too, without touching Claude Code's settings.
 - **Notifications that know where you are.** 🔄 Auto plays a sound only when you've been away from the computer
   for 2+ minutes. 💻 At my computer is silent; 📱 On my phone always sounds. One tap in the pinned panel, or
@@ -71,19 +71,25 @@ next. *Pult* is Russian for a remote control.
 A Telegram Mini App on your own server, one tap away from any topic. It is the comfortable way to work from the
 phone:
 
-- **Home** gathers everything that waits for you: permission requests and Claude's questions from every project,
-  with buttons, and what is running right now. One line says how busy the computer is (processor, memory) and how
-  much Claude's sessions hold; a tap shows every session with the commands it runs, the busiest first. A tap on
-  "in the background" shows what each background task costs: how long it has run, the processor now and in total,
-  the memory now and at its peak.
+- **Home** is built around whose move it is. On top, **Your move**: permission requests and Claude's questions to
+  answer right there, and sessions that ended and need you, the longest waiting first — with **ready replies**
+  taken from Claude's own message (one tap, three seconds to undo) and a field for your own words. Below,
+  **Projects**: who works and who waits, today's turns, a line per live session. Optionally a small model (haiku, on
+  your subscription) writes those lines in plain words and picks the replies. Back after a break, **While you were
+  away** sums up what ran. Every mark leads to its cause: a project's red dot opens its board with what waits on
+  top; a session opens at its outcome.
+- **Telegram becomes a pager** once the app is set up: it calls you only when Claude waits for you and you are
+  neither in the app nor at the computer (or for your own messages in a topic), with the ready replies as buttons.
+  Seen anywhere, the call folds. A turn stopped by the usage limit offers to continue right after the reset.
 - **A session** shows the whole conversation, live. When you scroll up, your own message stays pinned on top, and
   earlier history loads by itself. Under the message field: the model with its effort as five dots (a tap opens
   the menu), where your message will go, and the context gauge as in VS Code. The paperclip sends a screenshot
   to Claude; the microphone turns your voice into words in the field.
-- **Usage** shows your plan's limits and today's tokens by project. A form starts a new task in any project.
+- **Resources** shows your plan's limits, today's tokens by project, the computer's load and Pult's own state. A form
+  starts a new task in any project.
 
 <p align="center">
-  <img src="media/app.en.png" width="860" alt="Three screens of the web app: Home with a permission request and a question, the model and effort menu of a session, Usage with plan limits and today's tokens by project">
+  <img src="media/app.en.png" width="860" alt="Three screens of the web app: Home with a session that waits for a choice and its ready replies, then the projects board; a project's screen with what waits, what runs and today's outcomes; a session ending in its outcome card with ready replies">
 </p>
 
 It needs a Linux server with a domain name and HTTPS: see [deploy/relay/README.md](deploy/relay/README.md).
@@ -198,8 +204,8 @@ Telegram on your phone ───────────────────
 web app (optional): Mini App ──► relay on your server ◄── pultd connects out, no open ports on the computer
 ```
 
-- **Hooks** (`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `SessionEnd`,
-  `PermissionRequest`) pass each event to the daemon. The hook never gets in the way. If the daemon isn't running
+- **Hooks** (`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure`,
+  `SessionEnd`, `PermissionRequest`) pass each event to the daemon. The hook never gets in the way. If the daemon isn't running
   or anything goes wrong, it exits quietly and Claude Code behaves as if it weren't there.
 - **Permission requests.** The hook waits for your answer from Telegram while the dialog on the computer stays
   open. Claude Code takes whichever answer comes first and ignores a later one.

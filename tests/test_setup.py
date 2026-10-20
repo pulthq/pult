@@ -260,6 +260,15 @@ class SettingsTest(Base):
         p = subprocess.run(["/bin/sh", "-c", cmd], input="{}", capture_output=True, text=True, timeout=10)
         self.assertEqual(p.stdout, "{} %s\n" % S.SOCK)
         self.assertEqual(d["hooks"]["PreToolUse"], mine["PreToolUse"])
+        # hooks from an older Pult lack a newer event: the status says which, and how to add it
+        old = dict(d, hooks={k: v for k, v in d["hooks"].items() if k != "StopFailure"})
+        S.SETTINGS.write_text(json.dumps(old))
+        out = io.StringIO()
+        with redirect_stdout(out), mock.patch.object(S, "service", lambda lbl: (None, None)), \
+                mock.patch.object(S, "sock_ok", lambda: False):
+            pultctl.cmd_status()
+        self.assertIn("— not yet StopFailure: run pult hooks on", out.getvalue())
+        S.SETTINGS.write_text(json.dumps(d))
         self.run_cli(S.hooks_set, False)
         self.assertEqual(json.loads(S.SETTINGS.read_text()), {"model": "x", "hooks": mine})
         self.assertTrue(list(S.SETTINGS.parent.glob("settings.json.bak-pult-*")))

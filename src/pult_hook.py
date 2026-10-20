@@ -20,7 +20,7 @@ SOCK = os.environ.get("PULT_SOCK") or os.path.expanduser("~/.local/share/pult/pu
 TRACKED = {"claude-vscode", "cli"}       # `claude -p` (sdk-cli) and other SDK runs are skipped
 
 EVENTS = ["SessionStart", "UserPromptSubmit", "PostToolUse", "PostToolUseFailure",
-          "Stop", "SessionEnd", "PermissionRequest"]
+          "Stop", "StopFailure", "SessionEnd", "PermissionRequest"]     # StopFailure: an API error ended the turn
 WAIT_TIMEOUT = 6 * 3600 + 60             # wait up to 6 h for a Telegram answer; the Mac dialog stays open meanwhile
 
 
