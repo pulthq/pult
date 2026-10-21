@@ -60,6 +60,7 @@ EDIT_EVERY = 12          # s; edit a turn message no more often than this (Teleg
 MAX_RUNNING = 3          # turns from Telegram at once: Claude Code takes 250–450 MB each
 MAX_DRIVEN = 5           # sessions from Telegram that hold a process
 DRIVEN_IDLE = 20 * 60    # an idle session from Telegram is closed; it continues via resume
+RESULT_GRACE = 3.0       # s after a turn's result for its Stop hook; an interrupted turn gets none and is closed then
 ASK_TIMEOUT = 6 * 3600   # how long to wait for a permission answer in a session from Telegram
 # the longest line of the Claude process's stream: a picture Claude reads comes in it twice (the result and
 # tool_use_result), and the SDK's own 1 MB cut off a session at one ~470 KB screenshot (2026-10-21)
@@ -85,7 +86,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 STT_MAX = 4 * 1024 * 1024       # bytes of one recording from the app (5 min at 32 kbit/s ≈ 1.2 MB; base64 must fit the 8 MB frame)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.9.29"
+VERSION = "0.9.30"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -720,6 +721,7 @@ class Driven:
                     ctx = ctx_from_usage(m.model_usage, self.model)
                     if ctx:
                         self.d.set_ctx(self.sid, *ctx, model=self.model)
+                    self.d.result_seen(self.sid)
                     self.result.set()
                 elif isinstance(m, SystemMessage) and m.subtype == "init":
                     self.model = m.data.get("model") or self.model
@@ -1320,6 +1322,21 @@ class Pult:
             await self.send(lv.pkey, text, reply_to=t.msg, notify=True, prio=2, sid=lv.sid, kind="vehi",
                             buttons=[[{"text": self.t("btn.mute"), "callback_data": "m:" + tok}] +
                                      (self.app_row(lv.sid) or [])])
+
+    def result_seen(self, sid):
+        """A turn's result in the SDK stream of Pult's own session. An interrupted turn gets no Stop hook, only the
+        result (error_during_execution — tests/probe_midturn.py stop, 2.1.300): the turn stayed "working", and with it
+        the session's idle process was never closed (2026-10-21, a session after Stop). If no hook has closed the turn
+        RESULT_GRACE s later, it is closed here as interrupted."""
+        lv = self.live.get(sid)
+        t = lv.turn if lv else None
+        if t and not t.done:
+            asyncio.get_running_loop().call_later(RESULT_GRACE, self._close_unended, lv, t)
+
+    def _close_unended(self, lv, t):
+        if lv.turn is t and not t.done:
+            log("turn %s: a result without Stop (interrupted) — closing" % lv.sid[:8])
+            self.finish_turn(lv, "⏹")
 
     def finish_turn(self, lv, mark):
         t = lv.turn

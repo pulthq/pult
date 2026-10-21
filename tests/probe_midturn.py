@@ -9,7 +9,8 @@ Turn 1: Claude calls Bash `sleep 4; echo step N` for N = 1..5, one call at a tim
   Absorbed: Claude reads it at the next tool boundary — one result, HALTED, steps 3..5 not run.
   Not absorbed: the first result is DONE after five steps, then a second turn HALTED.
 With `interrupt` — right after the second prompt, an interrupt: is the waiting prompt dropped, or does it run as
-the next turn (what the owner saw from Pult's own queue on 2026-10-21)?
+the next turn (what the owner saw from Pult's own queue on 2026-10-21)? With `stop` — an interrupt alone, ~7 s in,
+no second prompt. Both print the hook events: does an interrupted turn get a Stop (Pult closes a turn on it)?
 User settings are not loaded (setting_sources=[]); PULT_OFF=1, so the real Pult does not see the events.
 """
 import asyncio, json, sys, tempfile, time
@@ -18,8 +19,17 @@ from claude_agent_sdk import (AssistantMessage, ClaudeAgentOptions, ClaudeSDKCli
                               ResultMessage, SystemMessage, TextBlock, ToolUseBlock)
 
 INTERRUPT = "interrupt" in sys.argv[1:]
-ARGS = [a for a in sys.argv[1:] if a != "interrupt"]
+STOP = "stop" in sys.argv[1:]
+ARGS = [a for a in sys.argv[1:] if a not in ("interrupt", "stop")]
 TMP = Path(tempfile.mkdtemp(prefix="pult-mid-"))
+LOG = TMP / "hooks.jsonl"
+HOOK = TMP / "hook.py"
+HOOK.write_text("""import json, sys, time, os
+d = json.load(sys.stdin)
+d["_t"] = time.time()
+open(os.environ["HOOK_LOG"], "a").write(json.dumps(d, ensure_ascii=False) + "\\n")
+""")
+EVENTS = ["UserPromptSubmit", "Stop", "StopFailure", "SessionEnd"]
 T0 = time.time()
 
 
@@ -32,8 +42,11 @@ async def allow(tool, inp, ctx):
 
 
 async def main():
+    cmd = "%s %s" % (sys.executable, HOOK)
+    hooks = {ev: [{"matcher": "*", "hooks": [{"type": "command", "command": cmd, "timeout": 10}]}] for ev in EVENTS}
     kw = dict(cwd=str(TMP), model="claude-haiku-5-5", permission_mode="default", can_use_tool=allow,
-              setting_sources=[], env={"PULT_OFF": "1", "PULT_SOCK": "/nonexistent"}, stderr=lambda s: None)
+              setting_sources=[], settings=json.dumps({"hooks": hooks}),
+              env={"PULT_OFF": "1", "PULT_SOCK": "/nonexistent", "HOOK_LOG": str(LOG)}, stderr=lambda s: None)
     if ARGS:
         kw["cli_path"] = ARGS[0]
     async with ClaudeSDKClient(options=ClaudeAgentOptions(**kw)) as c:
@@ -62,8 +75,12 @@ async def main():
                       "2, 3, 4, 5 — one call at a time, waiting for each to finish before the next. Then reply with "
                       "one word: DONE. If at any point you get a new message from the user, follow it instead.")
         await asyncio.sleep(7)
-        say("--- second prompt mid-turn")
-        await c.query("Stop the test now: make no more tool calls and reply with one word: HALTED.")
+        if STOP:
+            say("--- interrupt, no second prompt")
+            await c.interrupt()
+        else:
+            say("--- second prompt mid-turn")
+            await c.query("Stop the test now: make no more tool calls and reply with one word: HALTED.")
         if INTERRUPT:
             await asyncio.sleep(0.5)
             say("--- interrupt")
@@ -71,6 +88,11 @@ async def main():
         await asyncio.sleep(30)
         reader.cancel()
         say("--- итог: результатов %d, вызовов инструментов %d" % (results, steps))
+    say("--- хуки:")
+    for line in LOG.read_text().splitlines() if LOG.exists() else []:
+        d = json.loads(line)
+        print("%5.1f %s %s" % (d["_t"] - T0, d.get("hook_event_name"),
+                               repr((d.get("prompt") or d.get("last_assistant_message") or "")[:50])), flush=True)
     say("--- транскрипт: user, attachment и queue-operation")
     for f in Path.home().glob(".claude/projects/*%s*/*.jsonl" % TMP.name.replace("_", "-")):
         for line in f.read_text().splitlines():

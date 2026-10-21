@@ -2421,6 +2421,30 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             claude_agent_sdk.ClaudeSDKClient = old
             d.task.cancel()
 
+    async def test_interrupted_turn_closes(self):
+        # an interrupted turn of Pult's own session gets no Stop hook, only its result (probe_midturn.py stop, 2.1.300):
+        # shortly after the result it is closed as interrupted, so it doesn't stay "working" and keep the idle process
+        # alive (2026-10-21, a session after Stop). A turn whose Stop comes is closed by the Stop, as before
+        old = pultd.RESULT_GRACE
+        pultd.RESULT_GRACE = 0.3
+        try:
+            await run_hook(ev("UserPromptSubmit", prompt="Долгая задача"))
+            await until(lambda: self.p.live.get(SID) and self.p.live[SID].turn)
+            t = self.p.live[SID].turn
+            self.p.result_seen(SID)
+            await until(lambda: self.p.live[SID].turn is None)
+            self.assertEqual(t.done[0], "⏹")
+            await run_hook(ev("UserPromptSubmit", prompt="Ещё раз"))
+            await until(lambda: self.p.live[SID].turn)
+            t2 = self.p.live[SID].turn
+            self.p.result_seen(SID)
+            await run_hook(ev("Stop", last_assistant_message="Готово"))
+            await asyncio.sleep(0.5)
+            self.assertEqual(t2.done[0], "✔️")
+            self.p.result_seen(SID)                    # no turn open: nothing to close
+        finally:
+            pultd.RESULT_GRACE = old
+
     async def test_busy_report(self):
         # what a restart would cut off (pult busy, install.sh): Pult's own sessions with a turn, queued prompts or
         # background tasks — a subagent too, after the session's turn has ended (2026-10-20: a restart killed one);
