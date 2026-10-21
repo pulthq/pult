@@ -511,6 +511,7 @@ S = {
               "  pult setup                    set up or change: the bot, you, the group, hooks\n"
               "  pult status                   what is on: the service, hooks, Telegram, tabs\n"
               "  pult start | stop | restart   the background service\n"
+              "  pult busy                     what a restart would cut off (sessions from Telegram at work)\n"
               "  pult hooks on | off           whether Pult sees sessions in VS Code and the terminal\n"
               "  pult tab                      writing from Telegram into open VS Code tabs\n"
               "  pult tab setup | on | off | allow VERSION\n"
@@ -525,6 +526,7 @@ S = {
               "  pult setup                    настроить или поменять: бот, ты, группа, хуки\n"
               "  pult status                   что включено: служба, хуки, Telegram, вкладки\n"
               "  pult start | stop | restart   фоновая служба\n"
+              "  pult busy                     что оборвёт перезапуск (работающие сессии из Telegram)\n"
               "  pult hooks on | off           видит ли Пульт сессии в VS Code и терминале\n"
               "  pult tab                      запись из Telegram в открытые вкладки VS Code\n"
               "  pult tab setup | on | off | allow ВЕРСИЯ\n"
@@ -552,13 +554,26 @@ S = {
     "cli.install.taken": {"en": "{path} already belongs to another program — left as is. Pult's command: {ctl}",
                           "ru": "{path} уже занят другой программой — не трогаю. Команда Пульта: {ctl}"},
     "cli.install.next": {"en": "Next, set it up in a terminal: pult setup", "ru": "Дальше — настройка, в терминале: pult setup"},
-    "cli.svc.busy": {
-        "en": "Pult holds a session started from Telegram. A restart interrupts a running turn (an idle session "
-              "continues later by itself). Restart now?",
-        "ru": "У Пульта открыта сессия, запущенная из Telegram. Перезапуск оборвёт идущий ход (простаивающая сессия "
-              "потом продолжится сама). Перезапустить сейчас?",
+    "cli.svc.busy": {"en": "Stop Pult anyway?", "ru": "Всё равно остановить Пульт?"},
+    "cli.svc.wait": {
+        "en": "Not stopped. Wait until they finish (`pult busy` shows what is left), or anyway: PULT_FORCE=1 before "
+              "the command.",
+        "ru": "Не останавливаю. Подожди, пока закончат (`pult busy` покажет, что осталось), или всё равно: "
+              "PULT_FORCE=1 перед командой.",
     },
-    "cli.svc.kept": {"en": "Not restarted.", "ru": "Не перезапускаю."},
+    "cli.busy.list": {
+        "en": "Stopping Pult would cut off its own sessions — those started from Telegram or the app:\n{list}",
+        "ru": "Остановка Пульта оборвёт его собственные сессии — запущенные из Telegram или приложения:\n{list}",
+    },
+    "cli.busy.turn": {"en": "a turn is running", "ru": "идёт ход"},
+    "cli.busy.bg": {"en": "in the background: {tasks}", "ru": "в фоне: {tasks}"},
+    "cli.busy.unknown": {
+        "en": "{n} Claude processes; this Pult can't tell whether they are busy",
+        "ru": "процессов Claude: {n}; этот Пульт не может сказать, заняты ли они",
+    },
+    "cli.busy.none": {"en": "Nothing of Pult's own is running: a restart cuts nothing off.",
+                      "ru": "У Пульта ничего не идёт: перезапуск ничего не оборвёт."},
+    "cli.svc.kept": {"en": "Left as it is.", "ru": "Оставляю как есть."},
     "cli.svc.started": {"en": "✓ Pult is running (service {label}).", "ru": "✓ Пульт работает (служба {label})."},
     "cli.svc.not_started": {"en": "✗ Pult didn't start — see the log: {log}",
                             "ru": "✗ Пульт не запустился — смотри журнал: {log}"},

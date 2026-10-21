@@ -82,7 +82,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 STT_MAX = 4 * 1024 * 1024       # bytes of one recording from the app (5 min at 32 kbit/s ≈ 1.2 MB; base64 must fit the 8 MB frame)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.9.25"
+VERSION = "0.9.27"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -289,10 +289,11 @@ def image_kind(blob):
     return None
 
 
-def prompt_started(path, tail=512 * 1024):
-    """When the turn in progress began: the time of the owner's last prompt in the transcript. For a turn Pult
-    learns about from its steps (Pult restarted mid-turn, a tab opened before Pult) — otherwise "working 14 s"
-    after a restart. Messages absorbed mid-turn (queued_command) and tool results don't count."""
+def prompt_started(path, owner=False, tail=512 * 1024):
+    """When the turn in progress began: the time of the last prompt in the transcript. For a turn Pult learns about
+    from its steps (Pult restarted mid-turn, a tab opened before Pult) — otherwise "working 14 s" after a restart.
+    Messages absorbed mid-turn (queued_command) and tool results don't count. owner=True — the owner's own prompt
+    only, not a turn Claude Code started itself (a background task or subagent reported back: an origin)."""
     try:
         with open(path, "rb") as f:
             f.seek(0, 2)
@@ -312,6 +313,8 @@ def prompt_started(path, tail=512 * 1024):
         content = (e.get("message") or {}).get("content")
         blocks = content if isinstance(content, list) else [{"type": "text", "text": content or ""}]
         if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in blocks):
+            continue
+        if owner and e.get("origin"):
             continue
         if any(isinstance(b, dict) and b.get("type") == "text" and b.get("text", "").strip() for b in blocks):
             return _ts(e.get("timestamp")) or None
@@ -589,6 +592,8 @@ class Live:
         self.pending = {}
         self.bg = []              # background tasks still running after the turn (background_tasks in Stop)
         self.bg_seen = {}         # task id → when Pult first saw it running
+        self.run = None           # when the owner's prompt set the work going: turns Claude starts by itself (its
+                                  # background task or subagent reported back) go on with it — "working 27 min"
         self.pid = None           # the session's claude process: the hook's parent (probe_load.py)
 
 
@@ -1337,9 +1342,13 @@ class Pult:
             await self.refresh_title(lv)
             if notes:
                 # the turn was started by Claude Code itself (a background task finished); it's not the owner's prompt
+                for n in notes:
+                    n["what"] = n["what"] or next((b.get("description") or b.get("command") for b in lv.bg
+                                                   if b.get("id") == n["id"]), None) or self.t("task.default")
                 ended = {n["id"] for n in notes}
                 lv.bg = [b for b in lv.bg if b.get("id") not in ended]
-                self.start_turn(lv, note=R.task_notes_text(notes))
+                t = self.start_turn(lv, note=R.task_notes_text(notes))
+                lv.run = lv.run or t.started
             else:
                 origin = self.expect.get(sid)
                 sent = self.tab_expect.get(sid)
@@ -1350,6 +1359,7 @@ class Pult:
                     self.seen_here(lv)                         # typed here
                 t = self.start_turn(lv, None if origin else ev.get("prompt"), reply_to=origin)
                 t.here = not origin and not lv.driven
+                lv.run = t.started
         elif name in ("PostToolUse", "PostToolUseFailure"):
             tool, inp = ev.get("tool_name"), ev.get("tool_input")
             for r in list(lv.pending.values()):
@@ -1360,11 +1370,15 @@ class Pult:
             if lv.turn is None:
                 if lv.title is None:
                     await self.refresh_title(lv)
-                began = await asyncio.to_thread(prompt_started, lv.transcript) if lv.transcript else None
+                # read before the turn appears, so the app never sees it without its start and its run's
+                began, own = await asyncio.to_thread(
+                    lambda p: (prompt_started(p), prompt_started(p, owner=True)), lv.transcript) \
+                    if lv.transcript else (None, None)
                 t = self.start_turn(lv)
                 if began and began < t.started:
                     t.started = began              # the turn began before Pult saw it (a restart mid-turn)
                     t.changed.set()
+                lv.run = lv.run or min(own or t.started, t.started)
             t = lv.turn
             t.n += 1
             t.last = time.time()
@@ -2813,14 +2827,21 @@ class Pult:
         row = self.store.topic(pkey)
         return row["name"] if row and row["name"] else (pkey or "").rsplit("-", 1)[-1]
 
+    @staticmethod
+    def bg_since(lv):
+        """Since when the session's background tasks run, as far as Pult saw: the first sight of the oldest still
+        running; None — none runs."""
+        seen = [lv.bg_seen.get(b.get("id")) for b in lv.bg]
+        return min([s for s in seen if s], default=None)
+
     def live_item(self, lv):
         t = lv.turn
         return {"sid": lv.sid, "title": self.title(lv), "project": self.project_label(lv.pkey), "pkey": lv.pkey,
                 "driven": lv.driven, "state": "ask" if lv.pending else "work" if t else "idle",
-                "started": t.started if t else None, "prompt": R.short(R.prompt_text(t.prompt), 300) if t and t.prompt else None,
+                "started": t.started if t else None, "run": (lv.run or t.started) if t else None, "prompt": R.short(R.prompt_text(t.prompt), 300) if t and t.prompt else None,
                 "note": t.note if t else None, "now": R.plain(t.now, NOW_LEN) if t and t.now else None,
                 "bg": [R.short(b.get("description") or b.get("command") or self.t("task.default"), 80) for b in lv.bg],
-                "tab": bool(self.tab_for(lv.sid))}
+                "bg_since": self.bg_since(lv), "tab": bool(self.tab_for(lv.sid))}
 
     def req_item(self, req):
         lv = self.live.get(req.sid) or self.stub(req.sid)
@@ -2907,7 +2928,8 @@ class Pult:
             t = lv.turn
             pending = [r for r in lv.pending.values() if not r.fut.done()]
             st = A.state(pending, t is not None, lv.bg or (sid in self.driven and self.driven[sid].bg), rec or None)
-            since = min(getattr(r, "ts", 0) or time.time() for r in pending) if pending else t.started if t else rec.get("ts")
+            since = min(getattr(r, "ts", 0) or time.time() for r in pending) if pending else (lv.run or t.started) if t \
+                else (st == "bg" and self.bg_since(lv)) or rec.get("ts")
             line = (R.plain(t.now, NOW_LEN) if t.now else R.short(R.prompt_text(t.prompt), 160) if t.prompt
                     else t.note or "") if t else rec.get("line") or ""
             # on the board a session sits under its project: its own title, or its first prompt, never the project again
@@ -3143,7 +3165,11 @@ class Pult:
             outcome = {k: rec.get(k) for k in ("line", "need", "replies", "fail", "ts", "dur")}
             outcome.update(state=A.state(pending, False, lv.bg, rec), resume=self.attn.resume.get(sid),
                            reset=self.limit_reset() if rec.get("fail") == "rate_limit" else None)
-        self.mark_seen(sid)                        # the owner opened it: its outcome no longer calls them
+        # the owner opened it: its outcome no longer calls them — unless it waits for their decision (the model named
+        # what is needed) or broke off: reading isn't deciding, so that stays "your move" until they answer, write
+        # to the session or press "Got it" (the owner, 2026-10-20)
+        if not (rec and (rec.get("fail") or (rec.get("you") and rec.get("need")))):
+            self.mark_seen(sid)
         page = await asyncio.to_thread(PW.transcript_page, path, before, after, lv.cwd)
         stats = await asyncio.to_thread(self.stats.get, path)
         live = self.live_item(lv)
@@ -3481,6 +3507,22 @@ class Pult:
 
     # ----- loops -----
 
+    def busy_report(self):
+        """What stopping the daemon would cut off (`pult busy`, a restart asks first): Pult's own sessions — their
+        claude is the daemon's child — with a turn running, prompts queued or background tasks, subagents too. A
+        session whose turn has ended may still have them (2026-10-20: a restart killed a background subagent that
+        way). Tabs live in VS Code and survive a restart; `pult run` tasks are processes of their own."""
+        out = []
+        for sid, d in list(self.driven.items()):
+            lv = self.live.get(sid)
+            bg = [R.short(b.get("description") or b.get("command") or self.t("task.default"), 80) for b in (lv.bg if lv else [])]
+            n = max(len(d.bg), len(bg))
+            turn = d.busy or not d.q.empty()
+            if turn or n:
+                out.append({"sid": sid, "title": self.title(lv) if lv else sid[:8],
+                            "project": self.name_of(lv.pkey) if lv else "", "turn": turn, "bg": bg, "n": n})
+        return out
+
     async def handle_conn(self, reader, writer):
         try:
             line = await reader.readline()
@@ -3492,6 +3534,10 @@ class Pult:
                 return
             if msg.get("op") == "hello":
                 await self.on_tab(msg, reader, writer)
+                return
+            if msg.get("op") == "busy":
+                writer.write((json.dumps({"busy": self.busy_report()}, ensure_ascii=False) + "\n").encode())
+                await writer.drain()
                 return
             res = await self.on_hook(msg, reader, writer)
             if msg.get("wait"):

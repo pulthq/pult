@@ -150,6 +150,8 @@ def main(argv):
         return S.cmd_setup()
     elif cmd in ("start", "stop", "restart"):
         return S.cmd_service(cmd)
+    elif cmd == "busy":
+        return S.cmd_busy()
     elif cmd == "hooks" and rest[:1] in (["on"], ["off"]):
         S.hooks_set(rest[0] == "on")
     elif cmd == "hooks":

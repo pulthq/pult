@@ -143,6 +143,10 @@ def lines_word(n):
 # ---------- Claude's background tasks ----------
 
 _TASK_NOTE = re.compile(r"<task-notification>(.*?)</task-notification>", re.S)
+# a subagent that hands its report back itself (SubagentHandback) starts the turn with it, before its
+# task-notification: <agent-message from="id">; the transcript keeps it as "Another Claude session sent a message: …"
+# with origin peer (a real session 2026-10-20, Claude Code 2.1.300); the hook's text is not seen yet — both forms
+_AGENT_MSG = re.compile(r'(?:Another Claude session sent a message:\s*)?<agent-message from="([^"]*)"')
 _TASK_END = ("completed", "failed", "stopped", "killed")
 
 
@@ -158,8 +162,12 @@ def _names(items, n):
 
 def task_notes(prompt):
     """A turn Claude Code started by itself because a background task ended: the “prompt” is then a set of
-    <task-notification> blocks with task-id, status, summary (probe 2026-10-16, Claude Code 2.1.301).
+    <task-notification> blocks with task-id, status, summary (probe 2026-10-16, Claude Code 2.1.301), or a subagent's
+    own report, <agent-message> ("what" is then empty: the task's description is the caller's to find).
     → [{id, status, what}]; for a prompt typed by a person — []."""
+    m = _AGENT_MSG.match(str(prompt or "").lstrip())
+    if m:
+        return [{"id": m.group(1), "status": "completed", "what": ""}]
     if not str(prompt or "").lstrip().startswith("<task-notification>"):
         return []
     out = []

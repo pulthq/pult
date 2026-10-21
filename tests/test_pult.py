@@ -228,6 +228,11 @@ class RenderTest(unittest.TestCase):
         two = R.task_notes(one("b1", "completed", "А") + "\n" + one("b2", "completed", "Б"))
         self.assertEqual(R.task_notes_text(two), "⚙️ Закончились фоновые задачи: «А», «Б»")
         self.assertEqual(R.task_notes("Посмотри <task-notification> в логе"), [])     # a prompt typed by a human
+        # a subagent's own report (SubagentHandback): in both forms seen, the queue's and the transcript's
+        hb = '<agent-message from="a4137">\n[Subagent hand-back] The text below is the final report of a subagent'
+        self.assertEqual(R.task_notes(hb), [{"id": "a4137", "status": "completed", "what": ""}])
+        self.assertEqual(R.task_notes("Another Claude session sent a message: " + hb)[0]["id"], "a4137")
+        self.assertEqual(R.task_notes('Ответь на <agent-message from="x"> в логе'), [])
         self.assertEqual(R.bg_text([]), "")
         self.assertEqual(R.bg_text([{"id": "b1", "status": "running", "description": "Сборка"}]),
                          "⚙️ В фоне ещё идёт: «Сборка»")
@@ -288,6 +293,11 @@ class EnglishTest(unittest.TestCase):
 
 
 class HelpersTest(unittest.TestCase):
+    def test_children_of_an_ancestor(self):
+        # asked from inside a session Pult started, the daemon's children include the asker's own claude: macOS
+        # pgrep leaves out the asker's ancestors unless told otherwise (seen 2026-10-20 — `pult busy` saw nothing)
+        self.assertIn(os.getpid(), pult_os.children(os.getppid()))
+
     @unittest.skipIf(os.name == "nt", "a drive letter on Windows: WindowsTest.test_project_folder")
     def test_decode_pkey(self):
         root = TMP / "fs"
@@ -1048,6 +1058,22 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await until(lambda: any("работает 10 мин" in t for t in self.sent()))
         await run_hook(ev("Stop", last_assistant_message="ок"))
 
+    async def test_run_started_before_pult(self):
+        # the same mid-turn, in a turn Claude started itself (its background task reported back): the turn begins at
+        # that report, the owner's work — at their own prompt; an origin marks what Claude Code wrote itself
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        auto = json.loads(tline("user", "<task-notification>\n<task-id>b1</task-id>\n</task-notification>", ago=120))
+        auto["origin"] = {"kind": "task-notification"}
+        Path(TP).write_text(tline("user", "Собери и проверь", ago=900) + "\n" + json.dumps(auto) + "\n")
+        self.assertAlmostEqual(pultd.prompt_started(TP), time.time() - 120, delta=5)
+        self.assertAlmostEqual(pultd.prompt_started(TP, owner=True), time.time() - 900, delta=5)
+        await run_hook(ev("SessionStart", source="startup"))
+        await run_hook(ev("PostToolUse", tool_name="Read", tool_input={"file_path": "/Users/x/proj/a.md"}))
+        await until(lambda: self.p.live[SID].turn)
+        self.assertAlmostEqual(self.p.live[SID].turn.started, time.time() - 120, delta=5)
+        self.assertAlmostEqual(self.p.live_item(self.p.live[SID])["run"], time.time() - 900, delta=5)
+        await run_hook(ev("Stop", last_assistant_message="ок"))
+
     async def test_stale_turn(self):
         lv = self.p.live_of(SID, PKEY)
         t = self.p.start_turn(lv, "задача")
@@ -1586,6 +1612,9 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
     async def test_background_tasks(self):
         # turn over, its background command still running → a line in the result; once it ends, Claude starts a turn
         await run_hook(ev("UserPromptSubmit", prompt="Собери проект в фоне"))
+        await until(lambda: SID in self.p.live and self.p.live[SID].turn)
+        run0 = self.p.live[SID].run                                 # the owner's prompt sets the work going
+        self.assertEqual(run0, self.p.live[SID].turn.started)
         await run_hook(ev("PostToolUse", tool_name="Bash", tool_input={"command": "make", "run_in_background": True}))
         await run_hook(ev("Stop", last_assistant_message="Запустил сборку",
                           background_tasks=[{"id": "b7", "type": "shell", "status": "running",
@@ -1595,6 +1624,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("\n⚙️ В фоне ещё идёт: «Сборка проекта»\n", res)
         ov = await self.p.api_overview()
         self.assertEqual([s["bg"] for s in ov["live"]], [["Сборка проекта"]])  # in "Running" — with the background task
+        self.assertEqual(ov["live"][0]["bg_since"], self.p.live[SID].bg_seen["b7"])  # "background 3 min" counts from here
         n = len(self.texts())
         note = ("<task-notification>\n<task-id>b7</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n<output-file>/tmp/x"
                 "</output-file>\n<status>completed</status>\n<summary>Background command \"Сборка проекта\" completed "
@@ -1607,10 +1637,31 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("task-notification", "".join(self.sent()))
         self.assertEqual(self.p.live[SID].bg, [])
         self.assertEqual(self.p.live_item(self.p.live[SID])["note"], "⚙️ Закончилась фоновая задача «Сборка проекта»")
+        # Claude's own turn goes on with the owner's work: "working N" counts from their prompt, not from this turn
+        self.assertGreater(self.p.live[SID].turn.started, run0)
+        self.assertEqual(self.p.live_item(self.p.live[SID])["run"], run0)
+        ov = await self.p.api_overview()
+        self.assertEqual([(r["state"], r["since"]) for r in ov["board"][0]["rows"]], [("work", run0)])
         await run_hook(ev("Stop", last_assistant_message="Сборка прошла", background_tasks=[]))
         await until(lambda: any(t.startswith("✅") and "Сборка прошла" in t for t in self.texts()))
         self.assertNotIn("В фоне", self.texts()[-1])
         self.assertNotIn("task-notification", self.p.live[SID].title or "")
+        # a subagent hands its report back itself: also Claude's own turn, not "You: Another Claude session…"
+        await run_hook(ev("UserPromptSubmit", prompt="Позови ревьюера"))
+        # the hook may be done before the daemon has read it (Windows, over TCP): wait for the turn it starts
+        await until(lambda: self.p.live[SID].turn and self.p.live[SID].turn.prompt == "Позови ревьюера")
+        run1 = self.p.live[SID].run
+        self.assertGreater(run1, run0)                              # a new prompt of the owner — a new run
+        await run_hook(ev("Stop", last_assistant_message="Ревьюер смотрит", background_tasks=[
+            {"id": "a9", "type": "subagent", "status": "running", "description": "Ревью правки"}]))
+        await until(lambda: any(t.startswith("✅") and "Ревьюер смотрит" in t for t in self.texts()))
+        n = len(self.texts())
+        await run_hook(ev("UserPromptSubmit", prompt='Another Claude session sent a message: <agent-message from="a9">\n'
+                                                     "[Subagent hand-back] The text below is the final report"))
+        await until(lambda: len(self.texts()) > n)
+        self.assertIn("<i>⚙️ Закончилась фоновая задача «Ревью правки»</i>", self.texts()[n])
+        self.assertNotIn("agent-message", "".join(self.sent()))
+        self.assertEqual((self.p.live[SID].bg, self.p.live[SID].run), ([], run1))
 
     async def test_whose_move(self):
         # stage V: a turn typed here ends while the owner is away → "Your move" with the result's first sentence;
@@ -1645,7 +1696,8 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await until(lambda: self.p.attn.day_of(PKEY)[0] == 3)
         ov = await self.p.api_overview()
         self.assertEqual(ov["mine"], [])
-        self.assertEqual([(r["state"], r["bg"]) for r in ov["board"][0]["rows"]], [("bg", ["Сборка"])])
+        self.assertEqual([(r["state"], r["bg"], r["since"]) for r in ov["board"][0]["rows"]],
+                         [("bg", ["Сборка"], self.p.live[SID].bg_seen["b1"])])    # the chip's time: since the task was seen
         # an API error ends the turn: a failure, in Telegram too
         await run_hook(ev("UserPromptSubmit", prompt="Дальше"))
         await run_hook(ev("StopFailure", error="rate_limit", last_assistant_message="Usage limit reached"))
@@ -1714,7 +1766,11 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             await self.p.api_project("-nowhere-at-all")
         info = await self.p.api_session(SID)
         self.assertEqual((info["outcome"]["state"], info["outcome"]["need"], info["outcome"]["replies"]), ("you", "Выбери А или Б", ["А", "Б"]))
-        self.assertEqual((await self.p.api_session(SID))["outcome"]["state"], "idle")     # opened — seen
+        # opened, yet the decision is still the owner's: it stays "your move" until they answer or press "Got it"
+        self.assertEqual((await self.p.api_session(SID))["outcome"]["state"], "you")
+        self.assertEqual([r["sid"] for r in (await self.p.api_project(PKEY))["mine"]], [SID])
+        await self.p.api_seen(SID)
+        self.assertEqual((await self.p.api_session(SID))["outcome"]["state"], "idle")
         d = await self.p.api_project(PKEY)
         self.assertEqual(([r["sid"] for r in d["today"]], d["mine"]), ([SID], []))
         with mock.patch.object(self.p, "list_projects", lambda known: [(time.time(), PKEY, "/Users/x/proj")]):
@@ -2189,6 +2245,32 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             await until(lambda: closed, timeout=3)     # no background tasks — the idle process is closed
         finally:
             claude_agent_sdk.ClaudeSDKClient, pultd.DRIVEN_IDLE = old
+
+    async def test_busy_report(self):
+        # what a restart would cut off (pult busy, install.sh): Pult's own sessions with a turn, queued prompts or
+        # background tasks — a subagent too, after the session's turn has ended (2026-10-20: a restart killed one);
+        # an idle one is not listed. Asked over the socket, as pult_setup does
+        import pult_setup
+        NS, idle, queued = types.SimpleNamespace, "22222222-2222-3333-4444-555555555555", "33333333-2222-3333-4444-555555555555"
+        lv = self.p.live_of(SID, PKEY)
+        lv.bg = [{"id": "a1", "type": "subagent", "status": "running", "description": "Probe A: maker"}]
+        q = asyncio.Queue()
+        q.put_nowait(("дальше", None))
+        self.p.driven.update({SID: NS(busy=False, bg={"a1"}, q=asyncio.Queue()),
+                              idle: NS(busy=False, bg=set(), q=asyncio.Queue()),
+                              queued: NS(busy=False, bg=set(), q=q)})
+        with mock.patch.object(pult_setup, "SOCK", os.environ["PULT_SOCK"]), \
+                mock.patch.object(pult_setup, "service", lambda lbl: ("running", "1")):
+            busy = await asyncio.to_thread(pult_setup.busy_sessions, "x")
+            self.assertEqual(sorted((b["sid"], b["turn"], b["bg"], b["n"]) for b in busy),
+                             [(SID, False, ["Probe A: maker"], 1), (queued, True, [], 0)])
+            self.assertEqual(busy[0]["project"], "proj")
+            # the SDK reports a task the Stop hook hasn't yet: counted without its name
+            lv.bg = []
+            busy = await asyncio.to_thread(pult_setup.busy_sessions, "x")
+            self.assertEqual([(b["bg"], b["n"]) for b in busy if b["sid"] == SID], [([], 1)])
+            self.p.driven.clear()
+            self.assertEqual(await asyncio.to_thread(pult_setup.busy_sessions, "x"), [])
 
     async def test_ignores_automation_and_tmp(self):
         await run_hook(ev("UserPromptSubmit", prompt="cron"), entry="sdk-cli")

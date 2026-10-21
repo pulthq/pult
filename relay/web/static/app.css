@@ -125,9 +125,15 @@ button:focus-visible, a:focus-visible, label:focus-visible { outline: 2px solid 
 .now { margin-top: 4px; font-size: 14.5px; overflow-wrap: anywhere; }
 .chip { flex: none; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 99px; background: var(--code); color: var(--muted); white-space: nowrap; }
 .chip.ok { color: var(--ok); animation: pulse 1.8s ease-in-out infinite; } .chip.warn { color: var(--warn); } .chip.bad { color: var(--danger); }
-/* a turn in progress pulses in colour: the chip fills green and back */
+/* a turn in progress pulses in colour: the chip fills green and back; background tasks — the same in grey */
 @keyframes pulse { 0%, 100% { background: var(--code); color: var(--ok); } 50% { background: var(--ok); color: #fff; } }
-@media (prefers-reduced-motion: reduce) { .chip.ok { animation: none; } }
+.chip.mute { animation: pulse-mute 1.8s ease-in-out infinite; }
+@keyframes pulse-mute { 0%, 100% { background: var(--code); color: var(--muted); } 50% { background: var(--muted); color: var(--card); } }
+@media (prefers-reduced-motion: reduce) { .chip.ok, .chip.mute { animation: none; } }
+/* a chip with a running time keeps one width: its text and invisible samples of the widest share one grid cell */
+.chip.timer { display: inline-grid; justify-items: center; font-variant-numeric: tabular-nums; }
+.chip.timer > span { grid-area: 1 / 1; }
+.chip.timer > .ghost { visibility: hidden; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 5px 0 3px; }
 
 /* what needs you: the one loud thing — a warm bar on the left, everything else as usual */

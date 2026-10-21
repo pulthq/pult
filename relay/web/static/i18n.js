@@ -76,6 +76,7 @@ const S = {
   "st.ask": { en: "waiting for you", ru: "ждёт ответа" },
   "st.work": { en: "working {dur}", ru: "работает {dur}" },
   "st.bg": { en: "in the background", ru: "в фоне" },
+  "st.bg.t": { en: "background {dur}", ru: "в фоне {dur}" },
   "st.open": { en: "open", ru: "открыта" },
   "mode.auto": { en: "🔄 Auto", ru: "🔄 Авто" },
   "mode.mac": { en: "💻 At my computer", ru: "💻 За компьютером" },
@@ -102,6 +103,7 @@ const S = {
   // Home after stage V: whose move, the projects board
   "home.mine": { en: "Your move · {n}", ru: "Твой ход · {n}" },
   "home.projects": { en: "Projects", ru: "Проекты" },
+  "home.running": { en: "Running now · {n}", ru: "Идёт сейчас · {n}" },
   "top.cpu": { en: "CPU", ru: "ЦП" },
   "top.mem": { en: "RAM", ru: "ОЗУ" },
   "mine.waits": { en: "waits {dur}", ru: "ждёт {dur}" },

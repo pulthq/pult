@@ -3,8 +3,8 @@
   ~/.local/share/pult/venv/bin/python tools/media.py          # both languages, about two minutes
 
   media/demo.{en,ru}.gif         the opening animation: a project's topic in Telegram, turn by turn (tools/chat_shot.py)
-  media/app-home.{en,ru}.png     Home of the web app next to the animation at the top: "Your move" with ready replies,
-                                 then the projects board — 412×740, the animation's own shape
+  media/app-home.{en,ru}.png     Home of the web app next to the animation at the top: "Running now", then "Your
+                                 move" — 412×740, the animation's own shape
   media/app-session.{en,ru}.png  the session screen of the web app: your message pinned on top, the status by the field
   media/app.{en,ru}.png          three app screens in phone frames: Home ("Your move" with ready replies and the board),
                                  a project's screen, a session ending in its outcome card
@@ -58,7 +58,8 @@ def screens(lang):
         # Home from the "Your move" card that waits for a choice: its ready replies, then the projects board
         mine = "const c = document.querySelector('.card.mine'); window.scrollTo(0, c.getBoundingClientRect().top + window.scrollY - 14)"
         shot(urls["HOME"], out["home"], SHOT_HEIGHT="860", SHOT_JS=mine)
-        shot(urls["HOME"], out["top"], SHOT_HEIGHT="740", SHOT_JS=mine)
+        # the top of Home next to the animation: what runs now, then what waits for you ("While you were away" closed)
+        shot(urls["HOME"], out["top"], SHOT_HEIGHT="740", SHOT_JS="document.querySelector('.card.catch .x').click()")
         shot(urls["PROJ"], out["project"], SHOT_HEIGHT="860")
         # opened once, so its outcome card is still red: it waited for you when you opened it
         shot(urls["SESS4"], out["outcome"], SHOT_HEIGHT="860")

@@ -62,6 +62,19 @@ if (-not (Good $VenvPy @())) {
     if ($LASTEXITCODE -ne 0) { exit 1 }
 }
 
+# Updating restarts the service, and that cuts off what Pult's own sessions are doing - a turn, a background task or
+# subagent. In a console `pult install` asks before the restart; without one (a script, an agent) nothing is changed
+# while they run. $env:PULT_FORCE = '1' - anyway.
+if ([Console]::IsInputRedirected -and $env:PULT_FORCE -ne '1' -and (Test-Path (Join-Path $Dst 'pultd.py'))) {
+    $busy = & $VenvPy -X utf8 (Join-Path $Src 'src\pultctl.py') busy
+    if ($LASTEXITCODE -ne 0) {
+        $busy | ForEach-Object { Write-Host $_ }
+        Say "Nothing changed. Wait until they finish (pult busy shows what is left), or anyway: `$env:PULT_FORCE = '1' before install.ps1" `
+            "Ничего не менял. Подожди, пока закончат (pult busy покажет, что осталось), или всё равно: `$env:PULT_FORCE = '1' перед install.ps1"
+        exit 1
+    }
+}
+
 # the same files install.sh copies (tests/test_setup.py checks both lists)
 $files = 'src/pultd.py', 'src/pult_hook.py', 'src/pult_render.py', 'src/pult_web.py', 'src/pult_i18n.py', 'src/pult_stt.py',
          'src/pult_load.py', 'src/pult_attn.py', 'src/pult_brief.py', 'src/pult_os.py', 'src/pult_setup.py', 'src/pultctl.py',

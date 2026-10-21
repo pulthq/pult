@@ -450,7 +450,9 @@ def children(pid, name=None):
         want = name and name.lower()
         return [p for p, (pp, exe) in win_procs().items() if pp == pid and
                 (not want or exe.lower() in (want, want + ".exe"))]
-    out = run("pgrep", "-P", str(pid), *(["-f", name] if name else [])) or ""
+    # macOS pgrep leaves out the asker's own ancestors unless -a: asked from a session Pult started, its claude
+    # would be missing (Linux pgrep has no such rule, and its -a means something else)
+    out = run("pgrep", *(["-a"] if KIND == "mac" else []), "-P", str(pid), *(["-f", name] if name else [])) or ""
     return [int(x) for x in out.split()]
 
 

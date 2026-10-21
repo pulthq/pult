@@ -9,9 +9,9 @@
 <p align="center">
   <img src="media/demo.en.gif" width="330" alt="A project's topic in Telegram: Claude works, asks for permission to run a command, the phone shows a notification, a tap on Allow, the turn goes on and its result arrives">
   &nbsp;
-  <img src="media/app-home.en.png" width="330" alt="Home in the web app: a session that waits for your choice, with ready replies taken from Claude's message, then the projects board — who works, who waits, what each session is doing">
+  <img src="media/app-home.en.png" width="330" alt="Home in the web app: what runs right now, each with how long it has run, then what waits for you — a permission request to answer right there">
 </p>
-<p align="center"><sub>Left: a project's topic in Telegram. Right: Home in the web app — what waits for you, with ready replies, and every project's live sessions. Made-up projects, drawn from Pult's own output on the test stand.</sub></p>
+<p align="center"><sub>Left: a project's topic in Telegram. Right: Home in the web app — what runs right now, then what waits for you. Made-up projects, drawn from Pult's own output on the test stand.</sub></p>
 
 You give Claude Code a task in VS Code or a terminal and walk away. Claude keeps going, then stops to ask a
 question or wait for a permission, and the work stalls until you're back. Pult puts every Claude Code session on
@@ -71,10 +71,12 @@ next. *Pult* is Russian for a remote control.
 A Telegram Mini App on your own server, one tap away from any topic. It is the comfortable way to work from the
 phone:
 
-- **Home** is built around whose move it is. On top, **Your move**: permission requests and Claude's questions to
-  answer right there, and sessions that ended and need you, the longest waiting first — with **ready replies**
-  taken from Claude's own message (one tap, three seconds to undo) and a field for your own words. Below,
-  **Projects**: who works and who waits, today's turns, a line per live session. Optionally a small model (haiku, on
+- **Home** is built around whose move it is. On top, **Running now**: every session at work or waiting on its
+  background tasks and every task without Claude still running, each with how long it has run — a turn counts from
+  your own message. Then **Your move**: permission requests and Claude's questions to answer right there, and
+  sessions that ended and need you, the longest waiting first — with **ready replies** taken from Claude's own
+  message (one tap, three seconds to undo) and a field for your own words; what waits for your decision stays until
+  you answer or press Got it. Below, **Projects**: who works and who waits, today's turns, a line per recent session. Optionally a small model (haiku, on
   your subscription) writes those lines in plain words and picks the replies. Back after a break, **While you were
   away** sums up what ran. Every mark leads to its cause: a project's red dot opens its board with what waits on
   top; a session opens at its outcome.
@@ -259,7 +261,9 @@ are trademarks of Anthropic.
 ## Turn it off, remove it
 
 - `pult hooks off`, then Reload Window: Pult stops seeing sessions.
-- `pult stop`: the service stops. `pult start` starts it again.
+- `pult stop`: the service stops. `pult start` starts it again. While sessions started from Telegram or the app are
+  at work (a turn, a background task or subagent), stopping or restarting cuts them off: in a terminal Pult asks
+  first, without one it refuses. `pult busy` shows what is running; `PULT_FORCE=1` stops anyway.
 - `pult tab off`: new VS Code tabs start without the wrapper.
 - `pult uninstall`: removes the service, the hooks, the `pult` command and Pult's files, and asks whether to also
   delete your settings with the bot token. The bot and the group stay in Telegram.

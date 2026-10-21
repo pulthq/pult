@@ -354,15 +354,77 @@ def svc_start(lbl):
     return False
 
 
-def telegram_sessions(lbl):
-    """Claude processes the daemon holds for sessions from Telegram: a restart interrupts a running turn."""
+def busy_sessions(lbl):
+    """What stopping the service would cut off, as the daemon tells it: Pult's own sessions (started from Telegram or
+    the app) with a turn running or background tasks — [{"title", "project", "turn", "bg", "n"}]. A daemon that
+    can't tell (an older Pult) yet holds Claude processes: [{"unknown": their count}]. Nothing — []."""
     pid = service(lbl)[1]
-    return len(pult_os.children(pid, "claude")) if pid else 0
+    if not pid:
+        return []
+    try:
+        s = pult_os.link_connect(SOCK, timeout=5)
+        try:
+            s.sendall(b'{"op": "busy"}\n')         # no "wait": a daemon without this op answers nothing
+            buf = b""
+            while not buf.endswith(b"\n"):
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+        finally:
+            s.close()
+        return list(json.loads(buf)["busy"])
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    n = len(pult_os.children(pid, "claude"))
+    return [{"unknown": n}] if n else []
+
+
+def busy_text(busy):
+    """The busy sessions for a human, one per line."""
+    lines = []
+    for b in busy:
+        if "unknown" in b:
+            lines.append("  • " + T("cli.busy.unknown", n=b["unknown"]))
+            continue
+        what = ([T("cli.busy.turn")] if b.get("turn") else []) + \
+            ([T("cli.busy.bg", tasks=", ".join(b.get("bg") or []) or b.get("n"))] if b.get("n") else [])
+        name = b.get("project") or ""
+        if b.get("title") and b["title"] != name:
+            name = "%s · %s" % (name, b["title"]) if name else b["title"]
+        lines.append("  • %s — %s" % (name, "; ".join(what)))
+    return "\n".join(lines)
+
+
+def forced():
+    return os.environ.get("PULT_FORCE") == "1"
+
+
+def may_stop(lbl, interactive=False):
+    """Whether the service may stop now: nothing of Pult's own runs, or the owner agreed in the terminal, or
+    PULT_FORCE=1. Without a terminal (a script, an agent) the service isn't stopped while something runs."""
+    busy = [] if forced() else busy_sessions(lbl)
+    if not busy:
+        return True
+    say(T("cli.busy.list", list=busy_text(busy)))
+    if interactive:
+        if yes(T("cli.svc.busy"), False):
+            return True
+        say(T("cli.svc.kept"))
+        return False
+    say(T("cli.svc.wait"))
+    return False
+
+
+def cmd_busy():
+    """`pult busy`: what a restart would cut off; exit code 1 while something runs."""
+    busy = busy_sessions(label())
+    say(T("cli.busy.list", list=busy_text(busy)) if busy else T("cli.busy.none"))
+    return 1 if busy else 0
 
 
 def restart(lbl, interactive=False):
-    if interactive and telegram_sessions(lbl) and not yes(T("cli.svc.busy"), False):
-        say(T("cli.svc.kept"))
+    if not may_stop(lbl, interactive):
         return False
     svc_stop(lbl)
     why = SVC.problem()
@@ -383,6 +445,8 @@ def linger_hint():
 def cmd_service(op):
     lbl = label()
     if op == "stop":
+        if not may_stop(lbl, interactive=sys.stdin.isatty()):
+            return 1
         svc_stop(lbl)
         say(T("cli.svc.stopped"))
         return 0

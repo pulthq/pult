@@ -110,6 +110,9 @@ def service_env(path):
     return dict(kv.split("=", 1) for kv in shlex.split(line[len("Environment="):]))
 
 
+BUSY = S.busy_sessions                         # the real one: Base replaces it with a fake
+
+
 class Base(unittest.TestCase):
     """Every path of pult_setup in a temporary folder; the service is a fake."""
 
@@ -126,13 +129,14 @@ class Base(unittest.TestCase):
                           EXT_DIRS=[t / "extensions", t / ".vscode-server" / "extensions"])
         self.patches = [mock.patch.object(S, k, v) for k, v in self.paths.items()]
         self.svc = SimpleNamespace(loaded=False, started=0, stopped=0)
+        self.busy = []                         # what the daemon says a restart would cut off
         self.patches += [
             mock.patch.object(S, "service", lambda lbl: ("running", "1") if self.svc.loaded else (None, None)),
             mock.patch.object(S, "svc_stop", self.fake_stop),
             mock.patch.object(S, "svc_start", self.fake_start),
-            mock.patch.object(S, "telegram_sessions", lambda lbl: 0),
-            mock.patch.dict(os.environ, {"PULT_LANG": "en"}),
-        ]
+            mock.patch.object(S, "busy_sessions", lambda lbl: self.busy),
+            mock.patch.dict(os.environ, {"PULT_LANG": "en", "PULT_SOCK": ""}),    # "": in a session Pult started
+        ]                                                                         # it is the real daemon's socket
         for p in self.patches:
             p.start()
         I.set_lang("en")
@@ -381,6 +385,60 @@ class SettingsTest(Base):
             self.assertEqual(pultctl.main(["help"]), 0)
             self.assertEqual(pultctl.main(["nonsense"]), 2)
         self.assertIn("pult setup", out.getvalue())
+
+    def test_busy_guard(self):
+        # a restart or stop cuts off what Pult's own sessions are doing (2026-10-20: an agent ran `bash install.sh`
+        # and killed a background subagent in a session from the app): without a terminal — refused; in one — asked,
+        # no by default; PULT_FORCE=1 — anyway; nothing running — no question
+        self.svc.loaded = True
+        self.busy = [{"sid": "s1", "title": "Поиск стратегий", "project": "trader", "turn": False,
+                      "bg": ["Probe A: maker"], "n": 1}, {"unknown": 2}]
+        tty = lambda v: mock.patch.object(sys.stdin, "isatty", lambda: v)
+        ready = mock.patch.object(S, "configured", lambda env=None: True)
+        ready.start()
+        self.addCleanup(ready.stop)
+        for op in ("restart", "stop"):
+            with tty(False):
+                res, out = self.run_cli(S.cmd_service, op)
+            self.assertEqual((res, self.svc.stopped), (1, 0), out)
+            self.assertIn("trader · Поиск стратегий — in the background: Probe A: maker", out)
+            self.assertIn("2 Claude processes", out)
+            self.assertIn("PULT_FORCE=1", out)
+            with tty(True):
+                res, out = self.run_cli(S.cmd_service, op, answers=[""])
+            self.assertEqual((res, self.svc.stopped), (1, 0), out)
+        with tty(True):
+            res, out = self.run_cli(S.cmd_service, "restart", answers=["y"])
+        self.assertEqual((res, self.svc.stopped, self.svc.started), (0, 1, 1), out)
+        with tty(False), mock.patch.dict(os.environ, {"PULT_FORCE": "1"}):
+            res, out = self.run_cli(S.cmd_service, "restart")
+        self.assertEqual((res, self.svc.stopped), (0, 2), out)
+        self.assertEqual(self.run_cli(S.cmd_busy)[0], 1)
+        self.busy = []
+        with tty(True):
+            res, out = self.run_cli(S.cmd_service, "restart")
+        self.assertEqual((res, self.svc.stopped), (0, 3), out)
+        res, out = self.run_cli(S.cmd_busy)
+        self.assertEqual(res, 0)
+        self.assertIn("cuts nothing off", out)
+
+    def test_busy_sessions(self):
+        # the daemon is asked over its socket; one that answers nothing (an older Pult) yet holds Claude processes
+        # counts as busy; no service — nothing
+        import socket
+        a, b = socket.socketpair()
+        b.sendall(json.dumps({"busy": [{"sid": "s1", "turn": True, "bg": [], "n": 0}]}).encode() + b"\n")
+        with mock.patch.object(S, "busy_sessions", BUSY), mock.patch.object(S, "service", lambda lbl: ("running", "7")), \
+                mock.patch.object(S.pult_os, "link_connect", lambda path, timeout=1.0: a):
+            self.assertEqual(S.busy_sessions("x"), [{"sid": "s1", "turn": True, "bg": [], "n": 0}])
+        self.assertEqual(json.loads(b.recv(100)), {"op": "busy"})
+        b.close()
+        with mock.patch.object(S, "busy_sessions", BUSY), mock.patch.object(S, "service", lambda lbl: ("running", "7")), \
+                mock.patch.object(S.pult_os, "link_connect", mock.Mock(side_effect=OSError)), \
+                mock.patch.object(S.pult_os, "children", lambda pid, name=None: [11, 12]):
+            self.assertEqual(S.busy_sessions("x"), [{"unknown": 2}])
+        with mock.patch.object(S, "busy_sessions", BUSY), mock.patch.object(S, "service", lambda lbl: (None, None)):
+            self.assertEqual(S.busy_sessions("x"), [])
 
     def test_install_not_set_up(self):
         # install.sh without a terminal and without settings: the service file is written, the setup is suggested
