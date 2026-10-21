@@ -792,6 +792,40 @@ class TabTest(Base):
         os.symlink(sys.executable, d / "venv" / "bin" / "python")
         self.assertEqual(run().stdout, "hi\n")                                   # pult_tab.py: not a chat → exec
 
+    def test_wrapper_line_check(self):
+        # a wrapper line VS Code can't use stops every Claude tab from starting (2026-10-21: a Windows path written
+        # with single backslashes): pult status and pult tab setup say which file and give the right line
+        (S.HOME / S.TAB_FILE).parent.mkdir(parents=True, exist_ok=True)
+        (S.HOME / S.TAB_FILE).write_text("wrapper")
+        user = S.EDITOR_DIRS[0] / "settings.json"
+        user.parent.mkdir(parents=True)
+        good = '{\n  // ours\n  %s\n  "x": 1\n}' % S.wrapper_line()
+        self.assertEqual(json.loads(S.wrapper_line()[:-1].join("{}"))["claudeCode.claudeProcessWrapper"],
+                         str(S.HOME / S.TAB_FILE))                       # the line we print is valid JSON
+        user.write_text(good)
+        self.assertEqual(S.wrapper_problems(), [])
+        user.write_text(r'{"claudeCode.claudeProcessWrapper": "C:\Users\x\.local\share\pult\%s"}' % S.TAB_FILE)
+        self.assertEqual([why for _, why, _ in S.wrapper_problems()], ["broken"])
+        prof = S.EDITOR_DIRS[0] / "profiles" / "p1" / "settings.json"
+        prof.parent.mkdir(parents=True)
+        prof.write_text('{\n  // "claudeCode.claudeProcessWrapper": "/old/%s",\n'
+                        '  "claudeCode.claudeProcessWrapper": "/nowhere/%s"\n}' % (S.TAB_FILE, S.TAB_FILE))
+        self.assertEqual([(f, why) for f, why, _ in S.wrapper_problems()], [(user, "broken"), (prof, "missing")])
+        out = io.StringIO()
+        with redirect_stdout(out), mock.patch.object(S, "service", lambda lbl: (None, None)), \
+                mock.patch.object(S, "sock_ok", lambda: False):
+            pultctl.cmd_status()
+        text = out.getvalue()
+        self.assertIn("isn't valid JSON", text)
+        self.assertIn("/nowhere/%s, and there's no such file" % S.TAB_FILE, text)
+        self.assertEqual(text.count(S.wrapper_line()), 2)                  # the right line, for each file
+        with mock.patch.object(sys.stdin, "isatty", lambda: False):
+            _, out = self.run_cli(S.cmd_tab_setup, answers=["~"])
+        self.assertIn("isn't valid JSON", out)
+        res, out = self.run_cli(S.cmd_report)
+        self.assertIn("(broken line in", out)
+        self.assertIn("(missing line in", out)
+
     def test_tab_setup(self):
         (S.EXT_DIRS[1] / "anthropic.claude-code-2.1.999-linux-x64").mkdir(parents=True)
         with mock.patch.object(sys.stdin, "isatty", lambda: False), \

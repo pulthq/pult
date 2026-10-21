@@ -46,6 +46,8 @@ def cmd_status():
             except (S.TgError, OSError) as e:
                 row("cli.st.tg", T("cli.st.route_bad", route=T(name), why=e))
     row("cli.st.tabs", tab_state())
+    for w in S.wrapper_warnings():
+        print("  " + w.replace("\n", "\n  "))
     row("cli.st.log", S.tilde(S.LOG))
 
 

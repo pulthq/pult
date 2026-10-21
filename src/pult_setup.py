@@ -885,6 +885,44 @@ def tab_wrapped():
     return bool(wrapper_users())
 
 
+WRAPPER_VALUE = re.compile(r'"claudeCode\.claudeProcessWrapper"\s*:\s*"((?:[^"\\\r\n]|\\.)*)"')
+
+
+def wrapper_line():
+    """The line for the VS Code settings, as JSON wants it: on Windows each backslash of the path doubled."""
+    return '"claudeCode.claudeProcessWrapper": %s,' % json.dumps(str(HOME / TAB_FILE), ensure_ascii=False)
+
+
+def wrapper_problems():
+    """[(settings file, "broken" | "missing", what the line holds)] for each wrapper line VS Code can't use. The
+    extension hands the value to the SDK as the program to run, as is (no ~), and the SDK first checks the file is
+    there: "broken" — not a JSON string (a Windows path with single backslashes: VS Code drops each one with the
+    letter after it, 2026-10-21), "missing" — no such file. Either way Claude tabs in VS Code don't start at all."""
+    out = []
+    for f in wrapper_users():
+        try:
+            text = f.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for m in WRAPPER_VALUE.finditer(text):
+            if "//" in text[text.rfind("\n", 0, m.start()) + 1:m.start()]:
+                continue                                    # commented out: VS Code doesn't read it
+            try:
+                path = json.loads('"%s"' % m.group(1))
+            except ValueError:
+                out.append((f, "broken", m.group(1)))
+                continue
+            if not os.path.isfile(path):
+                out.append((f, "missing", path))
+    return out
+
+
+def wrapper_warnings():
+    """What `pult status` and `pult tab setup` say about wrapper lines VS Code can't use, one text each."""
+    return [T("cli.tab.broken" if why == "broken" else "cli.tab.missing", file=tilde(f), value=value,
+              line=wrapper_line(), palette=pult_os.PALETTE) for f, why, value in wrapper_problems()]
+
+
 def vkey(v):
     try:
         return tuple(int(x) for x in v.split("."))
@@ -906,10 +944,12 @@ def cmd_tab_setup():
     TAB_CONF.parent.mkdir(parents=True, exist_ok=True)
     TAB_CONF.write_text(json.dumps(conf, ensure_ascii=False) + "\n", encoding="utf-8")
     say(T("cli.tab.saved", path=tilde(TAB_CONF)))
-    line = '"claudeCode.claudeProcessWrapper": %s,' % json.dumps(str(HOME / TAB_FILE), ensure_ascii=False)
+    line = wrapper_line()
     say(T("cli.tab.line", line=line, palette=pult_os.PALETTE))
     if pult_os.remote_server():
         say(T("cli.tab.remote", palette=pult_os.PALETTE))
+    for w in wrapper_warnings():
+        say(w)
     ext = newest_extension()
     if ext and ext not in conf["versions"]:
         say(T("cli.tab.unverified", v=ext))
@@ -1087,8 +1127,10 @@ def report_lines():
         "this computer: desktop %s · keyboard idle from %s · VS Code server %s" % (
             pult_os.desktop() if pult_os.KIND == "linux" else pult_os.NAME, pult_os.idle_source(),
             "yes" if pult_os.remote_server() else "no"),
-        "tabs: wrapper in VS Code settings %s · off switch %s · folders %d · verified versions %s" % (
-            "yes" if tab_wrapped() else "no", "yes" if TAB_OFF.exists() else "no", len(conf.get("folders") or []),
+        "tabs: wrapper in VS Code settings %s%s · off switch %s · folders %d · verified versions %s" % (
+            "yes" if tab_wrapped() else "no",
+            "".join(" (%s line in %s)" % (why, tilde(f)) for f, why, _ in wrapper_problems()),
+            "yes" if TAB_OFF.exists() else "no", len(conf.get("folders") or []),
             ", ".join(conf.get("versions") or []) or "—"),
     ]
     if env.get("PULT_BOT_TOKEN"):

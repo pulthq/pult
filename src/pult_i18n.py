@@ -767,6 +767,18 @@ S = {
         "ru": "У тебя расширение Claude Code {v}: обёртка на нём не проверялась и ни во что не вмешивается до "
               "`pult tab allow {v}` (после tests/probe_tab.py или на свой риск).",
     },
+    "cli.tab.broken": {
+        "en": "⚠️ The wrapper line in {file} isn't valid JSON: VS Code reads \"{value}\" with the backslashes eaten, "
+              "and Claude tabs don't start at all. Replace the line with:\n  {line}\nthen {palette} → Developer: Reload Window.",
+        "ru": "⚠️ Строка обёртки в {file} — не JSON: VS Code прочтёт \"{value}\" без обратных косых, и вкладки Claude "
+              "не запустятся совсем. Замени строку на:\n  {line}\nпотом {palette} → Developer: Reload Window.",
+    },
+    "cli.tab.missing": {
+        "en": "⚠️ The wrapper line in {file} names {value}, and there's no such file: Claude tabs in VS Code don't start "
+              "at all. Replace the line with:\n  {line}\nthen {palette} → Developer: Reload Window.",
+        "ru": "⚠️ Строка обёртки в {file} указывает на {value}, а такого файла нет: вкладки Claude в VS Code не "
+              "запустятся совсем. Замени строку на:\n  {line}\nпотом {palette} → Developer: Reload Window.",
+    },
     "cli.tab.copy": {"en": "Copy the line to the clipboard?", "ru": "Скопировать строку в буфер обмена?"},
     "cli.tab.copied": {"en": "Copied.", "ru": "Скопировано."},
     "cli.stt.about": {
