@@ -1,6 +1,6 @@
 """Live Pult test: a real Claude (haiku) via the SDK, a fake Telegram.
 
-Run (uses a little of the subscription, ~40 s):
+Run (uses a little of the subscription, ~70 s):
   ~/.local/share/pult/venv/bin/python tests/e2e_live.py
 
 
@@ -9,6 +9,7 @@ continuing the same session; a fork of a session "open on the Mac";
 a background command — "in the background" in the result, the load view finds its process, a turn when it ends,
 the next prompt with its own result; that result is the owner's move on Home until the session is opened.
 With Telegram as a pager: a task from the app makes no turn or result message; its question is paged once.
+A message from the app mid-turn reaches Claude in that turn, and the app shows it as written mid-turn.
 """
 import asyncio, json, os, shutil, sys, tempfile, time, urllib.parse
 from pathlib import Path
@@ -192,6 +193,23 @@ async def main():
     assert not quiet and len(page) == 1, "the pager posted the wrong things"
     await p.page_due()
     assert len(mine5()) == 1, "paged twice"
+    # a message from the app while Pult's own session works reaches Claude in the same turn, at its next step — not
+    # after the result (2026-10-21: "stop, wrong project" waited out a 10-minute turn); the app shows it mid-turn
+    sid6 = (await p.api_new(pkey5, "This is a test of a long turn. Call the Bash tool with command `sleep 4; echo step N` "
+                            "for N = 1, 2, 3, 4, 5 - one call at a time, waiting for each to finish. Then reply with one "
+                            "word: DONE. If a new message from the user comes in meanwhile, follow it instead."))["sid"]
+    await until(lambda: p.driven.get(sid6) and p.driven[sid6].asking, what="долгий ход")
+    await asyncio.sleep(8)
+    r = await p.api_send(sid6, "Stop the test now: make no more tool calls and reply with one word: HALTED.")
+    await until(lambda: (p.attn.rec.get(sid6) or {}).get("ts"), what="итог долгого хода")
+    path6 = p.transcript_of(sid6)[0]
+    rows = [json.loads(x) for x in Path(path6).read_text().splitlines() if x.strip()]
+    bash = [b for e in rows if e.get("type") == "assistant" for b in (e.get("message") or {}).get("content") or []
+            if isinstance(b, dict) and b.get("type") == "tool_use"]
+    mid = [i for i in pultd.PW.transcript_page(path6)["items"] if i.get("mid")]
+    log("посреди хода:", r.get("how"), "· шагов:", len(bash), "· в приложении:", [i["text"][:30] for i in mid])
+    assert r.get("how") == "session" and 0 < len(bash) < 5, "the message waited for the turn's end"
+    assert len(mid) == 1 and "HALTED" in mid[0]["text"], "the app doesn't show the message written mid-turn"
     log("тем создано:", len([1 for m, _ in calls if m == "createForumTopic"]), "· вызовов Telegram:", len(calls))
     for d in list(p.driven.values()):
         d.task.cancel()

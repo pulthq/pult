@@ -85,7 +85,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 STT_MAX = 4 * 1024 * 1024       # bytes of one recording from the app (5 min at 32 kbit/s ≈ 1.2 MB; base64 must fit the 8 MB frame)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.9.28"
+VERSION = "0.9.29"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -648,6 +648,34 @@ class Driven:
         lv = self.d.live.get(self.sid)
         return self.asking or bool(lv and lv.turn)
 
+    async def say(self, text, origin):
+        """A message for this session. During our query's turn it goes straight to Claude Code, which reads it at the
+        turn's next step, as in a VS Code tab (a queued_command, absorbed_mid_turn — tests/probe_midturn.py, 2.1.300);
+        held here until the result, "stop, wrong project" reached Claude only after a 10-minute turn (2026-10-21).
+        A turn that ends before its next step runs the message as a turn of its own — Claude Code does that itself."""
+        if self.client and self.asking:
+            try:
+                await self.client.query(text)
+                if origin:
+                    self.d.expect[self.sid] = origin  # the turn's result answers the latest message
+                return
+            except Exception as e:                    # the process is going away: the loop will see it
+                log("Telegram session %s: a message mid-turn: %r" % (self.sid[:8], e))
+        self.q.put_nowait((text, origin))
+
+    async def stop(self):
+        """Stop means stop: messages still waiting here are dropped, so the interrupt doesn't start the next turn
+        (2026-10-21: each tap on Stop let one more waiting "stop, wrong project" start a turn). → how many dropped."""
+        items = []
+        while not self.q.empty():
+            items.append(self.q.get_nowait())
+        if None in items:
+            self.q.put_nowait(None)              # the process has ended: the loop still has to see that
+        dropped = len([x for x in items if x is not None])
+        if self.client:
+            await self.client.interrupt()
+        return dropped
+
     async def _wait_hook(self, tool, inp, ctx):
         # The decision arrives via the PermissionRequest hook (buttons in Telegram) and cancels this call.
         from claude_agent_sdk import PermissionResultDeny
@@ -719,11 +747,11 @@ class Driven:
                             break
                         text, origin = item
                         async with self.d.run_sem:
-                            self.asking = True
                             self.result.clear()
                             self.d.expect[self.sid] = origin
                             try:
                                 await c.query(text)
+                                self.asking = True       # only now: a message sent sooner must not overtake this one
                                 await self.result.wait()
                             finally:
                                 self.asking = False
@@ -2470,8 +2498,8 @@ class Pult:
         quote = bool(trow and trow["thread"] == here)    # a reply in the same topic the session lives in
         if sid in self.driven:
             dr = self.driven[sid]
-            dr.q.put_nowait((text, origin if quote else None))
             await self.react(origin, "✍" if dr.busy else "👀")
+            await dr.say(text, origin if quote else None)
             return
         tab = self.tab_for(sid)
         if tab:
@@ -2792,11 +2820,12 @@ class Pult:
                 ours = [s for s in self.driven if self.session_pkey(s) == topic["pkey"]]
                 sid = ours[0] if len(ours) == 1 else None
         dr = self.driven.get(sid) if sid else None
-        if not dr or not dr.client or not dr.busy:
+        if not dr or not dr.client or not dr.busy and dr.q.empty():
             key = "stop.how" if rep_id or not topic else "stop.tab" if sid and self.tab_for(sid) else "stop.none"
             await self.send(None, self.t(key), here=here)
             return
-        await dr.client.interrupt()
+        if await dr.stop():
+            log("stop: session %s, waiting messages dropped" % sid[:8])
         await self.react(rep_id or mid, "🫡")
 
     # ----- web app (stage 1B): app window requests via pult_web -----
@@ -3237,7 +3266,7 @@ class Pult:
                 return {"ok": False, "need": "fork"}
         body = self.with_uploads(text, files)
         if how == "session":
-            self.driven[sid].q.put_nowait((body, None))
+            await self.driven[sid].say(body, None)
         elif how == "tab":
             await self.to_tab(tab, body, None)
         else:
@@ -3509,7 +3538,8 @@ class Pult:
         dr = self.driven.get(sid)
         if not dr or not dr.client:
             return {"ok": False, "note": self.t("stop.only_driven")}
-        await dr.client.interrupt()
+        if await dr.stop():
+            log("stop: session %s, waiting messages dropped" % sid[:8])
         return {"ok": True}
 
     # ----- loops -----

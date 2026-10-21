@@ -268,7 +268,8 @@ const S = {
   // new task
   "new.title": { en: "New task", ru: "Новая задача" },
   "new.project": { en: "Project", ru: "Проект" },
-  "new.pick": { en: "— pick —", ru: "— выбери —" },
+  "new.pick": { en: "Pick a project", ru: "Выбери проект" },
+  "new.pick.title": { en: "Which project", ru: "В каком проекте" },
   "new.what": { en: "What to do", ru: "Что сделать" },
   "new.placeholder": { en: "A task for Claude…", ru: "Задача для Claude…" },
   "new.start": { en: "Start", ru: "Запустить" },

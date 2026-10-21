@@ -1631,7 +1631,9 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.store.touch_session(SID, PKEY, path="/Users/x/proj", driven=True)
         self.p.live_of(SID, PKEY).transcript = TP
         q = asyncio.Queue()
-        self.p.driven[SID] = SimpleNamespace(q=q, busy=False, bg=set(), client=None, task=SimpleNamespace(cancel=lambda: None))
+        dr = self.p.driven[SID] = SimpleNamespace(q=q, busy=False, asking=False, bg=set(), client=None,
+                                                  task=SimpleNamespace(cancel=lambda: None))
+        dr.say = types.MethodType(pultd.Driven.say, dr)
         png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\0" * 20).decode()
         bad = base64.b64encode(b"#!/bin/sh\nrm -rf /\n").decode()
         res = await self.p.api_send(SID, "Look", files=[{"name": "a.png", "data": png}, {"name": "x.sh", "data": bad}, {"data": "%%%"}])
@@ -1672,8 +1674,10 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Прерывать нечего", self.texts()[-1])
         stopped = []
         self.store.touch_session(SID, PKEY, path="/Users/x/proj", driven=True)
-        self.p.driven[SID] = SimpleNamespace(busy=True, bg=set(), q=asyncio.Queue(), task=SimpleNamespace(cancel=lambda: None),
-                                             client=SimpleNamespace(interrupt=mock.AsyncMock(side_effect=lambda: stopped.append(1))))
+        dr = self.p.driven[SID] = SimpleNamespace(
+            busy=True, asking=False, sid=SID, d=self.p, bg=set(), q=asyncio.Queue(), task=SimpleNamespace(cancel=lambda: None),
+            client=SimpleNamespace(interrupt=mock.AsyncMock(side_effect=lambda: stopped.append(1))))
+        dr.say, dr.stop = types.MethodType(pultd.Driven.say, dr), types.MethodType(pultd.Driven.stop, dr)
         self.p.set_focus(PKEY, SID)
         await self.p.on_message(dict(base, message_id=5, text="/stop"))
         self.assertEqual(stopped, [1])
@@ -2358,6 +2362,64 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             await until(lambda: closed, timeout=3)     # no background tasks — the idle process is closed
         finally:
             claude_agent_sdk.ClaudeSDKClient, pultd.DRIVEN_IDLE = old
+
+    async def test_driven_midturn(self):
+        # a message written while Pult's own session works goes straight to Claude Code, which reads it at the turn's
+        # next step (probe_midturn.py, 2.1.300); Pult no longer holds it until the result: on 2026-10-21 "stop, wrong
+        # project" waited out a 10-minute turn. Stop drops what is still waiting, so it starts no next turn
+        from claude_agent_sdk import ResultMessage
+        import claude_agent_sdk
+        res = lambda: ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1, is_error=False, num_turns=1,
+                                    session_id=SID, result="ok")
+
+        class FakeClient:
+            def __init__(self, options):
+                self.out, self.sent, self.stops = asyncio.Queue(), [], 0
+                made.append(self)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def query(self, text):
+                self.sent.append(text)                 # a long turn: no result until it is interrupted
+
+            async def interrupt(self):
+                self.stops += 1
+                self.out.put_nowait(res())
+
+            async def receive_messages(self):
+                while True:
+                    yield await self.out.get()
+
+        made = []
+        old = claude_agent_sdk.ClaudeSDKClient
+        claude_agent_sdk.ClaudeSDKClient = FakeClient
+        self.store.touch_session(SID, PKEY, path="/Users/x/proj", driven=True)
+        try:
+            d = self.p.driven[SID] = pultd.Driven(self.p, SID, "/Users/x/proj")
+            await d.say("глянь", 1)
+            await until(lambda: made and made[0].sent == ["глянь"] and d.asking)
+            c = made[0]
+            await d.say("стоп, не туда", 2)            # mid-turn: at once, and the result will answer this one
+            self.assertEqual(c.sent, ["глянь", "стоп, не туда"])
+            self.assertEqual(self.p.expect[SID], 2)
+            r = await self.p.api_send(SID, "остановись")   # from the app: the same way
+            self.assertEqual((r["how"], c.sent[-1]), ("session", "остановись"))
+            d.q.put_nowait(("ещё одно", None))         # waiting in Pult (the loop is busy with the turn)
+            r = await self.p.api_stop(SID)
+            self.assertEqual((r["ok"], c.stops), (True, 1))
+            await until(lambda: not d.asking)
+            await asyncio.sleep(0.05)
+            self.assertNotIn("ещё одно", c.sent)        # dropped: Stop does not start the next turn
+            self.assertTrue(d.q.empty())
+            await d.say("теперь дальше", None)         # between turns: through the loop, as before
+            await until(lambda: c.sent[-1] == "теперь дальше")
+        finally:
+            claude_agent_sdk.ClaudeSDKClient = old
+            d.task.cancel()
 
     async def test_busy_report(self):
         # what a restart would cut off (pult busy, install.sh): Pult's own sessions with a turn, queued prompts or
