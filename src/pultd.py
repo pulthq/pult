@@ -86,13 +86,15 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 STT_MAX = 4 * 1024 * 1024       # bytes of one recording from the app (5 min at 32 kbit/s ≈ 1.2 MB; base64 must fit the 8 MB frame)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.9.30"
+VERSION = "0.10.0"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
 EDITOR_DIRS = pult_os.editor_dirs()     # VS Code and its forks (and their remote side): where the tab wrapper is set
+TAB_FILE = "pult-tab.exe" if os.name == "nt" else "pult-tab.sh"   # what claudeCode.claudeProcessWrapper points at
 EXT_DIRS = pult_os.extension_dirs()
 TAB_CHECK_EVERY = 3600   # s; check whether a new Claude Code extension version is out
+TG_REACH = (2, 30)       # s; at start, the first and the longest pause between tries to reach Telegram
 MENU_CHECK_EVERY = 1800  # s; the app button in the owner's chat is still ours (only the token's holder can change it)
 CONFLICT_WARN_EVERY = 6 * 3600   # s; "someone else reads this bot" at most this often
 WEB_MANIFEST = HOME / "web-manifest.json"   # what the last deploy put on the relay (written by the deploy script)
@@ -2625,7 +2627,7 @@ class Pult:
             conf = json.loads(TAB_CONF.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return
-        wrapped = bool(pult_os.files_with(EDITOR_DIRS, "pult-tab.sh"))
+        wrapped = bool(pult_os.files_with(EDITOR_DIRS, TAB_FILE))
         v = pult_os.newest_extension(EXT_DIRS)
         if not wrapped or not v or v in (conf.get("versions") or []) or self.store.get("tab_warned") == v:
             return
@@ -3637,6 +3639,32 @@ class Pult:
                 except Exception as e:
                     log("update %s not handled: %r" % (u.get("update_id"), e))
 
+    async def telegram_start(self):
+        """Telegram may be out of reach for a while at start: after logging in to Windows the VPN comes up later
+        (2026-10-21: 20 s, the first time 13 min), and the bot's menu and the first messages failed one by one and
+        were never tried again. Here the bot's menu, the panel, the version notice and reading updates wait until
+        Telegram first answers. The app, the tabs and the hooks don't wait for it."""
+        t0, delay, said = time.monotonic(), TG_REACH[0], False
+        while True:
+            try:
+                await self.tg.call("getMe")
+                break
+            except TgError as e:
+                if e.code is not None:
+                    break                  # Telegram answered (a revoked token…): what follows reports it
+                why = e
+            except (httpx.HTTPError, ValueError) as e:
+                why = e
+            if not said:
+                log("Telegram out of reach, waiting:", why)
+                said = True
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, TG_REACH[1])
+        if said:
+            log("Telegram reachable after %d s" % (time.monotonic() - t0))
+        await self.setup_commands()
+        await asyncio.gather(self.poll(), self.tab_version_watch(), self.ensure_panel(), self.menu_watch())
+
     async def setup_commands(self):
         for lang in I.LANGS:
             cmds = [{"command": c, "description": I.T("cmd." + c, lang)} for c in I.COMMANDS]
@@ -3760,10 +3788,8 @@ async def amain():
     server = await start_link(p.handle_conn, SOCK)
     log("Pult started; group:", p.chat, "; link: 127.0.0.1:%d" % server.sockets[0].getsockname()[1]
         if pult_os.link_tcp() else "; socket: " + SOCK)
-    await p.setup_commands()
     # the panel is sent via the message queue, so it must run alongside it, or startup hangs (seen 2026-10-16, 0.6.0)
-    jobs = [p.out.run(), p.poll(), p.usage_watch(), p.tab_version_watch(), p.ensure_panel(), p.attention_watch(),
-            p.menu_watch()]
+    jobs = [p.out.run(), p.telegram_start(), p.usage_watch(), p.attention_watch()]
     if env.get("PULT_RELAY_URL") and env.get("PULT_RELAY_SECRET"):
         p.web = PW.Web(p, env["PULT_RELAY_URL"], env["PULT_RELAY_SECRET"], token, p.allowed,
                        proxy=env.get("PULT_PROXY") or None, manifest=WEB_MANIFEST)

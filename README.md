@@ -4,7 +4,7 @@
 
 [![tests](https://github.com/pulthq/pult/actions/workflows/tests.yml/badge.svg)](https://github.com/pulthq/pult/actions/workflows/tests.yml)
 [![release](https://img.shields.io/github/v/release/pulthq/pult?label=release&color=2f6fcf)](https://github.com/pulthq/pult/releases)
-&nbsp;MIT · macOS and Linux · English and Russian · [Русский](README.ru.md)
+&nbsp;MIT · macOS, Linux and Windows · English and Russian · [Русский](README.ru.md)
 
 <p align="center">
   <img src="media/demo.en.gif" width="330" alt="A project's topic in Telegram: Claude works, asks for permission to run a command, the phone shows a notification, a tap on Allow, the turn goes on and its result arrives">
@@ -17,14 +17,14 @@ You give Claude Code a task in VS Code or a terminal and walk away. Claude keeps
 question or wait for a permission, and the work stalls until you're back. Pult puts every Claude Code session on
 your computer into a Telegram group, one topic per project. Your phone shows what Claude is doing, buzzes when
 Claude needs you, and lets you answer, continue the session or start a new one. Pult runs on your computer and
-opens no port on it.
+opens no port to the network.
 
 ```
 git clone https://github.com/pulthq/pult.git && cd pult && ./install.sh
 ```
 
-The installer walks you through your own Telegram bot and group in about ten minutes. macOS and Linux; Windows is
-next. *Pult* is Russian for a remote control.
+The installer walks you through your own Telegram bot and group in about ten minutes. macOS, Linux and Windows
+(there the installer is `install.ps1`: see [Install](#install-about-10-minutes)). *Pult* is Russian for a remote control.
 
 ## An hour with Pult
 
@@ -117,11 +117,13 @@ What Pult adds on top of reaching a session:
 
 ## Requirements
 
-- macOS or Linux. Tested on macOS 26 (Apple Silicon) and Ubuntu 24.04 (arm64).
-- Claude Code, signed in: the VS Code extension, the CLI, or both. Tested with the extension 2.1.301 and the
-  Agent SDK 0.2.167.
+- macOS, Linux or Windows. Tested on macOS 26 (Apple Silicon), Ubuntu 24.04 (arm64) and Windows 11 (x64).
+- Claude Code, signed in: the VS Code extension, the CLI, or both. Tested with the extension 2.1.301 (on Windows,
+  2.1.306) and the Agent SDK 0.2.167.
 - Python 3.10 or newer. On a Mac with Homebrew: `brew install python@3.12`. On Debian or Ubuntu:
-  `sudo apt update && sudo apt install python3 python3-venv`.
+  `sudo apt update && sudo apt install python3 python3-venv`. On Windows: from
+  [python.org](https://www.python.org/downloads/windows/) or `winget install Python.Python.3.12`, not the Microsoft
+  Store one.
 - Telegram, and a bot of your own (created in @BotFather; the setup walks you through it).
 - Optional, for the web app: a Linux server with a domain name and HTTPS.
 
@@ -134,8 +136,8 @@ cd pult
 ```
 
 The installer creates its own Python environment in `~/.local/share/pult`, puts the `pult` command into
-`~/.local/bin` and adds a background service (launchd on macOS, a systemd user service on Linux). Then the setup
-wizard takes four steps:
+`~/.local/bin` and adds a background service (launchd on macOS, a systemd user service on Linux). On Windows, see
+below. Then the setup wizard takes four steps:
 
 1. **Bot.** In Telegram, open @BotFather → `/newbot`, and paste the token it gives you.
 2. **You.** Open the link the wizard shows, on your phone, and tap **Start**. Pult learns your Telegram ID and
@@ -146,7 +148,7 @@ wizard takes four steps:
 4. **Hooks.** Pult adds its hooks to `~/.claude/settings.json`. Your other settings stay as they are, and a
    backup copy is made first.
 
-Then, in VS Code: Cmd+Shift+P (Ctrl+Shift+P on Linux) → **Developer: Reload Window**, so that open tabs pick up
+Then, in VS Code: Cmd+Shift+P (Ctrl+Shift+P on Linux and Windows) → **Developer: Reload Window**, so that open tabs pick up
 the hooks. Run `pult setup` again any time to change the bot, the owner or the group.
 
 Optional:
@@ -173,6 +175,36 @@ On a server, a user's services stop when they log out. To keep Pult running, and
 Whether you're away from the computer (the sound in 🔄 Auto) comes from GNOME, KDE or X11. Elsewhere (a server,
 another desktop) it comes from what you do in sessions: a prompt typed or a permission answered in the last two
 minutes.
+
+</details>
+
+<details>
+<summary><b>On Windows</b></summary>
+
+Get Pult with `git clone` or as the ZIP from [Releases](https://github.com/pulthq/pult/releases), then in PowerShell,
+in its folder:
+
+```
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+- **Python** is found with the `py` launcher. The Microsoft Store one won't do: it runs sandboxed.
+- **The service** is a Task Scheduler task, "Pult", that starts Pult when you log in to Windows; no admin rights
+  needed. Pult runs while you're logged in.
+- **The `pult` command** goes to `~\.local\bin`, which the installer adds to your PATH: open a new terminal after
+  installing.
+- **No console windows:** the hooks and the tab wrapper run without one.
+- **Writing into tabs:** the line `pult tab setup` prints has each backslash of the path doubled, as JSON wants. If
+  VS Code says "Claude Code native binary not found at C:sers…", the line lost its backslashes: `pult status` shows
+  the right one.
+- **Commands without Git Bash:** Claude Code runs them through PowerShell, and its permission requests come to
+  Telegram the same way.
+- **Away from the computer** (the sound in 🔄 Auto): Windows tells Pult how long the keyboard and mouse have been
+  idle and whether the screen is locked.
+- **Behind a VPN:** right after you log in, Telegram may be out of reach for a while. Pult waits for it, then sets up
+  the bot's menu.
+- **Not on Windows yet:** the computer's load on the web app's Resources screen.
+- The log is `~\.local\state\pult\pult.log`; the settings, as elsewhere, `~\.config\pult\env`.
 
 </details>
 
@@ -207,7 +239,8 @@ web app (optional): Mini App ──► relay on your server ◄── pultd conn
 ```
 
 - **Hooks** (`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure`,
-  `SessionEnd`, `PermissionRequest`) pass each event to the daemon. The hook never gets in the way. If the daemon isn't running
+  `SessionEnd`, `PermissionRequest`) pass each event to the daemon: over a unix socket, or on Windows over 127.0.0.1
+  with a key in a file only you can read. The hook never gets in the way. If the daemon isn't running
   or anything goes wrong, it exits quietly and Claude Code behaves as if it weren't there.
 - **Permission requests.** The hook waits for your answer from Telegram while the dialog on the computer stays
   open. Claude Code takes whichever answer comes first and ignores a later one.
@@ -240,7 +273,8 @@ web app (optional): Mini App ──► relay on your server ◄── pultd conn
   in the app shows recent logins and logs every window out.
 - **Links show where they lead:** when a link's words don't show its address, the domain follows in brackets —
   Claude may write a link a web page talked it into, and it comes from your own bot.
-- **No telemetry.** Logs stay on the computer: `~/Library/Logs` on macOS, `~/.local/state/pult` on Linux.
+- **No telemetry.** Logs stay on the computer: `~/Library/Logs` on macOS, `~/.local/state/pult` on Linux and
+  Windows.
   `pult report` prints versions and state with tokens, IDs, folder names and message text removed, for a bug
   report.
 - **Vulnerabilities:** report them privately, see [SECURITY.md](SECURITY.md).
@@ -277,8 +311,9 @@ Claude Code works exactly as before without Pult.
 
 | | |
 |---|---|
-| The bot is silent | `pult status` shows the service and the connection to Telegram. `pult restart`. The log is `~/Library/Logs/pult.log` on macOS, `~/.local/state/pult/pult.log` on Linux. |
+| The bot is silent | `pult status` shows the service and the connection to Telegram. `pult restart`. The log is `~/Library/Logs/pult.log` on macOS, `~/.local/state/pult/pult.log` on Linux and Windows. |
 | Linux: Pult stops when you log out | `sudo loginctl enable-linger $USER`. |
+| VS Code: "Claude Code native binary not found at …" | The wrapper line in the VS Code settings is broken or names a missing file. `pult status` says which settings file and prints the right line; then Reload Window. |
 | No sessions from VS Code | The hooks are off: `pult hooks on`, then Reload Window. |
 | `409` in the log | Another program is reading this bot's updates, such as a second copy of Pult. |
 | No permission buttons, but the feed works | Claude Code's `auto` mode decides by itself. That's normal. |
@@ -286,8 +321,6 @@ Claude Code works exactly as before without Pult.
 | Something else | `pult report`, then [open an issue](https://github.com/pulthq/pult/issues/new/choose). |
 
 </details>
-
-**Windows?** Not yet: it comes next.
 
 **Several people?** No. One Pult has one owner.
 

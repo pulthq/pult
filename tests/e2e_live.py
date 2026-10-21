@@ -17,7 +17,7 @@ from pathlib import Path
 
 SRC = Path(__file__).resolve().parent.parent / "src"
 TMP = Path(tempfile.mkdtemp(prefix="pult-e2e-"))   # outside the repo: transcripts won't land in its project
-os.environ.update(PULT_HOME=str(TMP / "home"), PULT_SOCK="/tmp/pult-e2e-%d.sock" % os.getpid(), PULT_ENV=str(TMP / "env"))
+os.environ.update(PULT_HOME=str(TMP / "home"), PULT_SOCK=str(TMP / "pult.sock") if os.name == "nt" else "/tmp/pult-e2e-%d.sock" % os.getpid(), PULT_ENV=str(TMP / "env"))
 (TMP / "home").mkdir()
 shutil.copy(SRC / "pult_hook.py", TMP / "home" / "pult_hook.py")
 sys.path.insert(0, str(SRC))
@@ -156,7 +156,10 @@ async def main():
     log("нагрузка:", ld.get("session") and {k: ld["session"][k] for k in ("pid", "cpu", "mem", "n")},
         [(x["type"], x.get("found"), x.get("cmd") or x.get("what")) for x in ld.get("tasks", [])],
         "· pid из хука:", p.live[sid4].pid)
-    assert ld["ok"] and ld["session"] and ld["tasks"] and ld["tasks"][0].get("found"), "background command not found"
+    if os.name == "nt":                         # the load view is empty on Windows so far (project doc, K2)
+        assert not ld["ok"], "Windows has a load view now: check this step there"
+    else:
+        assert ld["ok"] and ld["session"] and ld["tasks"] and ld["tasks"][0].get("found"), "background command not found"
     await until(lambda: len(done(mark)) >= 2, what="итог хода по концу фоновой задачи")
     note = [t for t in texts(mark) if "Background task" in t and not t.startswith("✅")]
     log("ход по фону:", note[-1].replace("\n", " | ") if note else "НЕТ", "· итог:", done(mark)[1].replace("\n", " | "))
@@ -204,7 +207,7 @@ async def main():
     r = await p.api_send(sid6, "Stop the test now: make no more tool calls and reply with one word: HALTED.")
     await until(lambda: (p.attn.rec.get(sid6) or {}).get("ts"), what="итог долгого хода")
     path6 = p.transcript_of(sid6)[0]
-    rows = [json.loads(x) for x in Path(path6).read_text().splitlines() if x.strip()]
+    rows = [json.loads(x) for x in Path(path6).read_text(encoding="utf-8").splitlines() if x.strip()]
     bash = [b for e in rows if e.get("type") == "assistant" for b in (e.get("message") or {}).get("content") or []
             if isinstance(b, dict) and b.get("type") == "tool_use"]
     mid = [i for i in pultd.PW.transcript_page(path6)["items"] if i.get("mid")]

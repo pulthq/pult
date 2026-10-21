@@ -17,9 +17,10 @@ from claude_agent_sdk import (AssistantMessage, ClaudeAgentOptions, ClaudeSDKCli
                               ResultMessage, SystemMessage, TextBlock, UserMessage)
 
 SRC = Path(__file__).resolve().parent.parent / "src"
+WIN = os.name == "nt"
 CLI = sys.argv[1] if len(sys.argv) > 1 else str(max(
     [p for pat in (".vscode/extensions", ".vscode-server/extensions")
-     for p in Path.home().glob(pat + "/anthropic.claude-code-*/resources/native-binary/claude")],
+     for p in Path.home().glob(pat + "/anthropic.claude-code-*/resources/native-binary/claude" + (".exe" if WIN else ""))],
     key=lambda p: [int(x) for x in p.parts[-4].split("-")[2].split(".")]))
 sys.path.insert(0, str(SRC))
 import pult_tab  # noqa: E402
@@ -32,9 +33,15 @@ PROJ = TMP / "proj"
 PROJ.mkdir()
 SOCK = str(TMP / "d.sock")
 (TMP / "tab.json").write_text(json.dumps({"folders": [str(PROJ)], "versions": [VER]}))
-SHIM = TMP / "ext-spawn.sh"            # like the extension with a wrapper: <wrapper> <its own claude> <args>
-SHIM.write_text('#!/bin/sh\nexec %s %s %s "$@"\n' % (sys.executable, SRC / "pult_tab.py", CLI))
-SHIM.chmod(0o755)
+if WIN:                                 # pult-tab.exe as install makes it, with the extension's first argument inside
+    import pult_setup  # noqa: E402
+    SHIM = pult_setup.make_exe(TMP / "ext-spawn.exe", pult_setup.base_pythonw(), {
+        "pult_tab.py": (SRC / "pult_tab.py").read_bytes(),
+        "__main__.py": "import sys\nsys.argv[1:1] = [%r]\nimport pult_tab\npult_tab.entry()\n" % CLI})
+else:
+    SHIM = TMP / "ext-spawn.sh"        # like the extension with a wrapper: <wrapper> <its own claude> <args>
+    SHIM.write_text('#!/bin/sh\nexec %s %s %s "$@"\n' % (sys.executable, SRC / "pult_tab.py", CLI))
+    SHIM.chmod(0o755)
 ENV = {"PULT_TAB_CONF": str(TMP / "tab.json"), "PULT_SOCK": SOCK, "PULT_OFF": "1"}
 T0 = time.time()
 
@@ -57,10 +64,13 @@ async def main():
         hello = json.loads(await reader.readline())
         t = {"hello": hello, "sid": hello.get("sid"), "w": writer}
         tabs.append(t)
-        while line := await reader.readline():
-            m = json.loads(line)
-            if m.get("op") == "sid":
-                t["sid"] = m["sid"]
+        try:
+            while line := await reader.readline():
+                m = json.loads(line)
+                if m.get("op") == "sid":
+                    t["sid"] = m["sid"]
+        except ConnectionError:
+            pass                       # Windows: the wrapper's exit drops the connection instead of closing it
     server = await pultd.start_link(daemon, SOCK)
 
     opts = ClaudeAgentOptions(cli_path=str(SHIM), cwd=str(PROJ), model="claude-haiku-5-5", permission_mode="default",
@@ -105,7 +115,7 @@ async def main():
     server.close()
     log = Path(pult_tab.LOG)
     if log.exists():
-        say("журнал обёртки:", [l for l in log.read_text().splitlines() if str(PROJ) in l or "во вкладку" in l][-3:])
+        say("журнал обёртки:", [l for l in log.read_text(encoding="utf-8").splitlines() if str(PROJ) in l or "во вкладку" in l][-3:])
 
 
 asyncio.run(main())

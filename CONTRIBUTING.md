@@ -22,8 +22,8 @@ python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt -r relay/r
 ```
 
 None of these need Telegram, Claude or your settings. They use a fake Bot API and temporary folders, and the same
-four run on GitHub Actions (macOS and Ubuntu). `./install.sh` installs your working copy to `~/.local/share/pult` and
-restarts the service.
+four run on GitHub Actions (macOS, Ubuntu and Windows). `./install.sh` (on Windows, `install.ps1`) installs your
+working copy to `~/.local/share/pult` and restarts the service.
 
 Checks that use the real Claude Code, and spend a little of your plan:
 

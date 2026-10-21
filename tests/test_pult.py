@@ -2179,7 +2179,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         conf, vs = TMP / "tabv.json", TMP / "vscode" / "User" / "settings.json"
         conf.write_text('{"folders": ["~/Documents"], "versions": ["2.1.300"]}')
         vs.parent.mkdir(parents=True, exist_ok=True)
-        vs.write_text('{\n  // настройки\n  "claudeCode.claudeProcessWrapper": "/x/pult-tab.sh",\n}')
+        vs.write_text('{\n  // настройки\n  "claudeCode.claudeProcessWrapper": "/x/%s",\n}' % pultd.TAB_FILE)
         old = (pultd.TAB_CONF, pultd.EDITOR_DIRS, pultd.EXT_DIRS)
         pultd.TAB_CONF, pultd.EDITOR_DIRS, pultd.EXT_DIRS = conf, [TMP / "nothing", vs.parent], [ext, server]
         try:
@@ -2196,6 +2196,47 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len([t for t in self.texts() if "Вышло обновление" in t]), 1)
         finally:
             pultd.TAB_CONF, pultd.EDITOR_DIRS, pultd.EXT_DIRS = old
+
+    async def test_telegram_start_waits(self):
+        # Telegram out of reach at start (after logging in to Windows the VPN comes up later, 2026-10-21): the bot's
+        # menu, the panel, the version notice and reading updates wait until it first answers — not lost one by one
+        fails = [httpx.ConnectError("no route"), httpx.ConnectTimeout("timeout")]
+
+        def handler(req):
+            if req.url.path.endswith("/getMe") and fails:
+                raise fails.pop(0)
+            return self.fake.handler(req)
+        self.p.tg = pultd.Tg("T", transport=httpx.MockTransport(handler))
+        started = []
+
+        async def mark(name):
+            started.append((name, len(self.fake.calls)))
+        logged = []
+        with mock.patch.object(pultd, "TG_REACH", (0.01, 0.02)), \
+                mock.patch.object(pultd, "log", lambda *a: logged.append(" ".join(map(str, a)))), \
+                mock.patch.object(self.p, "poll", lambda: mark("poll")), \
+                mock.patch.object(self.p, "tab_version_watch", lambda: mark("version")), \
+                mock.patch.object(self.p, "ensure_panel", lambda: mark("panel")), \
+                mock.patch.object(self.p, "menu_watch", lambda: mark("menu")):
+            await asyncio.wait_for(self.p.telegram_start(), 5)
+        methods = [m for m, _ in self.fake.calls]
+        self.assertEqual(methods[0], "getMe")                     # the first call that got through
+        self.assertEqual(methods[1:3], ["setMyCommands", "setMyCommands"])
+        self.assertEqual(sorted(n for n, _ in started), ["menu", "panel", "poll", "version"])
+        self.assertTrue(all(at >= 3 for _, at in started))        # after the menu, not before Telegram answered
+        self.assertEqual(len([x for x in logged if "out of reach" in x]), 1)   # said once, not on every try
+        self.assertTrue(any("Telegram reachable after" in x for x in logged))
+        # Telegram answers with an error (a revoked token): reachable — no endless waiting
+        self.fake.calls.clear()
+        self.p.tg = pultd.Tg("T", transport=httpx.MockTransport(
+            lambda req: httpx.Response(401, json={"ok": False, "error_code": 401, "description": "Unauthorized"})))
+        with mock.patch.object(self.p, "setup_commands", lambda: mark("commands")), \
+                mock.patch.object(self.p, "poll", lambda: mark("poll2")), \
+                mock.patch.object(self.p, "tab_version_watch", lambda: mark("version2")), \
+                mock.patch.object(self.p, "ensure_panel", lambda: mark("panel2")), \
+                mock.patch.object(self.p, "menu_watch", lambda: mark("menu2")):
+            await asyncio.wait_for(self.p.telegram_start(), 5)
+        self.assertIn("commands", [n for n, _ in started])
 
     def test_tab_wrapper_rules(self):
         import pult_tab

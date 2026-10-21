@@ -4,7 +4,7 @@
 
 [![tests](https://github.com/pulthq/pult/actions/workflows/tests.yml/badge.svg)](https://github.com/pulthq/pult/actions/workflows/tests.yml)
 [![release](https://img.shields.io/github/v/release/pulthq/pult?label=release&color=2f6fcf)](https://github.com/pulthq/pult/releases)
-&nbsp;MIT · macOS и Linux · английский и русский · [English](README.md)
+&nbsp;MIT · macOS, Linux и Windows · английский и русский · [English](README.md)
 
 <p align="center">
   <img src="media/demo.ru.gif" width="330" alt="Тема проекта в Telegram: Claude работает, спрашивает разрешение на команду, на телефоне уведомление, нажатие «Разрешить», ход идёт дальше и приходит итог">
@@ -17,13 +17,14 @@
 задать вопрос или дождаться разрешения, и работа стоит, пока ты не вернёшься. Пульт переносит каждую сессию
 Claude Code на компьютере в группу Telegram, по теме на проект. Телефон показывает, что Claude делает, звонит,
 когда Claude нужен ты, и даёт ответить, продолжить сессию или начать новую. Пульт работает на твоём компьютере
-и не открывает на нём ни одного порта.
+и не открывает на нём портов в сеть.
 
 ```
 git clone https://github.com/pulthq/pult.git && cd pult && ./install.sh
 ```
 
-Установщик за десять минут проведёт через своего бота и группу в Telegram. macOS и Linux; Windows — следующим.
+Установщик за десять минут проведёт через своего бота и группу в Telegram. macOS, Linux и Windows (там установщик —
+`install.ps1`, см. [Установку](#установка-минут-10)).
 *Пульт* по-английски — remote control.
 
 ## Час с Пультом
@@ -115,10 +116,12 @@ Mini App в Telegram на своём сервере, в одном касани�
 
 ## Что нужно
 
-- macOS или Linux. Проверено на macOS 26 (Apple Silicon) и Ubuntu 24.04 (arm64).
-- Claude Code, вход выполнен: расширение VS Code, CLI или оба. Проверено с расширением 2.1.301 и Agent SDK 0.2.167.
+- macOS, Linux или Windows. Проверено на macOS 26 (Apple Silicon), Ubuntu 24.04 (arm64) и Windows 11 (x64).
+- Claude Code, вход выполнен: расширение VS Code, CLI или оба. Проверено с расширением 2.1.301 (на Windows — 2.1.306)
+  и Agent SDK 0.2.167.
 - Python 3.10 или новее. На Маке через Homebrew: `brew install python@3.12`. В Debian или Ubuntu:
-  `sudo apt update && sudo apt install python3 python3-venv`.
+  `sudo apt update && sudo apt install python3 python3-venv`. На Windows — с
+  [python.org](https://www.python.org/downloads/windows/) или `winget install Python.Python.3.12`, но не из Microsoft Store.
 - Telegram и свой бот (создаётся в @BotFather, мастер подскажет).
 - По желанию, для веб-приложения: Linux-сервер с доменом и HTTPS.
 
@@ -131,7 +134,8 @@ cd pult
 ```
 
 Установщик создаёт своё окружение Python в `~/.local/share/pult`, кладёт команду `pult` в `~/.local/bin` и
-добавляет фоновую службу (launchd на macOS, служба systemd пользователя на Linux). Дальше мастер проходит четыре шага:
+добавляет фоновую службу (launchd на macOS, служба systemd пользователя на Linux; про Windows — ниже). Дальше мастер
+проходит четыре шага:
 
 1. **Бот.** В Telegram открой @BotFather → `/newbot` и вставь токен, который он пришлёт.
 2. **Ты.** Открой на телефоне ссылку, которую покажет мастер, и нажми **«Старт»**. Пульт узнает твой ID в
@@ -142,7 +146,7 @@ cd pult
 4. **Хуки.** Пульт добавит свои хуки в `~/.claude/settings.json`. Остальные настройки не меняются, сначала
    делается копия.
 
-Затем в VS Code: Cmd+Shift+P (Ctrl+Shift+P на Linux) → **Developer: Reload Window**, чтобы открытые вкладки
+Затем в VS Code: Cmd+Shift+P (Ctrl+Shift+P на Linux и Windows) → **Developer: Reload Window**, чтобы открытые вкладки
 подхватили хуки. `pult setup` можно запустить снова в любой момент — сменить бота, владельца или группу.
 
 По желанию:
@@ -169,6 +173,34 @@ cd pult
 Отошёл ли ты от компьютера (звук в 🔄 Авто), Пульт узнаёт у GNOME, KDE или X11. В остальных случаях (сервер,
 другой рабочий стол) — по твоим действиям в сессиях: набранный запрос или ответ на разрешение за последние две
 минуты.
+
+</details>
+
+<details>
+<summary><b>На Windows</b></summary>
+
+Возьми Пульт через `git clone` или ZIP из [Releases](https://github.com/pulthq/pult/releases), затем в PowerShell, в его
+папке:
+
+```
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+- **Python** установщик находит через `py`. Python из Microsoft Store не подойдёт: он работает в песочнице.
+- **Служба** — задание «Pult» в Планировщике заданий: оно запускает Пульт при входе в Windows, права администратора не
+  нужны. Пульт работает, пока ты в системе.
+- **Команда `pult`** — в `~\.local\bin`, установщик добавит эту папку в PATH: после установки открой новый терминал.
+- **Окон консоли нет:** хуки и обёртка вкладок работают без них.
+- **Запись во вкладки:** в строке, которую печатает `pult tab setup`, каждая обратная косая в пути удвоена, как требует
+  JSON. Если VS Code пишет «Claude Code native binary not found at C:sers…», строка потеряла косые: `pult status`
+  покажет правильную.
+- **Команды без Git Bash:** Claude Code выполняет их через PowerShell, запросы разрешений приходят в Telegram так же.
+- **Отошёл ли ты от компьютера** (звук в 🔄 Авто): Windows сообщает Пульту, сколько не трогали клавиатуру и мышь и
+  заблокирован ли экран.
+- **За VPN:** сразу после входа в Windows Telegram может быть какое-то время недоступен. Пульт дождётся его и тогда
+  поставит меню бота.
+- **На Windows пока нет:** нагрузки компьютера на экране «Ресурсы» веб-приложения.
+- Журнал — `~\.local\state\pult\pult.log`, настройки, как везде, — `~\.config\pult\env`.
 
 </details>
 
@@ -203,7 +235,8 @@ Telegram на телефоне ────────────────�
 ```
 
 - **Хуки** (`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure`,
-  `SessionEnd`, `PermissionRequest`) передают демону каждое событие. Хук никогда не мешает: если демон не запущен или что-то
+  `SessionEnd`, `PermissionRequest`) передают демону каждое событие: через unix-сокет, а на Windows — через 127.0.0.1
+  с ключом в файле, который можешь прочесть только ты. Хук никогда не мешает: если демон не запущен или что-то
   пошло не так, он молча выходит, и Claude Code ведёт себя так, будто хука нет.
 - **Разрешения.** Хук ждёт твоего ответа из Telegram, а окно на компьютере остаётся открытым. Claude Code берёт
   первый ответ и пропускает поздний.
@@ -238,7 +271,7 @@ Telegram на телефоне ────────────────�
 - **Ссылки показывают, куда ведут:** если текст ссылки не показывает её адрес, домен стоит рядом в скобках — Claude
   может написать ссылку, которую ему подсунула страница, а придёт она от твоего же бота.
 - **Никакой телеметрии.** Журналы остаются на компьютере: `~/Library/Logs` на macOS, `~/.local/state/pult` на
-  Linux. `pult report` печатает версии и состояние для сообщения об ошибке — без токенов, ID, имён папок и текста
+  Linux и Windows. `pult report` печатает версии и состояние для сообщения об ошибке — без токенов, ID, имён папок и текста
   сообщений.
 - **Уязвимости** — сообщай закрыто, см. [SECURITY.md](SECURITY.md).
 
@@ -275,8 +308,9 @@ Pult — независимый проект с открытым кодом, н�
 
 | | |
 |---|---|
-| Бот молчит | `pult status` покажет службу и связь с Telegram. `pult restart`. Журнал — `~/Library/Logs/pult.log` на macOS, `~/.local/state/pult/pult.log` на Linux. |
+| Бот молчит | `pult status` покажет службу и связь с Telegram. `pult restart`. Журнал — `~/Library/Logs/pult.log` на macOS, `~/.local/state/pult/pult.log` на Linux и Windows. |
 | Linux: Пульт останавливается, когда выходишь | `sudo loginctl enable-linger $USER`. |
+| VS Code: «Claude Code native binary not found at …» | Строка обёртки в настройках VS Code сломана или указывает на несуществующий файл. `pult status` назовёт файл настроек и напечатает правильную строку; потом Reload Window. |
 | Нет сессий из VS Code | Хуки выключены: `pult hooks on`, затем Reload Window. |
 | В журнале `409` | Обновления этого бота читает другая программа, например вторая копия Пульта. |
 | Кнопок разрешений нет, а лента есть | Режим `auto` в Claude Code решает сам. Это нормально. |
@@ -284,8 +318,6 @@ Pult — независимый проект с открытым кодом, н�
 | Другое | `pult report`, затем [заведи issue](https://github.com/pulthq/pult/issues/new/choose). |
 
 </details>
-
-**Windows?** Пока нет: будет следующим.
 
 **Несколько человек?** Нет. У одного Пульта один владелец.
 
