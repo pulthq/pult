@@ -32,6 +32,7 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat 
 
 import pult_web as PW  # noqa: E402
 import pultd  # noqa: E402
+import pult_spend as S  # noqa: E402
 import relay  # noqa: E402
 
 TOKEN = "777:TEST-TOKEN"
@@ -244,14 +245,137 @@ class TranscriptTest(unittest.TestCase):
         self.assertGreater(new["end"], size)
 
 
-def usage_reply(session=12, week=4, fable=0):
+def usage_reply(session=12, week=4, fable=0, share=None):
     lim = lambda kind, pct, model=None: {"kind": kind, "percent": pct, "resets_at": "2026-10-16T17:00:00+00:00",
                                          "severity": "normal", "is_active": kind == "session",
                                          "scope": {"model": {"display_name": model}} if model else None}
     return {"subscription_type": "max", "rate_limits": {
         "limits": [lim("session", session), lim("weekly_all", week), lim("weekly_scoped", fable, "Fable")],
+        "weekly_scoped_shares": [{"limit_index": 2, "used_percent_of_weekly": share, "allowance_percent_of_weekly": 50}] if share is not None else [],
         "extra_usage": {"is_enabled": False}, "seven_day_breakdown": {"rows": [
             {"display_name": "Claude Code", "percent": 100}, {"display_name": "Chats", "percent": 0}]}}}
+
+
+def tline(kind, ts, **message):
+    """A transcript line at `ts`: the owner's message, a tool's result or a model reply."""
+    return json.dumps({"type": kind, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(ts)) + ".000Z",
+                       "message": dict({"role": kind}, **message)}) + "\n"
+
+
+def reply(ts, mid, model="claude-opus-5-5", stop="end_turn", **usage):
+    return tline("assistant", ts, id=mid, model=model, stop_reason=stop, content=[], usage=usage)
+
+
+def slots_of(weights, t0, fable=None):
+    """Slots with an Opus weight each (and a Fable one), one session working in each."""
+    out = {}
+    for j, w in enumerate(weights):
+        s = S.Slot()
+        s.per["-Users-x-a"] = [float(w), float((fable or {}).get(j, 0)), 0.0, 0.0, 0.0, 1, 0, 0]
+        s.work.add("s1")
+        out[int(t0 // S.SLOT) + j] = s
+    return out
+
+
+class SpendTest(unittest.TestCase):
+    """Stage R: the transcripts in slots, the curve through Claude Code's readings, the pace and the forecast."""
+
+    def test_read(self):
+        root = T.TMP / "spend"
+        shutil.rmtree(root, ignore_errors=True)
+        lt = time.localtime()
+        now = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 12, 0, 0, 0, 0, -1))
+        t = now - 3 * 3600 - (now % S.SLOT)
+        (root / "-Users-x-a" / "s1" / "subagents").mkdir(parents=True)
+        (root / "-private-tmp-x").mkdir(parents=True)
+        tool = [{"type": "tool_result", "tool_use_id": "x", "content": 'a line "timestamp":"2020-01-01T00:00:00.000Z"'}]
+        (root / "-Users-x-a" / "s1.jsonl").write_text(
+            tline("user", t, content="do it")
+            + reply(t + 60, "m1", stop="tool_use", input_tokens=10, output_tokens=100, cache_read_input_tokens=1000,
+                    cache_creation_input_tokens=200, cache_creation={"ephemeral_1h_input_tokens": 100})
+            + reply(t + 61, "m1", stop="tool_use", input_tokens=10, output_tokens=100)      # the same reply, another block
+            + tline("user", t + 1200, content=tool)                                        # a 20-minute command
+            + reply(t + 1260, "m2", model="claude-fable-5-1", output_tokens=50)            # the turn ends
+            + tline("user", t + 7200, content="and this")                                  # two hours later
+            + reply(t + 7260, "m3", model="claude-haiku-5-5", output_tokens=4))
+        (root / "-Users-x-a" / "s1" / "subagents" / "agent-a1.jsonl").write_text(
+            reply(t + 300, "a1", model="claude-sonnet-5-5", output_tokens=10))
+        (root / "-private-tmp-x" / "t.jsonl").write_text(reply(t, "t1", output_tokens=99))   # a throwaway folder
+        sp = S.Spend(root, pultd.skip_pkey)
+        sp.update(now)
+        i = int(t // S.SLOT)
+        work = sorted(k - i for k, x in sp.slots.items() if x.work)
+        self.assertEqual(work, [0, 1, 2, 3, 4, 24])          # the command counts as work, the 2 hours after the turn don't
+        self.assertEqual([k - i for k, x in sp.slots.items() if x.agents], [1])
+        self.assertEqual(sp.slots[i].per["-Users-x-a"][:2], [10 + 100 + 500 + 125 + 200, 0.0])    # one reply, once
+        self.assertEqual(sp.slots[i + 4].weight(S.FACTOR), 250 * S.FACTOR["fable"])
+        self.assertEqual(sp.today(now)["projects"], [{"pkey": "-Users-x-a", "req": 4, "out": 164, "read": 1210}])
+        with (root / "-Users-x-a" / "s1.jsonl").open("a") as f:         # only what is appended is read again
+            f.write(tline("user", t + 7500, content="more") + reply(t + 7560, "m4", output_tokens=1)[:30])
+        sp.update(now)
+        self.assertEqual(sp.today(now)["projects"][0]["req"], 4)      # the reply is not finished yet
+        self.assertIn(i + 25, sp.slots)
+
+    def test_curve(self):
+        t0 = S.SLOT * 4000
+        slots = slots_of([1, 1, 2, 0, 0, 0, 4], t0)
+        log = [(t0 + 900, "session", 4, t0 + 18000), (t0 + 2400, "session", 6, t0 + 18000),   # +2 points: too rough
+               (t0 + 1000, "session", 5, t0 + 99999)]                                       # another window's
+        rows = S.curve(slots, t0, t0 + 3600, 10, log, "session", t0 + 18000, S.FACTOR)
+        self.assertEqual([round(r[2], 3) for r in rows], [1, 1, 2, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0])   # through each reading
+        self.assertEqual(sum(r[3] for r in rows), 0)
+        rows = S.curve(slots_of([0, 0, 0, 5], t0), t0, t0 + 1200, 5, [(t0 + 900, "session", 3, t0 + 18000)],
+                       "session", t0 + 18000, S.FACTOR)
+        self.assertEqual([(r[2], r[3]) for r in rows], [(1, 1), (1, 1), (1, 1), (2, 0), (0, 0)])  # no tokens here — elsewhere
+
+    def lims(self, now, week, h5=None, h5_left=7200):
+        out = [{"kind": "weekly_all", "name": "Неделя", "percent": week, "resets_at": now + 86400}]
+        if h5 is not None:
+            out.append({"kind": "session", "name": "Окно 5 ч", "percent": h5, "resets_at": now + h5_left})
+        return {"limits": out, "shares": []}
+
+    def test_forecast(self):
+        t0 = S.SLOT * 4_000_000
+        now = t0 + 6 * 86400                                   # a week at one weight unit a slot, one session always
+        slots = slots_of([1] * (6 * 288), t0)
+        state = lambda used: S.view(slots, self.lims(now, used), [], now, 90, {})["limits"][0]
+        w = state(60)                                           # 10 % a day: the last day's pace
+        self.assertEqual((w["state"], round(w["rate"], 4), round(w["proj"], 1), round(w["spare"], 1)), ("under", 0.4167, 70.0, 30.0))
+        self.assertEqual((round(w["per_sh"], 4), round(w["sh_left"]), w["par"]), (0.4167, 72, None))
+        self.assertEqual(len(w["bars"]), 145)                   # an hour a bar, up to now
+        self.assertEqual((w["bars"][0][:3], w["projects"][0][0]), ([round(60 / 144, 3), 1, 0], "-Users-x-a"))
+        self.assertEqual(state(80)["state"], "pace")            # ~93 % at the reset
+        self.assertEqual(S.view(slots, self.lims(now, 80), [], now, 95, {})["limits"][0]["state"], "under")
+        over = state(90)                                        # 105 %: runs out in 16 h, 8 h before the reset
+        self.assertEqual((over["state"], round((over["hit"] - now) / 3600, 1), over["spare"]), ("over", 16.0, 0.0))
+        self.assertEqual(state(100)["state"], "over")
+        # the 5-hour window, 3 h in, 30 %: it would leave 50 % — unless the week has less left
+        v = S.view(slots, self.lims(now, 60, h5=30), [], now, 90, {})
+        h5 = v["limits"][1]
+        self.assertEqual((h5["key"], h5["state"], round(h5["proj"]), round(h5["par"], 1)), ("h5", "under", 50, 2.5))   # 5 session-hours left in 2 h
+        self.assertNotIn("tighter", h5)
+        self.assertEqual(v["top"], "week")                     # nothing runs out: the fuller one
+        v = S.view(slots, self.lims(now, 90, h5=30), [], now, 90, {})
+        self.assertEqual((v["limits"][1]["tighter"], v["top"]), ({"sh": 0.0}, "week"))
+        self.assertEqual(S.view(slots, self.lims(now, 60, h5=99, h5_left=7200), [], now, 90, {})["top"], "h5")
+        stale = S.view(slots, self.lims(now, 60, h5=30, h5_left=-60), [], now, 90, {})   # the window reset after the reading
+        self.assertEqual([x["key"] for x in stale["limits"]], ["week"])
+        # 2 % is too rough for its own rate: the one kept from before
+        v = S.view(slots, self.lims(now, 60, h5=2), [], now, 90, {"k": {"h5": 0.5}})
+        self.assertEqual((round(v["limits"][1]["rate"], 2), v["known"]["k"]["h5"]), (6.0, 0.5))
+        self.assertEqual(S.view(slots, self.lims(now, 60, h5=2), [], now, 90, {})["limits"][1]["state"], "none")
+
+    def test_fable_factor(self):
+        t0 = S.SLOT * 4_000_000
+        slots = slots_of([300], t0, fable={0: 100})
+        u = {"limits": [{"kind": "weekly_all", "percent": 60, "resets_at": t0 + 7 * 86400}], "shares": [{"name": "Fable", "used": 30}]}
+        self.assertEqual(S.fit_factor(slots, u, t0, t0 + 7 * 86400, t0 + 600)["fable"], 3.0)   # half the week from a quarter of the tokens
+        u["shares"][0]["used"] = 0
+        self.assertEqual(S.fit_factor(slots, u, t0, t0 + 7 * 86400, t0 + 600)["fable"], S.FACTOR["fable"])
+
+    def test_shares(self):
+        self.assertEqual(PW.simplify_usage(usage_reply(fable=64, share=32))["shares"], [{"name": "Fable", "used": 32, "allow": 50}])
+        self.assertEqual(PW.simplify_usage(usage_reply())["shares"], [])
 
 
 class UsageStatsTest(unittest.TestCase):
@@ -308,17 +432,17 @@ class UsageStatsTest(unittest.TestCase):
         (root / "-Users-x-b" / "s2.jsonl").write_text(a("m1", 10) + a("m3", 100))  # session fork: m1 is already counted
         (root / "-private-tmp-x" / "t.jsonl").write_text(a("t1", 50))
         os.utime(fa, (now - 60, now - 60))                                       # copy b is newer than original a
-        dt = PW.DayTokens(root, pultd.skip_pkey)
-        got = {r["pkey"]: (r["req"], r["out"], r["read"]) for r in dt.get(now)["projects"]}
+        dt = S.Spend(root, pultd.skip_pkey)
+        got = {r["pkey"]: (r["req"], r["out"], r["read"]) for r in dt.today(now)["projects"]}
         self.assertEqual(got, {"-Users-x-a": (3, 22, 330), "-Users-x-b": (1, 100, 110)})   # yesterday's, /tmp — skipped
-        self.assertEqual([r["pkey"] for r in dt.get(now)["projects"]], ["-Users-x-b", "-Users-x-a"])  # sorted by output
+        self.assertEqual([r["pkey"] for r in dt.today(now)["projects"]], ["-Users-x-b", "-Users-x-a"])  # sorted by output
         with fa.open("a") as f:
             f.write(a("m4", 1) + a("m5", 1000)[:40])                             # the second one is incomplete
-        self.assertEqual(dt.get(now)["projects"][1]["out"], 23)
+        self.assertEqual(dt.today(now)["projects"][1]["out"], 23)
         with fa.open("a") as f:
             f.write(a("m5", 1000)[40:])
-        self.assertEqual(dt.get(now)["projects"][0], {"pkey": "-Users-x-a", "req": 5, "out": 1023, "read": 550})
-        self.assertEqual(dt.get(now + 86400)["projects"], [])                    # a new day: old data is not re-read
+        self.assertEqual(dt.today(now)["projects"][0], {"pkey": "-Users-x-a", "req": 5, "out": 1023, "read": 550})
+        self.assertEqual(dt.today(now + 86400)["projects"], [])                  # a new day: yesterday is not today
 
 
 class ChainBase(unittest.IsolatedAsyncioTestCase):
@@ -446,6 +570,42 @@ class ChainTest(ChainBase):
         self.assertIn("startapp=usage", warns[0]["reply_markup"])
         await self.p.warn_usage(PW.simplify_usage(usage_reply(session=96)))
         self.assertEqual(len([d for d in self.fake.of("sendMessage") if "⚠️" in d["text"]]), 2)
+
+    async def test_spend_screen(self):
+        # stage R through the daemon: every reading goes into the usage log, the screen names the projects and gives
+        # the five biggest a colour each, the Home strip shows the limit that runs out first, "on pace" is a setting
+        root = T.TMP / "spend-screen"
+        shutil.rmtree(root, ignore_errors=True)
+        now = time.time()
+        for n, pkey in enumerate(("-Users-nobody-gone-alpha", "-Users-nobody-gone-beta")):
+            (root / pkey).mkdir(parents=True)
+            (root / pkey / "s.jsonl").write_text("".join(reply(now - 3600 + 300 * j, "%s%d" % (pkey, j), output_tokens=100 * (2 - n))
+                                                         for j in range(10)))
+        self.p.spend = S.Spend(root, pultd.skip_pkey)
+        u = PW.simplify_usage(usage_reply(session=20, week=95, fable=64, share=32))
+        for lim in u["limits"]:
+            lim["resets_at"] = now + (3600 if lim["kind"] == "session" else 86400)
+        calls = []
+
+        async def fake_usage(force=False):
+            calls.append(force)
+            self.p._usage = u
+            self.store.log_usage(u)
+            return u
+        self.p.usage = fake_usage
+        v = await self.p.api_spend(force=True)
+        self.assertEqual(calls, [True])
+        self.assertEqual([x["key"] for x in v["limits"]], ["week", "h5"])
+        week = v["limits"][0]
+        self.assertEqual([(x["name"], x["color"]) for x in week["projects"]], [("alpha", 0), ("beta", 1)])
+        self.assertEqual(week["state"], "over")               # 95 % and a day of work at this pace
+        self.assertEqual(v["shares"], [{"name": "Fable", "used": 32, "allow": 50}])
+        self.assertEqual([o["name"] for o in v["others"]], ["Неделя · Fable"])
+        self.assertEqual(self.store.usage_log(now - 60)[0][1:3], ("session", 20))
+        self.assertEqual((await self.p.api_overview())["usage_top"], {"key": "week", "pct": 95.0, "state": "over"})
+        self.assertEqual((await self.p.api_prefs(pace=95))["pace"], 95)
+        self.assertEqual((await self.p.api_prefs(pace=42))["pace"], 95)      # only 85, 90 or 95
+        self.assertEqual(self.store.get("spend_colors")["-Users-nobody-gone-alpha"][0], 0)   # the colour stays
 
     async def test_send_open_session_needs_fork(self):
         ws = await self.phone()

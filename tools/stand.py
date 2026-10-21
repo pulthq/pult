@@ -7,9 +7,9 @@ LOAD), stays up HOLD s.
   ~/.local/share/pult/venv/bin/python tools/shot.py "$(grep ^HOME /tmp/stand.out | cut -d' ' -f2)" home.png 412 4 [dark]
 
 Telegram passes initData in the URL after # (tgWebAppData=…); that is how the stand opens the app without Telegram.
-Usage is stubbed (82 %): the real request launches Claude Code. The data is made up and neutral — the screenshots go
+Usage is stubbed (38 % of the 5-hour window, 71 % of the week, a made-up week of work): the real request launches Claude Code. The data is made up and neutral — the screenshots go
 into the public README: STAND_LANG=en|ru picks the texts, STAND_XSS=1 adds markup that must stay text."""
-import asyncio, base64, hashlib, hmac, json, os, sys, time, urllib.parse
+import asyncio, base64, hashlib, hmac, json, os, random, sys, time, urllib.parse
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -103,6 +103,35 @@ def aline(text, mid, out, ago=0):
                                    "usage": {"input_tokens": 2, "cache_read_input_tokens": 120000, "output_tokens": out}}})
 
 
+def week_of_work(root, now):
+    """A made-up week for Resources (stage R): turns in three projects in the daytime, now and then two or three at
+    once, an agent here and there, some on Fable. Seeded, so the screenshots repeat."""
+    rnd = random.Random(7)
+    iso = lambda ts: time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(ts))
+    homes = [Path(T.TP).parent, root / PKEY2, root / "-Users-x-blog"]
+    for n in range(26):
+        day = rnd.randrange(0, 7)
+        start = now - day * 86400 - rnd.uniform(0.5, 14) * 3600
+        if start > now - 1800:
+            continue
+        home, model = rnd.choice(homes[:2] * 3 + homes[2:]), "claude-fable-5-1" if rnd.random() < 0.2 else "claude-opus-5-5"
+        sid = "%08x-0000-4000-8000-%012x" % (n, n)
+        rows, ts = [json.dumps({"type": "user", "timestamp": iso(start), "message": {"role": "user", "content": "…"}})], start
+        for k in range(rnd.randrange(8, 40)):
+            ts += rnd.uniform(40, 240)
+            if ts > now - 60:
+                break
+            rows.append(json.dumps({"type": "assistant", "timestamp": iso(ts), "message": {
+                "id": "w%d-%d" % (n, k), "model": model, "role": "assistant", "content": [], "stop_reason": "tool_use",
+                "usage": {"input_tokens": 3, "cache_read_input_tokens": rnd.randrange(40000, 160000),
+                          "cache_creation_input_tokens": rnd.randrange(500, 6000), "output_tokens": rnd.randrange(200, 3000)}}}))
+        rows.append(rows[-1].replace('"tool_use"', '"end_turn"').replace('"id": "w', '"id": "e'))
+        (home / (sid + ".jsonl")).write_text("\n".join(rows) + "\n")
+        if rnd.random() < 0.25:                           # an agent of that session
+            (home / sid / "subagents").mkdir(parents=True, exist_ok=True)
+            (home / sid / "subagents" / "agent-a.jsonl").write_text("\n".join(r.replace('"id": "w', '"id": "a') for r in rows[1:6]) + "\n")
+
+
 def png_sample(w=320, h=200):
     """A small made-up picture for the owner's message: coloured bands, no real content."""
     import struct, zlib
@@ -140,9 +169,9 @@ async def main():
     await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", 18097).start()
     async def fake_usage(force=False):
-        r = W.usage_reply(session=82, week=41, fable=3)
+        r = W.usage_reply(session=38, week=71, fable=44, share=22)
         for lim in r["rate_limits"]["limits"]:                 # resets in the future, as in real life
-            ahead = 2 * 3600 + 600 if lim["kind"] == "session" else 3 * 86400 + 5 * 3600
+            ahead = 2 * 3600 + 600 if lim["kind"] == "session" else 1 * 86400 + 20 * 3600
             lim["resets_at"] = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() + ahead))
         return PW.simplify_usage(r)
     p.usage = fake_usage
@@ -207,7 +236,8 @@ async def main():
     blog = d.parent / "-Users-x-blog"                  # a third project: only "today by project" sees it
     blog.mkdir(parents=True, exist_ok=True)
     (blog / (SID3 + ".jsonl")).write_text("\n".join(aline("…", "b%d" % i, 700, ago=60 * i) for i in range(4)) + "\n")
-    p.day_tokens = PW.DayTokens(d.parent, pultd.skip_pkey)     # the stand's transcripts, never the Mac's own
+    week_of_work(d.parent, time.time())
+    p.spend = pultd.S.Spend(d.parent, pultd.skip_pkey)        # the stand's transcripts, never the Mac's own
     await T.run_hook(ev("UserPromptSubmit", SID2, cwd=DESK, prompt=D["tickets"]))
     await T.run_hook(ev("PermissionRequest", SID2, cwd=DESK, tool_name="AskUserQuestion", tool_input=q), wait=False)
     await T.run_hook(ev("Stop", SID2, cwd=DESK, last_assistant_message=D["tickets_done"],

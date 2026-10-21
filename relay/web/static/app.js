@@ -6,6 +6,10 @@ import { t, plural, q, setLang, LANG, locale } from "./i18n.js";
 
 const tg = window.Telegram && window.Telegram.WebApp;
 if (tg) { tg.ready(); tg.expand(); }
+// the chart's own colours follow Telegram's theme, not only the phone's (a dark Telegram on a light phone)
+const scheme = () => { if (tg && tg.colorScheme) document.documentElement.dataset.scheme = tg.colorScheme; };
+scheme();
+if (tg && tg.onEvent) tg.onEvent("themeChanged", scheme);
 // the language: Telegram's right away, then Pult's own setting (overview / settings carry it)
 setLang(String((tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.language_code) || "en").startsWith("ru") ? "ru" : "en");
 
@@ -575,17 +579,21 @@ function ModePick({ mode, onSet, pager }) {
 const GEAR = html`<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`;
 // the top line stays grey while all is well: a colour means look here
 const quiet = (v, bad) => (v >= bad ? "bad" : v >= bad - 10 ? "warn" : "dim");
-function Top({ mac, load, usagePct, pager, onSet }) {
+const GLYPH = { pace: "●", under: "▼", over: "▲" };
+function Top({ mac, load, usagePct, usageTop, pager, onSet }) {
   const [open, setOpen] = useState(false);
   const cur = MODES.includes(mac.mode) ? mac.mode : "auto";
   const line = cur === "auto" ? (mac.away ? t("mac.away.short", { dur: durShort(mac.idle) }) : t("mac.here.short")) : t("mode." + cur + ".short");
   const m = load ? memPct(load) : null;
-  const lim = usagePct;
-  const stat = (k, v, cls) => html`<span class="tl-c"><span class="tl-l">${t(k)}</span><span class=${"tl-v " + cls}>${v}</span></span>`;
+  // the limit: the one that runs out first (stage R), grey unless it does; an older Pult sends only the 5-hour window
+  const lim = usageTop ? Math.round(usageTop.pct) : usagePct;
+  const limCls = !usageTop || usageTop.state === "none" ? quiet(lim, 80) : usageTop.state === "over" ? "bad" : "dim";
+  const limText = lim + "\u00a0%" + (usageTop && GLYPH[usageTop.state] ? "\u00a0" + GLYPH[usageTop.state] : "");
+  const stat = (k, v, cls, label) => html`<span class="tl-c"><span class="tl-l">${label || t(k)}</span><span class=${"tl-v " + cls}>${v}</span></span>`;
   return html`<div class="where">
     <div class="where-h">
       <button class="where-b" aria-expanded=${open} onClick=${() => setOpen(!open)}><span class="tl-l">${t("mode." + cur + ".btn")}</span><span class="tl-v">${line}</span></button>
-      ${(load || lim != null) && html`<button class="where-b top-load" onClick=${() => go("#/usage")}>${lim != null && stat("top.lim", lim + "\u00a0%", quiet(lim, 80))}${load && stat("top.cpu", pct(load.cpu), quiet(load.cpu, 90))}${m !== null && m >= 90 && stat("top.mem", m + "\u00a0%", "bad")}</button>`}
+      ${(load || lim != null) && html`<button class="where-b top-load" onClick=${() => go("#/usage")}>${lim != null && stat("top.lim", limText, limCls, usageTop && t("sp.short." + usageTop.key))}${load && stat("top.cpu", pct(load.cpu), quiet(load.cpu, 90))}${m !== null && m >= 90 && stat("top.mem", m + "\u00a0%", "bad")}</button>`}
       <a class="gear" href="#/settings" aria-label=${t("settings")}>${GEAR}</a>
     </div>
     ${open && html`<${ModePick} mode=${cur} onSet=${onSet} pager=${pager}/>`}
@@ -749,7 +757,7 @@ function Home() {
   const nRun = running.length + jobsOn.length;
   const rest = board.map((p) => Object.assign({}, p, { rows: p.rows.filter((r) => !runs(r)) }));
   return html`<div>
-    <${Top} mac=${d.mac} load=${d.load} usagePct=${d.usage_pct} pager=${d.pager} onSet=${(m) => set(Object.assign({}, d, { mac: Object.assign({}, d.mac, { mode: m }) }))}/>
+    <${Top} mac=${d.mac} load=${d.load} usagePct=${d.usage_pct} usageTop=${d.usage_top} pager=${d.pager} onSet=${(m) => set(Object.assign({}, d, { mac: Object.assign({}, d.mac, { mode: m }) }))}/>
     ${nRun > 0 && html`<h3>${t("home.running", { n: nRun })}</h3><div class="list">
       ${running.map((r) => html`<${BoardRow} key=${r.sid} r=${r} now=${now} onBg=${onBg} project=${r.project}/>`)}
       ${jobsOn.map((j) => html`<${Job} key=${j.id} j=${j} now=${now} row=${true}/>`)}</div>`}
@@ -795,6 +803,10 @@ function Settings() {
     try { await api("prefs", { lang: k }); set(Object.assign({}, d, { prefs: Object.assign({}, d.prefs, { lang: k }) })); useLang(k); haptic("success"); }
     catch (e) { alertBox(e.message); }
   };
+  const setPace = async (n) => {
+    try { const p = await api("prefs", { pace: n }); set(Object.assign({}, d, { prefs: Object.assign({}, d.prefs, p) })); haptic("success"); }
+    catch (e) { alertBox(e.message); }
+  };
   const saveKey = async (k) => {
     setKbusy(true);
     try { const r = await api("stt_key", { key: k.trim() }); set(Object.assign({}, d, { stt: Object.assign({}, d.stt || {}, { on: r.on }) })); setKey(""); haptic("success"); alertBox(t(r.on ? "voice.saved" : "voice.removed")); }
@@ -805,6 +817,9 @@ function Settings() {
     <h3>${t("notifications")}</h3><div class="list">${sw("pager", t("pager"), t("pager.about"))}${d.prefs.pager ? "" : sw("vehi", t("vehi"), t("vehi.about"))}${sw("brief", t("brief"), t("brief.about"))}</div>
     <h3>${t("where")}</h3>
     <${ModePick} mode=${d.prefs.mode} pager=${d.prefs.pager} onSet=${(m) => set(Object.assign({}, d, { prefs: Object.assign({}, d.prefs, { mode: m }) }))}/>
+    ${d.prefs.pace ? html`<h3>${t("pace")}</h3>
+    <div class="seg">${[85, 90, 95].map((n) => html`<button key=${n} class=${d.prefs.pace === n ? "on" : ""} onClick=${() => setPace(n)}>${n}\u00a0%</button>`)}</div>
+    <div class="dim small">${t("pace.about", { n: d.prefs.pace })}</div>` : ""}
     <h3>${t("language")}</h3>
     <div class="seg">${[["en", "English"], ["ru", "Русский"]].map(([k, label]) => html`<button key=${k}
       class=${d.prefs.lang === k ? "on" : ""} onClick=${() => setLangPref(k)}>${label}</button>`)}</div>
@@ -1241,10 +1256,214 @@ function NewTask({ pkey }) {
   </div>`;
 }
 
+// ---------- Resources: how the plan's limits are spent (stage R) ----------
+// For each limit: the curve from its start to its reset against the even pace, the forecast at the current pace, how
+// many sessions worked at once, what spent it. The computer counts (pult_spend.py), the app only draws — SVG by hand,
+// no chart library. The data is the only loud thing: thin marks, hairline grid; red only when a limit runs out early.
+
+// hours of one session's work, as precise as it is worth: 35 h · 5.9 h · 25 min
+const shours = (h) => nb(h >= 10 ? t("dur.h", { n: Math.round(h) }) : h >= 1 ? t("dur.h", { n: num(h, 1) }) : t("dur.m", { n: Math.max(5, Math.round(h * 12) * 5) }));
+const sameDay = (a, b) => a.toDateString() === b.toDateString();
+const spWhen = (ts) => { const d = toDate(ts); return (sameDay(d, new Date()) ? "" : t("weekdays").split(" ")[d.getDay()] + " ") + hhmm(d); };
+const durLong = (sec) => (sec >= 86400 ? t("dur.d", { n: Math.floor(sec / 86400) }) + (Math.floor(sec % 86400 / 3600) ? " " + t("dur.h", { n: Math.floor(sec % 86400 / 3600) }) : "") : dur(sec));
+const spColor = (c) => (c == null ? "var(--c0)" : "var(--c" + (c + 1) + ")");
+
+function verdict(L) {
+  const left = Math.max(0, L.t1 - L.now);
+  if (L.used >= 100) return [t("sp.out", { left: durLong(left) })];
+  if (L.state === "none") return [t("sp.none")];
+  if (L.state === "over") {
+    const slow = (100 - L.used) / Math.max(1e-9, L.rate * left / 3600);
+    return [t("sp.over.v", { left: durLong(left), hit: spWhen(L.hit), gap: durLong(L.t1 - L.hit) }),
+      t(slow > 0.66 ? "sp.slow.3" : slow > 0.4 ? "sp.slow.2" : "sp.slow.1")];
+  }
+  const out = [t("sp.at", { left: durLong(left), proj: "~" + pct(L.proj) })];
+  let s = t(L.state === "under" ? "sp.burn" : "sp.free", { spare: "~" + pct(L.spare) });
+  if (L.sh_left != null) s += t("sp.sh", { sh: shours(L.sh_left) });
+  if (L.par != null && L.par >= 1) {
+    const n = Math.round(L.par);
+    s += t("sp.par", { n, sessions: plural(n, "session"), hm: hhmm(toDate(L.t1)) });
+  }
+  out.push(s + ".");
+  if (L.tighter) out.push(t("sp.tighter", { sh: L.tighter.sh != null ? shours(L.tighter.sh) : "—" }));
+  return out;
+}
+
+function PaceChart({ L }) {
+  const box = useRef(null);
+  const [w, setW] = useState(0);
+  const [hx, setHx] = useState(null);
+  useEffect(() => {
+    const el = box.current;
+    const fit = () => setW(el.clientWidth);
+    fit();
+    const ro = window.ResizeObserver ? new ResizeObserver(fit) : null;
+    if (ro) ro.observe(el); else window.addEventListener("resize", fit);
+    const away = (e) => { if (!el.contains(e.target)) setHx(null); };       // a tap elsewhere hides the readout
+    document.addEventListener("pointerdown", away);
+    return () => { if (ro) ro.disconnect(); else window.removeEventListener("resize", fit); document.removeEventListener("pointerdown", away); };
+  }, []);
+  useEffect(() => setHx(null), [L.key]);
+  if (!w) return html`<div class="chart" ref=${box}></div>`;
+  const W = w, PT = 16, PH = 150, ST = PT + PH + 20, SH = 38, XB = ST + SH + 16, HT = XB + 4;
+  const X = (ts) => (ts - L.t0) / (L.t1 - L.t0) * W, Y = (p) => PT + (1 - Math.min(p, 100) / 100) * PH;
+  let c = 0;
+  const cums = L.bars.map((b) => (c += b[0]));
+  const end = (i) => Math.min(L.t0 + (i + 1) * L.step, L.now);
+  const pts = [[0, Y(0)]].concat(cums.map((v, i) => [X(end(i)), Y(v)]));
+  const line = pts.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join("");
+  // the axis: days for the week, hours for the window
+  const ticks = [], d = toDate(L.t0);
+  if (L.key === "week") { d.setHours(24, 0, 0, 0); for (; d / 1000 < L.t1; d.setDate(d.getDate() + 1)) ticks.push(d / 1000); }
+  else { d.setMinutes(60, 0, 0); for (; d / 1000 < L.t1; d.setHours(d.getHours() + 1)) ticks.push(d / 1000); }
+  const marks = [L.t0].concat(ticks, [L.t1]);
+  const labels = L.key === "week"
+    ? marks.slice(0, -1).map((a, i) => [(X(a) + X(marks[i + 1])) / 2, X(marks[i + 1]) - X(a) > 22 ? t("weekdays").split(" ")[toDate(a + 60).getDay()] : ""])
+    : ticks.map((a) => [X(a), hhmm(toDate(a))]);
+  const ink = { "text-anchor": "end", class: "ink" };
+  const hitX = L.hit ? X(L.hit) : null, endP = L.proj == null ? null : L.hit ? 100 : L.proj;
+  const short = W - X(L.now) < 70;                                  // a short forecast: one label "82 % → ~88 %"
+  const nBars = Math.round((L.t1 - L.t0) / L.step), bw = W / nBars, gap = bw >= 4 ? 1 : 0;
+  const maxN = Math.max(4, ...L.bars.map((b) => b[1] + b[2]));
+  // the readout under the finger: the bar's spend, sessions at once and projects; past now — the forecast
+  let tip = null, cx = 0, cy = 0;
+  if (hx != null) {
+    const at = L.t0 + hx / W * (L.t1 - L.t0);
+    if (at < L.now && L.bars.length) {
+      const i = Math.min(Math.floor((at - L.t0) / L.step), L.bars.length - 1), b = L.bars[i], s = L.t0 + i * L.step;
+      cx = X(Math.min(s + L.step / 2, L.now)); cy = Y(cums[i]);
+      tip = html`<div class="dim">${(L.key === "week" ? t("weekdays").split(" ")[toDate(s + 60).getDay()] + " " : "") + hhmm(toDate(s))}–${hhmm(toDate(end(i)))}</div>
+        <div class="v">${t("sp.tip.spent", { d: "+" + pct(b[0]), c: pct(cums[i]) })}</div>
+        <div>${b[1] || b[2] ? t("sp.tip.at", { who: (b[1] ? t("sp.tip.n", { n: b[1], sessions: plural(b[1], "session") }) : "")
+          + (b[1] && b[2] ? t("sp.tip.and") : "") + (b[2] ? t("sp.tip.n", { n: b[2], sessions: plural(b[2], "agent") }) : "") }) : t("sp.tip.idle")}</div>
+        ${b[3].map(([j, v]) => html`<div><i class="k" style=${"background:" + spColor((L.projects[j] || {}).color)}></i>${(L.projects[j] || {}).name} · ${pct(v)}</div>`)}
+        ${b[4] ? html`<div><i class="k" style="background:var(--pace)"></i>${t("sp.elsewhere")} · ${pct(b[4])}</div>` : ""}`;
+    } else if (L.rate != null) {
+      cx = hx;
+      const p = Math.min(100, L.used + L.rate * (at - L.now) / 3600);
+      cy = Y(p);
+      tip = html`<div class="dim">${t("sp.tip.fc", { when: spWhen(at) })}</div><div class="v">~${pct(p)}</div>
+        <div>${t("sp.tip.rate", { r: pct(L.rate) })}</div>`;
+    }
+  }
+  const pick = (e) => { const r = e.currentTarget.getBoundingClientRect(); setHx(Math.max(0, Math.min(W, (e.clientX - r.left) / r.width * W))); };
+  return html`<div class="chart" ref=${box}>
+    <svg viewBox=${"0 0 " + W + " " + HT} height=${HT} role="img" aria-label=${L.name + ": " + pct(L.used) + (endP != null ? " → ~" + pct(endP) : "")}
+      onPointerMove=${pick} onPointerDown=${pick} onPointerLeave=${(e) => e.pointerType === "mouse" && setHx(null)}>
+      <line x1="0" x2=${W} y1=${Y(0)} y2=${Y(0)} stroke="var(--grid)"/><line x1="0" x2=${W} y1=${Y(50)} y2=${Y(50)} stroke="var(--grid)"/>
+      <line x1="0" x2=${W} y1=${Y(100)} y2=${Y(100)} stroke="var(--axis)"/>
+      <text x="0" y=${Y(100) - 4}>100 %</text><text x="0" y=${Y(50) - 4}>50 %</text>
+      ${ticks.map((a) => html`<line x1=${X(a)} x2=${X(a)} y1=${PT} y2=${ST + SH} stroke="var(--grid)"/>`)}
+      ${labels.map(([x, s]) => s && html`<text x=${x} y=${XB} text-anchor="middle">${s}</text>`)}
+      <line x1="0" y1=${Y(0)} x2=${W} y2=${Y(100)} stroke="var(--pace)" stroke-width="1.5"/>
+      <path d=${line + "L" + X(L.now).toFixed(1) + " " + Y(0) + "L0 " + Y(0) + "Z"} fill="var(--s1)" opacity="0.1"/>
+      <path d=${line} fill="none" stroke="var(--s1)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+      ${endP != null && html`<line x1=${X(L.now)} y1=${Y(L.used)} x2=${L.hit ? hitX : W} y2=${Y(endP)} stroke=${L.hit ? "var(--danger)" : "var(--s1)"} stroke-width="2" stroke-dasharray="4 4" stroke-linecap="round"/>`}
+      ${L.hit && L.used < 100 ? html`<rect x=${hitX} y=${Y(100) - 3} width=${Math.max(0, W - hitX)} height="6" rx="3" fill="var(--danger)" opacity="0.25"/>
+        <circle cx=${hitX} cy=${Y(100)} r="4.5" fill="var(--danger)" stroke="var(--card)" stroke-width="2"/>
+        <text x=${hitX > W * 0.6 ? W : hitX} y=${Y(100) - 6} text-anchor=${hitX > W * 0.6 ? "end" : "start"} class="ink">${t("sp.runs.out", { when: spWhen(L.hit) })}</text>` : ""}
+      ${endP != null && !L.hit ? html`<circle cx=${W - 4} cy=${Y(endP)} r="4" fill="var(--card)" stroke="var(--s1)" stroke-width="2"/>
+        ${!short && html`<text x=${W - 12} y=${Y(endP) - 8} ...${ink}>~${pct(endP)}</text>`}` : ""}
+      <circle cx=${X(L.now)} cy=${Y(L.used)} r="4.5" fill="var(--s1)" stroke="var(--card)" stroke-width="2"/>
+      <text x=${X(L.now) - 8} y=${Y(L.used) - 9} ...${ink}>${pct(L.used) + (short && endP != null && !L.hit ? " → ~" + pct(endP) : "")}</text>
+      <text x="0" y=${ST - 2}>${t("sp.at.once", { n: maxN })}</text>
+      ${L.bars.map((b, i) => {
+        if (!b[1] && !b[2]) return "";
+        const x = i * bw, bwid = Math.max(1, bw - gap), hs = b[1] / maxN * SH, ha = b[2] / maxN * SH;
+        return html`<rect x=${x} y=${ST + SH - hs} width=${bwid} height=${hs} fill="var(--s1)"/>${ha ? html`<rect x=${x} y=${ST + SH - hs - ha - (hs ? 1 : 0)} width=${bwid} height=${ha} fill="var(--s1-soft)"/>` : ""}`;
+      })}
+      <line x1="0" x2=${W} y1=${ST + SH + 0.5} y2=${ST + SH + 0.5} stroke="var(--axis)"/>
+      ${tip && html`<line x1=${cx} x2=${cx} y1=${PT - 6} y2=${ST + SH} stroke="var(--ink)" stroke-opacity="0.35"/>
+        <circle cx=${cx} cy=${cy} r="4" fill="var(--s1)" stroke="var(--card)" stroke-width="2"/>`}
+    </svg>
+    ${tip && html`<div class=${"tip" + (cy < PT + 70 ? " below" : "")} style=${"left:" + Math.max(100, Math.min(W - 100, cx)) + "px;top:" + (cy < PT + 70 ? cy + 14 : cy - 12) + "px"}>${tip}</div>`}
+  </div>`;
+}
+
+// the same as a table: a row a day (the week) or half an hour (the window)
+function SpendTable({ L }) {
+  const per = L.key === "week" ? 24 : 6, rows = [];
+  let c = 0;
+  for (let i = 0; i < L.bars.length; i += per) {
+    const part = L.bars.slice(i, i + per), s = L.t0 + i * L.step;
+    const add = part.reduce((a, b) => a + b[0], 0);
+    c += add;
+    rows.push(html`<tr><td>${(L.key === "week" ? t("weekdays").split(" ")[toDate(s + 60).getDay()] + " " : "") + hhmm(toDate(s))}</td>
+      <td>+${pct(add)}</td><td>${pct(c)}</td><td>${Math.max(...part.map((b) => b[1]))}</td></tr>`);
+  }
+  return html`<table class="tv"><thead><tr><th>${t("sp.t.from")}</th><th>+ %</th><th>${t("sp.t.total")}</th><th>${t("sp.t.peak")}</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+// what spent the limit: a project keeps its colour, the five biggest have one, the rest are "other"
+function Spent({ L }) {
+  const parts = L.projects.filter((p) => p.color != null).map((p) => [p.name, p.pct, spColor(p.color), p.sh]);
+  const rest = L.projects.filter((p) => p.color == null);
+  const restPct = rest.reduce((a, p) => a + p.pct, 0);
+  if (restPct >= 0.3) parts.push([t("sp.other"), restPct, "var(--c0)", L.per_sh ? restPct / L.per_sh : null]);
+  if (L.ext >= 0.3) parts.push([t("sp.elsewhere"), L.ext, "var(--pace)", null]);
+  if (!parts.length) return "";
+  return html`<h3>${t("sp.ate." + L.key)}</h3><div class="card spent">
+    <div class="stack">${parts.map(([, v, col], i) => html`<i key=${i} style=${"flex:" + v + ";background:" + col}></i>`)}</div>
+    ${parts.map(([n, v, col, sh], i) => html`<div class="prow" key=${i}><span><i class="swatch" style=${"background:" + col}></i>${n}</span>
+      <span class="dim">${pct(v)}${sh != null ? " · ≈ " + shours(sh) : ""}</span></div>`)}</div>`;
+}
+
+function Spend() {
+  const [d, err, set] = useLive(() => api("spend"), [], () => false, 60000);
+  const [key, setKey] = useState(null);
+  const [table, setTable] = useState(false);
+  const [busy, setBusy] = useState(false);
+  useNow(30000);
+  if (!d && err) return html`<${Usage}/>`;          // an older Pult on the computer, or no reading: the old screen says why
+  if (!d) return html`<div><h2>${t("res.title")}</h2><${Loading}/></div>`;
+  if (!d.limits.length) return html`<${Usage}/>`;
+  const by = Object.fromEntries(d.limits.map((x) => [x.key, x]));
+  // the week opens first — the budget that has to last; the window only when it runs out first and the week doesn't
+  const auto = by.h5 && by.h5.hit && !(by.week && by.week.hit) ? "h5" : by.week ? "week" : "h5";
+  const L = by[key] || by[auto];
+  const other = d.limits.find((x) => x !== L);
+  const refresh = async () => {
+    setBusy(true);
+    try { set(await api("spend", { force: true })); haptic("success"); } catch (e) { alertBox(e.message); }
+    setBusy(false);
+  };
+  const share = (name) => (d.shares || []).find((x) => name.indexOf(x.name) >= 0);
+  const chip = { pace: "ok", under: "info", over: "bad" }[L.state];
+  return html`<div><h2>${t("res.title")}</h2>
+    ${d.limits.length > 1 && html`<div class="seg spend-seg">${d.limits.map((x) => html`<button key=${x.key} class=${x === L ? "on" : ""}
+      onClick=${() => setKey(x.key)}>${t("sp.short." + x.key)}</button>`)}</div>`}
+    <div class="card spend">
+      <div class="sp-h"><span>${t("sp.name." + L.key)}${d.plan ? " · " + d.plan.charAt(0).toUpperCase() + d.plan.slice(1) : ""}</span><span>${t("usage.reset", { when: spWhen(L.t1) })}</span></div>
+      <div class="sp-hero"><span class="big">${pct(L.used)}</span>${chip && html`<span class=${"vchip " + chip}>${t("sp.chip." + L.state)}</span>`}</div>
+      <div class="verdict">${verdict(L).join(" ")}</div>
+      <${PaceChart} L=${L}/>
+      <div class="sp-leg"><span><i class="swatch" style="background:var(--s1)"></i>${t("sp.sessions")}</span><span><i class="swatch" style="background:var(--s1-soft)"></i>${t("sp.agents")}</span>
+        <span><i class="swatch line" style="background:var(--pace)"></i>${t("sp.even")}</span>
+        <button class="link" onClick=${() => setTable(!table)}>${t(table ? "sp.chart" : "sp.table")}</button></div>
+      ${table && html`<${SpendTable} L=${L}/>`}
+    </div>
+    <div class="list">
+      ${other && html`<button class="lim" onClick=${() => setKey(other.key)}>
+        <div class="item-h"><b>${t("sp.short." + other.key)}</b><b class="pct">${pct(other.used)}</b></div>
+        <div class="meter"><i class=${other.state === "over" ? "bad" : "spend"} style=${"width:" + Math.min(100, other.used) + "%"}></i></div>
+        <div class="dim">${t("usage.reset", { when: spWhen(other.t1) })}${other.hit ? " · " + t("sp.runs.out", { when: spWhen(other.hit) }) : other.proj != null ? " · " + t("sp.other.at", { proj: "~" + pct(other.proj) }) : ""}</div></button>`}
+      ${(d.others || []).map((x) => { const sh = share(x.name); return html`<div class="lim" key=${x.name}>
+        <div class="item-h"><b>${x.name}</b><b class=${"pct " + level(x.percent)}>${pct(x.percent)}</b></div>
+        <div class="meter"><i class=${level(x.percent) || "spend"} style=${"width:" + Math.min(100, x.percent) + "%"}></i></div>
+        <div class="dim">${sh ? t("sp.share", { used: sh.used, allow: sh.allow }) + " · " : ""}${t("usage.reset", { when: spWhen(x.resets_at) })}</div></div>`; })}
+    </div>
+    <${Spent} L=${L}/>
+    <div class="dim small">${t("sp.about")}${L.per_sh ? " " + t("sp.about.sh", { per: pct(L.per_sh), limit: t("sp.of." + L.key) }) : ""}${d.fable_x >= 1.5 ? " " + t("sp.about.fable", { x: num(d.fable_x, 1) }) : ""}</div>
+    ${d.extra && d.extra.enabled && html`<div class="dim small">${t("usage.extra", { used: d.extra.used ?? 0, limit: d.extra.limit ?? "—", cur: d.extra.currency || "" })}</div>`}
+    <button class="btn ghost wide" disabled=${busy} onClick=${refresh}>${busy ? t("refreshing") : t("refresh")}</button>
+    <div class="dim small">${t("usage.updated", { ago: ago(d.ts) })}</div>
+  </div>`;
+}
+
 // Resources: can I keep working — the plan's limits, the computer's load, Pult itself
 function Resources() {
   const [st] = useLive(() => api("settings"), [], () => false);
-  return html`<div><${Usage}/><${Load} embedded=${true}/>
+  return html`<div><${Spend}/><${Load} embedded=${true}/>
     ${st && html`<h3>${t("res.pult")}</h3><div class="list"><div class="item static">
       <div>${t("status.pult", { v: st.version, mac: st.mac.away ? t("mac.away", { dur: dur(st.mac.idle) }) : t("mac.here") })}</div>
       <div class="dim">${t("status.tg", { how: t("tg." + (st.telegram === "proxy" ? "proxy" : "direct")) })}</div>

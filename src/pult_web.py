@@ -374,7 +374,16 @@ def simplify_usage(r):
                             "resets_at": _iso(w.get("resets_at")), "severity": None, "active": False})
     extra = rl.get("extra_usage") or {}
     rows = (rl.get("seven_day_breakdown") or {}).get("rows") or []
-    return {"plan": (r or {}).get("subscription_type"), "limits": out, "ts": time.time(),
+    # a model's own share of the week (Fable): used and allowed, in % of the whole week — fits its factor (stage R)
+    shares = []
+    raw = rl.get("limits") or []
+    for s in rl.get("weekly_scoped_shares") or []:
+        i = s.get("limit_index")
+        lim = raw[i] if isinstance(i, int) and 0 <= i < len(raw) else {}
+        model = (((lim.get("scope") or {}).get("model")) or {}).get("display_name")
+        if model and s.get("used_percent_of_weekly") is not None:
+            shares.append({"name": model, "used": s.get("used_percent_of_weekly"), "allow": s.get("allowance_percent_of_weekly")})
+    return {"plan": (r or {}).get("subscription_type"), "limits": out, "ts": time.time(), "shares": shares,
             "extra": {"enabled": bool(extra.get("is_enabled")), "used": extra.get("used_credits"),
                       "limit": extra.get("monthly_limit"), "currency": extra.get("currency")},
             "week_by": [{"name": x.get("display_name"), "percent": x.get("percent")} for x in rows if x.get("percent")]}
@@ -445,82 +454,6 @@ class Stats:
             st[k]["req"] += 1
             st[k]["out"] += out
         st["turn"]["think"] += think
-
-
-class DayTokens:
-    """Today's tokens per project across all transcripts on the Mac, reading only new data. The first pass reads
-    everything modified today (measured 2026-10-16: 44 files, 155 MB — 0.25 s), after that only appended data.
-    One model response is written as several lines, and a session copy repeats the original's lines, so we count
-    by message.id."""
-
-    def __init__(self, root, skip=lambda pkey: False):
-        self.root = root
-        self.skip = skip
-        self.lock = threading.Lock()
-        self.day = None
-        self.off = {}                          # file → bytes already read
-        self.seen = set()
-        self.per = {}
-
-    def get(self, now=None):
-        with self.lock:
-            return self._get(now or time.time())
-
-    def _get(self, now):
-        lt = time.localtime(now)
-        midnight = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
-        if self.day != midnight:
-            # new day: keep the offsets — everything before them is from yesterday
-            self.day, self.seen, self.per = midnight, set(), {}
-        files = []
-        for p in list(self.root.glob("*/*.jsonl")) + list(self.root.glob("*/*/subagents/*.jsonl")):
-            pkey = p.relative_to(self.root).parts[0]
-            try:
-                st = p.stat()
-            except OSError:
-                continue
-            if st.st_mtime >= midnight and not self.skip(pkey):
-                files.append((st.st_mtime, str(p), pkey, st))
-        for _, key, pkey, st in sorted(files):     # oldest first: a reply repeated in a session copy doesn't count
-            off = self.off.get(key, 0)
-            if st.st_size < off:
-                off = 0                        # file was rewritten — message.id filters out repeats
-            if st.st_size == off:
-                continue
-            try:
-                with open(key, "rb") as f:
-                    f.seek(off)
-                    for line in f:
-                        if not line.endswith(b"\n"):
-                            break              # unfinished line — read the rest next time
-                        off += len(line)
-                        if b'"usage"' in line and b'"assistant"' in line:
-                            self.feed(pkey, line, midnight)
-            except OSError:
-                pass
-            self.off[key] = off
-        rows = [dict(v, pkey=k) for k, v in self.per.items()]
-        return {"day": midnight, "projects": sorted(rows, key=lambda r: -r["out"])}
-
-    def feed(self, pkey, line, midnight):
-        try:
-            e = json.loads(line)
-        except ValueError:
-            return
-        m = e.get("message") or {}
-        u = m.get("usage")
-        if e.get("type") != "assistant" or not u or (_iso(e.get("timestamp")) or 0) < midnight:
-            return
-        mid = m.get("id")
-        if mid:
-            if mid in self.seen:
-                return
-            self.seen.add(mid)
-        d = self.per.setdefault(pkey, {"req": 0, "out": 0, "read": 0})
-        d["req"] += 1
-        d["out"] += u.get("output_tokens") or 0
-        d["read"] += (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0) + \
-            (u.get("cache_creation_input_tokens") or 0)
 
 
 # ---------- connection to the relay ----------

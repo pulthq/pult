@@ -337,3 +337,47 @@ details.logbox { margin-top: 20px; } details.logbox summary { color: var(--link)
   color: var(--ink); font-size: 14px; cursor: pointer; white-space: nowrap; }
 .seg button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
 .modes .small { margin-top: 6px; }
+
+/* Resources (stage R): a limit's curve against the even pace, the forecast, sessions at once, what spent it. The
+   chart's colours are fixed (checked for colour blindness against the light and the dark card): the data is the only
+   loud thing, the grid a hairline, red only when a limit runs out before its reset */
+:root { --s1: #2a78d6; --s1-soft: #86b6ef; --pace: #a3a9b4; --grid: rgba(60, 70, 90, .09); --axis: rgba(60, 70, 90, .26);
+  --c1: #2a78d6; --c2: #eb6834; --c3: #1baf7a; --c4: #eda100; --c5: #e87ba4; --c0: #b9bdc6; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-scheme="light"]) { --s1: #3987e5; --s1-soft: #9ec5f4; --pace: #5d6573; --grid: rgba(255, 255, 255, .06); --axis: rgba(255, 255, 255, .2);
+    --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c4: #c98500; --c5: #d55181; --c0: #4a515d; }
+}
+:root[data-scheme="dark"] { --s1: #3987e5; --s1-soft: #9ec5f4; --pace: #5d6573; --grid: rgba(255, 255, 255, .06); --axis: rgba(255, 255, 255, .2);
+  --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c4: #c98500; --c5: #d55181; --c0: #4a515d; }
+.seg.spend-seg { margin: 0 0 10px; }
+.card.spend { padding: 14px; }
+.sp-h { display: flex; justify-content: space-between; gap: 8px; font-size: 13.5px; color: var(--muted); }
+.sp-hero { display: flex; align-items: center; gap: 10px; margin: 2px 0; }
+.sp-hero .big { font-size: 40px; font-weight: 650; letter-spacing: -.02em; line-height: 1.1; }
+.vchip { font-size: 13.5px; font-weight: 600; padding: 3px 10px; border-radius: 99px; white-space: nowrap; background: var(--code); }
+.vchip.ok { color: var(--ok); } .vchip.info { color: var(--link); } .vchip.bad { color: var(--danger); }
+.verdict { font-size: 15px; margin: 4px 0 10px; }
+.chart { position: relative; touch-action: pan-y; user-select: none; -webkit-user-select: none; min-height: 1px; }
+.chart svg { display: block; width: 100%; overflow: visible; }
+.chart text { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+.chart text.ink { fill: var(--ink); font-weight: 600; font-size: 12px; }
+.chart .tip { position: absolute; transform: translate(-50%, -100%); pointer-events: none; z-index: 2; min-width: 150px; max-width: 200px;
+  background: var(--card); border-radius: 10px; padding: 7px 10px; font-size: 12.5px; line-height: 1.4; box-shadow: 0 0 0 1px var(--line), 0 6px 18px rgba(0, 0, 0, .16); }
+.chart .tip.below { transform: translate(-50%, 0); }
+.chart .tip .v { font-weight: 650; font-size: 14px; }
+.chart .tip .k { display: inline-block; width: 10px; height: 2px; border-radius: 1px; vertical-align: middle; margin-right: 6px; }
+.sp-leg { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 6px; font-size: 12.5px; color: var(--muted); }
+.sp-leg .link { margin-left: auto; padding: 0; font-size: 13px; }
+.swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.swatch.line { height: 2px; vertical-align: 3px; }
+.meter i.spend { background: var(--s1); }
+button.lim { display: block; width: 100%; text-align: left; background: none; border: 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+.stack { display: flex; gap: 2px; height: 10px; margin: 2px 0 10px; }
+.stack i { display: block; height: 100%; min-width: 2px; }
+.stack i:first-child { border-radius: 4px 0 0 4px; } .stack i:last-child { border-radius: 0 4px 4px 0; } .stack i:only-child { border-radius: 4px; }
+.prow { display: flex; justify-content: space-between; gap: 10px; font-size: 14.5px; padding: 3px 0; }
+.prow .dim { font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.tv { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; font-variant-numeric: tabular-nums; }
+table.tv th, table.tv td { text-align: right; padding: 4px 6px; border-top: 1px solid var(--line); }
+table.tv th:first-child, table.tv td:first-child { text-align: left; }
+table.tv th { color: var(--muted); font-weight: 500; }

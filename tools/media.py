@@ -8,6 +8,8 @@
   media/app-session.{en,ru}.png  the session screen of the web app: your message pinned on top, the status by the field
   media/app.{en,ru}.png          three app screens in phone frames: Home ("Your move" with ready replies and the board),
                                  a project's screen, a session ending in its outcome card
+  media/app-usage.{en,ru}.png    Resources in two phone frames: the week's curve against the even pace, and the 5-hour
+                                 window that runs out before its reset (the stand's made-up week)
   media/social.png               1280×640, the link preview: GitHub takes it only in the repository's settings
                                  (Settings → General → Social preview); there is no API for it
 
@@ -37,7 +39,9 @@ def shot(url, out, width=412, wait=6, **env):
 
 def page(name, body, css):
     p = TMP / name
-    p.write_text('<!doctype html><meta charset="utf-8"><style>%s%s</style>%s' % (FRAME, css, body), encoding="utf-8")
+    # the viewport: without it a mobile window narrower than 980 px lays the page out at 980 and shrinks it (two phones)
+    p.write_text('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>%s%s</style>%s'
+                 % (FRAME, css, body), encoding="utf-8")
     return p.as_uri()
 
 
@@ -54,7 +58,7 @@ def screens(lang):
             if "PROJECTS" in urls:
                 break
             time.sleep(0.5)
-        out = {k: TMP / ("%s.%s.png" % (k, lang)) for k in ("home", "top", "project", "outcome", "session")}
+        out = {k: TMP / ("%s.%s.png" % (k, lang)) for k in ("home", "top", "project", "outcome", "session", "week", "h5")}
         # Home from the "Your move" card that waits for a choice: its ready replies, then the projects board
         mine = "const c = document.querySelector('.card.mine'); window.scrollTo(0, c.getBoundingClientRect().top + window.scrollY - 14)"
         shot(urls["HOME"], out["home"], SHOT_HEIGHT="860", SHOT_JS=mine)
@@ -65,6 +69,9 @@ def screens(lang):
         shot(urls["SESS4"], out["outcome"], SHOT_HEIGHT="860")
         # your message pinned; 412×740 is the animation's own shape, so the two stand side by side at one size
         shot(urls["SESS"], out["session"], SHOT_HEIGHT="740", SHOT_JS="window.scrollTo(0, 560)")
+        # Resources: the week (its tab), then the window that opens by itself — it runs out before its reset
+        shot(urls["USAGE"], out["week"], SHOT_HEIGHT="760", SHOT_JS="document.querySelector('.spend-seg button').click()")
+        shot(urls["USAGE"], out["h5"], SHOT_HEIGHT="760")
         return out
     finally:
         stand.terminate()
@@ -83,7 +90,7 @@ def social(chat, session, out):
     """The link preview: the name and what it does on the left, the chat and the app on the right."""
     body = """<div class="card"><div class="text"><div class="name">Pult</div>
       <div class="tag">Watch and steer every Claude Code session on your computer — from Telegram.</div>
-      <div class="chips"><span>macOS · Linux</span><span>Telegram + web app</span><span>MIT</span></div>
+      <div class="chips"><span>macOS · Linux · Windows</span><span>Telegram + web app</span><span>MIT</span></div>
       <div class="url">github.com/pulthq/pult</div></div>
       <div class="ph one"><img src="%s"></div><div class="ph two"><img src="%s"></div></div>""" % (chat.as_uri(), session.as_uri())
     css = """.card { position: relative; width: 1280px; height: 640px; overflow: hidden;
@@ -110,6 +117,7 @@ def main():
         shutil.copy(s["session"], MEDIA / ("app-session.%s.png" % lang))
         shutil.copy(s["top"], MEDIA / ("app-home.%s.png" % lang))
         phones([s["home"], s["project"], s["outcome"]], MEDIA / ("app.%s.png" % lang))
+        phones([s["week"], s["h5"]], MEDIA / ("app-usage.%s.png" % lang))
         env = dict(os.environ, STAND_LANG=lang)
         subprocess.run([PY, str(REPO / "tools" / "chat_shot.py"), str(MEDIA / ("demo.%s.gif" % lang))], check=True, env=env,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
