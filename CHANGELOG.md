@@ -2,8 +2,15 @@
 
 Versions 0.x come before the first public release. Newest first.
 
-## 0.9.31 — 2026-10-21
+## 0.10.0 — 2026-10-21
 
+- **Windows.** Pult now runs on Windows too; tested on Windows 11 (x64) with VS Code, Telegram and the Claude Code
+  extension 2.1.306. Install with `install.ps1`; a Task Scheduler task starts Pult when you log in, with no admin
+  rights; the hooks run as programs, not through a shell; the tab wrapper is `pult-tab.exe`; the hooks and
+  the wrapper open no console windows. Checked live: the task at logon, a VS Code tab through the wrapper, a message from Telegram into the tab, a
+  permission answered from Telegram (Claude Code runs commands through PowerShell when there is no Git Bash),
+  logging out and in. Not on Windows yet: the computer's load on the web app's Resources screen. The README has a
+  Windows section.
 - At start, Pult waits until Telegram answers before it sets the bot's menu, posts the panel and the version notice,
   and reads updates. Right after logging in to Windows the network may come up later (a VPN), and those calls used to
   fail one by one and were never tried again. The app, the tabs and the hooks don't wait for Telegram.

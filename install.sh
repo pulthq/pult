@@ -26,8 +26,10 @@ ru() {
 say() { if ru; then echo "$2"; else echo "$1"; fi; }
 
 if [ "$OS" != Darwin ] && [ "$OS" != Linux ]; then
-  say "Pult runs on macOS and Linux for now; Windows is in progress." \
-      "Пока Пульт работает на macOS и Linux; Windows — в работе."
+  say "Pult runs on macOS, Linux and Windows. On Windows, install it from PowerShell, in this folder:
+  powershell -ExecutionPolicy Bypass -File install.ps1" \
+      "Пульт работает на macOS, Linux и Windows. На Windows ставь его из PowerShell, в этой папке:
+  powershell -ExecutionPolicy Bypass -File install.ps1"
   exit 1
 fi
 

@@ -8,8 +8,8 @@ chat bot. Thank you for reporting them carefully.
 Please **don't open a public issue**. Report it privately through GitHub:
 [Security → Report a vulnerability](https://github.com/pulthq/pult/security/advisories/new).
 
-Include what an attacker needs and what they get: a short description, steps to reproduce, and the Pult and macOS
-versions (`pult report`, with anything private removed). We'll confirm we got it, keep you posted on the fix, and
+Include what an attacker needs and what they get: a short description, steps to reproduce, and the Pult version and your
+system (`pult report`, with anything private removed). We'll confirm we got it, keep you posted on the fix, and
 credit you in the release notes if you'd like.
 
 ## What counts
