@@ -38,6 +38,7 @@ import pult_i18n as I
 import pult_load as L
 import pult_os
 import pult_render as R
+import pult_spend as S
 import pult_stt as STT
 import pult_web as PW
 
@@ -82,11 +83,12 @@ LOAD_TTL = 4             # s to keep the snapshot of processes (~50 ms of ps): t
 USAGE_EVERY = 15 * 60    # usage check for warnings, if there was work on the Mac
 USAGE_NEAR_EVERY = 5 * 60   # …and near the threshold (from 70 %), more often
 WARN_AT = (80, 95)       # % of a limit: a warning with sound in General (decision 2026-10-16)
+SPEND_COLORS = 5         # projects with a colour of their own on the spend screen; the rest are "other"
 UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the app shrinks them to ~200 KB first)
 UPLOADS_MAX = 3                 # pictures per message
 STT_MAX = 4 * 1024 * 1024       # bytes of one recording from the app (5 min at 32 kbit/s ≈ 1.2 MB; base64 must fit the 8 MB frame)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.10.0"
+VERSION = "0.11.0"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -98,8 +100,9 @@ TG_REACH = (2, 30)       # s; at start, the first and the longest pause between 
 MENU_CHECK_EVERY = 1800  # s; the app button in the owner's chat is still ours (only the token's holder can change it)
 CONFLICT_WARN_EVERY = 6 * 3600   # s; "someone else reads this bot" at most this often
 WEB_MANIFEST = HOME / "web-manifest.json"   # what the last deploy put on the relay (written by the deploy script)
-PREFS = {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": None}   # owner prefs: milestones, location
-# (auto/mac/phone), language, a model's line for each result, Telegram as a pager (None — on where the app is set up)
+PREFS = {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": None, "pace": S.PACE_LOW}   # owner prefs:
+# milestones, location (auto/mac/phone), language, a model's line for each result, Telegram as a pager (None — on where the
+# app is set up), the % at a limit's reset that is still "on pace" (stage R)
 MODES = ("auto", "mac", "phone")
 REPO_URL = os.environ.get("PULT_REPO_URL") or "https://github.com/pulthq/pult"   # where /feedback sends bugs and ideas
 MODEL_RE = re.compile(r"[A-Za-z0-9][\w.\-\[\]]{0,63}")        # a model alias or id for a session from Telegram
@@ -500,6 +503,8 @@ CREATE TABLE IF NOT EXISTS topics(pkey TEXT PRIMARY KEY, path TEXT, name TEXT, t
 CREATE TABLE IF NOT EXISTS sessions(sid TEXT PRIMARY KEY, pkey TEXT, path TEXT, title TEXT,
     driven INTEGER DEFAULT 0, last_seen REAL);
 CREATE TABLE IF NOT EXISTS msgs(msg INTEGER PRIMARY KEY, sid TEXT, kind TEXT, ts REAL);
+CREATE TABLE IF NOT EXISTS usage_log(ts REAL, kind TEXT, pct REAL, resets REAL);
+CREATE INDEX IF NOT EXISTS usage_log_ts ON usage_log(ts);
 """
 
 
@@ -544,8 +549,17 @@ class Store:
     def msg(self, msg):
         return self.db.execute("SELECT * FROM msgs WHERE msg=?", (msg,)).fetchone()
 
+    def log_usage(self, u):
+        """Every get_usage reading, each limit: the points the spend curve passes through (stage R)."""
+        rows = [(u["ts"], x["kind"], x["percent"], x["resets_at"]) for x in u.get("limits") or [] if x.get("kind")]
+        self.db.executemany("INSERT INTO usage_log VALUES(?,?,?,?)", rows)
+
+    def usage_log(self, since):
+        return [tuple(r) for r in self.db.execute("SELECT ts, kind, pct, resets FROM usage_log WHERE ts >= ? ORDER BY ts", (since,))]
+
     def prune(self, days=60):
         self.db.execute("DELETE FROM msgs WHERE ts < ?", (time.time() - days * 86400,))
+        self.db.execute("DELETE FROM usage_log WHERE ts < ?", (time.time() - days * 86400,))
 
 
 # ---------- live session state ----------
@@ -802,7 +816,9 @@ class Pult:
         self._procs = (0.0, None)
         self.web = None                # pult_web.Web — the web app, if a relay is configured
         self.stats = PW.Stats()        # model, thinking, session tokens — for the app
-        self.day_tokens = PW.DayTokens(CLAUDE_PROJECTS, skip_pkey)   # today's tokens per project
+        self.spend = S.Spend(CLAUDE_PROJECTS, skip_pkey)   # the week's transcripts in 5-min slots: the spend curve, today by project
+        self._spend = (0.0, None)      # the last Resources view, for the Home strip
+        self._pnames = {}              # pkey → a project's name for the spend screen (decode_pkey walks the disk)
         self.activity = 0.0            # time of the last session event: without work, usage doesn't grow
         self._usage = None
         self._usage_lock = asyncio.Lock()
@@ -3033,7 +3049,8 @@ class Pult:
         for p in projects:
             del p["rows_all"]
         return {"board": projects, "mine": mine, "brief": self.prefs()["brief"], "reset": self.limit_reset(),
-                "usage_pct": self.limit_pct(), "catchup": self.catchup(), "stt": self.stt_state()["on"],
+                "usage_pct": self.limit_pct(), "usage_top": await self.spend_top(), "catchup": self.catchup(),
+                "stt": self.stt_state()["on"],
                 "pager": self.pager()}
 
     async def api_project(self, pkey):
@@ -3368,6 +3385,10 @@ class Pult:
                 async with ClaudeSDKClient(options=o) as c:
                     return await c._query._send_control_request({"subtype": "get_usage"}, timeout=30)
             self._usage = PW.simplify_usage(await asyncio.wait_for(ask(), 60))
+            try:
+                self.store.log_usage(self._usage)
+            except Exception as e:
+                log("usage log:", repr(e))
             return self._usage
 
     async def api_inbox(self, name):
@@ -3430,14 +3451,76 @@ class Pult:
 
     async def api_today(self):
         """Today's tokens per project, for the Usage screen; kept apart from get_usage, since that one may break."""
-        d = await asyncio.to_thread(self.day_tokens.get)
+        d = await asyncio.to_thread(self.spend.today)
         for r in d["projects"]:
-            path = None if self.store.topic(r["pkey"]) else await asyncio.to_thread(decode_pkey, r["pkey"])
-            r["name"] = self.project_name(r["pkey"], path) if path else self.project_label(r["pkey"])
+            r["name"] = await self.spend_name(r["pkey"])
         return d
+
+    async def spend_name(self, pkey):
+        if pkey not in self._pnames:
+            path = None if self.store.topic(pkey) else await asyncio.to_thread(decode_pkey, pkey)
+            self._pnames[pkey] = self.project_name(pkey, path) if path else self.project_label(pkey)
+        return self._pnames[pkey]
+
+    async def spend_view(self, u):
+        """The Resources screen (stage R) from a usage reading: the curve, pace and forecast of the 5-hour window
+        and the week, who spent them. Named projects and their colours: a project keeps its colour (one of COLORS
+        slots), the five biggest of a view get one — a slot goes to a project not seen for longest."""
+        known = self.store.get("spend_known") or {}
+        log_ = self.store.usage_log(time.time() - 8 * 86400)
+        v = await asyncio.to_thread(self.spend.view, u, log_, None, self.prefs()["pace"], known)
+        self.store.put("spend_known", v.pop("known"))
+        colors = self.store.get("spend_colors") or {}        # pkey → [slot, last time it was among the five]
+        now = time.time()
+        for lim in v["limits"]:
+            top = [p for p, _, _ in lim["projects"][:SPEND_COLORS]]
+            for pkey in top:
+                if pkey in colors:
+                    colors[pkey][1] = now
+            for pkey in top:
+                if pkey not in colors:
+                    taken = {c[0]: k for k, c in colors.items()}
+                    free = [i for i in range(SPEND_COLORS) if i not in taken]
+                    if not free:          # the slot of the project longest out of the five, not one shown now
+                        old = min((k for k in colors if k not in top), key=lambda k: colors[k][1], default=None)
+                        if old is None:
+                            continue
+                        free = [colors.pop(old)[0]]
+                    colors[pkey] = [free[0], now]
+            lim["projects"] = [{"name": await self.spend_name(p), "pct": round(c, 2), "sh": sh,
+                                "color": colors[p][0] if p in colors and p in top else None} for p, c, sh in lim["projects"]]
+        self.store.put("spend_colors", colors)
+        v["others"] = [{"name": x["name"], "percent": x["percent"], "resets_at": x["resets_at"]}
+                       for x in u["limits"] if x["kind"] not in S.WINDOWS]
+        v["shares"] = u.get("shares") or []
+        factor = v.pop("factor")
+        v.pop("per_sh_w")
+        v.update(plan=u.get("plan"), ts=u.get("ts"), extra=u.get("extra"), fable_x=round(factor.get("fable") or 0, 1))
+        self._spend = (time.time(), v)
+        return v
+
+    async def api_spend(self, force=False):
+        """Resources (stage R): get_usage (kept a minute, `force` — anew) and the transcripts."""
+        return await self.spend_view(await self.usage(bool(force)))
+
+    async def spend_top(self):
+        """The limit the Home strip shows — the one that runs out first, else the fuller one: from the last usage
+        reading, no new request; the view is kept a minute."""
+        at, v = self._spend
+        if self._usage and (v is None or time.time() - at > 60):
+            try:
+                v = await self.spend_view(self._usage)
+            except Exception as e:
+                log("spend:", repr(e))
+        lim = next((x for x in (v or {}).get("limits") or [] if x["key"] == v.get("top")), None)
+        return {"key": lim["key"], "pct": lim["used"], "state": lim["state"]} if lim else None
 
     async def usage_watch(self):
         """Limit warnings: at 80 % and 95 %, a message with sound in General, once per window."""
+        try:
+            await asyncio.to_thread(self.spend.update)      # the first pass over the week's transcripts, ~2 s, not in a request
+        except Exception as e:
+            log("spend:", repr(e))
         last = 0.0
         while True:
             await asyncio.sleep(60)
@@ -3494,7 +3577,8 @@ class Pult:
     async def api_prefs(self, **kw):
         cur = self.prefs()
         for k, v in kw.items():
-            if k in ("vehi", "brief", "pager") and isinstance(v, bool) or k == "mode" and v in MODES or k == "lang" and v in I.LANGS:
+            if k in ("vehi", "brief", "pager") and isinstance(v, bool) or k == "mode" and v in MODES or k == "lang" and v in I.LANGS \
+                    or k == "pace" and v in S.PACES:
                 cur[k] = v
         self.store.put("prefs", cur)
         if "mode" in kw:

@@ -11,91 +11,83 @@
   &nbsp;
   <img src="media/app-home.en.png" width="330" alt="Home in the web app: what runs right now, each with how long it has run, then what waits for you — a permission request to answer right there">
 </p>
-<p align="center"><sub>Left: a project's topic in Telegram. Right: Home in the web app — what runs right now, then what waits for you. Made-up projects, drawn from Pult's own output on the test stand.</sub></p>
+<p align="center"><sub>Left: a project's topic in Telegram. Right: Home in the web app. Made-up projects, drawn from Pult's own output on the test stand.</sub></p>
 
-You give Claude Code a task in VS Code or a terminal and walk away. Claude keeps going, then stops to ask a
-question or wait for a permission, and the work stalls until you're back. Pult puts every Claude Code session on
-your computer into a Telegram group, one topic per project. Your phone shows what Claude is doing, buzzes when
-Claude needs you, and lets you answer, continue the session or start a new one. Pult runs on your computer and
-opens no port to the network.
+You give Claude Code a task and walk away. Claude stops to ask a question or wait for a permission, and the work
+stalls until you're back. **Pult** puts every Claude Code session on your computer into a Telegram group, one
+topic per project: your phone shows what Claude is doing, buzzes only when Claude needs you, and lets you answer,
+continue or start a session — and what you do from the phone shows up in the open VS Code tab. It runs on your
+computer and opens no port to the network.
 
 ```
 git clone https://github.com/pulthq/pult.git && cd pult && ./install.sh
 ```
 
-The installer walks you through your own Telegram bot and group in about ten minutes. macOS, Linux and Windows
-(there the installer is `install.ps1`: see [Install](#install-about-10-minutes)). *Pult* is Russian for a remote control.
-
-## An hour with Pult
-
-1. **You start a task** in a VS Code tab and leave for lunch. Nothing to start or register: Pult already sees
-   every session on the computer.
-2. **The project's topic shows the turn live.** One message that keeps updating — `⏳ Checkout: clearer error
-   messages · working 6 min` — and under it what Claude is doing right now, in Claude's own words.
-3. **Claude needs to run a command.** Your phone buzzes: `✋ Claude asks for permission`, the command in full,
-   and **Allow** / **Deny** buttons. The dialog in VS Code stays open too; whoever answers first decides.
-4. **The result arrives:** `✅ Checkout: clearer error messages · done in 12 min` and Claude's summary.
-5. **You write back from the phone.** "Now the tests" goes to the same session and shows up in the open VS Code
-   tab as if you had typed it there. `/new …` starts another session in the same project.
-6. **Back at the computer,** everything you did from the phone is in the tab, and the topic keeps the history.
+About ten minutes with your own Telegram bot; on Windows the installer is `install.ps1`. *Pult* is Russian for a
+remote control.
 
 ## What you get
 
-- **Every session, automatically.** VS Code tabs and terminal sessions appear in their project's topic through
-  Claude Code hooks, including the ones you opened before leaving.
-- **Only what a person needs to read.** The turn in one live message, the result, Claude's questions and
-  permission requests with buttons. No session ids, file paths or tool names in the chat.
-- **Write back.** A reply continues that session; plain text in a topic goes to the topic's current session;
-  `/new` starts a new one. Photos and files reach Claude too, from the chat or the app's paperclip: they're saved
-  on the computer, and Claude gets the path.
-- **Speak instead of typing.** A voice message in a topic is recognized and goes on as typed text would; in the
-  app, the microphone next to the paperclip puts the words into the message field. Recognition is done by Groq
-  (Whisper) with your free key, set in the app's Settings → Voice input or with `pult stt`; the recordings are kept
-  nowhere. Without a key, nothing changes.
-- **Straight into an open VS Code tab** (optional). Your message appears in the tab as if typed there, and the
-  turn runs in it. If Claude is busy in that tab, it gets your message in the middle of its turn: the tab doesn't
-  show it as a separate message, and the answer comes with that turn's result, as a reply to your message.
-- **The model and the effort, from the phone.** Pick Fable, Opus, Sonnet or Haiku and how hard Claude thinks, for one
-  session: a running one switches at once, an open VS Code tab too, without touching Claude Code's settings.
-- **Notifications that know where you are.** 🔄 Auto plays a sound only when you've been away from the computer
-  for 2+ minutes. 💻 At my computer is silent; 📱 On my phone always sounds. One tap in the pinned panel, or
-  `/desk`, `/phone`, `/auto`.
-- **Reminders and warnings.** A reminder when a turn runs for 10, 30 or 60 minutes; a warning when your plan's
-  usage reaches 80 % and 95 %.
-- **Any long command, not only Claude.** `pult run -- npm run build` reports the start, progress, the exit code
-  and the last lines of output.
-- **Two languages.** The bot and the app speak English and Russian; the language follows your Telegram.
+| | |
+|---|---|
+| **Every session, nothing to start** | VS Code tabs and terminal sessions appear in their project's topic through Claude Code's hooks, including the ones you opened before leaving. |
+| **Answer from anywhere** | Permission requests and Claude's questions come with buttons. The dialog on the computer stays open too: whichever answer comes first decides. |
+| **Write back, even into an open tab** | A reply continues that session, `/new` starts one. With the optional tab wrapper, your message appears in the VS Code tab as if typed there. Photos and files reach Claude too; voice messages turn into text with a free Groq key. |
+| **Pick the model and effort** | Fable, Opus, Sonnet or Haiku and how hard Claude thinks, for one session — a running one switches at once. |
+| **See your plan's pace** | Each limit, the week and the 5-hour window, as a curve against the even pace, with a forecast: on pace, under (how many hours of a session's work would go unused) or over (when it runs out). Under it, how many sessions worked at once. |
+| **Called only when it matters** | With the web app, Telegram becomes a pager: it rings when Claude waits for you and you're neither in the app nor at the computer. Reminders on long turns, warnings at 80 % and 95 % of a limit. |
+| **Your own long commands** | `pult run -- npm run build` reports the start, the progress and the exit code the same way. |
 
 ## The web app (optional)
 
-A Telegram Mini App on your own server, one tap away from any topic. It is the comfortable way to work from the
+A Telegram Mini App on a small server of yours, one tap from any topic — the comfortable way to work from the
 phone:
 
-- **Home** is built around whose move it is. On top, **Running now**: every session at work or waiting on its
-  background tasks and every task without Claude still running, each with how long it has run — a turn counts from
-  your own message. Then **Your move**: permission requests and Claude's questions to answer right there, and
-  sessions that ended and need you, the longest waiting first — with **ready replies** taken from Claude's own
-  message (one tap, three seconds to undo) and a field for your own words; what waits for your decision stays until
-  you answer or press Got it. Below, **Projects**: who works and who waits, today's turns, a line per recent session. Optionally a small model (haiku, on
-  your subscription) writes those lines in plain words and picks the replies. Back after a break, **While you were
-  away** sums up what ran. Every mark leads to its cause: a project's red dot opens its board with what waits on
-  top; a session opens at its outcome.
-- **Telegram becomes a pager** once the app is set up: it calls you only when Claude waits for you and you are
-  neither in the app nor at the computer (or for your own messages in a topic), with the ready replies as buttons.
-  Seen anywhere, the call folds. A turn stopped by the usage limit offers to continue right after the reset.
-- **A session** shows the whole conversation, live. When you scroll up, your own message stays pinned on top, and
-  earlier history loads by itself. Under the message field: the model with its effort as five dots (a tap opens
-  the menu), where your message will go, and the context gauge as in VS Code. The paperclip sends a screenshot
-  to Claude; the microphone turns your voice into words in the field.
-- **Resources** shows your plan's limits, today's tokens by project, the computer's load and Pult's own state. A form
-  starts a new task in any project.
+- **Home** is built around whose move it is: what runs right now, then what waits for you — permission requests to
+  answer right there, sessions that ended and need you, with ready replies taken from Claude's own message.
+- **A session** shows the whole conversation, live, with the model, the effort and the context gauge under the
+  message field.
+- **Resources** shows how you spend your plan: the curve of each limit, the forecast, who spent it, and the
+  computer's load.
 
 <p align="center">
-  <img src="media/app.en.png" width="860" alt="Three screens of the web app: Home with a session that waits for a choice and its ready replies, then the projects board; a project's screen with what waits, what runs and today's outcomes; a session ending in its outcome card with ready replies">
+  <img src="media/app.en.png" width="860" alt="Three screens of the web app: Home with a session that waits for a choice and its ready replies, then the projects board; a project's screen; a session ending in its outcome card">
+</p>
+<p align="center">
+  <img src="media/app-usage.en.png" width="620" alt="Resources in the web app: the week's curve against the even pace with a forecast, sessions at work under it; the 5-hour window that will run out before its reset">
 </p>
 
-It needs a Linux server with a domain name and HTTPS: see [deploy/relay/README.md](deploy/relay/README.md).
-Without it, everything above works in the chat alone.
+It needs a Linux server with a domain and HTTPS: [deploy/relay/README.md](deploy/relay/README.md). Without it,
+everything else works in the chat alone.
+
+## How it works
+
+```mermaid
+flowchart LR
+  subgraph PC["Your computer"]
+    direction TB
+    CC["Claude Code<br/>VS Code tabs, terminals"] -->|hooks| D(["pultd<br/>the daemon"])
+    D -->|"Agent SDK"| NEW["sessions<br/>from the phone"]
+    D <-->|"tab wrapper"| CC
+  end
+  D -->|"long polling, outbound"| TG["Telegram<br/>group + Mini App"]
+  D -->|"WebSocket, outbound"| R["relay on your server<br/>(optional, stores nothing)"]
+  TG --> R
+```
+
+- **Hooks** pass every session's events to the daemon. If the daemon isn't running, the hook exits quietly and
+  Claude Code behaves as if Pult weren't there.
+- **Permission requests** race the dialog on the computer: Claude Code takes the first answer and ignores a later
+  one, so nothing gets stuck.
+- **Sessions from the phone** are your own Claude Code through the Agent SDK: the project's folder, your settings,
+  Claude Code's own system prompt.
+- **Writing into an open tab** goes through an optional process wrapper that passes everything through byte for
+  byte. It works only on Claude Code versions it was checked on; on a new version it turns itself off and tells
+  you.
+- **The usage curve** passes through Claude Code's own readings of your limits; its shape between them comes from
+  the tokens in your transcripts.
+
+The details, with diagrams of each path: **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
 ## How it differs from the official options
 
@@ -108,26 +100,20 @@ Anthropic has its own ways to reach Claude Code away from the keyboard. If they 
 | Your sign-in | whatever Claude Code is signed in with | a claude.ai plan; API keys aren't supported | claude.ai or a Console API key |
 | Status | independent, open source | official | official, research preview |
 
-What Pult adds on top of reaching a session:
-
-- **One Telegram group with a topic per project**, keeping the history of turns, results and decisions.
-- **Notifications that know where you are**, reminders on long turns, and warnings at 80 % and 95 % of your plan.
-- **Long commands of your own** reported the same way: `pult run -- npm run build`.
-- **Nothing to start per session**, and no Claude app needed: it isn't available in every country.
+On top of reaching a session, Pult keeps one group with a topic per project and its history, knows where you are
+before it rings, shows your plan's pace, and needs no Claude app, which isn't available in every country.
 
 ## Requirements
 
-- macOS, Linux or Windows. Tested on macOS 26 (Apple Silicon), Ubuntu 24.04 (arm64) and Windows 11 (x64).
-- Claude Code, signed in: the VS Code extension, the CLI, or both. Tested with the extension 2.1.301 (on Windows,
+- macOS, Linux or Windows; tested on macOS 26 (Apple Silicon), Ubuntu 24.04 (arm64) and Windows 11 (x64).
+- Claude Code, signed in: the VS Code extension, the CLI or both. Tested with the extension 2.1.301 (on Windows,
   2.1.306) and the Agent SDK 0.2.167.
-- Python 3.10 or newer. On a Mac with Homebrew: `brew install python@3.12`. On Debian or Ubuntu:
-  `sudo apt update && sudo apt install python3 python3-venv`. On Windows: from
-  [python.org](https://www.python.org/downloads/windows/) or `winget install Python.Python.3.12`, not the Microsoft
-  Store one.
-- Telegram, and a bot of your own (created in @BotFather; the setup walks you through it).
-- Optional, for the web app: a Linux server with a domain name and HTTPS.
+- Python 3.10+: `brew install python@3.12`, `sudo apt install python3 python3-venv`, or on Windows
+  [python.org](https://www.python.org/downloads/windows/) / `winget install Python.Python.3.12` (not the Microsoft
+  Store one).
+- Telegram and a bot of your own, created in @BotFather; the setup walks you through it.
 
-## Install (about 10 minutes)
+## Install
 
 ```
 git clone https://github.com/pulthq/pult.git
@@ -135,46 +121,28 @@ cd pult
 ./install.sh
 ```
 
-The installer creates its own Python environment in `~/.local/share/pult`, puts the `pult` command into
-`~/.local/bin` and adds a background service (launchd on macOS, a systemd user service on Linux). On Windows, see
-below. Then the setup wizard takes four steps:
+The installer makes its own Python environment in `~/.local/share/pult`, puts the `pult` command into
+`~/.local/bin` and adds a background service (launchd on macOS, a systemd user service on Linux). Then a wizard:
 
-1. **Bot.** In Telegram, open @BotFather → `/newbot`, and paste the token it gives you.
-2. **You.** Open the link the wizard shows, on your phone, and tap **Start**. Pult learns your Telegram ID and
-   language.
-3. **Group.** Create a group and turn on **Topics**. Add the bot as an admin with **Manage Topics** and **Pin
-   Messages**, then send `/bind@your_bot` in the group. The wizard checks all of this and tells you what's
-   missing.
-4. **Hooks.** Pult adds its hooks to `~/.claude/settings.json`. Your other settings stay as they are, and a
-   backup copy is made first.
+1. **Bot.** In @BotFather: `/newbot`, paste the token.
+2. **You.** Open the link it shows on your phone and tap **Start**: Pult learns your ID and language.
+3. **Group.** Create a group with **Topics** on, add the bot as an admin with **Manage Topics** and **Pin
+   Messages**, send `/bind@your_bot` there. The wizard checks it and says what's missing.
+4. **Hooks.** Pult adds its hooks to `~/.claude/settings.json`, keeping your other settings and a backup.
 
-Then, in VS Code: Cmd+Shift+P (Ctrl+Shift+P on Linux and Windows) → **Developer: Reload Window**, so that open tabs pick up
-the hooks. Run `pult setup` again any time to change the bot, the owner or the group.
-
-Optional:
-
-- `pult tab setup` writes Telegram messages straight into open VS Code tabs. It prints one line to add to the VS
-  Code settings.
-- `pult app` sets up the web app. It needs your own server: see [deploy/relay/README.md](deploy/relay/README.md).
+Then **Developer: Reload Window** in VS Code, so open tabs pick up the hooks. Optional: `pult tab setup` (writing
+into open tabs: one line for the VS Code settings), `pult app` (the web app), `pult stt` (voice, a free Groq key).
 
 <details>
 <summary><b>On Linux</b></summary>
 
-Pult goes where Claude Code runs:
-
-- **A Linux desktop with VS Code or a terminal**: the same as on a Mac.
-- **A server you open in VS Code through Remote-SSH**: Claude Code runs on the server, so install Pult there. The
-  line from `pult tab setup` goes into the server's settings: in a window connected to it, Ctrl+Shift+P →
-  **Preferences: Open Remote Settings (JSON)**.
-- **Claude Code in a terminal on a server, over SSH**: sessions, permissions and questions come to Telegram the
-  same way.
-
-On a server, a user's services stop when they log out. To keep Pult running, and start it at boot:
-`sudo loginctl enable-linger $USER` (the installer reminds you).
-
-Whether you're away from the computer (the sound in 🔄 Auto) comes from GNOME, KDE or X11. Elsewhere (a server,
-another desktop) it comes from what you do in sessions: a prompt typed or a permission answered in the last two
-minutes.
+- **A desktop with VS Code or a terminal:** the same as on a Mac.
+- **A server opened in VS Code through Remote-SSH:** Claude Code runs on the server, so install Pult there; the line
+  from `pult tab setup` goes into the server's settings (**Preferences: Open Remote Settings (JSON)**).
+- **Claude Code in a terminal over SSH:** sessions, permissions and questions come to Telegram the same way.
+- A user's services stop when they log out: `sudo loginctl enable-linger $USER` keeps Pult running and starts it at
+  boot (the installer reminds you).
+- "Away from the computer" comes from GNOME, KDE or X11; elsewhere, from what you do in sessions.
 
 </details>
 
@@ -188,96 +156,48 @@ in its folder:
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-- **Python** is found with the `py` launcher. The Microsoft Store one won't do: it runs sandboxed.
-- **The service** is a Task Scheduler task, "Pult", that starts Pult when you log in to Windows; no admin rights
-  needed. Pult runs while you're logged in.
-- **The `pult` command** goes to `~\.local\bin`, which the installer adds to your PATH: open a new terminal after
-  installing.
-- **No console windows:** the hooks and the tab wrapper run without one.
-- **Writing into tabs:** the line `pult tab setup` prints has each backslash of the path doubled, as JSON wants. If
-  VS Code says "Claude Code native binary not found at C:sers…", the line lost its backslashes: `pult status` shows
-  the right one.
-- **Commands without Git Bash:** Claude Code runs them through PowerShell, and its permission requests come to
-  Telegram the same way.
-- **Away from the computer** (the sound in 🔄 Auto): Windows tells Pult how long the keyboard and mouse have been
-  idle and whether the screen is locked.
-- **Behind a VPN:** right after you log in, Telegram may be out of reach for a while. Pult waits for it, then sets up
-  the bot's menu.
-- **Not on Windows yet:** the computer's load on the web app's Resources screen.
-- The log is `~\.local\state\pult\pult.log`; the settings, as elsewhere, `~\.config\pult\env`.
+- **Python** is found with the `py` launcher; the Microsoft Store one runs sandboxed and won't do.
+- **The service** is a Task Scheduler task, "Pult", that starts at logon, with no admin rights.
+- **The `pult` command** goes to `~\.local\bin`, added to your PATH: open a new terminal after installing.
+- **No console windows:** the hooks and the tab wrapper (`pult-tab.exe`) run without one.
+- **The wrapper line** that `pult tab setup` prints doubles each backslash, as JSON wants. If VS Code says "Claude
+  Code native binary not found at C:sers…", the line lost its backslashes: `pult status` shows the right one.
+- **Without Git Bash** Claude Code runs commands through PowerShell; their permission requests come the same way.
+- **Behind a VPN** Telegram may be out of reach right after logon; Pult waits for it.
+- **Not on Windows yet:** the computer's load on Resources. The log: `~\.local\state\pult\pult.log`.
 
 </details>
 
 ## Using it
 
-Work on the computer as usual. In Telegram:
-
-| | |
+| In Telegram | |
 |---|---|
 | a project's topic | its sessions' turns, results, questions and permission requests |
 | reply to a session's message | continue that session |
-| text in a project's topic | the topic's current session (🎯 in the pinned card); none — the only open one, else Pult asks once |
-| `/new text`, or `/new` and then the text | a new session in this topic's project |
-| `/desk` `/phone` `/auto` `/mode` | notification mode |
-| `/status` | what's open on the computer right now |
-| `/projects`, `/sessions` | projects with their topics; recent sessions of this project |
-| `/stop` | interrupt the topic's current session started from Telegram; as a reply — that session |
-| `/app`, 📱 Pult in a topic's pinned bar | open the web app (from a topic — on that project) |
-| `/help` | everything above, in sections |
+| text in a topic | the topic's current session (🎯 in the pinned card); none — the only open one, else Pult asks once |
+| `/new text`, or `/new` then the text | a new session in this project |
+| `/desk` `/phone` `/auto` `/mode` | where you are: silent at the computer, always sound, or sound after 2 minutes away |
+| `/status`, `/projects`, `/sessions` | what's open now; projects; recent sessions of this project |
+| `/stop` | interrupt the topic's current session started from Telegram |
+| `/app`, 📱 Pult in a topic's pinned bar | open the web app |
 
-In a terminal, `pult help` lists the commands: `status`, `setup`, `start|stop|restart`, `hooks on|off`,
-`tab …`, `app`, `stt`, `run`, `report`, `uninstall`.
-
-## How it works
-
-```
-VS Code tabs, terminal ──hooks──► pult_hook.py ──unix socket──► pultd (your computer) ──────► Telegram Bot API
-                                                                   │
-Telegram on your phone ────────────────────────────────────────►  ├──Agent SDK──► Claude Code (sessions from Telegram)
-                                                                   ├──► the tab wrapper ──► an open VS Code tab
-web app (optional): Mini App ──► relay on your server ◄── pultd connects out, no open ports on the computer
-```
-
-- **Hooks** (`SessionStart`, `UserPromptSubmit`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure`,
-  `SessionEnd`, `PermissionRequest`) pass each event to the daemon: over a unix socket, or on Windows over 127.0.0.1
-  with a key in a file only you can read. The hook never gets in the way. If the daemon isn't running
-  or anything goes wrong, it exits quietly and Claude Code behaves as if it weren't there.
-- **Permission requests.** The hook waits for your answer from Telegram while the dialog on the computer stays
-  open. Claude Code takes whichever answer comes first and ignores a later one.
-- **Sessions from Telegram** run through the Claude Agent SDK. That is your Claude Code, in the project's
-  folder, with your settings and Claude Code's own system prompt. By default they use Claude Code's `auto`
-  permission mode (`PULT_PERMISSION_MODE`). Anything Claude Code asks about comes to Telegram as buttons.
-- **Writing into an open tab** uses an optional wrapper (`claudeCode.claudeProcessWrapper`) between VS Code and
-  Claude Code. It passes everything through byte for byte and adds your message to the tab's input. It acts only
-  on Claude Code versions it was checked on, and runs Claude Code directly in any other case.
-- **Honest caveat.** Some of this relies on Claude Code internals: hook payloads, and the tab's message stream.
-  When the Claude Code extension updates, Pult turns writing into tabs off until the new version is checked, and
-  tells you so. Until then, messages to open tabs go to a copy of the session.
+In a terminal, `pult help`: `status`, `setup`, `start|stop|restart`, `busy`, `hooks on|off`, `tab …`, `app`, `stt`,
+`run`, `report`, `uninstall`.
 
 ## Security and privacy
 
-- **Who can control your computer.** Only the Telegram account(s) in `PULT_ALLOWED_USER_IDS` (you), and only in the
-  bound group. Anyone who gets into your Telegram account can run Claude Code on your computer with your
-  user's rights, so turn on Telegram's two-step verification.
-- **The bot token is a key.** It lives in `~/.config/pult/env` (mode 600). If it leaks, `/revoke` it in
-  @BotFather and run `pult setup`.
-- **What goes to Telegram:** your prompts, Claude's replies (shortened in the chat), step names, permission
-  requests (commands, file names) and questions. Telegram stores it in its cloud like any chat. Bot chats are not
-  end-to-end encrypted.
-- **The web app relay** stores nothing. It cuts off strangers by Telegram's signature and your ID. The computer
-  checks every login again with the bot token, which never leaves it: a new login needs an initData Telegram made
-  minutes ago, a reconnect needs the one-time key the computer gave that window. The app's page runs scripts only
-  from your server and Telegram (Content-Security-Policy). The data passes through your server over TLS.
-- **Alerts.** Pult tells you, with sound, about an app login from a network it hasn't seen, and about signs that
-  someone else holds the bot token (another reader of the bot, a webhook, a changed app button). Settings → Logins
-  in the app shows recent logins and logs every window out.
-- **Links show where they lead:** when a link's words don't show its address, the domain follows in brackets —
-  Claude may write a link a web page talked it into, and it comes from your own bot.
-- **No telemetry.** Logs stay on the computer: `~/Library/Logs` on macOS, `~/.local/state/pult` on Linux and
-  Windows.
-  `pult report` prints versions and state with tokens, IDs, folder names and message text removed, for a bug
-  report.
-- **Vulnerabilities:** report them privately, see [SECURITY.md](SECURITY.md).
+- **Who can control your computer:** only your Telegram account (`PULT_ALLOWED_USER_IDS`), only in the bound group.
+  Anyone inside your Telegram account could run Claude Code with your user's rights: turn on two-step verification.
+- **The bot token is a key.** It lives in `~/.config/pult/env` (mode 600). If it leaks, `/revoke` it in @BotFather
+  and run `pult setup`.
+- **What goes to Telegram:** your prompts, Claude's replies (shortened), step names, commands and file names in
+  permission requests, questions. Telegram keeps it like any chat; bot chats aren't end-to-end encrypted.
+- **The relay** stores nothing and stops strangers by Telegram's signature and your ID; the computer checks every
+  login again with the bot token, which never leaves it. The page runs scripts only from your server and Telegram.
+- **Alerts** with sound on an app login from a new network and on signs that someone else holds the bot token;
+  Settings → Logins in the app logs every window out. A link whose words hide its address shows its domain.
+- **No telemetry.** Logs stay on the computer. `pult report` prints the state with tokens, IDs, folder names and
+  message text removed, for a bug report. Vulnerabilities: [SECURITY.md](SECURITY.md).
 
 ## Claude Code, your plan and Anthropic
 
@@ -294,13 +214,13 @@ are trademarks of Anthropic.
 
 ## Turn it off, remove it
 
-- `pult hooks off`, then Reload Window: Pult stops seeing sessions.
-- `pult stop`: the service stops. `pult start` starts it again. While sessions started from Telegram or the app are
-  at work (a turn, a background task or subagent), stopping or restarting cuts them off: in a terminal Pult asks
-  first, without one it refuses. `pult busy` shows what is running; `PULT_FORCE=1` stops anyway.
-- `pult tab off`: new VS Code tabs start without the wrapper.
-- `pult uninstall`: removes the service, the hooks, the `pult` command and Pult's files, and asks whether to also
-  delete your settings with the bot token. The bot and the group stay in Telegram.
+- `pult hooks off`, then Reload Window: Pult stops seeing sessions. `pult tab off`: new tabs start without the
+  wrapper.
+- `pult stop` / `pult start`. While sessions started from the phone are at work, stopping or restarting would cut
+  them off: in a terminal Pult asks first, without one it refuses (`pult busy` shows what runs; `PULT_FORCE=1` stops
+  anyway).
+- `pult uninstall` removes the service, the hooks, the command and Pult's files, and asks about your settings with
+  the bot token. The bot and the group stay in Telegram.
 
 Claude Code works exactly as before without Pult.
 
@@ -311,26 +231,24 @@ Claude Code works exactly as before without Pult.
 
 | | |
 |---|---|
-| The bot is silent | `pult status` shows the service and the connection to Telegram. `pult restart`. The log is `~/Library/Logs/pult.log` on macOS, `~/.local/state/pult/pult.log` on Linux and Windows. |
+| The bot is silent | `pult status` shows the service and the connection to Telegram; `pult restart`. The log: `~/Library/Logs/pult.log` (macOS), `~/.local/state/pult/pult.log` (Linux, Windows). |
 | Linux: Pult stops when you log out | `sudo loginctl enable-linger $USER`. |
-| VS Code: "Claude Code native binary not found at …" | The wrapper line in the VS Code settings is broken or names a missing file. `pult status` says which settings file and prints the right line; then Reload Window. |
+| VS Code: "Claude Code native binary not found at …" | The wrapper line in the VS Code settings is broken or names a missing file: `pult status` prints the right one; then Reload Window. |
 | No sessions from VS Code | The hooks are off: `pult hooks on`, then Reload Window. |
-| `409` in the log | Another program is reading this bot's updates, such as a second copy of Pult. |
+| `409` in the log | Another program reads this bot's updates, such as a second copy of Pult. |
 | No permission buttons, but the feed works | Claude Code's `auto` mode decides by itself. That's normal. |
-| A message to an open tab went to a copy | The tab was opened before the wrapper was set up (Reload Window), or the Claude Code extension just updated (Pult said so in General). |
+| A message to an open tab went to a copy | The tab was opened before the wrapper (Reload Window), or the extension just updated (Pult said so in General). |
 | Something else | `pult report`, then [open an issue](https://github.com/pulthq/pult/issues/new/choose). |
 
 </details>
 
-**Several people?** No. One Pult has one owner.
-
-**Extra cost?** No. Pult uses only what the sessions themselves use. The usage screen asks Claude Code for your
-limits without a model request.
+**Several people?** No: one Pult has one owner. **Extra cost?** No: Pult uses only what the sessions use; reading
+your limits makes no model request.
 
 ## Contributing
 
-Bug reports, ideas and pull requests are welcome: [CONTRIBUTING.md](CONTRIBUTING.md). The history of changes is in
-[CHANGELOG.md](CHANGELOG.md).
+Bug reports, ideas and pull requests are welcome: [CONTRIBUTING.md](CONTRIBUTING.md); how it's built:
+[ARCHITECTURE.md](ARCHITECTURE.md); the history: [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

@@ -37,6 +37,8 @@ screenshots of it. The README pictures come from there.
 
 ## Where things are
 
+How the parts fit together, with diagrams of each path: [ARCHITECTURE.md](ARCHITECTURE.md).
+
 | | |
 |---|---|
 | `src/pultd.py` | the daemon: topics, the turn feed, buttons, the Telegram queue, sessions through the Agent SDK |
@@ -45,7 +47,9 @@ screenshots of it. The README pictures come from there.
 | `src/pult_render.py`, `src/pult_i18n.py` | message rendering; every user-facing string in English and Russian |
 | `src/pult_web.py`, `relay/` | the web app: the daemon's side, the relay, the Mini App (Preact + htm, no build step) |
 | `src/pultctl.py`, `src/pult_setup.py` | the `pult` command: install, setup, service, report, uninstall |
-| `src/pult_os.py` | what differs between systems: paths, the service (launchd, systemd), idle, the system language |
+| `src/pult_spend.py` | usage pace on Resources: a week of transcripts in 5-minute slots, the curve through Claude Code's readings, the forecast |
+| `src/pult_attn.py`, `src/pult_brief.py`, `src/pult_load.py`, `src/pult_stt.py` | whose move it is; the optional one-line summary; the computer's load; voice to text |
+| `src/pult_os.py` | what differs between systems: paths, the service (launchd, systemd, a logon task), idle, the system language |
 | `deploy/relay/` | running the relay on a Linux server |
 
 ## Rules that keep Pult safe to run

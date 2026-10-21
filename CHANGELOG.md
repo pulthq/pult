@@ -2,6 +2,28 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.11.0 — 2026-10-22
+
+- **Usage pace on Resources.** Each limit — the week and the 5-hour window — now has a curve from its start to its
+  reset: what you have used, against the even pace (nothing at the start, the whole limit at the reset), and a
+  forecast at your current pace. One line says how it ends: on pace, under (how much will go unused, in hours of one
+  session's work, and for the window how many sessions you could add before it resets), or over (when the limit runs
+  out and how much slower you'd have to go). Under the curve, on the same time axis: how many sessions and agents
+  worked at once. Touch the chart for that hour's spend, sessions and projects; "as a table" gives the same in rows.
+  "What spent the week" splits the limit by project; a project keeps its colour.
+- The percentages come from Claude Code as before; the curve between two readings comes from the tokens in this
+  computer's transcripts (a reply weighs its tokens at the API's price ratios, Fable's factor is fitted to its own
+  weekly share), so it passes through every reading. Every reading is now kept in the state database for 60 days.
+- The Home strip shows the limit that runs out first (or the fuller one), with ● ▼ ▲ for its forecast, and is red
+  only when the limit will run out before its reset. Before, it always showed the 5-hour window.
+- Settings: what counts as on pace — 85, 90 (default) or 95 % at the reset.
+- "Today by project" is counted from the same pass over the transcripts; reading a week of transcripts takes about
+  two seconds at start, after that only what was appended.
+- **Docs.** The README is shorter, with a diagram of how it works; the new [ARCHITECTURE.md](ARCHITECTURE.md) (and
+  ARCHITECTURE.ru.md) has a diagram for each path — the big picture, a permission answered from the phone, a message
+  into an open tab, the web app's login, the usage curve — plus the rules that keep Claude Code safe, a code map and
+  where things live. New pictures: Resources with the week and the 5-hour window.
+
 ## 0.10.0 — 2026-10-21
 
 - **Windows.** Pult now runs on Windows too; tested on Windows 11 (x64) with VS Code, Telegram and the Claude Code

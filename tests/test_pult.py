@@ -40,6 +40,7 @@ I.set_lang("ru")          # the original checks are in Russian; English ones —
 CHAT, OWNER, SID = -100123, 42, "11111111-2222-3333-4444-555555555555"
 PKEY = "-Users-x-proj"
 TP = str(TMP / "projects" / PKEY / (SID + ".jsonl"))
+pultd.CLAUDE_PROJECTS = TMP / "projects"     # the spend reader (stage R) and the rest: never the Mac's own transcripts
 
 
 class FakeTg:
@@ -1182,12 +1183,12 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             pultd.TICK = old
 
     async def test_prefs(self):
-        self.assertEqual(self.p.prefs(), {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": None})
+        self.assertEqual(self.p.prefs(), {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": None, "pace": 90})
         self.p.env["PULT_FORCE_AWAY"] = "0"                                           # you are at the Mac
         self.assertFalse(await self.p.loud())
         self.assertTrue(await self.p.loud(driven=True))                     # auto: a session from Telegram — with sound
-        res = await self.p.api_prefs(mode="phone", vehi="да", lang="xx", brief="да", evil=True)  # garbage is rejected
-        self.assertEqual(res, {"vehi": True, "mode": "phone", "lang": None, "brief": False, "pager": None})
+        res = await self.p.api_prefs(mode="phone", vehi="да", lang="xx", brief="да", evil=True, pace="90")  # garbage is rejected
+        self.assertEqual(res, {"vehi": True, "mode": "phone", "lang": None, "brief": False, "pager": None, "pace": 90})
         self.assertTrue((await self.p.api_prefs(brief=True))["brief"])
         self.assertTrue(await self.p.loud())                                      # "with the phone" — always with sound
         await self.p.api_prefs(mode="mac")
@@ -2349,7 +2350,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             (root / pkey / "s.jsonl").write_text(json.dumps({
                 "type": "assistant", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
                 "message": {"id": "m%d" % i, "usage": {"output_tokens": 5 + i}}}) + "\n")
-        self.p.day_tokens = pultd.PW.DayTokens(root, pultd.skip_pkey)
+        self.p.spend = pultd.S.Spend(root, pultd.skip_pkey)
         d = await self.p.api_today()
         self.assertEqual([(r["name"], r["out"]) for r in d["projects"]], [("proj2", 6), ("proj", 5)])
 
