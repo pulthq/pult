@@ -4,6 +4,7 @@
   ~/.local/share/pult/venv/bin/python tests/test_pult.py
 """
 import asyncio
+import gc
 import json
 import os
 import shutil
@@ -15,6 +16,7 @@ import types
 import unittest
 from unittest import mock
 import urllib.parse
+import warnings
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent / "src"
@@ -87,10 +89,23 @@ class FakeTg:
         return out
 
 
+# What runs without Python's UTF-8 mode in real use — the hook, the tab wrapper, a command under `pult run` — runs so
+# here too, whatever the environment (CI turns it on for the rest): a system code page (cp1251) must not break them
+def plain_env(**kw):
+    env = dict(os.environ, **kw)
+    env.pop("PYTHONUTF8", None)
+    return env
+
+
+# the hook runs on the base Python, as Pult installs it: a venv's python.exe on Windows is a launcher that starts the
+# real one as its child, and the hook would see the launcher as its parent instead of the claude that started it
+HOOK_PY = getattr(sys, "_base_executable", sys.executable) if os.name == "nt" else sys.executable
+
+
 async def run_hook(ev, entry="claude-vscode", extra_env=None, wait=True):
-    env = dict(os.environ, CLAUDE_CODE_ENTRYPOINT=entry, **(extra_env or {}))
+    env = plain_env(CLAUDE_CODE_ENTRYPOINT=entry, **(extra_env or {}))
     env.pop("PULT_DRIVEN", None)
-    p = await asyncio.create_subprocess_exec(sys.executable, str(HERE / "pult_hook.py"), env=env,
+    p = await asyncio.create_subprocess_exec(HOOK_PY, str(HERE / "pult_hook.py"), env=env,
                                              stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE)
     p.stdin.write(json.dumps(ev, ensure_ascii=False).encode())          # as Claude Code sends it: raw UTF-8
     p.stdin.close()
@@ -123,6 +138,34 @@ def fake_claude(folder, script):
     p.write_text("#!%s\n%s" % (sys.executable, script), encoding="utf-8")
     p.chmod(0o755)
     return p
+
+
+# a claude that speaks the SDK's stream: answers control requests, and on a prompt sends a tool result with a 1 MB
+# picture (in the message and again in tool_use_result, as Claude Code does — a 2 MB line) and the turn's result
+BIG_LINE = r'''import json, os, sys
+if "-v" in sys.argv:
+    print("2.1.301")
+    sys.exit(0)
+if os.name == "nt":
+    import msvcrt
+    msvcrt.setmode(0, os.O_BINARY)
+    msvcrt.setmode(1, os.O_BINARY)
+def out(m):
+    sys.stdout.buffer.write(json.dumps(m).encode() + b"\n")
+    sys.stdout.flush()
+for line in sys.stdin.buffer:
+    m = json.loads(line)
+    if m.get("type") == "control_request":
+        out({"type": "control_response", "response": {"subtype": "success", "request_id": m["request_id"], "response": {}}})
+    elif m.get("type") == "user":
+        pic = "A" * (1024 * 1024)
+        out({"type": "user", "uuid": "u1", "session_id": "s", "parent_tool_use_id": None,
+             "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [
+                 {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": pic}}]}]},
+             "tool_use_result": {"type": "image", "file": {"base64": pic}}})
+        out({"type": "result", "subtype": "success", "duration_ms": 1, "duration_api_ms": 1, "is_error": False,
+             "num_turns": 1, "session_id": "s", "result": "ok"})
+'''
 
 
 def ev(name, **kw):
@@ -487,6 +530,11 @@ class HelpersTest(unittest.TestCase):
         self.assertEqual(pultctl.last_state("шаг 1\r".encode()), "шаг 1")
         self.assertEqual(pultctl.last_state(b"10%\r50%\r100%"), "100%")
         self.assertEqual(pultctl.last_state(b"10%\r100%\r\r"), "100%")
+        # a console program on a Russian Windows writes cp866: read in the console's code page, UTF-8 still first
+        self.assertEqual(pultctl.last_state("шаг 2\r".encode("cp866"), "cp866"), "шаг 2")
+        self.assertEqual(pultctl.last_state("шаг 3".encode(), "cp866"), "шаг 3")
+        self.assertEqual(pultctl.decode_out(b"\xff ok"), "\ufffd ok")
+        self.assertEqual(pultctl.decode_out("█▌ 50 % — готово ✓".encode(), "cp866"), "█▌ 50 % — готово ✓")   # real UTF-8
 
     def test_ctl_strip(self):
         import pultctl
@@ -675,6 +723,9 @@ class WindowsTest(unittest.IsolatedAsyncioTestCase):
 
     def test_system(self):
         self.assertTrue(pult_os.describe().startswith("Windows "))
+        # the task's user is the account itself, even where USERDOMAIN says WORKGROUP (an ssh session)
+        me = subprocess.run(["whoami"], capture_output=True, text=True).stdout.strip()
+        self.assertEqual(pult_os.Schtasks.user().lower(), me.lower())
         self.assertIsInstance(pult_os.system_lang(), str)
         self.assertEqual(pult_os.win_procs()[os.getpid()][1].lower(), os.path.basename(sys.executable).lower())
         v = pult_os.win_idle()
@@ -1090,8 +1141,9 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(t.done[0], "⏹")
 
     async def run_cli(self, *cmd, cwd=None, sock=None):
-        env = dict(os.environ, PULT_SOCK=sock or os.environ["PULT_SOCK"])
-        p = await asyncio.create_subprocess_exec(sys.executable, str(HERE / "pultctl.py"), "run", "--", *cmd, cwd=cwd,
+        env = plain_env(PULT_SOCK=sock or os.environ["PULT_SOCK"])            # pult.cmd gives -X utf8 to itself only
+        p = await asyncio.create_subprocess_exec(sys.executable, *(["-X", "utf8"] if os.name == "nt" else []),
+                                                 str(HERE / "pultctl.py"), "run", "--", *cmd, cwd=cwd,
                                                  env=env, stdout=asyncio.subprocess.PIPE)
         out = await p.stdout.read()
         return await p.wait(), out.decode()
@@ -1368,6 +1420,67 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             d.task.cancel()
         finally:
             claude_agent_sdk.ClaudeSDKClient = old
+
+    async def test_driven_big_line(self):
+        # a picture Claude reads comes in the stream's line twice: one ~470 KB screenshot made a line over the SDK's
+        # own 1 MB limit, and a session from the app crashed in its first turn (2026-10-21). Through the real SDK,
+        # with a stand-in claude: a 2 MB line passes, and with the SDK's default the same line still cuts it off
+        fake = str(fake_claude(TMP / "claude-big-line", BIG_LINE))
+
+        class D(pultd.Driven):
+            def options(self):
+                o = super().options()
+                o.cli_path = fake
+                return o
+
+        d = D(self.p, SID, str(TMP))
+        d.q.put_nowait(("глянь", None))
+        await until(lambda: d.result.is_set() and not d.asking, timeout=20)
+        await asyncio.sleep(0.3)
+        self.assertFalse(d.task.done())               # the turn ended with its result, the session is alive
+        d.q.put_nowait(None)
+        await asyncio.wait_for(d.task, 10)
+        old, pultd.SDK_LINE_MAX = pultd.SDK_LINE_MAX, 1024 * 1024
+        try:
+            d = D(self.p, SID, str(TMP))
+            d.q.put_nowait(("глянь", None))
+            await asyncio.wait_for(d.task, 20)        # the old limit: the reader fails and the session ends
+            # after a reader error the SDK ends the process but leaves its stdout pipe to the garbage collector:
+            # collect while the loop still runs (in the daemon the collector does it in its own time)
+            del d
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", ResourceWarning)
+                gc.collect()
+                await asyncio.sleep(0.1)
+                gc.collect()
+        finally:
+            pultd.SDK_LINE_MAX = old
+
+    async def test_new_session_before_transcript(self):
+        # the app opens a new session at once, before Claude Code has written its file: an empty chat, not
+        # "transcript not found" (2026-10-21); without a process of Pult's own a missing file is still an error
+        from types import SimpleNamespace
+        base = TMP / "claude-projects-fresh"
+        (base / PKEY).mkdir(parents=True, exist_ok=True)
+        SID2 = "22222222-3333-4444-5555-666666666666"
+        self.store.touch_session(SID2, PKEY, path="/Users/x/proj", driven=True)
+        old, pultd.CLAUDE_PROJECTS = pultd.CLAUDE_PROJECTS, base
+        try:
+            with self.assertRaises(ValueError):
+                await self.p.api_session(SID2)
+            self.p.live_of(SID2, PKEY).driven = True
+            self.p.driven[SID2] = SimpleNamespace(busy=True, bg=set(), q=asyncio.Queue(), client=None,
+                                                  task=SimpleNamespace(cancel=lambda: None))
+            info = await self.p.api_session(SID2)
+            self.assertEqual((info["sid"], info["page"]["items"], info["page"]["end"]), (SID2, [], None))
+            # the file appears: the next read finds it
+            (base / PKEY / (SID2 + ".jsonl")).write_text(json.dumps(
+                {"type": "user", "message": {"role": "user", "content": "глянь"}, "timestamp": "2026-10-21T14:00:03.000Z"}) + "\n")
+            info = await self.p.api_session(SID2)
+            self.assertEqual([i.get("text") for i in info["page"]["items"]], ["глянь"])
+        finally:
+            pultd.CLAUDE_PROJECTS = old
+            self.p.driven.pop(SID2, None)
 
     async def test_project_counts(self):
         # the app's project list: open sessions, working, waiting — from `claude agents`, Pult's own sessions and
@@ -2104,7 +2217,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         p = subprocess.run([sys.executable, str(HERE / "pult_tab.py"), str(fake), "--input-format",
                             "stream-json", "--output-format", "stream-json"], input=data, capture_output=True,
                            cwd=str(TMP / "sandbox"), timeout=20,
-                           env=dict(os.environ, PULT_TAB_CONF=str(TMP / "tab.json"), PULT_SOCK=str(TMP / "нет.sock")))
+                           env=plain_env(PULT_TAB_CONF=str(TMP / "tab.json"), PULT_SOCK=str(TMP / "нет.sock")))
         self.assertEqual((p.stdout, p.returncode), (data, 3))
         old, pult_tab.OFF = pult_tab.OFF, str(TMP / "tab-off")
         try:
@@ -2119,7 +2232,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         d = TMP / "ctl"
         seen = d / "seen.jsonl"
         fake = fake_claude(d / "anthropic.claude-code-2.1.301-darwin-arm64",
-                           "import json, sys\nsys.stdout.reconfigure(newline='\\n')\n"   # claude ends lines with LF on Windows too
+                           "import json, sys\nsys.stdout.reconfigure(newline='\\n', encoding='utf-8')\n"   # as claude: LF, UTF-8
                            "log = open(%r, 'a', encoding='utf-8')\n"
                            "for line in sys.stdin.buffer:\n    line = line.decode()\n"
                            "    log.write(line); log.flush()\n    o = json.loads(line)\n"
@@ -2142,7 +2255,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         proc = await asyncio.create_subprocess_exec(
             sys.executable, str(HERE / "pult_tab.py"), str(fake), "--input-format", "stream-json", "--output-format",
             "stream-json", stdin=subprocess.PIPE, stdout=subprocess.PIPE, cwd=str(d),
-            env=dict(os.environ, PULT_TAB_CONF=str(d / "tab.json"), PULT_SOCK=sock, PULT_TAB_LOG=str(d / "tab.log")))
+            env=plain_env(PULT_TAB_CONF=str(d / "tab.json"), PULT_SOCK=sock, PULT_TAB_LOG=str(d / "tab.log")))
         try:
             self.assertIn("control", (await asyncio.wait_for(hello, 10))["caps"])
             req = {"subtype": "apply_flag_settings", "settings": {"effortLevel": "low"}}

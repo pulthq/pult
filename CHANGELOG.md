@@ -2,6 +2,16 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.9.28 — 2026-10-21
+
+- A session started from Telegram or the app no longer crashes when Claude reads a picture. A picture comes in the
+  Claude process's stream twice, in the tool result and again beside it, so one ordinary ~470 KB screenshot made a
+  line over the Agent SDK's default 1 MB limit, and the SDK ended the session in the middle of its turn. Pult now
+  takes lines up to 64 MB. `tests/probe_bigline.py` shows both on a real Claude Code (2.1.300): the default limit
+  fails on such a picture, Pult's goes through.
+- A new session opened in the app right after it was started shows an empty chat until Claude Code writes the
+  session's file, instead of "session transcript not found" for a moment.
+
 ## 0.9.27 — 2026-10-21
 
 - After a restart in the middle of a turn, the turn and the start of the owner's run now appear together: for a
