@@ -2,6 +2,13 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.9.30 — 2026-10-21
+
+- A turn stopped from the app or with `/stop` now ends as interrupted. Claude Code sends no Stop hook for an
+  interrupted turn, only the turn's result, so the session stayed "working" in the app and in `pult busy`, and its
+  idle Claude process was never closed. Pult now closes a turn that has a result but no Stop a few seconds later.
+  `tests/probe_midturn.py stop` shows it on a real Claude Code (2.1.300).
+
 ## 0.9.29 — 2026-10-21
 
 - A message written while a session started from Telegram or the app is working now reaches Claude in that turn, at

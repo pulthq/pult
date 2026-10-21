@@ -1,6 +1,6 @@
 """Live Pult test: a real Claude (haiku) via the SDK, a fake Telegram.
 
-Run (uses a little of the subscription, ~70 s):
+Run (uses a little of the subscription, ~90 s):
   ~/.local/share/pult/venv/bin/python tests/e2e_live.py
 
 
@@ -10,6 +10,7 @@ a background command — "in the background" in the result, the load view finds 
 the next prompt with its own result; that result is the owner's move on Home until the session is opened.
 With Telegram as a pager: a task from the app makes no turn or result message; its question is paged once.
 A message from the app mid-turn reaches Claude in that turn, and the app shows it as written mid-turn.
+Stop from the app closes the interrupted turn, though Claude Code sends no Stop hook for it.
 """
 import asyncio, json, os, shutil, sys, tempfile, time, urllib.parse
 from pathlib import Path
@@ -210,6 +211,18 @@ async def main():
     log("посреди хода:", r.get("how"), "· шагов:", len(bash), "· в приложении:", [i["text"][:30] for i in mid])
     assert r.get("how") == "session" and 0 < len(bash) < 5, "the message waited for the turn's end"
     assert len(mid) == 1 and "HALTED" in mid[0]["text"], "the app doesn't show the message written mid-turn"
+    # Stop from the app: an interrupted turn gets no Stop hook, only its result — Pult closes the turn itself, so the
+    # session doesn't stay "working" and its process can go idle (2026-10-21, a session after Stop)
+    sid7 = (await p.api_new(pkey5, "This is a test of a long turn. Call the Bash tool with command `sleep 4; echo step N` "
+                            "for N = 1, 2, 3, 4, 5 - one call at a time. Then reply with one word: DONE."))["sid"]
+    await until(lambda: p.driven.get(sid7) and p.driven[sid7].asking and p.live.get(sid7) and p.live[sid7].turn,
+                what="долгий ход для «Стопа»")
+    await asyncio.sleep(6)
+    turn7 = p.live[sid7].turn
+    assert (await p.api_stop(sid7))["ok"]
+    await until(lambda: not p.driven[sid7].busy, timeout=20, what="ход закрыт после «Стопа»")
+    log("стоп:", turn7.done and turn7.done[0], "· сессия занята:", p.driven[sid7].busy)
+    assert turn7.done and turn7.done[0] == "⏹", "the interrupted turn wasn't closed"
     log("тем создано:", len([1 for m, _ in calls if m == "createForumTopic"]), "· вызовов Telegram:", len(calls))
     for d in list(p.driven.values()):
         d.task.cancel()
