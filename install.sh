@@ -83,6 +83,18 @@ if ! good "$DST/venv/bin/python"; then
   "$PY" -m venv "$DST/venv"
 fi
 
+# Updating restarts the service, and that cuts off what Pult's own sessions are doing — a turn, a background task or
+# subagent. In a terminal `pult install` asks before the restart; without one (a script, an agent) nothing is changed
+# while they run. PULT_FORCE=1 — anyway.
+if [ ! -t 0 ] && [ "${PULT_FORCE:-}" != 1 ] && [ -f "$DST/pultd.py" ]; then
+  if ! busy=$("$DST/venv/bin/python" "$SRC/src/pultctl.py" busy 2>&1); then
+    echo "$busy"
+    say "Nothing changed. Wait until they finish (pult busy shows what is left), or anyway: PULT_FORCE=1 ./install.sh" \
+        "Ничего не менял. Подожди, пока закончат (pult busy покажет, что осталось), или всё равно: PULT_FORCE=1 ./install.sh"
+    exit 1
+  fi
+fi
+
 cp "$SRC"/src/pultd.py "$SRC"/src/pult_hook.py "$SRC"/src/pult_render.py "$SRC"/src/pult_web.py "$SRC"/src/pult_i18n.py "$SRC"/src/pult_stt.py \
    "$SRC"/src/pult_load.py "$SRC"/src/pult_attn.py "$SRC"/src/pult_brief.py "$SRC"/src/pult_os.py "$SRC"/src/pult_setup.py "$SRC"/src/pultctl.py "$SRC"/requirements.txt "$DST"/
 # VS Code tab wrapper: takes effect only after the claudeCode.claudeProcessWrapper setting (pult tab setup)

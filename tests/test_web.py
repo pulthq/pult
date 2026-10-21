@@ -327,11 +327,7 @@ class ChainBase(unittest.IsolatedAsyncioTestCase):
         self.p.out = pultd.Outbox(rate=60000, burst=1000)
         self.p._agents = (time.monotonic() + 1e6, [])
         pultd.EDIT_EVERY = 0.05
-        try:
-            os.unlink(os.environ["PULT_SOCK"])
-        except FileNotFoundError:
-            pass
-        self.sock = await asyncio.start_unix_server(self.p.handle_conn, path=os.environ["PULT_SOCK"])
+        self.sock = await pultd.start_link(self.p.handle_conn, os.environ["PULT_SOCK"])
         self.srv = TestServer(relay.app())
         await self.srv.start_server()
         url = str(self.srv.make_url("/pult/agent")).replace("http://", "ws://")

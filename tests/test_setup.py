@@ -10,7 +10,6 @@ import io
 import json
 import os
 import plistlib
-import pwd
 import shlex
 import shutil
 import subprocess
@@ -21,6 +20,12 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
+import zipfile
+
+try:
+    import pwd
+except ImportError:                    # Windows
+    pwd = None
 
 SRC = Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
@@ -32,6 +37,8 @@ import pultctl  # noqa: E402
 
 GOOD = "123456789:" + "A" * 35
 OWNER, CHAT, BOT_ID = 42, -1001234567890, 777
+WIN = os.name == "nt"
+LAUNCHER = "pult.cmd" if WIN else "pult"
 
 
 class FakeBot:
@@ -95,12 +102,15 @@ def fake_manager(folder):
 
 
 def service_env(path):
-    """The environment a service file gives the daemon: a plist or a systemd unit."""
+    """The environment a service file gives the daemon: a plist or a systemd unit (a Windows task has none)."""
     if path.suffix == ".plist":
         with open(path, "rb") as f:
             return plistlib.load(f)["EnvironmentVariables"]
     line = next(ln for ln in path.read_text().splitlines() if ln.startswith("Environment="))
     return dict(kv.split("=", 1) for kv in shlex.split(line[len("Environment="):]))
+
+
+BUSY = S.busy_sessions                         # the real one: Base replaces it with a fake
 
 
 class Base(unittest.TestCase):
@@ -110,7 +120,8 @@ class Base(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="pult-setup-test-"))
         t = self.tmp
         self.paths = dict(HOME=t / "share", ENV_FILE=t / "conf" / "env", SOCK=str(t / "s.sock"), LOG=t / "pult.log",
-                          PY=t / "share" / "venv" / "bin" / "python", SVC=fake_manager(t / "services"), BIN=t / "bin",
+                          PY=t / "share" / "venv" / "bin" / "python", PYW=t / "share" / "venv" / "Scripts" / "pythonw.exe",
+                          SVC=fake_manager(t / "services"), BIN=t / "bin",
                           TAB_LOG=t / "pult-tab.log", SETTINGS=t / "claude" / "settings.json",
                           TAB_CONF=t / "conf" / "tab.json", TAB_OFF=t / "conf" / "tab-off",
                           EDITOR_DIRS=[t / "editors" / app / "User" for app in ("Code", "Cursor")]
@@ -118,13 +129,14 @@ class Base(unittest.TestCase):
                           EXT_DIRS=[t / "extensions", t / ".vscode-server" / "extensions"])
         self.patches = [mock.patch.object(S, k, v) for k, v in self.paths.items()]
         self.svc = SimpleNamespace(loaded=False, started=0, stopped=0)
+        self.busy = []                         # what the daemon says a restart would cut off
         self.patches += [
             mock.patch.object(S, "service", lambda lbl: ("running", "1") if self.svc.loaded else (None, None)),
             mock.patch.object(S, "svc_stop", self.fake_stop),
             mock.patch.object(S, "svc_start", self.fake_start),
-            mock.patch.object(S, "telegram_sessions", lambda lbl: 0),
-            mock.patch.dict(os.environ, {"PULT_LANG": "en"}),
-        ]
+            mock.patch.object(S, "busy_sessions", lambda lbl: self.busy),
+            mock.patch.dict(os.environ, {"PULT_LANG": "en", "PULT_SOCK": ""}),    # "": in a session Pult started
+        ]                                                                         # it is the real daemon's socket
         for p in self.patches:
             p.start()
         I.set_lang("en")
@@ -169,17 +181,21 @@ class SettingsTest(Base):
         # install.sh and the daemon crashed at start until the file was put there by hand
         root = Path(__file__).resolve().parent.parent
         src = root / "src"
-        inst = (root / "install.sh").read_text()
+        inst = (root / "install.sh").read_text(encoding="utf-8")
+        ps1 = (root / "install.ps1").read_text(encoding="utf-8-sig")
         for name in sorted(p.name for p in src.glob("pult*.py")):
             self.assertIn("src/" + name, inst, name)
+            self.assertIn("'src/%s'" % name, ps1, name)                       # Windows copies the same files
             self.assertIn(name, S.HOME_FILES, name)
+        self.assertTrue((root / "install.ps1").read_bytes().startswith(b"\xef\xbb\xbf"))   # 5.1 reads it as UTF-8
 
     def test_write_env(self):
         S.ENV_FILE.parent.mkdir(parents=True)
         S.ENV_FILE.write_text("# mine\nPULT_BOT_TOKEN=old\nOTHER=1\n")
         S.write_env(PULT_BOT_TOKEN="new", PULT_ALLOWED_USER_IDS="42", OTHER=None)
-        self.assertEqual(S.ENV_FILE.read_text(), "# mine\nPULT_BOT_TOKEN=new\nPULT_ALLOWED_USER_IDS=42\n")
-        self.assertEqual(S.ENV_FILE.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(S.ENV_FILE.read_text(encoding="utf-8"), "# mine\nPULT_BOT_TOKEN=new\nPULT_ALLOWED_USER_IDS=42\n")
+        if not WIN:                                    # Windows: the user's own folder is what keeps it private
+            self.assertEqual(S.ENV_FILE.stat().st_mode & 0o777, 0o600)
         self.assertEqual(S.read_env(), {"PULT_BOT_TOKEN": "new", "PULT_ALLOWED_USER_IDS": "42"})
 
     def test_label(self):
@@ -202,9 +218,15 @@ class SettingsTest(Base):
         self.assertEqual(S.label(), "io.example.pult")
 
     def test_service_file(self):
-        # what the service runs and with which settings — the same on both systems
+        # what the service runs and with which settings — the same on macOS and Linux; Windows: test_task
         p = S.write_service("io.github.pulthq.pult")
         self.assertEqual(p, S.service_file("io.github.pulthq.pult"))
+        if WIN:
+            text = p.read_text(encoding="utf-16")
+            self.assertIn(pult_os.xml_esc(S.HOME / "pultd.py"), text)
+            self.assertIn("<Command>%s</Command>" % pult_os.xml_esc(S.PYW), text)       # pythonw: no console window
+            self.assertIn("<Arguments>-X utf8 ", text)
+            return
         self.assertIn(str(S.HOME / "pultd.py"), p.read_text())
         env = service_env(p)
         self.assertEqual(env["PULT_LABEL"], "io.github.pulthq.pult")
@@ -226,6 +248,35 @@ class SettingsTest(Base):
         self.assertTrue(d["KeepAlive"])
         self.assertEqual(d["StandardOutPath"], "/l/pult.log")
 
+    def test_task(self):
+        # Windows: a Task Scheduler task — at logon, as the user, in the user's session, restarted after a failure;
+        # the definition is UTF-16 (schtasks reads nothing else) and the paths are XML-escaped and quoted
+        import xml.etree.ElementTree as ET
+        m = pult_os.Schtasks(self.tmp / "share2")
+        with mock.patch.object(pult_os.Schtasks, "user", staticmethod(lambda: "PC\\Анна & Co")):
+            p = m.write("Pult", [r"C:\Users\Анна\venv\Scripts\pythonw.exe", "-X", "utf8", r"C:\Users\Анна\a b\pultd.py"],
+                        {"PATH": "x"}, "log", r"C:\Users\Анна\a b")
+        self.assertEqual(p.name, "Pult.task.xml")
+        self.assertTrue(p.read_bytes().startswith(b"\xff\xfe"))                  # UTF-16 LE with its BOM
+        ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+        root = ET.fromstring(p.read_text(encoding="utf-16").split("?>", 1)[1])
+        f = lambda path: root.find(path, ns).text
+        self.assertEqual(f("t:Triggers/t:LogonTrigger/t:UserId"), "PC\\Анна & Co")
+        self.assertEqual(f("t:Principals/t:Principal/t:LogonType"), "InteractiveToken")
+        self.assertEqual(f("t:Principals/t:Principal/t:RunLevel"), "LeastPrivilege")
+        self.assertEqual(f("t:Settings/t:ExecutionTimeLimit"), "PT0S")
+        self.assertEqual(f("t:Settings/t:RestartOnFailure/t:Count"), "999")
+        self.assertEqual(f("t:Actions/t:Exec/t:Command"), r"C:\Users\Анна\venv\Scripts\pythonw.exe")
+        self.assertEqual(f("t:Actions/t:Exec/t:Arguments"), r'-X utf8 "C:\Users\Анна\a b\pultd.py"')
+        self.assertEqual(m.find(r"C:\Users\Анна\a b\pultd.py"), "Pult")
+        self.assertIsNone(m.find(r"C:\elsewhere\pultd.py"))
+        # the state is the daemon's own: the pid in its link file, alive or not
+        m.link.parent.mkdir(parents=True, exist_ok=True)
+        m.link.write_text(json.dumps({"port": 1, "key": "k", "pid": os.getpid()}), encoding="utf-8")
+        self.assertEqual(m.state("Pult"), ("running", str(os.getpid())))
+        m.link.write_text("{}", encoding="utf-8")
+        self.assertEqual(m.state("Pult"), (None, None))
+
     def test_systemd_unit(self):
         # quotes keep a path with spaces whole; % and $ would be expanded by systemd — doubled
         m = pult_os.Systemd(self.tmp / "units")
@@ -241,6 +292,23 @@ class SettingsTest(Base):
         self.assertIn("WantedBy=default.target\n", text)
         self.assertEqual(m.find("/home/a b/pult%d$X.py"), "pult")
 
+    def test_hooks_exec_form(self):
+        # Windows: exec form — base pythonw and the hook file as an argument; recognised and removed like the shell one
+        S.SETTINGS.parent.mkdir()
+        mine = {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "guard.sh",
+                                                              "args": ["--strict"]}]}]}
+        S.SETTINGS.write_text(json.dumps({"hooks": mine}))
+        with mock.patch.object(S, "WIN", True), mock.patch.object(S, "base_pythonw", lambda: Path("C:/Py/pythonw.exe")):
+            self.run_cli(S.hooks_set, True)
+            d = json.loads(S.SETTINGS.read_text(encoding="utf-8"))
+            h = d["hooks"]["Stop"][0]["hooks"][0]
+            self.assertEqual(h["command"], str(Path("C:/Py/pythonw.exe")))
+            self.assertEqual(h["args"], [str(S.HOME / "pult_hook.py"), "--sock=" + S.SOCK])   # not the default link
+            self.assertEqual(S.hooks_installed(d), sorted(S.pult_hook.EVENTS))
+            self.run_cli(S.hooks_set, False)
+        self.assertEqual(json.loads(S.SETTINGS.read_text(encoding="utf-8")), {"hooks": mine})
+
+    @unittest.skipIf(WIN, "a shell command: macOS and Linux")
     def test_hooks(self):
         # Pult's hooks on the environment's Python; other hooks stay; a backup copy before every change
         S.SETTINGS.parent.mkdir()
@@ -276,12 +344,32 @@ class SettingsTest(Base):
     def test_launcher(self):
         with mock.patch.dict(os.environ, {"PULT_HOME": ""}):
             self.assertIsNotNone(S.write_launcher())
-            self.assertIn(str(S.HOME / "pultctl.py"), (S.BIN / "pult").read_text())
-            (S.BIN / "pult").write_text("#!/bin/sh\necho someone else's\n")
+            text = (S.BIN / LAUNCHER).read_text(encoding="utf-8")
+            if WIN:                                    # pult.cmd: ASCII, the paths through %USERPROFILE%
+                self.assertIn('(goto) 2>nul & ', text)
+                self.assertIn(S.LAUNCHER_MARK, text)
+            else:
+                self.assertIn(str(S.HOME / "pultctl.py"), text)
+            (S.BIN / LAUNCHER).write_text("#!/bin/sh\necho someone else's\n")
             res, out = self.run_cli(S.write_launcher)
             self.assertIsNone(res)
             self.assertIn("already belongs to another program", out)
-            self.assertIn("someone else's", (S.BIN / "pult").read_text())
+            self.assertIn("someone else's", (S.BIN / LAUNCHER).read_text())
+
+    def test_windows_launcher(self):
+        # pult.cmd: cmd reads it in the console's code page — ASCII, a home with Cyrillic in it through %USERPROFILE%
+        home = self.tmp / "Анна"
+        with mock.patch.dict(os.environ, {"PULT_HOME": ""}), mock.patch.object(S, "WIN", True), \
+                mock.patch.object(S.Path, "home", lambda: home), mock.patch.object(S, "PY", home / "venv" / "python.exe"), \
+                mock.patch.object(S, "HOME", home / "pult"):
+            p = S.write_launcher()
+        self.assertEqual(p.name, "pult.cmd")
+        data = p.read_bytes()
+        data.decode("ascii")
+        self.assertIn(b'"%USERPROFILE%' + os.sep.encode() + b'venv' + os.sep.encode() + b'python.exe" -X utf8 ', data)
+        self.assertIn(b"\r\n(goto) 2>nul & ", data)                      # uninstall deletes the file while it runs
+        self.assertTrue(data.endswith(b" %*\r\n"))
+        self.assertNotIn(b"\r\r", data)
 
     def test_cli_lang(self):
         with mock.patch.dict(os.environ, {"PULT_LANG": ""}), mock.patch.object(S, "system_lang", lambda: "en"):
@@ -297,6 +385,60 @@ class SettingsTest(Base):
             self.assertEqual(pultctl.main(["help"]), 0)
             self.assertEqual(pultctl.main(["nonsense"]), 2)
         self.assertIn("pult setup", out.getvalue())
+
+    def test_busy_guard(self):
+        # a restart or stop cuts off what Pult's own sessions are doing (2026-10-20: an agent ran `bash install.sh`
+        # and killed a background subagent in a session from the app): without a terminal — refused; in one — asked,
+        # no by default; PULT_FORCE=1 — anyway; nothing running — no question
+        self.svc.loaded = True
+        self.busy = [{"sid": "s1", "title": "Поиск стратегий", "project": "trader", "turn": False,
+                      "bg": ["Probe A: maker"], "n": 1}, {"unknown": 2}]
+        tty = lambda v: mock.patch.object(sys.stdin, "isatty", lambda: v)
+        ready = mock.patch.object(S, "configured", lambda env=None: True)
+        ready.start()
+        self.addCleanup(ready.stop)
+        for op in ("restart", "stop"):
+            with tty(False):
+                res, out = self.run_cli(S.cmd_service, op)
+            self.assertEqual((res, self.svc.stopped), (1, 0), out)
+            self.assertIn("trader · Поиск стратегий — in the background: Probe A: maker", out)
+            self.assertIn("2 Claude processes", out)
+            self.assertIn("PULT_FORCE=1", out)
+            with tty(True):
+                res, out = self.run_cli(S.cmd_service, op, answers=[""])
+            self.assertEqual((res, self.svc.stopped), (1, 0), out)
+        with tty(True):
+            res, out = self.run_cli(S.cmd_service, "restart", answers=["y"])
+        self.assertEqual((res, self.svc.stopped, self.svc.started), (0, 1, 1), out)
+        with tty(False), mock.patch.dict(os.environ, {"PULT_FORCE": "1"}):
+            res, out = self.run_cli(S.cmd_service, "restart")
+        self.assertEqual((res, self.svc.stopped), (0, 2), out)
+        self.assertEqual(self.run_cli(S.cmd_busy)[0], 1)
+        self.busy = []
+        with tty(True):
+            res, out = self.run_cli(S.cmd_service, "restart")
+        self.assertEqual((res, self.svc.stopped), (0, 3), out)
+        res, out = self.run_cli(S.cmd_busy)
+        self.assertEqual(res, 0)
+        self.assertIn("cuts nothing off", out)
+
+    def test_busy_sessions(self):
+        # the daemon is asked over its socket; one that answers nothing (an older Pult) yet holds Claude processes
+        # counts as busy; no service — nothing
+        import socket
+        a, b = socket.socketpair()
+        b.sendall(json.dumps({"busy": [{"sid": "s1", "turn": True, "bg": [], "n": 0}]}).encode() + b"\n")
+        with mock.patch.object(S, "busy_sessions", BUSY), mock.patch.object(S, "service", lambda lbl: ("running", "7")), \
+                mock.patch.object(S.pult_os, "link_connect", lambda path, timeout=1.0: a):
+            self.assertEqual(S.busy_sessions("x"), [{"sid": "s1", "turn": True, "bg": [], "n": 0}])
+        self.assertEqual(json.loads(b.recv(100)), {"op": "busy"})
+        b.close()
+        with mock.patch.object(S, "busy_sessions", BUSY), mock.patch.object(S, "service", lambda lbl: ("running", "7")), \
+                mock.patch.object(S.pult_os, "link_connect", mock.Mock(side_effect=OSError)), \
+                mock.patch.object(S.pult_os, "children", lambda pid, name=None: [11, 12]):
+            self.assertEqual(S.busy_sessions("x"), [{"unknown": 2}])
+        with mock.patch.object(S, "busy_sessions", BUSY), mock.patch.object(S, "service", lambda lbl: (None, None)):
+            self.assertEqual(S.busy_sessions("x"), [])
 
     def test_install_not_set_up(self):
         # install.sh without a terminal and without settings: the service file is written, the setup is suggested
@@ -482,22 +624,33 @@ class ReportTest(Base):
 
 
 class UninstallTest(Base):
+    def wrapper_line(self):
+        return '{"claudeCode.claudeProcessWrapper": %s}' % json.dumps(str(S.HOME / S.TAB_FILE))
+
+    def stub_left(self):
+        """The wrapper left in place just runs claude: pult-tab.sh execs it; pult-tab.exe calls pult_tab.direct."""
+        if WIN:
+            with zipfile.ZipFile(S.HOME / "pult-tab.exe") as z:
+                return "pult_tab.direct(" in z.read("__main__.py").decode()
+        return 'exec "$@"' in (S.HOME / "pult-tab.sh").read_text()
+
     def prepare(self, wrapped):
         S.write_env(PULT_BOT_TOKEN=GOOD)
         S.TAB_CONF.write_text("{}")
         (S.ENV_FILE.parent / "notes.txt").write_text("someone's file")         # not Pult's: stays
         (S.HOME / "venv" / "bin").mkdir(parents=True)
         (S.HOME / "state.db").write_text("")
-        (S.HOME / "pult-tab.sh").write_text("wrapper")
+        (S.HOME / S.TAB_FILE).write_text("wrapper")
+        (S.HOME / "pult_tab.py").write_text("# the wrapper\n")
         S.SETTINGS.parent.mkdir()
         S.SETTINGS.write_text(json.dumps({"hooks": S.pult_hook.hooks_config("py pult_hook.py")}))
         S.write_service(S.label())
         S.BIN.mkdir()
-        (S.BIN / "pult").write_text("#!/bin/sh\n%s\n" % S.LAUNCHER_MARK)
+        (S.BIN / LAUNCHER).write_text("#!/bin/sh\n%s\n" % S.LAUNCHER_MARK)
         S.LOG.write_text("log")
         vs = S.EDITOR_DIRS[0] / "settings.json"
         vs.parent.mkdir(parents=True)
-        vs.write_text('{"claudeCode.claudeProcessWrapper": "%s"}' % (S.HOME / "pult-tab.sh") if wrapped else "{}")
+        vs.write_text(self.wrapper_line() if wrapped else "{}")
 
     def test_keeps_tab_stub(self):
         # VS Code still runs tabs through the wrapper: a pass-through stub stays, settings are kept
@@ -505,10 +658,10 @@ class UninstallTest(Base):
         with mock.patch.dict(os.environ, {"PULT_HOME": ""}):
             res, out = self.run_cli(S.cmd_uninstall, answers=["y", "n"])
         self.assertEqual(res, 0)
-        self.assertEqual(sorted(p.name for p in S.HOME.iterdir()), ["pult-tab.sh"])
-        self.assertIn('exec "$@"', (S.HOME / "pult-tab.sh").read_text())
+        self.assertEqual(sorted(p.name for p in S.HOME.iterdir()), [S.TAB_FILE])
+        self.assertTrue(self.stub_left())
         self.assertEqual(S.hooks_installed(), [])
-        self.assertFalse((S.BIN / "pult").exists())
+        self.assertFalse((S.BIN / LAUNCHER).exists())
         self.assertFalse(S.service_file(S.DEFAULT_LABEL).exists())
         self.assertTrue(S.ENV_FILE.exists() and S.LOG.exists())
         self.assertIn("claudeCode.claudeProcessWrapper", out)
@@ -531,21 +684,21 @@ class UninstallTest(Base):
         self.prepare(wrapped=False)
         prof = S.EDITOR_DIRS[1] / "profiles" / "p1" / "settings.json"
         prof.parent.mkdir(parents=True)
-        prof.write_text('{"claudeCode.claudeProcessWrapper": "%s"}' % (S.HOME / "pult-tab.sh"))
+        prof.write_text(self.wrapper_line())
         res, out = self.run_cli(S.cmd_uninstall, answers=["y", "n"])
-        self.assertIn('exec "$@"', (S.HOME / "pult-tab.sh").read_text())
-        self.assertIn("Cursor/User/profiles/p1/settings.json", out)
+        self.assertTrue(self.stub_left())
+        self.assertIn(os.path.join("Cursor", "User", "profiles", "p1", "settings.json"), out)
 
     def test_remote_ssh(self):
         # a server VS Code reaches through Remote-SSH: the wrapper is in its remote machine settings
         self.prepare(wrapped=False)
         remote = S.EDITOR_DIRS[2] / "settings.json"
         remote.parent.mkdir(parents=True)
-        remote.write_text('{"claudeCode.claudeProcessWrapper": "%s"}' % (S.HOME / "pult-tab.sh"))
+        remote.write_text(self.wrapper_line())
         self.assertTrue(S.tab_wrapped())
         res, out = self.run_cli(S.cmd_uninstall, answers=["y", "n"])
-        self.assertIn('exec "$@"', (S.HOME / "pult-tab.sh").read_text())
-        self.assertIn(".vscode-server/data/Machine/settings.json", out)
+        self.assertTrue(self.stub_left())
+        self.assertIn(os.path.join(".vscode-server", "data", "Machine", "settings.json"), out)
 
     def test_unreadable_settings(self):
         # hooks can't be removed from settings.json — nothing is deleted
@@ -615,6 +768,7 @@ class AppTest(Base):
 
 
 class TabTest(Base):
+    @unittest.skipIf(WIN, "Windows has pult-tab.exe: test_pult.WindowsTest")
     def test_shell_wrapper(self):
         # pult-tab.sh stands in the way of every VS Code tab: no environment or the off switch — the real claude
         # right away; with the environment — through pult_tab.py, which passes a non-chat run straight on too

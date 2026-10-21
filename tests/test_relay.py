@@ -183,6 +183,7 @@ class RelayTest(unittest.IsolatedAsyncioTestCase):
         for h in held + local + [ws, w2]:
             await h.close()
 
+    @unittest.skipIf(os.name == "nt", "the relay runs on a Linux server; Windows has no unix sockets in Python")
     async def test_unix_socket(self):
         """PULT_RELAY_SOCKET: the relay listens on a socket, a socket left by a crash is replaced, other files stay."""
         self.assertEqual(relay.listen(), {"host": "127.0.0.1", "port": relay.PORT})

@@ -83,7 +83,7 @@ async def main():
     p = pultd.Pult({"PULT_ALLOWED_USER_IDS": str(OWNER), "PULT_FORCE_AWAY": "1"}, tg, store)
     p.out = pultd.Outbox(rate=6000, burst=100)
     p._agents = (time.monotonic() + 1e6, [])
-    server = await asyncio.start_unix_server(p.handle_conn, path=os.environ["PULT_SOCK"])
+    server = await pultd.start_link(p.handle_conn, os.environ["PULT_SOCK"])
     asyncio.create_task(p.out.run())
     t0 = time.monotonic()
     log = lambda *a: print("%6.1f" % (time.monotonic() - t0), *a, flush=True)
@@ -146,6 +146,7 @@ async def main():
     if buttons("p:", mark):                     # sleep may be allowed in the owner's settings — then there is no button
         await p.on_callback({"id": "c4", "from": {"id": OWNER}, "data": "p:%s:y" % buttons("p:", mark)[0].split(":")[1]})
     await until(lambda: done(mark), what="итог с фоном")
+    run = p.live[sid4].run                       # the owner's prompt set the work going: "working N" counts from it
     log("итог с фоном:", done(mark)[0].replace("\n", " | "))
     assert "⚙️ Still running in the background" in done(mark)[0], "no “in the background” line"
     # the load view finds that command among the computer's processes, under this session's claude (0.9.16)
@@ -158,12 +159,15 @@ async def main():
     note = [t for t in texts(mark) if "Background task" in t and not t.startswith("✅")]
     log("ход по фону:", note[-1].replace("\n", " | ") if note else "НЕТ", "· итог:", done(mark)[1].replace("\n", " | "))
     assert note and "task-notification" not in "".join(texts(mark)), "the background-task turn is shown wrong"
+    log("начало захода:", run, "· после хода по фону:", p.live[sid4].run)
+    assert run and p.live[sid4].run == run, "Claude's own turn restarted the owner's run"
     mark2 = len(calls)
     await p.continue_session(sid4, "Reply with one word: PONG", None, None)
     await until(lambda: done(mark2), what="итог следующего запроса")
     await until(lambda: not p.driven[sid4].busy, what="сессия свободна")
     log("следующий запрос:", done(mark2)[0].replace("\n", " | "), "· bg процесса:", p.driven[sid4].bg)
     assert "PONG" in done(mark2)[0].upper(), "the result of another turn"
+    assert p.live[sid4].run > run, "the owner's next prompt didn't start a new run"
     # whose move (stage V): a real Stop leaves an outcome; nothing runs after PONG and nobody opened it — the owner's
     # move, with the result's first sentence as its line; opening the session puts it to rest
     ov = await p.api_overview()

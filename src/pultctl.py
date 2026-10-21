@@ -9,7 +9,6 @@ import collections
 import json
 import os
 import shlex
-import socket
 import subprocess
 import sys
 import time
@@ -82,15 +81,18 @@ def cmd_tab(argv):
 RUN_TICK = 30           # seconds; the last output line goes to the daemon at most this often
 
 
+def last_state(line):
+    """What a line of output shows in the end: after the last \\r that rewrote it, without the \\r of \\r\\n."""
+    return line.rstrip(b"\r").split(b"\r")[-1].decode(errors="replace").rstrip()[-300:]
+
+
 def tell(msg):
     """Task event to the daemon; no daemon — silently skip: the task runs without Pult too."""
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(1.0)
-        s.connect(S.SOCK)
+        s = S.pult_os.link_connect(S.SOCK)
         s.sendall(json.dumps({"run": msg}, ensure_ascii=False).encode() + b"\n")
         s.close()
-    except OSError:
+    except (OSError, ValueError):
         pass
 
 
@@ -103,7 +105,8 @@ def cmd_run(argv):
         print(T("cli.run.usage"))
         return 2
     rid = uuid.uuid4().hex[:8]
-    tell({"op": "start", "id": rid, "cmd": " ".join(shlex.quote(a) for a in argv), "cwd": os.getcwd(),
+    line = subprocess.list2cmdline(argv) if os.name == "nt" else " ".join(shlex.quote(a) for a in argv)
+    tell({"op": "start", "id": rid, "cmd": line, "cwd": os.getcwd(),
           "pid": os.getpid()})
     try:
         p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -121,8 +124,9 @@ def cmd_run(argv):
             sys.stdout.buffer.flush()
             lines = (part + chunk).split(b"\n")
             part = lines.pop()
-            # progress bars rewrite the line with \r — keep the line's last state
-            tail.extend(x for x in (ln.split(b"\r")[-1].decode(errors="replace").rstrip()[-300:] for ln in lines) if x)
+            # progress bars rewrite the line with \r — keep the line's last state; a line's own \r (Windows ends lines
+            # with \r\n) is not a rewrite
+            tail.extend(x for x in (last_state(ln) for ln in lines) if x)
             if time.time() - tick >= RUN_TICK and tail:
                 tell({"op": "tick", "id": rid, "last": tail[-1]})
                 tick = time.time()
@@ -130,7 +134,7 @@ def cmd_run(argv):
         pass                                   # the command got Ctrl+C too; wait for it to finish
     code = p.wait()
     if part.strip():
-        tail.append(part.split(b"\r")[-1].decode(errors="replace").rstrip()[-300:])
+        tail.append(last_state(part))
     tell({"op": "end", "id": rid, "code": code, "tail": list(tail)[-30:]})
     return code
 
@@ -146,6 +150,8 @@ def main(argv):
         return S.cmd_setup()
     elif cmd in ("start", "stop", "restart"):
         return S.cmd_service(cmd)
+    elif cmd == "busy":
+        return S.cmd_busy()
     elif cmd == "hooks" and rest[:1] in (["on"], ["off"]):
         S.hooks_set(rest[0] == "on")
     elif cmd == "hooks":

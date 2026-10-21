@@ -4,19 +4,17 @@
 
 Standard library only, like pultctl: it has to work before Pult's environment exists and when it is broken.
 Paths follow the daemon (PULT_HOME, PULT_ENV, PULT_SOCK, PULT_LOG). The service (launchd on macOS, systemd --user
-on Linux — pult_os) is named PULT_LABEL from the settings, else the name of a service that already runs this copy
-of Pult (an existing install keeps its name), else the default one.
+on Linux, a Task Scheduler task on Windows — pult_os) is named PULT_LABEL from the settings, else the name of a
+service that already runs this copy of Pult (an existing install keeps its name), else the default one.
 """
 import getpass
 import http.client
 import json
 import os
-import pwd
 import re
 import secrets
 import shlex
 import shutil
-import socket
 import sqlite3
 import subprocess
 import sys
@@ -25,6 +23,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
+try:
+    import pwd
+except ImportError:                            # Windows
+    pwd = None
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -37,7 +40,10 @@ HOME = Path(os.environ.get("PULT_HOME") or "~/.local/share/pult").expanduser()
 ENV_FILE = Path(os.environ.get("PULT_ENV") or "~/.config/pult/env").expanduser()
 SOCK = os.environ.get("PULT_SOCK") or str(HOME / "pult.sock")
 LOG = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
-PY = HOME / "venv" / "bin" / "python"          # Pult's environment; the hook and the tab wrapper run on it too
+WIN = pult_os.KIND == "windows"
+PY = HOME / "venv" / ("Scripts/python.exe" if WIN else "bin/python")    # Pult's environment; the hook and the tab
+PYW = HOME / "venv" / "Scripts" / "pythonw.exe"                         # wrapper run on it too (Windows: see below)
+TAB_FILE = "pult-tab.exe" if WIN else "pult-tab.sh"     # what claudeCode.claudeProcessWrapper points at
 SVC = pult_os.service_manager()                 # launchd / systemd --user
 BIN = Path("~/.local/bin").expanduser()
 TAB_LOG = pult_os.LOG_DIR / "pult-tab.log"
@@ -62,7 +68,7 @@ def say(*a):
 
 def tilde(p):
     p, home = str(p), str(Path.home())
-    return "~" + p[len(home):] if p == home or p.startswith(home + "/") else p
+    return "~" + p[len(home):] if p == home or p.startswith(home + os.sep) else p
 
 
 def version():
@@ -182,6 +188,26 @@ def configured(env=None):
 
 # ---------- hooks in ~/.claude/settings.json ----------
 
+def base_pythonw():
+    """Windows: the pythonw of the Python Pult's environment is made from. The hook and the tab wrapper run on it,
+    not on the environment's: they need only the standard library, survive the environment being rebuilt, and the
+    environment's pythonw is a redirector that would stand between claude and them."""
+    base = Path(getattr(sys, "_base_executable", "") or sys.executable)
+    for p in (base.with_name("pythonw.exe"), Path(sys.executable).with_name("pythonw.exe"), PYW):
+        if p.exists():
+            return p
+    return PYW
+
+
+def hook_entry():
+    """(command, args) for settings.json. macOS and Linux: a shell command, args None. Windows: exec form — base
+    pythonw with the hook file as its argument (no shell there to guard with; uninstall takes the hooks out first)."""
+    if not WIN:
+        return hook_command(), None
+    default = os.path.expanduser("~/.local/share/pult/pult.sock")
+    return str(base_pythonw()), [str(HOME / "pult_hook.py")] + ([] if SOCK == default else ["--sock=" + SOCK])
+
+
 def hook_command():
     """The command in settings.json. Claude Code runs it through the shell; without Pult's Python or the hook
     file (the environment is being rebuilt, Pult was removed while sessions were open) it exits 0 quietly."""
@@ -207,13 +233,18 @@ def save_settings(d):
     os.replace(tmp, path)
 
 
+def ours(h):
+    """A hook Pult installed: the hook file is in its command (shell form) or among its arguments (exec form)."""
+    return MARK in str(h.get("command", "")) or any(MARK in str(a) for a in h.get("args") or [])
+
+
 def strip_ours(hooks):
     """Removes everything Pult installed from the hooks block; leaves other hooks alone."""
     out = {}
     for ev, groups in (hooks or {}).items():
         kept = []
         for g in groups:
-            hs = [h for h in g.get("hooks", []) if MARK not in str(h.get("command", ""))]
+            hs = [h for h in g.get("hooks", []) if not ours(h)]
             if hs:
                 kept.append(dict(g, hooks=hs))
         if kept:
@@ -239,7 +270,7 @@ def hooks_installed(d=None):
     except (OSError, ValueError):
         return []
     return sorted(ev for ev, groups in (d.get("hooks") or {}).items()
-                  for g in groups for h in g.get("hooks", []) if MARK in str(h.get("command", "")))
+                  for g in groups for h in g.get("hooks", []) if ours(h))
 
 
 def hooks_set(on):
@@ -251,7 +282,7 @@ def hooks_set(on):
     if on:
         if not (HOME / "pult_hook.py").exists():
             sys.exit(T("cli.hooks.no_hook", path=tilde(HOME / "pult_hook.py")))
-        for ev, groups in pult_hook.hooks_config(hook_command()).items():
+        for ev, groups in pult_hook.hooks_config(*hook_entry()).items():
             hooks.setdefault(ev, []).extend(groups)
     if hooks:
         d["hooks"] = hooks
@@ -277,10 +308,12 @@ def write_service(lbl):
     for k in ("PULT_HOME", "PULT_ENV", "PULT_SOCK", "PULT_LOG"):
         if os.environ.get(k):
             env[k] = os.environ[k]                 # a separate (test) install keeps its own paths
-    if str(Path.home()) != pwd.getpwuid(os.getuid()).pw_dir:
+    if pwd and str(Path.home()) != pwd.getpwuid(os.getuid()).pw_dir:
         env["HOME"] = str(Path.home())             # a trial install in a stand-in HOME: the service would get the real one
     LOG.parent.mkdir(parents=True, exist_ok=True)
-    return SVC.write(lbl, [PY, "-u", HOME / "pultd.py"], env, LOG, HOME)
+    # Windows: pythonw (no console window); the daemon then writes its own log, and UTF-8 is said explicitly
+    argv = [PYW, "-X", "utf8", HOME / "pultd.py"] if WIN else [PY, "-u", HOME / "pultd.py"]
+    return SVC.write(lbl, argv, env, LOG, HOME)
 
 
 def service(lbl):
@@ -289,15 +322,12 @@ def service(lbl):
 
 
 def sock_ok(path=None):
-    s = socket.socket(socket.AF_UNIX)
-    s.settimeout(1.0)
+    """Whether the daemon answers on its link (unix socket, or 127.0.0.1 and the key on Windows)."""
     try:
-        s.connect(path or SOCK)
+        pult_os.link_connect(path or SOCK).close()
         return True
-    except OSError:
+    except (OSError, ValueError):
         return False
-    finally:
-        s.close()
 
 
 def svc_stop(lbl):
@@ -324,18 +354,77 @@ def svc_start(lbl):
     return False
 
 
-def telegram_sessions(lbl):
-    """Claude processes the daemon holds for sessions from Telegram: a restart interrupts a running turn."""
+def busy_sessions(lbl):
+    """What stopping the service would cut off, as the daemon tells it: Pult's own sessions (started from Telegram or
+    the app) with a turn running or background tasks — [{"title", "project", "turn", "bg", "n"}]. A daemon that
+    can't tell (an older Pult) yet holds Claude processes: [{"unknown": their count}]. Nothing — []."""
     pid = service(lbl)[1]
     if not pid:
-        return 0
-    out = subprocess.run(["pgrep", "-P", pid, "-f", "claude"], capture_output=True, text=True).stdout
-    return len(out.split())
+        return []
+    try:
+        s = pult_os.link_connect(SOCK, timeout=5)
+        try:
+            s.sendall(b'{"op": "busy"}\n')         # no "wait": a daemon without this op answers nothing
+            buf = b""
+            while not buf.endswith(b"\n"):
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+        finally:
+            s.close()
+        return list(json.loads(buf)["busy"])
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    n = len(pult_os.children(pid, "claude"))
+    return [{"unknown": n}] if n else []
+
+
+def busy_text(busy):
+    """The busy sessions for a human, one per line."""
+    lines = []
+    for b in busy:
+        if "unknown" in b:
+            lines.append("  • " + T("cli.busy.unknown", n=b["unknown"]))
+            continue
+        what = ([T("cli.busy.turn")] if b.get("turn") else []) + \
+            ([T("cli.busy.bg", tasks=", ".join(b.get("bg") or []) or b.get("n"))] if b.get("n") else [])
+        name = b.get("project") or ""
+        if b.get("title") and b["title"] != name:
+            name = "%s · %s" % (name, b["title"]) if name else b["title"]
+        lines.append("  • %s — %s" % (name, "; ".join(what)))
+    return "\n".join(lines)
+
+
+def forced():
+    return os.environ.get("PULT_FORCE") == "1"
+
+
+def may_stop(lbl, interactive=False):
+    """Whether the service may stop now: nothing of Pult's own runs, or the owner agreed in the terminal, or
+    PULT_FORCE=1. Without a terminal (a script, an agent) the service isn't stopped while something runs."""
+    busy = [] if forced() else busy_sessions(lbl)
+    if not busy:
+        return True
+    say(T("cli.busy.list", list=busy_text(busy)))
+    if interactive:
+        if yes(T("cli.svc.busy"), False):
+            return True
+        say(T("cli.svc.kept"))
+        return False
+    say(T("cli.svc.wait"))
+    return False
+
+
+def cmd_busy():
+    """`pult busy`: what a restart would cut off; exit code 1 while something runs."""
+    busy = busy_sessions(label())
+    say(T("cli.busy.list", list=busy_text(busy)) if busy else T("cli.busy.none"))
+    return 1 if busy else 0
 
 
 def restart(lbl, interactive=False):
-    if interactive and telegram_sessions(lbl) and not yes(T("cli.svc.busy"), False):
-        say(T("cli.svc.kept"))
+    if not may_stop(lbl, interactive):
         return False
     svc_stop(lbl)
     why = SVC.problem()
@@ -356,6 +445,8 @@ def linger_hint():
 def cmd_service(op):
     lbl = label()
     if op == "stop":
+        if not may_stop(lbl, interactive=sys.stdin.isatty()):
+            return 1
         svc_stop(lbl)
         say(T("cli.svc.stopped"))
         return 0
@@ -371,10 +462,10 @@ def cmd_service(op):
 # ---------- install ----------
 
 def write_launcher():
-    """~/.local/bin/pult → pultctl on Pult's Python. Someone else's `pult` there is left alone."""
+    """~/.local/bin/pult → pultctl on Pult's Python (Windows: pult.cmd). Someone else's `pult` there is left alone."""
     if os.environ.get("PULT_HOME"):
         return None                            # a separate (test) install doesn't take over the command
-    p = BIN / "pult"
+    p = BIN / ("pult.cmd" if WIN else "pult")
     if p.exists() or p.is_symlink():
         try:
             cur = p.read_text(encoding="utf-8")
@@ -384,10 +475,77 @@ def write_launcher():
             say(T("cli.install.taken", path=tilde(p), ctl="%s %s" % (tilde(PY), tilde(HOME / "pultctl.py"))))
             return None
     BIN.mkdir(parents=True, exist_ok=True)
+    if WIN:
+        # cmd reads a .cmd file in the console's code page: ASCII only, and the paths come from %USERPROFILE%
+        rel = lambda q: "%USERPROFILE%" + str(q)[len(str(Path.home())):] if tilde(q) != str(q) else str(q)
+        # bytes, not text: in text mode Windows would turn each \r\n into \r\r\n. cmd reads a batch file as it goes,
+        # and `pult uninstall` deletes this one while it runs ("The batch file cannot be found"): "(goto) 2>nul" ends
+        # the batch first, and the rest of the line, already read, runs as if typed — with the program's exit code
+        p.write_bytes(('@echo off\r\nrem %s — installed by install.ps1, removed by `pult uninstall`\r\n'
+                       '(goto) 2>nul & "%s" -X utf8 "%s" %%*\r\n' % (LAUNCHER_MARK, rel(PY), rel(HOME / "pultctl.py")))
+                      .encode("ascii", errors="replace"))
+        return p
     p.write_text('#!/bin/sh\n%s — installed by install.sh, removed by `pult uninstall`\nexec %s %s "$@"\n'
                  % (LAUNCHER_MARK, shlex.quote(str(PY)), shlex.quote(str(HOME / "pultctl.py"))), encoding="utf-8")
     p.chmod(0o755)
     return p
+
+
+# ---------- Windows programs: the tab wrapper ----------
+
+def launcher_bytes(gui=True):
+    """distlib's simple launcher for Windows — the one pip makes console scripts with (pip/_vendor/distlib): x64 or
+    ARM64, GUI (w) or console (t)."""
+    import importlib.util
+    import platform
+    spec = importlib.util.find_spec("pip")
+    if not spec or not spec.submodule_search_locations:
+        raise OSError("pip is not in Pult's environment")
+    arm = platform.machine().lower() in ("arm64", "aarch64")
+    name = "%s64%s.exe" % ("w" if gui else "t", "-arm" if arm else "")
+    return (Path(list(spec.submodule_search_locations)[0]) / "_vendor" / "distlib" / name).read_bytes()
+
+
+def make_exe(path, python, files, gui=True):
+    """A Windows program made the way pip makes console scripts: the launcher, a #! line with the Python to run, and
+    a zip with __main__.py — Python runs the .exe itself as a zip application (the launcher passes it its own path).
+    A running program can't be overwritten on Windows but can be renamed: the old one steps aside and goes next time."""
+    import io
+    import zipfile
+    py = str(python)
+    shebang = ("#!" + ('"%s"' % py if " " in py else py) + "\n").encode("utf-8")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, data in files.items():
+            z.writestr(name, data)
+    data = launcher_bytes(gui) + shebang + buf.getvalue()
+    path = Path(path)
+    for old in path.parent.glob(path.stem + ".old-*" + path.suffix):
+        try:
+            old.unlink()
+        except OSError:
+            pass                               # still running in an open tab
+    new = path.with_name(path.name + ".new")
+    new.write_bytes(data)
+    try:
+        os.replace(new, path)
+    except PermissionError:                    # a tab runs it right now
+        path.rename(path.with_name("%s.old-%d%s" % (path.stem, time.time() * 1000, path.suffix)))
+        os.replace(new, path)
+    return path
+
+
+TAB_MAIN = "import pult_tab\npult_tab.entry()\n"
+TAB_STUB_MAIN = ("# Pult was removed: claude runs directly, so VS Code tabs keep working. Remove the\n"
+                 "# claudeCode.claudeProcessWrapper line from the VS Code settings, then delete this folder.\n"
+                 "import sys\nimport pult_tab\npult_tab.direct(sys.argv[1:])\n")
+
+
+def make_tab_exe(stub=False):
+    """Windows: pult-tab.exe — the GUI launcher with base pythonw and pult_tab.py inside (the extension starts the
+    wrapper with pipes and windowsHide: a console program would get a console window for every tab)."""
+    return make_exe(HOME / "pult-tab.exe", base_pythonw(),
+                    {"pult_tab.py": (HOME / "pult_tab.py").read_bytes(), "__main__.py": TAB_STUB_MAIN if stub else TAB_MAIN})
 
 
 def cmd_install():
@@ -395,9 +553,11 @@ def cmd_install():
     lbl = label()
     write_service(lbl)
     launcher = write_launcher()
+    if WIN and (HOME / "pult_tab.py").exists():
+        make_tab_exe()
     say(T("cli.install.done", version=version(), home=tilde(HOME)))
-    if launcher and str(BIN) not in os.environ.get("PATH", "").split(":"):
-        say(T("cli.install.path", path=tilde(launcher), rc=pult_os.shell_rc()))
+    if launcher and not WIN and str(BIN) not in os.environ.get("PATH", "").split(":"):
+        say(T("cli.install.path", path=tilde(launcher), rc=pult_os.shell_rc()))     # install.ps1 adds it on Windows
     if not configured():
         if sys.stdin.isatty():
             return cmd_setup()
@@ -717,8 +877,8 @@ def tab_conf():
 
 def wrapper_users():
     """Settings files of VS Code, its forks, their profiles and their remote side that run Claude tabs through
-    pult-tab.sh (claudeProcessWrapper is a machine-level setting: it isn't in a workspace's settings)."""
-    return pult_os.files_with(EDITOR_DIRS, "pult-tab.sh")
+    the wrapper (claudeProcessWrapper is a machine-level setting: it isn't in a workspace's settings)."""
+    return pult_os.files_with(EDITOR_DIRS, TAB_FILE)
 
 
 def tab_wrapped():
@@ -746,7 +906,7 @@ def cmd_tab_setup():
     TAB_CONF.parent.mkdir(parents=True, exist_ok=True)
     TAB_CONF.write_text(json.dumps(conf, ensure_ascii=False) + "\n", encoding="utf-8")
     say(T("cli.tab.saved", path=tilde(TAB_CONF)))
-    line = '"claudeCode.claudeProcessWrapper": "%s",' % (HOME / "pult-tab.sh")
+    line = '"claudeCode.claudeProcessWrapper": %s,' % json.dumps(str(HOME / TAB_FILE), ensure_ascii=False)
     say(T("cli.tab.line", line=line, palette=pult_os.PALETTE))
     if pult_os.remote_server():
         say(T("cli.tab.remote", palette=pult_os.PALETTE))
@@ -892,7 +1052,7 @@ def run_out(*cmd):
 
 def claude_versions():
     out = []
-    cli = shutil.which("claude", path=SERVICE_PATH + ":" + os.environ.get("PATH", ""))
+    cli = shutil.which("claude", path=SERVICE_PATH + os.pathsep + os.environ.get("PATH", ""))
     if cli:
         out.append("CLI %s" % (run_out(cli, "--version").split(" ")[0] or "?"))
     ext = newest_extension()
@@ -955,8 +1115,8 @@ def cmd_report():
 
 # Pult's own files: removal touches only these, never a whole folder it doesn't know
 HOME_FILES = ("pultd.py", "pult_hook.py", "pult_render.py", "pult_web.py", "pult_i18n.py", "pult_stt.py", "pult_load.py", "pult_attn.py", "pult_brief.py", "pult_os.py", "pult_setup.py",
-              "pultctl.py", "pult_tab.py", "pult-tab.sh", "requirements.txt", "state.db", "state.db-journal", "state.db-wal",
-              "state.db-shm", "pult.sock", "venv", "__pycache__")
+              "pultctl.py", "pult_tab.py", "pult-tab.sh", "pult-tab.exe", "pult-tab.exe.new", "requirements.txt", "state.db",
+              "state.db-journal", "state.db-wal", "state.db-shm", "pult.sock", "pult.sock.tmp", "venv", "__pycache__")
 CONF_FILES = ("env", "env.tmp", "tab.json", "tab-off")
 TAB_STUB = ('#!/bin/sh\n# Pult was removed. This stub runs Claude Code directly, so VS Code tabs keep working:\n'
             '# remove the claudeCode.claudeProcessWrapper line from the VS Code settings, then delete this folder.\n'
@@ -964,18 +1124,25 @@ TAB_STUB = ('#!/bin/sh\n# Pult was removed. This stub runs Claude Code directly,
 
 
 def remove_known(folder, names, keep=()):
+    """Removes these names in folder, then the folder if it's empty. What can't go (Windows won't delete a program
+    that runs — the uninstaller's own Python) is returned, not fatal."""
+    left = []
     for n in names:
         p = folder / n
         if n in keep or not (p.exists() or p.is_symlink()):
             continue
-        if p.is_dir() and not p.is_symlink():
-            shutil.rmtree(p)
-        else:
-            p.unlink()
+        try:
+            if p.is_dir() and not p.is_symlink():
+                shutil.rmtree(p)
+            else:
+                p.unlink()
+        except OSError:
+            left.append(p)
     try:
         folder.rmdir()                          # only if nothing else is left
     except OSError:
         pass
+    return left
 
 
 def cmd_uninstall():
@@ -992,22 +1159,30 @@ def cmd_uninstall():
         hooks_set(False)
     svc_stop(lbl)
     SVC.remove(lbl)
-    launcher = BIN / "pult"
+    launcher = BIN / ("pult.cmd" if WIN else "pult")
     try:
-        if not os.environ.get("PULT_HOME") and LAUNCHER_MARK in launcher.read_text(encoding="utf-8"):
+        if not os.environ.get("PULT_HOME") and LAUNCHER_MARK in launcher.read_text(encoding="utf-8", errors="replace"):
             launcher.unlink()
-    except (OSError, UnicodeDecodeError):
+    except OSError:
         pass
     users = wrapper_users()
-    if users:
+    if users and WIN:
+        # the stub keeps pult_tab.py inside and runs on the base pythonw: the environment can go
+        make_tab_exe(stub=True)
+        left = remove_known(HOME, HOME_FILES, keep=("pult-tab.exe",))
+        say(T("cli.un.tab", path=tilde(HOME / TAB_FILE), home=tilde(HOME),
+              settings=", ".join(tilde(f) for f in users)))
+    elif users:
         # VS Code would fail to start Claude tabs without the wrapper file: leave a pass-through stub
-        remove_known(HOME, HOME_FILES, keep=("pult-tab.sh",))
+        left = remove_known(HOME, HOME_FILES, keep=("pult-tab.sh",))
         (HOME / "pult-tab.sh").write_text(TAB_STUB, encoding="utf-8")
         (HOME / "pult-tab.sh").chmod(0o755)
         say(T("cli.un.tab", path=tilde(HOME / "pult-tab.sh"), home=tilde(HOME),
               settings=", ".join(tilde(f) for f in users)))
     else:
-        remove_known(HOME, HOME_FILES)
+        left = remove_known(HOME, HOME_FILES)
+    if left:
+        say(T("cli.un.left", paths=", ".join(tilde(p) for p in left)))
     if drop_conf:
         remove_known(ENV_FILE.parent, CONF_FILES + (ENV_FILE.name,))
         for p in (LOG, TAB_LOG):

@@ -2,6 +2,45 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.9.26 — 2026-10-21
+
+- Restarting or stopping Pult no longer cuts off its own sessions without a word. `pult busy` asks the daemon what a
+  restart would cut off: sessions started from Telegram or the app with a turn running, prompts queued, or background
+  tasks, subagents included, even once the session's turn has ended. Without a terminal (a script, an agent),
+  `pult restart`, `pult stop`, `install.sh` and `install.ps1` refuse while something runs; in a terminal they ask, "no"
+  by default; `PULT_FORCE=1` goes ahead anyway. Before, an update run by a script killed a background subagent in a
+  session started from the app, and the session never learned of it.
+- On macOS, the daemon's Claude processes are found when asked from inside one of its own sessions: `pgrep` there
+  leaves out the asker's ancestors unless told otherwise.
+- Home opens with "Running now": every session with a turn in progress, every session with background tasks, every
+  task without Claude still running — the earliest started on top in each kind, so new ones come in below. A row is
+  two lines: the title with its time chip, then the project and what it does now. They leave the project blocks
+  below, and the finished tasks without Claude stay at the bottom: nothing shows twice.
+- The app's chips with a running time — "working 14 s", "running 25 min" for a task without Claude, and now
+  "background 3 min" — keep one width as the time ticks, all of them the same: the digits are tabular and each chip
+  is as wide as its longest form ("working 59 min"); past an hour they show whole hours. "Background" counts from when
+  Pult first saw the oldest task still running and pulses too, in grey, on the board and on the session screen; a tap
+  opens the task card as before.
+- "Working N" in the app counts from the owner's own prompt: a turn Claude starts by itself — a background task or a
+  subagent reported back — goes on with the same work instead of starting the clock again. Telegram's turn messages
+  keep each turn's own time. After a restart the start comes from the transcript.
+- A subagent that hands its report back itself (an `<agent-message>` before its task notification) starts Claude's own
+  turn, like a finished background task: shown as "Background task finished", not as the owner's prompt.
+- Reading isn't deciding: an outcome that waits for the owner's decision (the model named what is needed) or a turn that
+  broke off stays in "Your move" after the session is opened, until the owner answers, writes to the session or presses
+  "Got it" — now also on the outcome card at the end of the session. A plain report, or "your move" guessed without the
+  model, is put to rest by opening the session, as before.
+- The Home strip no longer cuts its text on a phone: the "where you are" and "limit · CPU" chips are now small tiles,
+  a label over a value ("🔄 Auto" over "away 12 min", "limit" and "CPU" over their numbers). A style meant only for
+  the first chip clipped every piece of the second one — "lim… · CPU 1…".
+- Groundwork for Windows. Windows itself is not released yet: it waits for a check on a real machine. The daemon's
+  link can run over 127.0.0.1 with a key from the link file; the VS Code tab wrapper becomes `pult-tab.exe`, which runs
+  claude without a console window and ends it together with the tab; hooks use Claude Code's exec form (no shell); a
+  Task Scheduler task starts Pult at logon; there is an `install.ps1`. GitHub Actions now run on Windows too, with a
+  real install and removal.
+- `pult run` keeps the last line of output when lines end with CRLF. The tail used to come out empty.
+- Checking whether a process is still there no longer uses `os.kill(pid, 0)`: on Windows that call ends the process.
+
 ## 0.9.25 — 2026-10-20
 
 - A Telegram message with choice buttons says what was chosen once it's done: "Which session?", "Which project

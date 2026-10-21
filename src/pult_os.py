@@ -103,6 +103,15 @@ def system_lang():
         m = re.search(r'\(\s*"?([A-Za-z]{2})', run("defaults", "read", "-g", "AppleLanguages", timeout=3) or "")
         if m:
             return m.group(1).lower()
+    if KIND == "windows":
+        try:
+            import ctypes
+            import locale
+            name = locale.windows_locale.get(ctypes.windll.kernel32.GetUserDefaultUILanguage(), "")
+        except (OSError, AttributeError):
+            name = ""
+        if name:
+            return name[:2].lower()
     for k in ("LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"):      # the order gettext reads them in
         v = os.environ.get(k, "").split(":")[0]
         if v and v != "POSIX" and not v.startswith("C"):
@@ -115,7 +124,7 @@ def describe():
     if KIND == "mac":
         name = "macOS " + (platform.mac_ver()[0] or "?")
     elif KIND == "windows":
-        name = "Windows " + platform.release()
+        name = "Windows %s (build %s)" % (platform.release(), platform.version().split(".")[-1] or "?")
     else:
         try:
             name = platform.freedesktop_os_release().get("PRETTY_NAME") or ""
@@ -163,6 +172,8 @@ def input_idle():
         return int(m.group(1)) / 1e9 if m else None
     if KIND == "linux":
         return linux_idle()
+    if KIND == "windows":
+        return win_idle()
     return None
 
 
@@ -181,6 +192,8 @@ def screen_locked():
     if KIND == "linux" and os.environ.get("XDG_SESSION_ID") and shutil.which("loginctl"):
         out = run("loginctl", "show-session", os.environ["XDG_SESSION_ID"], "-p", "LockedHint", "--value") or ""
         return {"yes": True, "no": False}.get(out.strip())
+    if KIND == "windows":
+        return win_locked()
     return None
 
 
@@ -241,6 +254,8 @@ def idle_source():
     if KIND == "linux":
         linux_idle()
         return _last[0] or "none"
+    if KIND == "windows":
+        return "GetLastInputInfo" if win_idle() is not None else "none"
     return "none"
 
 
@@ -271,6 +286,192 @@ def _x11_idle_ms():
     if not xss.XScreenSaverQueryInfo(dpy, x11.XDefaultRootWindow(dpy), info):
         return None
     return info.contents.idle
+
+
+# ---------- the link between the daemon and the hook, the tab wrapper, the `pult` command ----------
+#
+# macOS and Linux: a unix socket, mode 600. Windows (Python has no unix sockets there): 127.0.0.1 and a free port;
+# the link file, where the socket would be, holds {"port", "key", "pid"} — it is in the user's own folder, and the
+# key is the first line of every connection. PULT_LINK=tcp turns the Windows way on elsewhere too (the checks).
+# pult_hook.py and pult_tab.py repeat link_connect: they import nothing of Pult's.
+
+def link_tcp():
+    return KIND == "windows" or os.environ.get("PULT_LINK") == "tcp"
+
+
+def link_connect(path, timeout=1.0):
+    """A connected socket to the daemon; OSError (or ValueError: a broken link file) when there is none."""
+    import socket
+    if not link_tcp():
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        try:
+            s.connect(path)
+        except OSError:
+            s.close()
+            raise
+        return s
+    import json
+    with open(path, encoding="utf-8") as f:
+        link = json.load(f)
+    try:
+        port, key = int(link["port"]), str(link["key"])
+    except (KeyError, TypeError) as e:
+        raise ValueError("bad link file") from e
+    s = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+    s.sendall(key.encode() + b"\n")
+    return s
+
+
+# ---------- Windows: processes, keyboard idle, the lock screen ----------
+#
+# ctypes with the argument types spelled out: without them a 64-bit handle is cut to 32 bits.
+
+_w = {}
+
+
+def _win():
+    """kernel32 and user32 with the functions Pult calls; set up on first use."""
+    if not _w:
+        import ctypes
+        from ctypes import wintypes as t
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        u = ctypes.WinDLL("user32", use_last_error=True)
+        for f, res, args in (
+                (k.OpenProcess, t.HANDLE, [t.DWORD, t.BOOL, t.DWORD]),
+                (k.GetExitCodeProcess, t.BOOL, [t.HANDLE, ctypes.POINTER(t.DWORD)]),
+                (k.TerminateProcess, t.BOOL, [t.HANDLE, t.UINT]),
+                (k.CloseHandle, t.BOOL, [t.HANDLE]),
+                (k.CreateToolhelp32Snapshot, t.HANDLE, [t.DWORD, t.DWORD]),
+                (k.Process32FirstW, t.BOOL, [t.HANDLE, ctypes.c_void_p]),
+                (k.Process32NextW, t.BOOL, [t.HANDLE, ctypes.c_void_p]),
+                (k.ProcessIdToSessionId, t.BOOL, [t.DWORD, ctypes.POINTER(t.DWORD)]),
+                (k.GetTickCount, t.DWORD, []),
+                (u.GetLastInputInfo, t.BOOL, [ctypes.c_void_p]),
+                (u.OpenInputDesktop, t.HANDLE, [t.DWORD, t.BOOL, t.DWORD]),
+                (u.SwitchDesktop, t.BOOL, [t.HANDLE]),
+                (u.CloseDesktop, t.BOOL, [t.HANDLE])):
+            f.restype, f.argtypes = res, args
+        _w.update(k=k, u=u, ctypes=ctypes, t=t)
+    return _w
+
+
+def win_session():
+    """The Windows session this process runs in: 0 is the services' one — no screen, no keyboard."""
+    w = _win()
+    sid = w["t"].DWORD()
+    return sid.value if w["k"].ProcessIdToSessionId(os.getpid(), w["ctypes"].byref(sid)) else None
+
+
+def win_idle():
+    """Seconds since the last keyboard or mouse input in this user's session, or None (the services' session)."""
+    if win_session() in (0, None):
+        return None
+    w = _win()
+
+    class Info(w["ctypes"].Structure):
+        _fields_ = [("cbSize", w["t"].UINT), ("dwTime", w["t"].DWORD)]
+    li = Info()
+    li.cbSize = w["ctypes"].sizeof(li)
+    if not w["u"].GetLastInputInfo(w["ctypes"].byref(li)):
+        return None
+    return ((w["k"].GetTickCount() - li.dwTime) & 0xFFFFFFFF) / 1000     # both wrap around after 49.7 days
+
+
+def win_locked():
+    """True while the input goes to another desktop than the user's — the lock screen (or a screen saver, or a UAC
+    prompt for a moment); None in the services' session, where there is no input desktop at all."""
+    if win_session() in (0, None):
+        return None
+    w = _win()
+    h = w["u"].OpenInputDesktop(0, False, 0x0100)          # DESKTOP_SWITCHDESKTOP
+    if not h:
+        return True
+    try:
+        return not w["u"].SwitchDesktop(h)                 # switching to the desktop we are on: fails only when locked
+    finally:
+        w["u"].CloseDesktop(h)
+
+
+def pid_alive(pid):
+    """Whether the process exists. Not os.kill(pid, 0) on Windows: there it terminates the process."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return True
+    if KIND != "windows":
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+    w = _win()
+    h = w["k"].OpenProcess(0x1000, False, pid)               # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return w["ctypes"].get_last_error() == 5            # access denied: it exists, it isn't ours
+    try:
+        code = w["t"].DWORD()
+        return not w["k"].GetExitCodeProcess(h, w["ctypes"].byref(code)) or code.value == 259     # STILL_ACTIVE
+    finally:
+        w["k"].CloseHandle(h)
+
+
+def win_procs():
+    """Windows: {pid: (parent pid, program file name)} of every process — one Toolhelp snapshot."""
+    w = _win()
+    c, t = w["ctypes"], w["t"]
+
+    class Entry(c.Structure):
+        _fields_ = [("dwSize", t.DWORD), ("cntUsage", t.DWORD), ("th32ProcessID", t.DWORD),
+                    ("th32DefaultHeapID", c.c_size_t), ("th32ModuleID", t.DWORD), ("cntThreads", t.DWORD),
+                    ("th32ParentProcessID", t.DWORD), ("pcPriClassBase", c.c_long), ("dwFlags", t.DWORD),
+                    ("szExeFile", c.c_wchar * 260)]
+    snap = w["k"].CreateToolhelp32Snapshot(2, 0)             # TH32CS_SNAPPROCESS
+    if not snap or snap == c.c_void_p(-1).value:
+        return {}
+    out, e = {}, Entry()
+    e.dwSize = c.sizeof(e)
+    try:
+        ok = w["k"].Process32FirstW(snap, c.byref(e))
+        while ok:
+            out[e.th32ProcessID] = (e.th32ParentProcessID, e.szExeFile)
+            ok = w["k"].Process32NextW(snap, c.byref(e))
+    finally:
+        w["k"].CloseHandle(snap)
+    return out
+
+
+def children(pid, name=None):
+    """Direct children of a process (pids), only those whose program is name ("claude") when given."""
+    pid = int(pid)
+    if KIND == "windows":
+        want = name and name.lower()
+        return [p for p, (pp, exe) in win_procs().items() if pp == pid and
+                (not want or exe.lower() in (want, want + ".exe"))]
+    # macOS pgrep leaves out the asker's own ancestors unless -a: asked from a session Pult started, its claude
+    # would be missing (Linux pgrep has no such rule, and its -a means something else)
+    out = run("pgrep", *(["-a"] if KIND == "mac" else []), "-P", str(pid), *(["-f", name] if name else [])) or ""
+    return [int(x) for x in out.split()]
+
+
+def kill(pid):
+    """Ends a process at once (Windows: TerminateProcess; elsewhere SIGKILL). Whether it was there to end."""
+    if KIND != "windows":
+        try:
+            os.kill(int(pid), 9)
+            return True
+        except OSError:
+            return False
+    w = _win()
+    h = w["k"].OpenProcess(0x0001, False, int(pid))          # PROCESS_TERMINATE
+    if not h:
+        return False
+    try:
+        return bool(w["k"].TerminateProcess(h, 1))
+    finally:
+        w["k"].CloseHandle(h)
 
 
 # ---------- the load on the computer: processes, processor, memory ----------
@@ -585,12 +786,128 @@ class Systemd:
         return None if out is None else out.strip() == "yes"
 
 
+def xml_esc(s):
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
+def win_args(args):
+    """A Windows command line from a list (the quoting CreateProcess and Python's argv parsing agree on)."""
+    return subprocess.list2cmdline([str(a) for a in args])
+
+
+class Schtasks:
+    """Windows: a Task Scheduler task of this user, started at logon in the user's own session (a Windows service
+    would live in the services' session, without the keyboard idle time) and restarted after a failure. schtasks.exe
+    needs no administrator rights for a task that runs as the user who creates it.
+
+    A task carries no environment variables: the daemon gets the user's own. The task's definition is kept next to
+    Pult (<label>.task.xml) — it is what `pult start` registers again. The state comes from the daemon's link file
+    (its pid; pult.sock holds the port, the key and the pid on Windows)."""
+    DEFAULT = "Pult"
+
+    def __init__(self, folder=None):
+        self.folder = Path(folder or os.environ.get("PULT_HOME") or HOME / ".local" / "share" / "pult")
+        self.link = Path(os.environ.get("PULT_SOCK") or self.folder / "pult.sock")
+
+    def path(self, lbl):
+        return self.folder / (lbl + ".task.xml")
+
+    def find(self, script):
+        for p in sorted(self.folder.glob("*.task.xml")):
+            try:
+                text = p.read_text(encoding="utf-16")
+            except (OSError, UnicodeError):
+                continue
+            if xml_esc(script) in text:
+                return p.name[:-len(".task.xml")]
+        return None
+
+    @staticmethod
+    def user():
+        import getpass
+        dom = os.environ.get("USERDOMAIN")
+        return "%s\\%s" % (dom, getpass.getuser()) if dom else getpass.getuser()
+
+    def xml(self, argv, cwd):
+        user = xml_esc(self.user())
+        return "\n".join([
+            '<?xml version="1.0" encoding="UTF-16"?>',
+            '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">',
+            "  <RegistrationInfo><Description>Pult: Claude Code sessions from Telegram. Written by `pult install`, "
+            "removed by `pult uninstall`.</Description></RegistrationInfo>",
+            "  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>%s</UserId></LogonTrigger></Triggers>" % user,
+            '  <Principals><Principal id="Author"><UserId>%s</UserId><LogonType>InteractiveToken</LogonType>'
+            "<RunLevel>LeastPrivilege</RunLevel></Principal></Principals>" % user,
+            "  <Settings>",
+            "    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>",
+            "    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>",
+            "    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>",
+            "    <AllowHardTerminate>true</AllowHardTerminate>",
+            "    <StartWhenAvailable>true</StartWhenAvailable>",
+            "    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>",
+            "    <IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings>",
+            "    <AllowStartOnDemand>true</AllowStartOnDemand>",
+            "    <Enabled>true</Enabled>",
+            "    <Hidden>false</Hidden>",
+            "    <RunOnlyIfIdle>false</RunOnlyIfIdle>",
+            "    <WakeToRun>false</WakeToRun>",
+            "    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>",
+            "    <Priority>7</Priority>",
+            "    <RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure>",
+            "  </Settings>",
+            '  <Actions Context="Author"><Exec><Command>%s</Command><Arguments>%s</Arguments>'
+            "<WorkingDirectory>%s</WorkingDirectory></Exec></Actions>" % (
+                xml_esc(argv[0]), xml_esc(win_args(argv[1:])), xml_esc(cwd)),
+            "</Task>", ""])
+
+    def write(self, lbl, argv, env, log, cwd):
+        self.folder.mkdir(parents=True, exist_ok=True)
+        self.path(lbl).write_text(self.xml(argv, cwd), encoding="utf-16")      # schtasks reads UTF-16 only
+        return self.path(lbl)
+
+    def pid(self):
+        try:
+            with open(self.link, encoding="utf-8") as f:
+                return int(__import__("json").load(f)["pid"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def state(self, lbl):
+        pid = self.pid()
+        return ("running", str(pid)) if pid and pid_alive(pid) else (None, None)
+
+    def problem(self):
+        return None if shutil.which("schtasks") else "no schtasks.exe"
+
+    def stop(self, lbl):
+        run("schtasks", "/End", "/TN", lbl, timeout=30)
+        pid = self.pid()
+        exe = win_procs().get(pid, (0, ""))[1].lower() if pid else ""
+        if exe in ("pythonw.exe", "python.exe"):
+            kill(pid)                          # started by hand, not by the task: /End doesn't reach it
+        return True
+
+    def start(self, lbl):
+        if run("schtasks", "/Create", "/TN", lbl, "/XML", str(self.path(lbl)), "/F", timeout=30) is None:
+            return False
+        return run("schtasks", "/Run", "/TN", lbl, timeout=30) is not None
+
+    def remove(self, lbl):
+        run("schtasks", "/Delete", "/TN", lbl, "/F", timeout=30)
+        self.path(lbl).unlink(missing_ok=True)
+
+    def linger(self):
+        return None
+
+
 def service_manager(folder=None):
-    return Launchd(folder) if KIND == "mac" else Systemd(folder)
+    return Launchd(folder) if KIND == "mac" else Schtasks(folder) if KIND == "windows" else Systemd(folder)
 
 
 def service_path(bin_dir):
     """PATH for the daemon's service: Pult's command first, then where Claude Code and the tools usually are."""
+    if KIND == "windows":                       # the task has no environment of its own: this is only for lookups
+        return os.pathsep.join([str(bin_dir), os.environ.get("PATH", "")])
     extra = "/opt/homebrew/bin:/usr/local/bin" if KIND == "mac" else "/usr/local/bin"
     tail = ":/snap/bin" if KIND == "linux" else ""
     return "%s:%s:/usr/bin:/bin:/usr/sbin:/sbin%s" % (bin_dir, extra, tail)
