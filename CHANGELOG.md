@@ -2,6 +2,13 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.9.27 — 2026-10-21
+
+- After a restart in the middle of a turn, the turn and the start of the owner's run now appear together: for a
+  moment the app could count "working N" from the turn instead.
+- Tests: two checks of the run's start wait for the daemon to read the hook's event — on Windows the hook can finish
+  first. That is why 0.9.26's tests failed on Windows; macOS and Linux were green.
+
 ## 0.9.26 — 2026-10-21
 
 - Restarting or stopping Pult no longer cuts off its own sessions without a word. `pult busy` asks the daemon what a

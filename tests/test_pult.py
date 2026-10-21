@@ -1612,6 +1612,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
     async def test_background_tasks(self):
         # turn over, its background command still running → a line in the result; once it ends, Claude starts a turn
         await run_hook(ev("UserPromptSubmit", prompt="Собери проект в фоне"))
+        await until(lambda: SID in self.p.live and self.p.live[SID].turn)
         run0 = self.p.live[SID].run                                 # the owner's prompt sets the work going
         self.assertEqual(run0, self.p.live[SID].turn.started)
         await run_hook(ev("PostToolUse", tool_name="Bash", tool_input={"command": "make", "run_in_background": True}))
@@ -1647,6 +1648,8 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("task-notification", self.p.live[SID].title or "")
         # a subagent hands its report back itself: also Claude's own turn, not "You: Another Claude session…"
         await run_hook(ev("UserPromptSubmit", prompt="Позови ревьюера"))
+        # the hook may be done before the daemon has read it (Windows, over TCP): wait for the turn it starts
+        await until(lambda: self.p.live[SID].turn and self.p.live[SID].turn.prompt == "Позови ревьюера")
         run1 = self.p.live[SID].run
         self.assertGreater(run1, run0)                              # a new prompt of the owner — a new run
         await run_hook(ev("Stop", last_assistant_message="Ревьюер смотрит", background_tasks=[

@@ -82,7 +82,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 STT_MAX = 4 * 1024 * 1024       # bytes of one recording from the app (5 min at 32 kbit/s ≈ 1.2 MB; base64 must fit the 8 MB frame)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.9.26"
+VERSION = "0.9.27"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -1370,14 +1370,15 @@ class Pult:
             if lv.turn is None:
                 if lv.title is None:
                     await self.refresh_title(lv)
-                began = await asyncio.to_thread(prompt_started, lv.transcript) if lv.transcript else None
+                # read before the turn appears, so the app never sees it without its start and its run's
+                began, own = await asyncio.to_thread(
+                    lambda p: (prompt_started(p), prompt_started(p, owner=True)), lv.transcript) \
+                    if lv.transcript else (None, None)
                 t = self.start_turn(lv)
                 if began and began < t.started:
                     t.started = began              # the turn began before Pult saw it (a restart mid-turn)
                     t.changed.set()
-                if not lv.run:
-                    own = await asyncio.to_thread(prompt_started, lv.transcript, owner=True) if lv.transcript else None
-                    lv.run = min(own or t.started, t.started)
+                lv.run = lv.run or min(own or t.started, t.started)
             t = lv.turn
             t.n += 1
             t.last = time.time()
