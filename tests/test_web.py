@@ -179,9 +179,17 @@ class TranscriptTest(unittest.TestCase):
                 "origin": {"kind": "human"}, "humanTurn": True}}),
             json.dumps({"type": "attachment", "timestamp": "2026-10-17T20:56:19.000Z", "attachment": {"type": "total_tokens_reminder"}}),
             json.dumps({"type": "queue-operation", "operation": "remove", "content": "а меня ты обновил?", "reason": "absorbed_mid_turn"}),
+            # a session through the SDK (Pult's own): the same attachment has no origin at all (probe_midturn.py,
+            # 2.1.300); a background task's report in that shape is Claude's own, not the owner's
+            json.dumps({"type": "attachment", "timestamp": "2026-10-21T15:35:52.582Z", "attachment": {
+                "type": "queued_command", "prompt": "стоп, не туда", "commandMode": "prompt"}}),
+            json.dumps({"type": "attachment", "timestamp": "2026-10-21T15:35:53.000Z", "attachment": {
+                "type": "queued_command", "commandMode": "prompt", "prompt":
+                "<task-notification><task-id>b1</task-id><status>completed</status></task-notification>"}}),
         ]) + "\n")
         items = PW.transcript_page(str(p3))["items"]
-        self.assertEqual([(i["k"], i["text"], i.get("mid")) for i in items], [("user", "а меня ты обновил?", True)])
+        self.assertEqual([(i["k"], i["text"], i.get("mid")) for i in items],
+                         [("user", "а меня ты обновил?", True), ("user", "стоп, не туда", True)])
         self.assertEqual(page["items"][2]["out"], "строки файла")
         self.assertIsNone(page["before"])
         self.assertEqual(page["end"], self.p.read_bytes().rfind(b"\n") + 1)      # the partial line is not consumed

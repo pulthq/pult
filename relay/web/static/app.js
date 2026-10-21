@@ -1169,6 +1169,32 @@ function Session({ sid }) {
   </div>`;
 }
 
+// the new-task form picks with the app's own lists, not native <select>s: in Telegram on Android the project list
+// would not let the owner pick (2026-10-21), and the 30-s poll reorders projects (what needs you first), so the rows
+// could move under the finger — a list is frozen while it is open. The form starts on the project last started here,
+// never on whatever needs you first: that is how a "have a look" went to the wrong project (2026-10-21)
+const LAST_NEW = {
+  get() { try { return localStorage.getItem("pult.newPkey") || ""; } catch (e) { return ""; } },
+  set(k) { try { localStorage.setItem("pult.newPkey", k); } catch (e) {} },
+};
+
+function ProjectPick({ projects, cur, onPick, onClose }) {
+  return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick tall fixed">
+    <div class="q-t pick-h">${t("new.pick.title")}<button class="x" aria-label=${t("close")} onClick=${onClose}>×</button></div>
+    ${projects.map((x) => html`<button key=${x.pkey} class=${"opt" + (x.pkey === cur ? " on" : "")} onClick=${() => onPick(x.pkey)}>${x.name}</button>`)}</div>`;
+}
+
+function ChoicePick({ model, effort, onPick, onClose }) {
+  const col = (title, items, on, key) => html`<div class="pick-col"><div class="pick-t">${title}</div>
+    ${items.map(([v, label]) => html`<button key=${v} class=${"opt" + (v === on ? " on" : "")} onClick=${() => onPick({ [key]: v })}>${label}</button>`)}</div>`;
+  return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick tall fixed">
+    <div class="q-t pick-h">${t("model.pick")}<button class="x" aria-label=${t("close")} onClick=${onClose}>×</button></div>
+    <div class="pick-cols">
+      ${col(t("model"), MODELS.map(([m, label]) => [m, m ? label : t("pick.default")]), model, "model")}
+      ${col(t("effort"), EFFORTS.map((e) => [e, effortName(e)]), effort, "effort")}
+    </div></div>`;
+}
+
 function NewTask({ pkey }) {
   const [d, err] = useLive(() => api("projects"), [], () => false);
   const [p, setP] = useState(pkey || "");
@@ -1176,35 +1202,42 @@ function NewTask({ pkey }) {
   const [busy, setBusy] = useState(false);
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
+  const [sheet, setSheet] = useState(null);         // {k: "project", list} — the list as it was when opened — or {k: "model"}
   const a = useAttach();
   const v = useRecorder((w) => setText((c) => (c ? c.replace(/\s+$/, "") + " " : "") + w));
-  useEffect(() => { if (d && !p && d.projects.length) setP(d.projects[0].pkey); }, [d]);   // the busiest, most recent first
+  useEffect(() => {
+    const last = LAST_NEW.get();
+    if (d && !p && last && d.projects.some((x) => x.pkey === last)) setP(last);
+  }, [d]);
   if (!d) return html`<${Loading} err=${err}/>`;
   const send = async () => {
     setBusy(true);
-    try { const r = await api("new", { pkey: p, text, files: a.payload(), model, effort }); haptic("success"); go("#/s/" + r.sid); }
+    try {
+      const r = await api("new", { pkey: p, text, files: a.payload(), model, effort });
+      LAST_NEW.set(p); haptic("success"); go("#/s/" + r.sid);
+    }
     catch (e) { alertBox(e.message); }
     setBusy(false);
   };
+  const cur = d.projects.find((x) => x.pkey === p);
+  const close = () => setSheet(null);
   return html`<div><h2>${t("new.title")}</h2>
     <label class="lbl">${t("new.project")}</label>
-    <select value=${p} onChange=${(e) => setP(e.target.value)}>
-      <option value="">${t("new.pick")}</option>
-      ${d.projects.map((x) => html`<option value=${x.pkey}>${x.name}</option>`)}
-    </select>
+    <button class=${"field" + (p ? "" : " empty")} onClick=${() => setSheet({ k: "project", list: d.projects })}>
+      <span>${p ? (cur ? cur.name : p) : t("new.pick")}</span><span class="dim">▾</span></button>
     <label class="lbl">${t("new.what")}</label>
     <textarea ref=${plainField} rows="6" placeholder=${t("new.placeholder")} value=${text} onKeyDown=${sendKey(() => { if (!busy && p && (text.trim() || a.files.length)) send(); }, setText)} onInput=${(e) => setText(e.target.value)}/>
     <${Thumbs} a=${a}/>
     <${Attach} a=${a} disabled=${busy} wide=${true}/>
     ${d.stt ? html`<${Mic} v=${v} disabled=${busy} wide=${true}/>` : ""}
-    <div class="row2">
-      <label class="lbl">${t("model")}<select value=${model} onChange=${(e) => setModel(e.target.value)}>
-        ${MODELS.map(([m, label]) => html`<option key=${m} value=${m}>${m ? label : t(label)}</option>`)}</select></label>
-      <label class="lbl">${t("effort")}<select value=${effort} onChange=${(e) => setEffort(e.target.value)}>
-        ${EFFORTS.map((x) => html`<option key=${x} value=${x}>${x ? effortName(x) : t("effort.default")}</option>`)}</select></label>
-    </div>
+    <label class="lbl">${t("model.pick")}</label>
+    <button class="field" onClick=${() => setSheet({ k: "model" })}>
+      <span>${model ? MODELS.find(([m]) => m === model)[1] : t("pick.default")} · ${effort ? effortName(effort) : t("pick.default")}</span><span class="dim">▾</span></button>
     <button class="btn wide" disabled=${busy || !p || (!text.trim() && !a.files.length)} onClick=${send}>${t("new.start")}</button>
     <div class="dim small">${t("new.about")}</div>
+    ${sheet && sheet.k === "project" && html`<${ProjectPick} projects=${sheet.list} cur=${p} onClose=${close} onPick=${(k) => { setP(k); haptic("success"); close(); }}/>`}
+    ${sheet && sheet.k === "model" && html`<${ChoicePick} model=${model} effort=${effort} onClose=${close}
+      onPick=${(c) => { if ("model" in c) setModel(c.model); if ("effort" in c) setEffort(c.effort); haptic("success"); }}/>`}
   </div>`;
 }
 

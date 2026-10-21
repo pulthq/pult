@@ -2,6 +2,19 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.9.29 — 2026-10-21
+
+- A message written while a session started from Telegram or the app is working now reaches Claude in that turn, at
+  its next step, as in a VS Code tab. Before, Pult held it until the turn's result, so "stop, wrong project" waited
+  out a ten-minute turn. The app shows such a message in the chat, marked as written during the turn.
+  `tests/probe_midturn.py` shows it on a real Claude Code (2.1.300).
+- Stop stops: messages still waiting in Pult are dropped instead of starting the next turn one by one, which had
+  made Stop look as if it did nothing. A message Claude Code already holds runs after the interrupt, as Claude Code
+  itself does.
+- New task: the project, the model and the effort are picked from the app's own lists instead of native drop-downs,
+  which failed to pick a project in Telegram on Android; a list stays as it was while it is open. The form starts on the
+  project last started from it, not on the project that needs you first, which sent a task to the wrong project.
+
 ## 0.9.28 — 2026-10-21
 
 - A session started from Telegram or the app no longer crashes when Claude reads a picture. A picture comes in the

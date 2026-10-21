@@ -272,12 +272,14 @@ def transcript_page(path, before=None, after=None, cwd=None, page=PAGE):
         kind = e.get("type")
         if kind == "attachment":
             # a message that reached Claude in the middle of its turn (written while it was busy): Claude Code keeps
-            # it as a queued_command attachment, not as a user message, and its own tab doesn't show it (2.1.301)
+            # it as a queued_command attachment, not as a user message, and its own tab doesn't show it (2.1.301).
+            # A tab marks it origin human; a session through the SDK has no origin at all (probe_midturn.py, 2.1.300)
             att = e.get("attachment") if isinstance(e.get("attachment"), dict) else {}
+            origin = att.get("origin")
             if att.get("type") == "queued_command" and att.get("commandMode", "prompt") == "prompt" \
-                    and (att.get("origin") or {}).get("kind") == "human":
+                    and (origin is None or isinstance(origin, dict) and origin.get("kind") == "human"):
                 text = _NOISE.sub("", _text_of(att.get("prompt"))).strip()
-                if text:
+                if text and not R.task_notes(text):
                     clean, paths = R.attachments(text)
                     item = {"k": "user", "text": _short(clean, TEXT_MAX), "ts": e.get("timestamp"), "mid": True}
                     if R.is_spoken(text):
