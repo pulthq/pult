@@ -119,6 +119,20 @@ def system_lang():
     return ""
 
 
+def console_encoding():
+    """The code page console programs write their output in when it goes to a pipe — Windows only: the console's
+    (cp866 on a Russian one), or the system's OEM one without a console. None elsewhere: there it is UTF-8."""
+    if KIND != "windows":
+        return None
+    try:
+        import ctypes
+        k = ctypes.windll.kernel32
+        cp = k.GetConsoleOutputCP() or k.GetOEMCP()
+    except (OSError, AttributeError):
+        return None
+    return "utf-8" if cp == 65001 else "cp%d" % cp
+
+
 def describe():
     """"macOS 26.0 (arm64)", "Ubuntu 24.04.1 LTS (aarch64)" — for the bug report."""
     if KIND == "mac":
@@ -824,6 +838,16 @@ class Schtasks:
 
     @staticmethod
     def user():
+        """DOMAIN\\name of this user as Windows knows it. Not USERDOMAIN: an ssh session sets it to WORKGROUP on a
+        computer outside a domain, and the task would name a user who doesn't exist (a real desktop, 2026-10-21)."""
+        try:
+            import ctypes
+            size = ctypes.c_ulong(512)
+            buf = ctypes.create_unicode_buffer(size.value)
+            if ctypes.windll.secur32.GetUserNameExW(2, buf, ctypes.byref(size)):       # 2 — NameSamCompatible
+                return buf.value
+        except (OSError, AttributeError):
+            pass
         import getpass
         dom = os.environ.get("USERDOMAIN")
         return "%s\\%s" % (dom, getpass.getuser()) if dom else getpass.getuser()

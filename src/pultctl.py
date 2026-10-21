@@ -5,6 +5,7 @@ environment is broken (`python3 ~/.local/share/pult/pultctl.py …`). `pult help
 Installing, the setup, the service, the report and removal live in pult_setup.py; here — the commands themselves,
 the status, the tab switch and `pult run`.
 """
+import codecs
 import collections
 import json
 import os
@@ -81,9 +82,50 @@ def cmd_tab(argv):
 RUN_TICK = 30           # seconds; the last output line goes to the daemon at most this often
 
 
-def last_state(line):
+def odd(text):
+    """UTF-8 a legacy code page makes by chance: cp866 "шаг" is E8 A0 A3, valid UTF-8 for "蠣". Real output keeps to
+    two-byte letters and the symbols of U+2000–U+2BFF (dashes, arrows, box drawing, progress bars)."""
+    return any(0x800 <= ord(c) < 0x2000 or 0x2C00 <= ord(c) < 0xFE00 for c in text)
+
+
+def decode_out(data, cp=None):
+    """A command's output as text: UTF-8 when it is (Python under `pult run`, git, node), else the console's code page
+    cp — what console programs write on Windows (cp866 on a Russian one); unreadable bytes become �."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode(cp or "utf-8", errors="replace")
+    return data.decode(cp, errors="replace") if cp and cp != "utf-8" and odd(text) else text
+
+
+def last_state(line, cp=None):
     """What a line of output shows in the end: after the last \\r that rewrote it, without the \\r of \\r\\n."""
-    return line.rstrip(b"\r").split(b"\r")[-1].decode(errors="replace").rstrip()[-300:]
+    return decode_out(line.rstrip(b"\r").split(b"\r")[-1], cp).rstrip()[-300:]
+
+
+def screen_writer(cp):
+    """How the output reaches the screen: bytes as they come, except a Windows console (cp set), which would read
+    them in its own code page — there they go as text, UTF-8 or that code page; a chunk may end mid-letter, the
+    decoder keeps it for the next one."""
+    if cp is None or not sys.stdout.isatty():
+        def write(chunk):
+            sys.stdout.buffer.write(chunk)
+            sys.stdout.buffer.flush()
+        return write
+    dec = codecs.getincrementaldecoder("utf-8")()
+
+    def write(chunk):
+        nonlocal dec
+        try:
+            text = dec.decode(chunk)
+            if cp != "utf-8" and odd(text):
+                raise UnicodeDecodeError("utf-8", chunk, 0, len(chunk), "a legacy code page")
+        except UnicodeDecodeError:
+            dec = codecs.getincrementaldecoder("utf-8")()
+            text = chunk.decode(cp, errors="replace")
+        sys.stdout.write(text)
+        sys.stdout.flush()
+    return write
 
 
 def tell(msg):
@@ -108,25 +150,29 @@ def cmd_run(argv):
     line = subprocess.list2cmdline(argv) if os.name == "nt" else " ".join(shlex.quote(a) for a in argv)
     tell({"op": "start", "id": rid, "cmd": line, "cwd": os.getcwd(),
           "pid": os.getpid()})
+    cp, env = S.pult_os.console_encoding(), None
+    if cp:          # Windows: Python writes to a pipe in the system's code page (cp1251) — ask it for UTF-8
+        env = dict(os.environ)
+        env.setdefault("PYTHONIOENCODING", "utf-8")
     try:
-        p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
     except OSError as e:
         print(T("cli.run.failed"), e, file=sys.stderr)
         tell({"op": "end", "id": rid, "code": 127, "tail": [str(e)]})
         return 127
     tail, part, tick = collections.deque(maxlen=40), b"", time.time()
+    show = screen_writer(cp)
     try:
         while True:
             chunk = os.read(p.stdout.fileno(), 65536)
             if not chunk:
                 break
-            sys.stdout.buffer.write(chunk)
-            sys.stdout.buffer.flush()
+            show(chunk)
             lines = (part + chunk).split(b"\n")
             part = lines.pop()
             # progress bars rewrite the line with \r — keep the line's last state; a line's own \r (Windows ends lines
             # with \r\n) is not a rewrite
-            tail.extend(x for x in (last_state(ln) for ln in lines) if x)
+            tail.extend(x for x in (last_state(ln, cp) for ln in lines) if x)
             if time.time() - tick >= RUN_TICK and tail:
                 tell({"op": "tick", "id": rid, "last": tail[-1]})
                 tick = time.time()
@@ -134,7 +180,7 @@ def cmd_run(argv):
         pass                                   # the command got Ctrl+C too; wait for it to finish
     code = p.wait()
     if part.strip():
-        tail.append(last_state(part))
+        tail.append(last_state(part, cp))
     tell({"op": "end", "id": rid, "code": code, "tail": list(tail)[-30:]})
     return code
 
