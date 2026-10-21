@@ -4,6 +4,7 @@
   ~/.local/share/pult/venv/bin/python tests/test_pult.py
 """
 import asyncio
+import gc
 import json
 import os
 import shutil
@@ -15,6 +16,7 @@ import types
 import unittest
 from unittest import mock
 import urllib.parse
+import warnings
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent / "src"
@@ -136,6 +138,34 @@ def fake_claude(folder, script):
     p.write_text("#!%s\n%s" % (sys.executable, script), encoding="utf-8")
     p.chmod(0o755)
     return p
+
+
+# a claude that speaks the SDK's stream: answers control requests, and on a prompt sends a tool result with a 1 MB
+# picture (in the message and again in tool_use_result, as Claude Code does — a 2 MB line) and the turn's result
+BIG_LINE = r'''import json, os, sys
+if "-v" in sys.argv:
+    print("2.1.301")
+    sys.exit(0)
+if os.name == "nt":
+    import msvcrt
+    msvcrt.setmode(0, os.O_BINARY)
+    msvcrt.setmode(1, os.O_BINARY)
+def out(m):
+    sys.stdout.buffer.write(json.dumps(m).encode() + b"\n")
+    sys.stdout.flush()
+for line in sys.stdin.buffer:
+    m = json.loads(line)
+    if m.get("type") == "control_request":
+        out({"type": "control_response", "response": {"subtype": "success", "request_id": m["request_id"], "response": {}}})
+    elif m.get("type") == "user":
+        pic = "A" * (1024 * 1024)
+        out({"type": "user", "uuid": "u1", "session_id": "s", "parent_tool_use_id": None,
+             "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": [
+                 {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": pic}}]}]},
+             "tool_use_result": {"type": "image", "file": {"base64": pic}}})
+        out({"type": "result", "subtype": "success", "duration_ms": 1, "duration_api_ms": 1, "is_error": False,
+             "num_turns": 1, "session_id": "s", "result": "ok"})
+'''
 
 
 def ev(name, **kw):
@@ -1390,6 +1420,67 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             d.task.cancel()
         finally:
             claude_agent_sdk.ClaudeSDKClient = old
+
+    async def test_driven_big_line(self):
+        # a picture Claude reads comes in the stream's line twice: one ~470 KB screenshot made a line over the SDK's
+        # own 1 MB limit, and a session from the app crashed in its first turn (2026-10-21). Through the real SDK,
+        # with a stand-in claude: a 2 MB line passes, and with the SDK's default the same line still cuts it off
+        fake = str(fake_claude(TMP / "claude-big-line", BIG_LINE))
+
+        class D(pultd.Driven):
+            def options(self):
+                o = super().options()
+                o.cli_path = fake
+                return o
+
+        d = D(self.p, SID, str(TMP))
+        d.q.put_nowait(("глянь", None))
+        await until(lambda: d.result.is_set() and not d.asking, timeout=20)
+        await asyncio.sleep(0.3)
+        self.assertFalse(d.task.done())               # the turn ended with its result, the session is alive
+        d.q.put_nowait(None)
+        await asyncio.wait_for(d.task, 10)
+        old, pultd.SDK_LINE_MAX = pultd.SDK_LINE_MAX, 1024 * 1024
+        try:
+            d = D(self.p, SID, str(TMP))
+            d.q.put_nowait(("глянь", None))
+            await asyncio.wait_for(d.task, 20)        # the old limit: the reader fails and the session ends
+            # after a reader error the SDK ends the process but leaves its stdout pipe to the garbage collector:
+            # collect while the loop still runs (in the daemon the collector does it in its own time)
+            del d
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", ResourceWarning)
+                gc.collect()
+                await asyncio.sleep(0.1)
+                gc.collect()
+        finally:
+            pultd.SDK_LINE_MAX = old
+
+    async def test_new_session_before_transcript(self):
+        # the app opens a new session at once, before Claude Code has written its file: an empty chat, not
+        # "transcript not found" (2026-10-21); without a process of Pult's own a missing file is still an error
+        from types import SimpleNamespace
+        base = TMP / "claude-projects-fresh"
+        (base / PKEY).mkdir(parents=True, exist_ok=True)
+        SID2 = "22222222-3333-4444-5555-666666666666"
+        self.store.touch_session(SID2, PKEY, path="/Users/x/proj", driven=True)
+        old, pultd.CLAUDE_PROJECTS = pultd.CLAUDE_PROJECTS, base
+        try:
+            with self.assertRaises(ValueError):
+                await self.p.api_session(SID2)
+            self.p.live_of(SID2, PKEY).driven = True
+            self.p.driven[SID2] = SimpleNamespace(busy=True, bg=set(), q=asyncio.Queue(), client=None,
+                                                  task=SimpleNamespace(cancel=lambda: None))
+            info = await self.p.api_session(SID2)
+            self.assertEqual((info["sid"], info["page"]["items"], info["page"]["end"]), (SID2, [], None))
+            # the file appears: the next read finds it
+            (base / PKEY / (SID2 + ".jsonl")).write_text(json.dumps(
+                {"type": "user", "message": {"role": "user", "content": "глянь"}, "timestamp": "2026-10-21T14:00:03.000Z"}) + "\n")
+            info = await self.p.api_session(SID2)
+            self.assertEqual([i.get("text") for i in info["page"]["items"]], ["глянь"])
+        finally:
+            pultd.CLAUDE_PROJECTS = old
+            self.p.driven.pop(SID2, None)
 
     async def test_project_counts(self):
         # the app's project list: open sessions, working, waiting — from `claude agents`, Pult's own sessions and

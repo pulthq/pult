@@ -61,6 +61,9 @@ MAX_RUNNING = 3          # turns from Telegram at once: Claude Code takes 250–
 MAX_DRIVEN = 5           # sessions from Telegram that hold a process
 DRIVEN_IDLE = 20 * 60    # an idle session from Telegram is closed; it continues via resume
 ASK_TIMEOUT = 6 * 3600   # how long to wait for a permission answer in a session from Telegram
+# the longest line of the Claude process's stream: a picture Claude reads comes in it twice (the result and
+# tool_use_result), and the SDK's own 1 MB cut off a session at one ~470 KB screenshot (2026-10-21)
+SDK_LINE_MAX = 64 * 1024 * 1024
 FOCUS_IDLE = 2 * 3600   # a topic forgets its current session after this long without the owner's text there
 VEHI = (10 * 60, 30 * 60, 60 * 60)   # long-turn milestones; with sound if the owner is away (decision 2026-10-16)
 TICK = 60                # s; refresh "working N min" this often, even without events
@@ -82,7 +85,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 STT_MAX = 4 * 1024 * 1024       # bytes of one recording from the app (5 min at 32 kbit/s ≈ 1.2 MB; base64 must fit the 8 MB frame)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.9.27"
+VERSION = "0.9.28"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -663,7 +666,7 @@ class Driven:
                   # in extension 2.1.300). Without a terminal, Claude Code itself turns cli into sdk-cli;
                   # claude-vscode is kept: the session shows up in the Claude tab and can be continued on the Mac
                   env={"PULT_DRIVEN": "1", "PULT_SOCK": SOCK, "CLAUDE_CODE_ENTRYPOINT": "claude-vscode"},
-                  stderr=lambda s: None)
+                  max_buffer_size=SDK_LINE_MAX, stderr=lambda s: None)
         if getattr(self, "want_model", None):
             kw["model"] = self.want_model
         if getattr(self, "want_effort", None):
@@ -2868,6 +2871,10 @@ class Pult:
             if p.exists():
                 return str(p), lv
         found = next(CLAUDE_PROJECTS.glob("*/%s.jsonl" % sid), None)
+        if not found and row and row["pkey"] and sid in self.driven:
+            # a session Pult has just started: Claude Code writes its file a moment later, and the app opens the
+            # new session at once — an empty chat for now, not "not found" (2026-10-21)
+            return str(CLAUDE_PROJECTS / row["pkey"] / (sid + ".jsonl")), lv
         if not found:
             raise ValueError(self.t("err.no_transcript"))
         return str(found), lv
