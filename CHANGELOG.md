@@ -2,6 +2,20 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.11.1 — 2026-10-22
+
+- **Crop and rotate a picture before sending it.** In the web app, tap an attached picture's thumbnail (the pencil
+  badge) to open an editor like Telegram's own: drag the frame's corners and sides or the frame itself, turn the
+  picture a quarter left, mirror it, or fix the proportion — free, original, 1:1, 4:3 or 16:9 (3:4 and 9:16 while
+  the frame stands upright). Back or Cancel leaves the picture as it was; tapping the thumbnail again reopens the
+  same edit. Telegram's own editor isn't available to Mini Apps, so this one is the app's own code, with no library.
+- The cut is made from the original file, and only the result is shrunk to 1600 px: a small part of a big screenshot
+  keeps its detail instead of being cut from an already shrunk copy.
+- While the editor is open, Telegram doesn't fold the window on a swipe down, so pulling the frame down can't close
+  the app.
+- `tools/editor_check.py` drives the editor on the stand in headless Chrome with touch emulation and checks the
+  result by the colour of each quarter of a test picture.
+
 ## 0.11.0 — 2026-10-22
 
 - **Usage pace on Resources.** Each limit — the week and the 5-hour window — now has a curve from its start to its

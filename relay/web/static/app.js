@@ -217,17 +217,39 @@ document.addEventListener("click", (e) => {
 
 // ---------- pictures from the phone ----------
 
-// a screenshot → a JPEG no wider than 1600 px, as base64: a few hundred kilobytes instead of megabytes
-async function shrink(file) {
-  const img = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = URL.createObjectURL(file); });
-  const k = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
-  const c = document.createElement("canvas");
-  c.width = Math.max(1, Math.round(img.naturalWidth * k)); c.height = Math.max(1, Math.round(img.naturalHeight * k));
-  c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
-  URL.revokeObjectURL(img.src);
-  const blob = await new Promise((ok) => c.toBlob(ok, "image/jpeg", 0.88));
+// an edit: quarter turns clockwise, mirrored or not (after the turn), the frame in shares of the turned picture, and
+// the frame's proportion (pixel width / height, null — free) with the chip that set it
+const FULL = { x: 0, y: 0, w: 1, h: 1 };
+const PLAIN = { rot: 0, flip: false, cut: FULL, ratio: null, rk: "free" };
+const plain = (e) => !e || (!e.rot && !e.flip && !e.cut.x && !e.cut.y && e.cut.w === 1 && e.cut.h === 1);
+const loadPic = (file) => new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = no; i.src = URL.createObjectURL(file); });
+const turned = (img, e) => (e.rot % 2 ? [img.naturalHeight, img.naturalWidth] : [img.naturalWidth, img.naturalHeight]);
+// the picture turned and mirrored, the frame `cut` cut out, at scale k → into canvas c. The browser turns a camera
+// photo upright by its EXIF itself, before any of this
+function paint(c, img, e, cut, k) {
+  const [W, H] = turned(img, e);
+  c.width = Math.max(1, Math.round(cut.w * W * k)); c.height = Math.max(1, Math.round(cut.h * H * k));
+  const g = c.getContext("2d");
+  g.imageSmoothingQuality = "high";
+  g.scale(c.width / (cut.w * W), c.height / (cut.h * H));
+  g.translate(-cut.x * W, -cut.y * H);
+  if (e.flip) { g.translate(W, 0); g.scale(-1, 1); }
+  g.translate(W / 2, H / 2); g.rotate(e.rot * Math.PI / 2);
+  g.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2);
+  return c;
+}
+// a picture and its edit → a JPEG no longer than 1600 px, as base64: a few hundred kilobytes instead of megabytes.
+// Always from the original file: a frame cut out of the shrunk copy would blur the small print
+async function bake(file, e, loaded) {
+  const img = loaded || await loadPic(file);
+  e = e || PLAIN;
+  const [W, H] = turned(img, e);
+  const c = paint(document.createElement("canvas"), img, e, e.cut, Math.min(1, 1600 / Math.max(e.cut.w * W, e.cut.h * H)));
+  if (!loaded) URL.revokeObjectURL(img.src);
+  const blob = await new Promise((ok, no) => c.toBlob((b) => (b ? ok(b) : no(new Error("toBlob"))), "image/jpeg", 0.88));
   const url = await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(blob); });
-  return { name: (file.name || "screenshot").replace(/\.[^.]+$/, "") + ".jpg", data: url.split(",")[1], preview: url };
+  return { name: (file.name || "screenshot").replace(/\.[^.]+$/, "") + ".jpg", data: url.split(",")[1], preview: url,
+    src: file, edit: plain(e) ? null : e };
 }
 const MAX_PICS = 3;
 function useAttach() {
@@ -236,10 +258,11 @@ function useAttach() {
     const list = [...(e.target.files || [])].slice(0, MAX_PICS - files.length);
     e.target.value = "";
     const out = [];
-    for (const f of list) { try { out.push(await shrink(f)); } catch (err) { alertBox(t("attach.failed")); } }
+    for (const f of list) { try { out.push(await bake(f)); } catch (err) { alertBox(t("attach.failed")); } }
     setFiles((cur) => cur.concat(out).slice(0, MAX_PICS));
   };
-  return { files, pick, remove: (i) => setFiles(files.filter((_, k) => k !== i)), clear: () => setFiles([]),
+  const edit = (i) => { const f = files[i]; emit("edit", { f, done: (x) => setFiles((cur) => cur.map((y) => (y === f ? x : y))) }); };
+  return { files, pick, edit, remove: (i) => setFiles(files.filter((_, k) => k !== i)), clear: () => setFiles([]),
     payload: () => files.map((f) => ({ name: f.name, data: f.data })) };
 }
 const CLIP = html`<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>`;
@@ -248,9 +271,149 @@ function Attach({ a, disabled, wide }) {
   return html`<label class=${"clip" + (wide ? " wide" : "") + (full || disabled ? " off" : "")} aria-label=${t("attach")}>${CLIP}${wide ? html`<span>${t("attach")}</span>` : ""}
     <input type="file" accept="image/*" multiple disabled=${disabled || full} onChange=${a.pick}/></label>`;
 }
+const PEN = html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20l1.2-4.6L15.8 4.8a2.3 2.3 0 0 1 3.3 3.3L8.6 18.8z"/></svg>`;
 function Thumbs({ a }) {
-  return a.files.length ? html`<div class="thumbs">${a.files.map((f, i) => html`<div class="thumb" key=${i}><img src=${f.preview} alt=""/>
-    <button aria-label=${t("attach.remove")} onClick=${() => a.remove(i)}>×</button></div>`)}</div>` : "";
+  return a.files.length ? html`<div class="thumbs">${a.files.map((f, i) => html`<div class="thumb" key=${i}>
+    <button class="thumb-ed" aria-label=${t("edit.open")} onClick=${() => a.edit(i)}><img src=${f.preview} alt=""/>${PEN}</button>
+    <button class="thumb-x" aria-label=${t("attach.remove")} onClick=${() => a.remove(i)}>×</button></div>`)}</div>` : "";
+}
+
+// ---------- the picture editor: turn, mirror, cut ----------
+
+// Telegram's own editor is Telegram's: a Mini App gets a plain file picker. So the app has its own, like Telegram's
+// crop screen: the whole picture, a frame with corners, the proportions under it. One finger: no pinch
+const RATIOS = [["free"], ["orig"], ["1:1", 1], ["4:3", 4 / 3], ["16:9", 16 / 9]];
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+// the frame after dragging zone z (a corner, a side or "move") by dx, dy shares of the picture; q — the frame's
+// width / height in shares while its proportion is fixed (then only corners pull); mw, mh — the smallest frame
+function reframe(c, z, dx, dy, q, mw, mh) {
+  if (z === "move") return { ...c, x: clamp(c.x + dx, 0, 1 - c.w), y: clamp(c.y + dy, 0, 1 - c.h) };
+  const E = z.includes("e"), Wt = z.includes("w"), S = z.includes("s"), N = z.includes("n");
+  const ax = E ? c.x : c.x + c.w, ay = S ? c.y : c.y + c.h;          // the side the finger isn't on stays put
+  const maxW = E ? 1 - c.x : Wt ? ax : 1, maxH = S ? 1 - c.y : N ? ay : 1;
+  let w = E ? c.w + dx : Wt ? c.w - dx : c.w, h = S ? c.h + dy : N ? c.h - dy : c.h;
+  if (q) {
+    w = Math.abs(w - c.w) >= Math.abs(h * q - c.w) ? w : h * q;      // whichever way the finger went further
+    w = clamp(w, Math.max(mw, mh * q), Math.min(maxW, maxH * q));
+    h = w / q;
+  } else { w = clamp(w, mw, maxW); h = clamp(h, mh, maxH); }
+  return { x: E ? ax : Wt ? ax - w : c.x, y: S ? ay : N ? ay - h : c.y, w, h };
+}
+// the display turned a quarter left / mirrored: the frame goes with the picture. A turn left of a mirrored picture is
+// the mirror of a turn right
+const turnLeft = (e) => ({ ...e, rot: (e.rot + (e.flip ? 1 : 3)) % 4, ratio: e.ratio && 1 / e.ratio,
+  cut: { x: e.cut.y, y: 1 - e.cut.x - e.cut.w, w: e.cut.h, h: e.cut.w } });
+const mirror = (e) => ({ ...e, flip: !e.flip, cut: { ...e.cut, x: 1 - e.cut.x - e.cut.w } });
+const tick = () => tg && tg.HapticFeedback && tg.HapticFeedback.selectionChanged();
+const ROT = html`<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="10" width="11" height="11" rx="2"/><path d="M8 6.5h5.5a5.5 5.5 0 0 1 5.5 5.5v1.5"/><path d="M10.5 4 8 6.5 10.5 9"/></svg>`;
+const FLIP = html`<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v2M12 9.5v2M12 16v2M12 21.5v.5"/><path d="M9 6 3 18h6z"/><path d="M15 6l6 12h-6z" fill="currentColor"/></svg>`;
+
+function Editor({ f, onDone, onClose }) {
+  const [img, setImg] = useState(null);
+  const [e, setE] = useState(f.edit || PLAIN);
+  const [box, setBox] = useState(null);
+  const [moving, setMoving] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const stage = useRef(null), cv = useRef(null), drag = useRef(null);
+  useEffect(() => {
+    let alive = true, got = null;
+    loadPic(f.src).then((i) => { got = i; if (alive) setImg(i); else URL.revokeObjectURL(i.src); })
+      .catch(() => { if (alive) { alertBox(t("attach.failed")); onClose(); } });
+    const fit = () => { const r = stage.current && stage.current.getBoundingClientRect(); if (r) setBox({ w: r.width, h: r.height }); };
+    fit(); addEventListener("resize", fit);
+    return () => { alive = false; removeEventListener("resize", fit); if (got) URL.revokeObjectURL(got.src); };
+  }, []);
+  const PAD = 24;                    // room around the picture for the corners
+  let v = null;
+  if (img && box) {
+    const [W, H] = turned(img, e);
+    const s = Math.min((box.w - 2 * PAD) / W, (box.h - 2 * PAD) / H);
+    v = { W, H, s, dw: W * s, dh: H * s, ox: (box.w - W * s) / 2, oy: (box.h - H * s) / 2 };
+  }
+  useEffect(() => { if (v && cv.current) paint(cv.current, img, e, FULL, v.s * Math.min(3, devicePixelRatio || 1)); },
+    [img, e.rot, e.flip, v && v.dw, v && v.dh]);
+  const fr = v && { l: v.ox + e.cut.x * v.dw, t: v.oy + e.cut.y * v.dh, w: e.cut.w * v.dw, h: e.cut.h * v.dh };
+  const q = v && e.ratio ? e.ratio * v.H / v.W : null;
+  // what a finger at x, y (px in the stage) takes: a corner, a side (only while free), the frame itself or nothing
+  const zone = (x, y) => {
+    const C = 28, r = fr.l + fr.w, b = fr.t + fr.h;
+    const near = (d, inner) => d > -C && d < Math.min(C, inner);   // d: how far inside the frame from that side
+    const nx = near(x - fr.l, fr.w / 3) ? "w" : near(r - x, fr.w / 3) ? "e" : "";
+    const ny = near(y - fr.t, fr.h / 3) ? "n" : near(b - y, fr.h / 3) ? "s" : "";
+    if (nx && ny) return ny + nx;
+    if (!q && nx && y > fr.t && y < b) return nx;
+    if (!q && ny && x > fr.l && x < r) return ny;
+    return x > fr.l && x < r && y > fr.t && y < b ? "move" : null;
+  };
+  const at = (ev) => { const r = stage.current.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; };
+  const down = (ev) => {
+    if (drag.current || !v || busy) return;
+    const [x, y] = at(ev), z = zone(x, y);
+    if (!z) return;
+    try { stage.current.setPointerCapture(ev.pointerId); } catch (err) {}
+    drag.current = { id: ev.pointerId, z, x, y, cut: e.cut };
+    setMoving(true);
+  };
+  const move = (ev) => {
+    const d = drag.current;
+    if (!d || ev.pointerId !== d.id) return;
+    const [x, y] = at(ev);
+    const cut = reframe(d.cut, d.z, (x - d.x) / v.dw, (y - d.y) / v.dh, q, Math.min(1, 48 / v.dw), Math.min(1, 48 / v.dh));
+    setE((cur) => ({ ...cur, cut }));
+  };
+  // where the finger lifted counts too: the last move may come merged into the lift
+  const up = (ev) => {
+    if (!drag.current || ev.pointerId !== drag.current.id) return;
+    if (ev.type === "pointerup") move(ev);
+    drag.current = null; setMoving(false);
+  };
+  // a proportion: the largest frame of it in the picture, around the frame's centre; 4:3 and 16:9 stand upright
+  // while the frame does
+  const upright = v && e.cut.w * v.W < e.cut.h * v.H;
+  const setRatio = (k, R) => {
+    tick();
+    if (k === "free") return setE({ ...e, ratio: null, rk: k });
+    if (k === "orig") return setE({ ...e, ratio: v.W / v.H, rk: k, cut: FULL });
+    const ratio = upright ? 1 / R : R, qq = ratio * v.H / v.W;
+    let w = Math.min(1, qq), h = w / qq;
+    if (h > 1) { h = 1; w = qq; }
+    const cx = e.cut.x + e.cut.w / 2, cy = e.cut.y + e.cut.h / 2;
+    setE({ ...e, ratio, rk: k, cut: { x: clamp(cx - w / 2, 0, 1 - w), y: clamp(cy - h / 2, 0, 1 - h), w, h } });
+  };
+  const label = (k) => (k === "free" ? t("edit.free") : k === "orig" ? t("edit.orig") : upright ? k.split(":").reverse().join(":") : k);
+  const done = async () => {
+    setBusy(true);
+    try { onDone(await bake(f.src, e, img)); } catch (err) { alertBox(t("attach.failed")); setBusy(false); }
+  };
+  return html`<div class="ed" role="dialog" aria-label=${t("edit.title")}>
+    <div class="ed-top">${!plain(e) && html`<button class="ed-b" onClick=${() => { tick(); setE(PLAIN); }}>${t("edit.reset")}</button>`}</div>
+    <div class="ed-stage" ref=${stage} onPointerDown=${down} onPointerMove=${move} onPointerUp=${up} onPointerCancel=${up}>
+      ${v && html`<canvas ref=${cv} style=${{ left: v.ox + "px", top: v.oy + "px", width: v.dw + "px", height: v.dh + "px" }}/>
+        <div class=${"ed-frame" + (moving ? " moving" : "")} style=${{ left: fr.l + "px", top: fr.t + "px", width: fr.w + "px", height: fr.h + "px" }}>
+          <i class="nw"></i><i class="ne"></i><i class="sw"></i><i class="se"></i></div>`}
+    </div>
+    <div class="ed-ratios">${RATIOS.map(([k, R]) => html`<button key=${k} class=${"ed-r" + (e.rk === k ? " on" : "")} disabled=${!v}
+      onClick=${() => setRatio(k, R)}>${label(k)}</button>`)}</div>
+    <div class="ed-bar"><button class="ed-b" onClick=${onClose}>${t("edit.cancel")}</button>
+      <button class="ed-i" aria-label=${t("edit.rotate")} disabled=${!v} onClick=${() => { tick(); setE(turnLeft(e)); }}>${ROT}</button>
+      <button class="ed-i" aria-label=${t("edit.flip")} disabled=${!v} onClick=${() => { tick(); setE(mirror(e)); }}>${FLIP}</button>
+      <button class="ed-b ok" disabled=${busy || !v} onClick=${done}>${t("done")}</button></div>
+  </div>`;
+}
+// one editor for the whole app, over everything: the composer is its own layer and would hold it under the banner.
+// Opened through the history like the other overlays — Back is "Cancel"; while it is open Telegram doesn't fold the
+// window on a swipe down, or pulling the frame down would close the app
+function EditHost() {
+  const [job, setJob] = useState(null);
+  const [show, hide] = useOverlay(!!job, (open) => { if (!open) setJob(null); });
+  useEffect(() => on("edit", (x) => { setJob(x); show(); }), [show]);
+  useEffect(() => {
+    if (!job || !tg || !tg.disableVerticalSwipes || !(tg.isVersionAtLeast && tg.isVersionAtLeast("7.7"))) return;
+    const was = tg.isVerticalSwipesEnabled;
+    tg.disableVerticalSwipes();
+    return () => { if (was) tg.enableVerticalSwipes(); };
+  }, [!!job]);
+  return job ? html`<${Editor} f=${job.f} onDone=${(x) => { job.done(x); haptic("success"); hide(); }} onClose=${hide}/>` : "";
 }
 
 // ---------- voice from the phone ----------
@@ -1540,7 +1703,8 @@ function App() {
     : html`<${Home}/>`;
   const tab = (name, h, label) => html`<a class=${r.name === name ? "on" : ""} href=${h}>${label}</a>`;
   return html`<${Banner}/><main class=${r.name === "s" ? "with-composer" : ""}>${screen}</main>
-    ${r.name !== "s" && html`<nav class="tabs">${tab("home", "#/", t("tab.home"))}${tab("projects", "#/projects", t("tab.projects"))}${tab("usage", "#/usage", t("tab.res"))}${tab("new", "#/new", "＋")}</nav>`}`;
+    ${r.name !== "s" && html`<nav class="tabs">${tab("home", "#/", t("tab.home"))}${tab("projects", "#/projects", t("tab.projects"))}${tab("usage", "#/usage", t("tab.res"))}${tab("new", "#/new", "＋")}</nav>`}
+    <${EditHost}/>`;
 }
 
 render(html`<${App}/>`, document.getElementById("app"));
