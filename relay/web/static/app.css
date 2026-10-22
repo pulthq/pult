@@ -304,8 +304,39 @@ pre.cmdline { background: var(--code); border-radius: 8px; padding: 6px 9px; fon
 .composer .thumbs { margin-top: 0; }
 .thumb { position: relative; width: 56px; height: 56px; border-radius: 8px; overflow: hidden; background: var(--code); }
 .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.thumb button { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; border-radius: 50%; border: 0; padding: 0;
+.thumb-ed { display: block; width: 100%; height: 100%; border: 0; padding: 0; background: none; cursor: pointer; }
+.thumb-ed svg { position: absolute; left: 3px; bottom: 3px; width: 18px; height: 18px; padding: 3px; border-radius: 50%;
+  background: rgba(0, 0, 0, .6); color: #fff; }
+.thumb-x { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; border-radius: 50%; border: 0; padding: 0;
   background: rgba(0, 0, 0, .6); color: #fff; font-size: 15px; line-height: 20px; cursor: pointer; }
+/* the picture editor: black like Telegram's, over everything; the finger moves the frame, never the page */
+.ed { position: fixed; inset: 0; z-index: 30; display: flex; flex-direction: column; background: #000; color: #fff;
+  touch-action: none; overscroll-behavior: contain; user-select: none; -webkit-user-select: none;
+  padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
+.ed button { background: none; border: 0; color: #fff; cursor: pointer; }
+.ed button:disabled { opacity: .4; }
+.ed-top { display: flex; justify-content: flex-end; min-height: 44px; padding: 0 8px; }
+.ed-stage { position: relative; flex: 1; overflow: hidden; touch-action: none; }
+.ed-stage canvas { position: absolute; display: block; }
+.ed-frame { position: absolute; border: 1.5px solid rgba(255, 255, 255, .9); box-shadow: 0 0 0 9999px rgba(0, 0, 0, .58); }
+.ed-frame.moving { --l: rgba(255, 255, 255, .55);
+  background: linear-gradient(to right, transparent calc(33.33% - .5px), var(--l) 0 calc(33.33% + .5px), transparent 0 calc(66.67% - .5px), var(--l) 0 calc(66.67% + .5px), transparent 0),
+    linear-gradient(to bottom, transparent calc(33.33% - .5px), var(--l) 0 calc(33.33% + .5px), transparent 0 calc(66.67% - .5px), var(--l) 0 calc(66.67% + .5px), transparent 0); }
+.ed-frame i { position: absolute; width: 22px; height: 22px; border: 0 solid #fff; }
+.ed-frame .nw { left: -4px; top: -4px; border-left-width: 4px; border-top-width: 4px; }
+.ed-frame .ne { right: -4px; top: -4px; border-right-width: 4px; border-top-width: 4px; }
+.ed-frame .sw { left: -4px; bottom: -4px; border-left-width: 4px; border-bottom-width: 4px; }
+.ed-frame .se { right: -4px; bottom: -4px; border-right-width: 4px; border-bottom-width: 4px; }
+.ed-ratios { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; padding: 8px 12px 2px; }
+.ed .ed-r { min-height: 34px; padding: 6px 12px; border-radius: 99px; font-size: 14px; color: rgba(255, 255, 255, .75); }
+.ed .ed-r.on { background: rgba(255, 255, 255, .16); color: #fff; font-weight: 600; }
+.ed-bar { display: flex; align-items: center; gap: 4px; padding: 6px 8px 8px; }
+.ed-bar .ed-b:first-child { margin-right: auto; }
+.ed-bar .ed-b.ok { margin-left: auto; }
+.ed .ed-b { min-height: 44px; padding: 8px 14px; font-weight: 600; font-size: 16px; }
+.ed .ed-b.ok { color: var(--tg-theme-button-color, #4f8be8); }
+.ed .ed-i { width: 48px; height: 44px; display: flex; align-items: center; justify-content: center; }
+.ed button:active { opacity: .6; }
 .btn.send { width: 38px; height: 38px; padding: 0; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
 
 .tabs { position: fixed; left: 0; right: 0; bottom: 0; display: flex; background: var(--card); border-top: 1px solid var(--line);

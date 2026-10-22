@@ -246,6 +246,14 @@ const S = {
   attach: { en: "Attach a screenshot", ru: "Приложить снимок" },
   "attach.remove": { en: "Remove", ru: "Убрать" },
   "attach.failed": { en: "Couldn't read the picture", ru: "Не удалось прочитать картинку" },
+  "edit.open": { en: "Crop or rotate", ru: "Обрезать или повернуть" },
+  "edit.title": { en: "Crop and rotate", ru: "Обрезка и поворот" },
+  "edit.reset": { en: "Reset", ru: "Сбросить" },
+  "edit.cancel": { en: "Cancel", ru: "Отмена" },
+  "edit.rotate": { en: "Rotate left", ru: "Повернуть влево" },
+  "edit.flip": { en: "Mirror", ru: "Отразить" },
+  "edit.free": { en: "Free", ru: "Свободно" },
+  "edit.orig": { en: "Original", ru: "Исходные" },
   "att.file": { en: "📎 file", ru: "📎 файл" },
 
   // voice input
