@@ -1633,7 +1633,8 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await self.p.api_send_files(SID, [".env"])
         # the command itself, as Claude runs it: the session comes from Claude Code's environment
-        env = plain_env(PULT_SOCK=os.environ["PULT_SOCK"], CLAUDE_CODE_SESSION_ID=SID, PULT_LANG="ru")
+        # a pipe in the system's code page, as on Windows: the Russian answer must not stop the command (Actions 2026-10-23)
+        env = plain_env(PULT_SOCK=os.environ["PULT_SOCK"], CLAUDE_CODE_SESSION_ID=SID, PULT_LANG="ru", PYTHONIOENCODING="cp1252")
         p = await asyncio.create_subprocess_exec(sys.executable, str(HERE / "pultctl.py"), "send", "deck.pptx", "-m", "Вот",
                                                  cwd=str(proj), env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         out, err = await p.communicate()

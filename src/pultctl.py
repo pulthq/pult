@@ -234,7 +234,18 @@ def cmd_send(argv):
     return 0 if res.get("sent") and not res.get("refused") else 1
 
 
+def utf8_pipes():
+    """Output into a pipe speaks UTF-8, as Claude Code reads a command's output. On Windows a pipe gets the system's code
+    page (cp1252, cp1251), and Russian words or a file's name stopped `pult send` midway — after the file was sent
+    (Actions, 2026-10-23). A console keeps its own way of writing."""
+    for stream in (sys.stdout, sys.stderr):
+        enc = (getattr(stream, "encoding", "") or "").lower().replace("-", "")
+        if hasattr(stream, "reconfigure") and enc != "utf8" and not stream.isatty():
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv):
+    utf8_pipes()
     I.set_lang(S.cli_lang())
     cmd, rest = (argv[0] if argv else ""), argv[1:]
     if cmd == "status":

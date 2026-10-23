@@ -19,6 +19,8 @@ Versions 0.x come before the first public release. Newest first.
   dependencies, caches, the inbox and lock files skipped); the result in Telegram gets a "📎 Files (N)" button into
   the app, and the outcome card there lists them, each with "To Telegram", plus "All to Telegram".
 - Pictures from a project's inbox show in the app's chat, like Telegram photos did.
+- The `pult` command writes UTF-8 into a pipe. On Windows a pipe got the system's code page, and Russian words or a
+  file's name stopped the command midway.
 - `tests/probe_sessionctx.py` checks the added context and the session's environment on Claude Code 2.1.300 and
   2.1.301; `tools/files_check.py` drives the files in the app on the stand.
 - Docs: ARCHITECTURE and CONTRIBUTING name `src/pult_new.py` and `src/pult_files.py`; ARCHITECTURE lists what a new
