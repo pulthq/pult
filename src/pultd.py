@@ -33,6 +33,7 @@ import httpx
 
 import pult_attn as A
 import pult_brief as B
+import pult_files as F
 import pult_hook
 import pult_i18n as I
 import pult_load as L
@@ -87,9 +88,10 @@ WARN_AT = (80, 95)       # % of a limit: a warning with sound in General (decisi
 SPEND_COLORS = 5         # projects with a colour of their own on the spend screen; the rest are "other"
 UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the app shrinks them to ~200 KB first)
 UPLOADS_MAX = 3                 # pictures per message
+ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_MAX = 4 * 1024 * 1024       # bytes of one recording from the app (5 min at 32 kbit/s ≈ 1.2 MB; base64 must fit the 8 MB frame)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.12.0"
+VERSION = "0.13.0"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -813,6 +815,8 @@ class Pult:
         self.cards_seen = set()        # topics whose card was checked since start (Pult.topic_card)
         self.run_sem = asyncio.Semaphore(MAX_RUNNING)
         self.jobs = {}                 # job id → a clone for a new project in progress (stage S)
+        self.held = {}                 # topic → files that came without words, waiting for the owner's next message (stage F)
+        self.albums = {}               # media_group_id → an album's files being gathered (stage F)
         self._idle = (0.0, None)
         self.here_seen = time.monotonic()   # the owner's last action in a session here (Pult.idle)
         self._agents = (0.0, [])
@@ -1150,7 +1154,7 @@ class Pult:
                 raise
         self.out.edit(msg, go, prio)
 
-    async def send_long(self, pkey, header, md, *, notify, sid, reply_to=None, prio=3, kind="result"):
+    async def send_long(self, pkey, header, md, *, notify, sid, reply_to=None, prio=3, kind="result", files_label=None):
         """A long Claude reply. With the app connected: the beginning in the chat and "Read in full" (the whole
         text in the app). Without it: 3500-character chunks, up to six chunks without a file (~20k characters), since
         a file is awkward to read on a phone; beyond that, the first five chunks and the whole text as a file."""
@@ -1160,7 +1164,8 @@ class Pult:
             rest = len(md) - len(chunks[0])
             ids.append(await self.send(pkey, header + "\n" + R.md_to_html(chunks[0]) +
                                        self.t("long.more", n=rest), notify=notify, sid=sid, kind=kind,
-                                       prio=prio, reply_to=reply_to, buttons=[self.app_row(sid, self.t("btn.read_all"))]))
+                                       prio=prio, reply_to=reply_to, buttons=[self.app_row(sid, self.t("btn.read_all"))] +
+                                       ([self.app_row(sid, files_label)] if files_label else [])))
             return ids
         if len(chunks) > 6:
             for i, ch in enumerate(chunks[:5]):
@@ -1175,7 +1180,7 @@ class Pult:
             ids.append(await self.send(pkey, (header + "\n" if i == 0 else "") + R.md_to_html(ch),
                                        notify=notify and i == 0, sid=sid, kind=kind, prio=prio,
                                        reply_to=reply_to if i == 0 else None,
-                                       buttons=self.with_app(None, sid) if last and sid else None))
+                                       buttons=self.with_app(None, sid, files_label) if last and sid else None))
         return ids
 
     async def send_doc(self, pkey, text, name, caption, sid=None):
@@ -1484,7 +1489,8 @@ class Pult:
         if t is not None:
             await t.created
         notify = await self.loud(lv.driven)
-        self.outcome(lv, t, text, fail, seen=bool(t and t.here) and not await self.away())
+        files = await self.files_of_turn(lv, t)
+        self.outcome(lv, t, text, fail, seen=bool(t and t.here) and not await self.away(), files=files)
         reply_to = t.msg if t else None
         # a message written from Telegram into a tab that was busy: Claude Code absorbs it into the running turn
         # (queued_command, absorbed_mid_turn — 2.1.301, 2026-10-18) and the tab doesn't show it, so no UserPromptSubmit
@@ -1513,7 +1519,8 @@ class Pult:
                 self.attn.save()
         await self.send_long(lv.pkey, "%s %s%s\n%s" % ("⚠️" if fail else "✅", self.head(lv), when,
                                                         R.esc(bg) + "\n" if bg else ""), text,
-                             notify=notify, sid=lv.sid, reply_to=reply_to)
+                             notify=notify, sid=lv.sid, reply_to=reply_to,
+                             files_label=self.t("btn.files", n=len(files)) if files else None)
 
     # ----- whose move (stage V): each session's last outcome, the model's line, the Home board -----
 
@@ -1523,13 +1530,16 @@ class Pult:
         key = "fail." + code
         return self.t(key) if key in I.S else self.t("fail.other", code=R.esc(code))
 
-    def outcome(self, lv, t, text, fail=None, seen=False):
+    def outcome(self, lv, t, text, fail=None, seen=False, files=None):
         """A turn ended: remember how (pult_attn) and, if the owner allowed it, let the model read the result.
         seen — the owner typed this turn here and is still at the computer: they watched it end."""
         waits = not lv.bg                                  # nothing else runs: the next step is the owner's
         line = self.fail_text(fail) if fail else B.first_sentence(text)
         dur = (t.done[1] - t.started) if t and t.done else None
         rec = self.attn.finished(lv.sid, lv.pkey, dur, R.plain(text, 600), line, waits, fail=fail, seen=seen)
+        if files:
+            rec["files"] = files                           # the turn's files: the app offers them to Telegram (stage F)
+            self.attn.save()
         self.changed(lv.sid)
         if not fail and text.strip() and self.prefs()["brief"]:
             bg = [b.get("description") or b.get("command") or "" for b in lv.bg]
@@ -2260,22 +2270,125 @@ class Pult:
             body = rest if cmd == "/new" else text
             if heard:
                 body = R.spoken_body(body)       # Claude is told the words were spoken: misheard words are to be expected
-            body = await self.with_attachments(m, body)
+            fresh = cmd == "/new" or here in self.new_next
+            if m.get("photo") or m.get("document"):
+                gid = m.get("media_group_id")
+                album = self.album_start(gid, mid, topic, thread, here) if gid else None
+                marks = await self.take_files(m, topic, here)
+                if album is not None:
+                    # an album: Telegram sends its files as separate messages, the caption on one of them — they are
+                    # gathered and go on once (stage F)
+                    self.album_add(gid, album, marks, body, mid, rep_id, fresh)
+                    return
+                if not body.strip():
+                    self.hold(here, marks, mid)            # files without words wait for the owner's next message (Q39)
+                    return
+                body += marks
+            body = self.with_held(here, body)
             if not body.strip():
                 return
-            row = self.store.msg(rep_id) if rep_id else None
-            fresh = cmd == "/new" or here in self.new_next
             self.new_next.discard(here)
-            if row:
-                await self.continue_session(row["sid"], body, mid, here)
-            elif topic and topic["path"] and fresh:
-                await self.drive(str(uuid.uuid4()), topic["path"], body, mid, pkey=topic["pkey"])
-            elif topic and topic["path"]:
-                await self.to_topic(topic, body, mid, here)
-            elif thread:
-                await self.cmd_projects(here, "bind", (body, mid, thread), reply_to=mid)
-            else:
-                await self.cmd_projects(here, "new", (body, mid), reply_to=mid)
+            await self.route(topic, thread, here, body, mid, rep_id, fresh)
+
+    async def route(self, topic, thread, here, body, mid, rep_id, fresh):
+        """The owner's words (with their files) go to a session: a reply — to the session it replies to; /new — to a new
+        one; else the topic's current session or the question where; outside a project — which project."""
+        row = self.store.msg(rep_id) if rep_id else None
+        if row:
+            await self.continue_session(row["sid"], body, mid, here)
+        elif topic and topic["path"] and fresh:
+            await self.drive(str(uuid.uuid4()), topic["path"], body, mid, pkey=topic["pkey"])
+        elif topic and topic["path"]:
+            await self.to_topic(topic, body, mid, here)
+        elif thread:
+            await self.cmd_projects(here, "bind", (body, mid, thread), reply_to=mid)
+        else:
+            await self.cmd_projects(here, "new", (body, mid), reply_to=mid)
+
+    # ----- files from the owner (stage F) -----
+
+    async def take_files(self, m, topic, here):
+        """A file or a photo from Telegram → the project's inbox/<date>/ under its own name (a photo: "photo-<time>.jpg");
+        outside a project topic — Pult's own inbox. Returns the marks for Claude's text: the path, or a line about a file
+        Telegram won't hand over (over 20 MB) — the owner is told that in the topic as well."""
+        if m.get("document"):
+            f = m["document"]
+            name = F.safe_name(f.get("file_name"), "file")
+        else:
+            f = m["photo"][-1]
+            name = "photo-%s.jpg" % time.strftime("%H%M%S")
+        size = f.get("file_size") or 0
+        if size > F.TG_GET_MAX:
+            mb = round(size / 2 ** 20)
+            await self.send(None, self.t("files.big", name=R.esc(name), mb=mb), reply_to=m["message_id"], here=here)
+            return "\n\n[A file from Telegram did not come: %s, %d MB — Telegram hands bots files up to 20 MB]" % (name, mb)
+        try:
+            _, blob = await self.tg.download(f["file_id"])
+        except TgError as e:
+            return "\n\n[An attachment from Telegram failed to download: %s — %s]" % (name, e)
+        project = topic["path"] if topic and topic["path"] and os.path.isdir(topic["path"]) else None
+        folder = F.drop_dir(project) if project else str(HOME / "inbox" / time.strftime("%Y-%m"))
+
+        def save():
+            os.makedirs(folder, exist_ok=True)
+            if project:
+                F.exclude_inbox(project)
+            p = F.unique(folder, name)
+            with open(p, "xb") as out:
+                out.write(blob)
+            return p
+        p = await asyncio.to_thread(save)
+        log("file from Telegram: %s (%d KB)" % (p, len(blob) // 1024))
+        return "\n\n[Attachment from Telegram: %s]" % p
+
+    def hold(self, here, marks, mid):
+        """Files that came without words (decision Q39): they wait for the owner's next message in this topic, F.HOLD
+        at most, and go with it; nothing comes — they just stay in the project. A reaction says they arrived."""
+        h = self.held.get(here)
+        if not h or time.time() - h["t"] > F.HOLD:
+            h = self.held[here] = {"marks": "", "t": 0}
+        h["marks"] += marks
+        h["t"] = time.time()
+        asyncio.create_task(self.react(mid, "👌"))
+
+    def with_held(self, here, body):
+        h = self.held.pop(here, None)
+        if not h or not body.strip() or time.time() - h["t"] > F.HOLD:
+            return body
+        return body + h["marks"]
+
+    def album_start(self, gid, mid, topic, thread, here):
+        """An album's file is about to download: the album knows it before, so a slow download doesn't let the album go
+        without it. Returns the album's generation for album_add."""
+        a = self.albums.get(gid)
+        if not a:
+            a = self.albums[gid] = {"marks": "", "body": "", "mid": mid, "topic": topic, "thread": thread, "here": here,
+                                    "rep": None, "fresh": False, "gen": 0}
+        a["gen"] += 1
+        return a["gen"]
+
+    def album_add(self, gid, gen, marks, body, mid, rep_id, fresh):
+        a = self.albums.get(gid)
+        if not a:
+            return
+        a["marks"] += marks
+        if body.strip() and not a["body"]:                     # the caption rides on one of the album's messages
+            a["body"], a["mid"], a["rep"], a["fresh"] = body, mid, rep_id, fresh
+        asyncio.create_task(self.album_go(gid, a["gen"]))
+
+    async def album_go(self, gid, gen):
+        await asyncio.sleep(ALBUM_WAIT)
+        a = self.albums.get(gid)
+        if not a or a["gen"] != gen:
+            return                                             # another file of the album came meanwhile
+        del self.albums[gid]
+        if not a["body"].strip():
+            self.hold(a["here"], a["marks"], a["mid"])
+            return
+        body = self.with_held(a["here"], a["body"] + a["marks"])
+        if a["fresh"]:
+            self.new_next.discard(a["here"])
+        await self.route(a["topic"], a["thread"], a["here"], body, a["mid"], a["rep"], a["fresh"])
 
     async def to_topic(self, topic, body, origin, here):
         """Text in a project topic that is not a reply and not /new. It goes without a question to the topic's current
@@ -2378,26 +2491,6 @@ class Pult:
         await self.send(None, self.t("where.ask"), buttons=rows,
                         reply_to=origin, here=here)
 
-    async def with_attachments(self, m, text):
-        """Photos and files from Telegram go to ~/.local/share/pult/inbox/; the path goes into the text for Claude."""
-        f = None
-        if m.get("photo"):
-            f = (m["photo"][-1]["file_id"], "jpg")
-        elif m.get("document"):
-            name = m["document"].get("file_name") or "file"
-            f = (m["document"]["file_id"], name.rsplit(".", 1)[-1][:8] if "." in name else "bin")
-        if not f:
-            return text
-        try:
-            _, blob = await self.tg.download(f[0])
-        except TgError as e:
-            return text + "\n\n[An attachment from Telegram failed to download: %s]" % e
-        d = HOME / "inbox" / time.strftime("%Y-%m")
-        d.mkdir(parents=True, exist_ok=True)
-        p = d / ("%d.%s" % (m["message_id"], re.sub(r"[^\w]", "", f[1]) or "bin"))
-        p.write_bytes(blob)
-        return (text or "Have a look at the attachment.") + "\n\n[Attachment from Telegram: %s]" % p
-
     # ----- voice: words from a recording (pult_stt — Groq Whisper) -----
 
     def make_stt(self):
@@ -2493,10 +2586,11 @@ class Pult:
         """The session's context window, or the window known for its model."""
         return self.ctx.get(sid) or (self.ctx_model.get(model_key(model)) if model else None)
 
-    def with_uploads(self, text, files):
-        """Pictures sent from the app (base64) go to ~/.local/share/pult/inbox/, like attachments from Telegram, and
-        Claude gets the path. Only real images by their first bytes, at most UPLOADS_MAX of UPLOAD_MAX each; the rest
-        is dropped. Nothing left to send — an error, as for an empty message."""
+    def with_uploads(self, text, files, project=None):
+        """Pictures sent from the app (base64) go to ~/.local/share/pult/inbox/ and Claude gets the path; with a project,
+        other files (a pdf, a deck — stage F) go to its inbox/<date>/ under their own names, like files from Telegram.
+        At most UPLOADS_MAX of UPLOAD_MAX each; the rest is dropped. Nothing left to send — an error, as for an empty
+        message."""
         text = (text or "").strip()
         paths = []
         for f in (files or [])[:UPLOADS_MAX]:
@@ -2505,7 +2599,17 @@ class Pult:
             except (ValueError, binascii.Error):
                 continue
             kind = image_kind(blob)
-            if not kind or len(blob) > UPLOAD_MAX:
+            if not blob or len(blob) > UPLOAD_MAX:
+                continue
+            if not kind:
+                if project and os.path.isdir(project) and (f or {}).get("name"):
+                    folder = F.drop_dir(project)
+                    os.makedirs(folder, exist_ok=True)
+                    F.exclude_inbox(project)
+                    p = F.unique(folder, F.safe_name(f["name"]))
+                    with open(p, "xb") as out:
+                        out.write(blob)
+                    paths.append(p)
                 continue
             d = HOME / "inbox" / time.strftime("%Y-%m")
             d.mkdir(parents=True, exist_ok=True)
@@ -2515,7 +2619,7 @@ class Pult:
         if paths:
             text = (text or "Have a look at the attachment.") + \
                 "".join("\n\n[Attachment from the Pult app: %s]" % p for p in paths)
-            log("pictures from the app: %d" % len(paths))
+            log("files from the app: %d" % len(paths))
         if not text:
             raise ValueError(self.t("err.empty"))
         return text
@@ -3244,7 +3348,7 @@ class Pult:
         pending = [r for r in lv.pending.values() if not r.fut.done()]
         outcome = None
         if rec and lv.turn is None:
-            outcome = {k: rec.get(k) for k in ("line", "need", "replies", "fail", "ts", "dur")}
+            outcome = {k: rec.get(k) for k in ("line", "need", "replies", "fail", "ts", "dur", "files")}
             outcome.update(state=A.state(pending, False, lv.bg, rec), resume=self.attn.resume.get(sid),
                            reset=self.limit_reset() if rec.get("fail") == "rate_limit" else None)
         # the owner opened it: its outcome no longer calls them — unless it waits for their decision (the model named
@@ -3310,7 +3414,7 @@ class Pult:
             how = "fork" if seen or any(a.get("sessionId") == sid for a in await self.agents()) else "resume"
             if how == "fork" and not fork:
                 return {"ok": False, "need": "fork"}
-        body = self.with_uploads(text, files)
+        body = self.with_uploads(text, files, self.session_project(sid)[1])
         if how == "session":
             await self.driven[sid].say(body, None)
         elif how == "tab":
@@ -3335,7 +3439,7 @@ class Pult:
             raise ValueError(self.t("err.need_project_text"))
         model, effort = self.check_choice(model, effort)
         sid = str(uuid.uuid4())
-        await self.drive(sid, path, self.with_uploads(text, files), None, pkey=pkey, model=model, effort=effort)
+        await self.drive(sid, path, self.with_uploads(text, files, path), None, pkey=pkey, model=model, effort=effort)
         return {"ok": True, "sid": sid}
 
     # ----- a new project from the phone (stage S) -----
@@ -3433,8 +3537,9 @@ class Pult:
         other = self.key_taken(pkey, dest)
         if other:
             raise ValueError(self.t("new.err.key", other=self.tilde(other)))
-        first = (N.describe_prompt(title, about) if how == "describe" else self.with_uploads(text, files)
-                 if text or files else None)
+        # the first turn's words, once the folder is there: a file from the app goes into the new project's inbox
+        first = ((lambda: N.describe_prompt(title, about)) if how == "describe" else
+                 (lambda: self.with_uploads(text, files, dest)) if text or files else None)
         done = lambda git: self.project_made(pkey, dest, title, parent, how, first, model, effort, git)
         if how == "clone":
             if not big:
@@ -3544,6 +3649,10 @@ class Pult:
             log("new project: topic: %r" % e)
         self.changed(None)
         out = {"pkey": pkey, "git": git}
+        try:
+            first = first() if first else None
+        except ValueError:
+            first = None                                   # nothing of the first turn survived (only a broken file)
         if first:
             sid = str(uuid.uuid4())
             if how == "describe":
@@ -3615,19 +3724,109 @@ class Pult:
                 log("usage log:", repr(e))
             return self._usage
 
-    async def api_inbox(self, name):
-        """A picture from the owner's inbox (Telegram photos, the app's screenshots) for the app's chat: only
-        <month>/<file> inside Pult's own inbox folder, and only real images."""
-        if not re.fullmatch(r"\d{4}-\d{2}/[\w.-]{1,80}", str(name or "")):
-            raise ValueError(self.t("err.no_request", op="inbox"))
-        p = (HOME / "inbox" / name).resolve()
-        if not str(p).startswith(str((HOME / "inbox").resolve()) + os.sep) or not p.is_file() or p.stat().st_size > UPLOAD_MAX:
+    async def api_inbox(self, name, pkey=None):
+        """A picture from the owner's inbox for the app's chat: <month>/<file> inside Pult's own inbox folder (the app's
+        screenshots, Telegram photos outside a project), or with pkey <date>/<file> inside that project's inbox/ (files
+        from Telegram, stage F); only real images."""
+        if pkey:
+            root = self.project_path(pkey)
+            if not root or not re.fullmatch(r"\d{4}-\d{2}-\d{2}/[^/\\]{1,%d}" % F.NAME_MAX, str(name or "")):
+                raise ValueError(self.t("err.no_request", op="inbox"))
+            base = Path(root) / F.INBOX
+        else:
+            if not re.fullmatch(r"\d{4}-\d{2}/[\w.-]{1,80}", str(name or "")):
+                raise ValueError(self.t("err.no_request", op="inbox"))
+            base = HOME / "inbox"
+        p = (base / name).resolve()
+        if not str(p).startswith(str(base.resolve()) + os.sep) or not p.is_file() or p.stat().st_size > UPLOAD_MAX:
             raise ValueError(self.t("err.no_transcript"))
         blob = await asyncio.to_thread(p.read_bytes)
         kind = image_kind(blob)
         if not kind:
             raise ValueError(self.t("err.no_transcript"))
         return {"kind": kind, "data": base64.b64encode(blob).decode()}
+
+    # ----- files to the owner (stage F) -----
+
+    def session_project(self, sid):
+        """A session's project: (pkey, its folder), or (None, None) if Pult doesn't know the session or the folder is gone."""
+        row, lv = self.store.session(sid), self.live.get(sid)
+        pkey = (lv and lv.pkey) or (row and row["pkey"])
+        path = self.project_path(pkey) if pkey else None
+        return (pkey, path) if path and os.path.isdir(path) else (None, None)
+
+    async def on_send(self, msg):
+        """`pult send` — a command Claude ran in a session: the files go to that session's project topic. The session is
+        the one Claude Code names in the command's environment (CLAUDE_CODE_SESSION_ID — probe_sessionctx.py)."""
+        sid = str(msg.get("sid") or "")
+        pkey, project = self.session_project(sid) if SID_RE.fullmatch(sid) else (None, None)
+        if not project:
+            return {"error": self.t("send.err.session")}
+        paths = [str(p) for p in (msg.get("paths") or []) if p]
+        if not paths:
+            return {"error": self.t("cli.send.usage")}
+        if len(paths) > F.SEND_MANY:
+            return {"error": self.t("send.err.many", n=F.SEND_MANY)}
+        return await self.send_files(sid, pkey, project, paths, msg.get("caption"))
+
+    async def api_send_files(self, sid, paths):
+        """The app's "To Telegram" under a turn's files (paths inside the project): the same checks as pult send."""
+        pkey, project = self.session_project(sid) if SID_RE.fullmatch(sid or "") else (None, None)
+        if not project:
+            raise ValueError(self.t("send.err.session"))
+        res = await self.send_files(sid, pkey, project, [os.path.join(project, str(p)) for p in (paths or [])][:F.SEND_MANY])
+        if not res["sent"]:
+            raise ValueError("; ".join("%s — %s" % (n, why) for n, why in res["refused"]) or self.t("send.err.nothing"))
+        return res
+
+    async def send_files(self, sid, pkey, project, paths, caption=None):
+        """A project's files to its topic, each a document, the caption under the first; replying to the turn that runs.
+        Every file is checked first (pult_files.why_not_send): inside the project, not like a secret, 1 byte to 50 MB.
+        → {"sent": [names], "refused": [[name, why]]}; every file sent is logged."""
+        sent, refused, ok = [], [], []
+        for p in paths:
+            why = F.why_not_send(p, project)
+            if why:
+                refused.append([os.path.basename(p), self.t(why, mb=F.TG_SEND_MAX // 2 ** 20)])
+            else:
+                ok.append(os.path.realpath(p))
+        if not ok:
+            return {"sent": sent, "refused": refused}
+        thread = await self.thread_for(pkey)
+        lv = self.live.get(sid)
+        notify = await self.loud(bool(lv and lv.driven))
+        reply_to = lv.turn.msg if lv and lv.turn and lv.turn.msg else None
+        cap = R.short(str(caption).strip(), 1000) if caption and str(caption).strip() else None
+        for i, p in enumerate(ok):
+            blob = await asyncio.to_thread(Path(p).read_bytes)
+            name = os.path.basename(p)
+            params = dict(chat_id=self.chat, message_thread_id=thread, caption=cap if i == 0 else None,
+                          disable_notification=not notify)
+            if reply_to:
+                params["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
+            try:
+                res = await self.out.submit(3, lambda n=name, b=blob, kw=params: self.tg.call(
+                    "sendDocument", files={"document": (n, b)}, timeout=300, **kw))
+            except TgError as e:
+                refused.append([name, self.t("send.err.tg", why=R.short(str(e), 200))])
+                continue
+            self.store.map_msg(res["message_id"], sid, "doc")         # a reply to the file goes to the session
+            sent.append(name)
+            log("file to Telegram: %s (%d KB) from %s" % (p, len(blob) // 1024, sid[:8]))
+        return {"sent": sent, "refused": refused}
+
+    async def files_of_turn(self, lv, t):
+        """The project's files the turn made or changed (pult_files.turn_files), for its outcome; [] when unknown."""
+        if t is None or not getattr(t, "started", None):
+            return []
+        project = self.project_path(lv.pkey)
+        if not project or not os.path.isdir(project):
+            return []
+        try:
+            return await asyncio.to_thread(F.turn_files, project, t.started, time.time())
+        except Exception as e:
+            log("turn files: %r" % e)
+            return []
 
     async def api_stt(self, data, mime=None):
         """A recording from the app → its words (the app puts them into the message field). Nothing is kept."""
@@ -3898,6 +4097,11 @@ class Pult:
                 return
             if msg.get("op") == "hello":
                 await self.on_tab(msg, reader, writer)
+                return
+            if msg.get("op") == "send":                   # pult send (stage F)
+                res = await self.on_send(msg)
+                writer.write((json.dumps(res, ensure_ascii=False) + "\n").encode())
+                await writer.drain()
                 return
             if msg.get("op") == "busy":
                 writer.write((json.dumps({"busy": self.busy_report()}, ensure_ascii=False) + "\n").encode())

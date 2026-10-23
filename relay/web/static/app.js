@@ -252,13 +252,22 @@ async function bake(file, e, loaded) {
     src: file, edit: plain(e) ? null : e };
 }
 const MAX_PICS = 3;
+// a document from the app goes as it is, through the relay's one message (8 MB with base64): 5 MB in all; bigger files
+// go to the project's topic in Telegram (up to 20 MB) — stage F
+const DOC_MAX = 5 * 1048576;
+const asB64 = (f) => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1] || ""); r.onerror = no; r.readAsDataURL(f); });
 function useAttach() {
   const [files, setFiles] = useState([]);
   const pick = async (e) => {
     const list = [...(e.target.files || [])].slice(0, MAX_PICS - files.length);
     e.target.value = "";
     const out = [];
-    for (const f of list) { try { out.push(await bake(f)); } catch (err) { alertBox(t("attach.failed")); } }
+    let docs = files.reduce((n, f) => n + (f.doc ? f.size : 0), 0);
+    for (const f of list) {
+      if (/^image\/(jpeg|png|gif|webp|heic|heif)$/.test(f.type)) { try { out.push(await bake(f)); } catch (err) { alertBox(t("attach.failed")); } continue; }
+      if (docs + f.size > DOC_MAX) { alertBox(t("attach.big", { name: f.name, mb: num(f.size / 1048576, 1) })); continue; }
+      try { out.push({ name: f.name, data: await asB64(f), doc: true, size: f.size }); docs += f.size; } catch (err) { alertBox(t("attach.failed")); }
+    }
     setFiles((cur) => cur.concat(out).slice(0, MAX_PICS));
   };
   const edit = (i) => { const f = files[i]; emit("edit", { f, done: (x) => setFiles((cur) => cur.map((y) => (y === f ? x : y))) }); };
@@ -269,11 +278,13 @@ const CLIP = html`<svg viewBox="0 0 24 24" width="20" height="20" fill="none" st
 function Attach({ a, disabled, wide }) {
   const full = a.files.length >= MAX_PICS;
   return html`<label class=${"clip" + (wide ? " wide" : "") + (full || disabled ? " off" : "")} aria-label=${t("attach")}>${CLIP}${wide ? html`<span>${t("attach")}</span>` : ""}
-    <input type="file" accept="image/*" multiple disabled=${disabled || full} onChange=${a.pick}/></label>`;
+    <input type="file" multiple disabled=${disabled || full} onChange=${a.pick}/></label>`;
 }
 const PEN = html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20l1.2-4.6L15.8 4.8a2.3 2.3 0 0 1 3.3 3.3L8.6 18.8z"/></svg>`;
 function Thumbs({ a }) {
-  return a.files.length ? html`<div class="thumbs">${a.files.map((f, i) => html`<div class="thumb" key=${i}>
+  return a.files.length ? html`<div class="thumbs">${a.files.map((f, i) => f.doc ? html`<div class="thumb doc" key=${i}>
+    <span class="doc-n">📄 ${f.name}</span>
+    <button class="thumb-x" aria-label=${t("attach.remove")} onClick=${() => a.remove(i)}>×</button></div>` : html`<div class="thumb" key=${i}>
     <button class="thumb-ed" aria-label=${t("edit.open")} onClick=${() => a.edit(i)}><img src=${f.preview} alt=""/>${PEN}</button>
     <button class="thumb-x" aria-label=${t("attach.remove")} onClick=${() => a.remove(i)}>×</button></div>`)}</div>` : "";
 }
@@ -490,11 +501,11 @@ function Pic({ a }) {
   useEffect(() => {
     if (!a.image || !a.inbox) return;
     let alive = true;
-    api("inbox", { name: a.name }).then((d) => alive && setSrc("data:image/" + (d.kind === "jpg" ? "jpeg" : d.kind) + ";base64," + d.data)).catch(() => {});
+    api("inbox", a.pkey ? { name: a.name, pkey: a.pkey } : { name: a.name }).then((d) => alive && setSrc("data:image/" + (d.kind === "jpg" ? "jpeg" : d.kind) + ";base64," + d.data)).catch(() => {});
     return () => { alive = false; };
   }, [a.name]);
   if (src) return html`<img class="att" src=${src} alt="" onClick=${open}/>${big && html`<div class="lightbox" onClick=${close}><img src=${src} alt=""/></div>`}`;
-  return html`<span class="att-chip">${a.image ? "🖼 " + a.name.split("/").pop() : t("att.file")}</span>`;
+  return html`<span class="att-chip">${(a.image ? "🖼 " : "📄 ") + (a.name.split("/").pop() || t("att.file"))}</span>`;
 }
 
 // the model of a session from Telegram: aliases Claude Code accepts, plus whatever the settings say
@@ -1129,6 +1140,34 @@ function TextMsg({ i, fold }) {
 // no card — the whole answer is right above
 // the session's last outcome at the end of the chat; one that waits for a decision stays "your move" on Home after
 // reading — "Got it" here puts it to rest without an answer
+// the files the turn made or changed in the project (stage F): each can go to the project's topic in Telegram
+const fsize = (b) => (b >= 1048576 ? t("size.mb", { n: num(b / 1048576, 1) }) : t("size.kb", { n: Math.max(1, Math.round(b / 1024)) }));
+const SHOW_FILES = 5;
+function TurnFiles({ sid, files }) {
+  const [state, setState] = useState({});       // path → "…" while sending, "✓" once sent
+  const [more, setMore] = useState(false);
+  const mark = (paths, v) => setState((x) => Object.assign({}, x, ...paths.map((p) => ({ [p]: v }))));
+  const go = async (paths) => {
+    mark(paths, "…");
+    try {
+      const r = await api("send_files", { sid, paths });
+      haptic("success");
+      paths.forEach((p) => mark([p], r.sent.includes(p.split(/[\\/]/).pop()) ? "✓" : ""));
+      if (r.refused && r.refused.length) alertBox(r.refused.map(([n, w]) => n + " — " + w).join("\n"));
+    } catch (e) { mark(paths, ""); alertBox(e.message); }
+  };
+  const shown = more ? files : files.slice(0, SHOW_FILES);
+  const left = files.filter((f) => state[f.p] !== "✓").map((f) => f.p).slice(0, 10);
+  return html`<div class="tfiles"><div class="o-l"><b>${t("files.turn")}</b></div>
+    ${shown.map((f) => { const cut = Math.max(f.p.lastIndexOf("/"), f.p.lastIndexOf("\\")); return html`<div class="tfile" key=${f.p}>
+      <span class="tf-n">📄 ${f.p.slice(cut + 1)}<span class="dim"> · ${fsize(f.size)}${cut > 0 ? " · " + f.p.slice(0, cut) : ""}</span></span>
+      ${state[f.p] === "✓" ? html`<span class="dim nowrap">✓ ${t("files.sent")}</span>`
+        : html`<button class="link nowrap" disabled=${state[f.p] === "…"} onClick=${() => go([f.p])}>${state[f.p] === "…" ? "…" : t("files.send")}</button>`}</div>`; })}
+    ${files.length > SHOW_FILES && !more && html`<button class="link" onClick=${() => setMore(true)}>${t("files.more", { n: files.length - SHOW_FILES })}</button>`}
+    ${files.length > 1 && left.length > 1 && html`<button class="link" onClick=${() => go(left)}>${t("files.all")}</button>`}
+  </div>`;
+}
+
 function Outcome({ sid, out, state, now }) {
   const [resume, setResume] = useState(out.resume);
   const [got, setGot] = useState(false);
@@ -1142,6 +1181,7 @@ function Outcome({ sid, out, state, now }) {
     ${state !== "fail" && out.line && html`<div class="o-l"><b>${t("out.line")}</b> ${out.line}</div>`}
     ${out.need && html`<div class="o-l"><b>${t("out.need")}</b> ${out.need}</div>`}
     ${out.fail === "rate_limit" ? html`<${ResumeAt} sid=${sid} resume=${resume} reset=${out.reset} onSet=${setResume}/>` : html`<${Replies} sid=${sid} replies=${out.replies}/>`}
+    ${out.files && out.files.length > 0 && html`<${TurnFiles} sid=${sid} files=${out.files}/>`}
     ${mine && (out.need || state === "fail") && html`<div class="foot">${got ? html`<span class="dim">✓ ${t("mine.got")}</span>` : html`<button class="link" onClick=${gotIt}>${t("mine.got")}</button>`}</div>`}
   </div>`;
 }
@@ -1324,7 +1364,7 @@ function Session({ sid }) {
       : i.k === "update" ? html`<div class="upd solo" key=${n}>${i.text}</div>`
       : html`<${TextMsg} key=${n} i=${i} fold=${i.text.length > LONG && all.slice(n + 1).some((x) => x.k === "text")}/>`)}
     ${lv.state === "work" && html`<div class="working">${t("working")}</div>`}
-    ${out && lv.state !== "work" && !info.pending.length && (outState === "you" || outState === "fail" || out.need || (out.replies && out.replies.length) || out.resume)
+    ${out && lv.state !== "work" && !info.pending.length && (outState === "you" || outState === "fail" || out.need || (out.replies && out.replies.length) || out.resume || (out.files && out.files.length))
       && html`<${Outcome} key=${out.ts} sid=${sid} out=${out} state=${outState} now=${now}/>`}
     ${info.pending.map((r) => html`<${Req} key=${r.rid} r=${r} showWhere=${false}/>`)}
     <div ref=${bottom}></div>

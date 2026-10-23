@@ -25,6 +25,12 @@ TRACKED = {"claude-vscode", "cli"}       # `claude -p` (sdk-cli) and other SDK r
 EVENTS = ["SessionStart", "UserPromptSubmit", "PostToolUse", "PostToolUseFailure",
           "Stop", "StopFailure", "SessionEnd", "PermissionRequest"]     # StopFailure: an API error ended the turn
 WAIT_TIMEOUT = 6 * 3600 + 60             # wait up to 6 h for a Telegram answer; the Mac dialog stays open meanwhile
+# what a session learns at its start (and again after a resume or a compaction) while Pult runs: how to hand the owner
+# a file (stage F). SessionStart's additionalContext reaches the model — probe tests/probe_sessionctx.py, 2.1.300/2.1.301
+CONTEXT = ("Pult, a Telegram remote for Claude Code, runs on this computer. When the owner asks for a file, or the task "
+           "is to hand them one, send it to their phone with `pult send <file>... [-m \"caption\"]`: it arrives in this "
+           "project's Telegram topic. Only files inside this project's folder, up to 50 MB each. Files the owner sends "
+           "from Telegram are saved in this project's inbox/<date>/ folder.")
 
 
 def hooks_config(command, args=None):
@@ -73,6 +79,10 @@ def main():
            "driven": os.environ.get("PULT_DRIVEN") == "1", "wait": wait}
     s = connect()
     s.sendall(json.dumps(msg, ensure_ascii=False).encode() + b"\n")
+    if ev.get("hook_event_name") == "SessionStart":          # only now: the daemon took the event, so Pult runs
+        sys.stdout.buffer.write(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart",
+                                                                   "additionalContext": CONTEXT}}).encode())
+        sys.stdout.buffer.flush()
     if not wait:
         return
     s.settimeout(None)

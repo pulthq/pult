@@ -2,6 +2,30 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.13.0 — 2026-10-23
+
+- **Files to Claude.** A document, a deck, a spreadsheet or a picture sent or forwarded to a project's topic lands in
+  that project's `inbox/<date>/` under its own name (in a git project the folder is excluded locally, never
+  committed). The caption is the task; an album goes as one message with its caption; files sent without words wait
+  up to ten minutes for your next message in the topic and go with it, and a 👌 says they arrived. Over Telegram's
+  20 MB limit for bots, you're told so, and so is Claude. Outside a project topic files go to Pult's own inbox, as
+  before. The web app's paperclip takes any file now — pictures as before, other files up to 5 MB in all.
+- **Files from Claude.** `pult send FILE… [-m TEXT]` sends files to the project's topic. Claude runs it when you ask
+  for a file: every session learns about it at its start, through the SessionStart hook's added context, while Pult
+  runs. The command finds its session by Claude Code's own environment (`CLAUDE_CODE_SESSION_ID`). It sends only
+  files inside that session's project folder (after links), nothing that looks like keys or settings (`.env`, `*.pem`,
+  `id_*`, `.ssh/`, `credentials*` and the like), 1 byte to 50 MB, at most ten at once; each file sent is logged.
+- **Files of the turn.** When a turn ends, Pult notes the project's files it made or changed (hidden folders,
+  dependencies, caches, the inbox and lock files skipped); the result in Telegram gets a "📎 Files (N)" button into
+  the app, and the outcome card there lists them, each with "To Telegram", plus "All to Telegram".
+- Pictures from a project's inbox show in the app's chat, like Telegram photos did.
+- The `pult` command writes UTF-8 into a pipe. On Windows a pipe got the system's code page, and Russian words or a
+  file's name stopped the command midway.
+- `tests/probe_sessionctx.py` checks the added context and the session's environment on Claude Code 2.1.300 and
+  2.1.301; `tools/files_check.py` drives the files in the app on the stand.
+- Docs: ARCHITECTURE and CONTRIBUTING name `src/pult_new.py` and `src/pult_files.py`; ARCHITECTURE lists what a new
+  project and a file sent may touch, and SECURITY counts going past those limits as a vulnerability.
+
 ## 0.12.0 — 2026-10-23
 
 - **A new project from the phone.** In the web app, "＋ New project" heads the project list of "+" and sits under

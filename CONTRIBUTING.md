@@ -49,6 +49,8 @@ How the parts fit together, with diagrams of each path: [ARCHITECTURE.md](ARCHIT
 | `src/pultctl.py`, `src/pult_setup.py` | the `pult` command: install, setup, service, report, uninstall |
 | `src/pult_spend.py` | usage pace on Resources: a week of transcripts in 5-minute slots, the curve through Claude Code's readings, the forecast |
 | `src/pult_attn.py`, `src/pult_brief.py`, `src/pult_load.py`, `src/pult_stt.py` | whose move it is; the optional one-line summary; the computer's load; voice to text |
+| `src/pult_new.py` | a new project from the phone: the folder's name from any title, the name checks, the clone link; the daemon makes the folder |
+| `src/pult_files.py` | files to and from the phone: safe names, the project's inbox, what `pult send` may send, the files a turn made |
 | `src/pult_os.py` | what differs between systems: paths, the service (launchd, systemd, a logon task), idle, the system language |
 | `deploy/relay/` | running the relay on a Linux server |
 

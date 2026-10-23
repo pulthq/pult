@@ -12,6 +12,7 @@ With Telegram as a pager: a task from the app makes no turn or result message; i
 A message from the app mid-turn reaches Claude in that turn, and the app shows it as written mid-turn.
 Stop from the app closes the interrupted turn, though Claude Code sends no Stop hook for it.
 A new project "with a description" (stage S): git, its topic by the title, a first turn that writes CLAUDE.md.
+A file made in a session goes to the project's topic with `pult send`, and the turn's outcome lists it (stage F).
 """
 import asyncio, json, os, shutil, sys, tempfile, time, urllib.parse
 from pathlib import Path
@@ -227,6 +228,23 @@ async def main():
     await until(lambda: not p.driven[sid7].busy, timeout=20, what="ход закрыт после «Стопа»")
     log("стоп:", turn7.done and turn7.done[0], "· сессия занята:", p.driven[sid7].busy)
     assert turn7.done and turn7.done[0] == "⏹", "the interrupted turn wasn't closed"
+    # files (stage F): a session of Pult's makes a file and sends it with `pult send` — the command finds its session by
+    # Claude Code's environment and the file lands in the project's topic; the turn's outcome lists the file
+    docs = len([1 for m, _ in calls if m == "sendDocument"])
+    send = "PULT_SOCK=%s %s %s send report.md -m 'From the test'" % (os.environ["PULT_SOCK"], sys.executable, SRC / "pultctl.py")
+    sid9 = (await p.api_new(pkey5, "Write the file report.md in the current folder with one line: Hello from the test. "
+                            "Then run exactly this with the Bash tool: " + send + " — and reply with one word: SENT."))["sid"]
+    mark9, t9 = len(calls), time.monotonic()
+    while not (p.attn.rec.get(sid9) or {}).get("ts"):
+        for b in buttons("p:", mark9):
+            mark9 = len(calls)
+            await p.on_callback({"id": "c9", "from": {"id": OWNER}, "data": "p:%s:y" % b.split(":")[1]})
+        assert time.monotonic() - t9 < 180, "не дождался: итог хода с файлом"
+        await asyncio.sleep(0.3)
+    sent9 = [d for m, d in calls if m == "sendDocument"][docs:]
+    log("файл в теме:", len(sent9), "· файлы хода:", [f["p"] for f in p.attn.rec[sid9].get("files") or []])
+    assert sent9 and (PROJ / "report.md").exists(), "pult send didn't deliver the file"
+    assert "report.md" in [f["p"] for f in p.attn.rec[sid9].get("files") or []], "the turn's files miss report.md"
     # a new project from the phone (stage S): a folder made a moment ago gets git, a topic named by its title and a
     # first turn that writes CLAUDE.md from the description (permission mode here is "default": Write asks)
     pultd.NEW_ROOT = TMP

@@ -22,7 +22,11 @@ For example:
 - the bot token, the relay secret or session content leaks into logs, `pult report`, the relay or anywhere it
   shouldn't;
 - the hook or the tab wrapper can be made to change what Claude Code does without the owner's say;
-- `pult uninstall`, `pult setup` or the installer touching files that aren't Pult's.
+- `pult uninstall`, `pult setup` or the installer touching files that aren't Pult's;
+- "New project" in the web app making a folder outside the owner's home folder, writing into a folder that already
+  exists, or handing git a link that isn't https;
+- `pult send` or the app's "To Telegram" sending a file from outside the session's project folder or one that looks
+  like keys or settings, or a file from Telegram landing outside the project's `inbox/`.
 
 Things that are by design and not vulnerabilities:
 
