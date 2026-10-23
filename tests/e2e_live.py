@@ -11,6 +11,7 @@ the next prompt with its own result; that result is the owner's move on Home unt
 With Telegram as a pager: a task from the app makes no turn or result message; its question is paged once.
 A message from the app mid-turn reaches Claude in that turn, and the app shows it as written mid-turn.
 Stop from the app closes the interrupted turn, though Claude Code sends no Stop hook for it.
+A new project "with a description" (stage S): git, its topic by the title, a first turn that writes CLAUDE.md.
 """
 import asyncio, json, os, shutil, sys, tempfile, time, urllib.parse
 from pathlib import Path
@@ -50,7 +51,7 @@ def buttons(prefix, after=0):
     for m, d in calls[after:]:
         if "reply_markup" in d:
             for row in json.loads(d["reply_markup"]).get("inline_keyboard", []):
-                out += [b["callback_data"] for b in row if b["callback_data"].startswith(prefix)]
+                out += [b["callback_data"] for b in row if b.get("callback_data", "").startswith(prefix)]
     return out
 
 
@@ -226,6 +227,23 @@ async def main():
     await until(lambda: not p.driven[sid7].busy, timeout=20, what="ход закрыт после «Стопа»")
     log("стоп:", turn7.done and turn7.done[0], "· сессия занята:", p.driven[sid7].busy)
     assert turn7.done and turn7.done[0] == "⏹", "the interrupted turn wasn't closed"
+    # a new project from the phone (stage S): a folder made a moment ago gets git, a topic named by its title and a
+    # first turn that writes CLAUDE.md from the description (permission mode here is "default": Write asks)
+    pultd.NEW_ROOT = TMP
+    mark, t8 = len(calls), time.monotonic()
+    r8 = await p.api_create("Дача у моря", how="describe", about="Учёт дел по даче: посадки и полив. Пока только записи.",
+                            parent=str(TMP))
+    while not (p.attn.rec.get(r8["sid"]) or {}).get("ts"):
+        for b in buttons("p:", mark):
+            mark = len(calls)
+            await p.on_callback({"id": "c8", "from": {"id": OWNER}, "data": "p:%s:y" % b.split(":")[1]})
+        assert time.monotonic() - t8 < 180, "не дождался: итог нового проекта"
+        await asyncio.sleep(0.3)
+    md = Path(os.path.realpath(TMP), "dacha_u_morya", "CLAUDE.md")
+    topic8 = [d.get("name") for m, d in calls if m == "createForumTopic"][-1]
+    log("новый проект: git", r8["git"], "· CLAUDE.md", md.exists() and md.stat().st_size, "· тема", topic8,
+        "· сессия", p.live[r8["sid"]].title)
+    assert md.exists() and (md.parent / ".git").is_dir() and topic8 == "Дача у моря", "the new project isn't complete"
     log("тем создано:", len([1 for m, _ in calls if m == "createForumTopic"]), "· вызовов Telegram:", len(calls))
     for d in list(p.driven.values()):
         d.task.cancel()

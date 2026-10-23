@@ -49,6 +49,8 @@ phone:
   message field.
 - **Resources** shows how you spend your plan: the curve of each limit, the forecast, who spent it, and the
   computer's load.
+- **A new project** from the phone: a folder anywhere in your home folder — empty with git, with a `CLAUDE.md` that
+  Claude writes from your description, or a clone of a repository. Its topic appears in the group at once.
 
 <p align="center">
   <img src="media/app.en.png" width="860" alt="Three screens of the web app: Home with a session that waits for a choice and its ready replies, then the projects board; a project's screen; a session ending in its outcome card">

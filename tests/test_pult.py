@@ -31,6 +31,7 @@ import pult_brief as B  # noqa: E402
 import pult_hook  # noqa: E402
 import pult_i18n as I  # noqa: E402
 import pult_load as L  # noqa: E402
+import pult_new as N  # noqa: E402
 import pult_os  # noqa: E402
 import pult_render as R  # noqa: E402
 import pult_stt as STT  # noqa: E402
@@ -744,6 +745,50 @@ class WindowsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pultd.decode_pkey(pultd.sanitize(path[0].lower() + path[1:])), path)
 
 
+class NewProjectTest(unittest.TestCase):
+    """Stage S without the daemon: the folder's name from a title, the checks, clone links, clone progress."""
+
+    def test_folder_name(self):
+        for title, name in [("Дача у моря", "dacha_u_morya"), ("Щука и ёжик", "shchuka_i_ezhik"), ("Київ", "kiyiv"),
+                            ("Объединение", "obedinenie"), ("my-shop-api", "my-shop-api"), ("My App!", "my_app"),
+                            ("Café 2026", "cafe_2026"), ("  .hidden. ", "hidden"), ("中文", ""), ("🙂 план", "plan")]:
+            self.assertEqual(N.folder_name(title), name, title)
+        self.assertEqual(len(N.folder_name("я" * 80)), N.NAME_MAX)
+        for name in ["dacha_u_morya", "x", "My.App-2", "a_"]:
+            self.assertIsNone(N.bad_name(name), name)
+        for name in ["", ".x", "-x", "x.", "con", "LPT1.txt", "a b", "дача", "a/b", "..", "x" * 65]:
+            self.assertEqual(N.bad_name(name), "new.err.name", name)
+
+    def test_repo(self):
+        gh = ("https://github.com/pulthq/pult.git", "pult", "pulthq/pult")
+        for link in ["https://github.com/pulthq/pult", "https://github.com/pulthq/pult.git", "github.com/pulthq/pult/",
+                     "git@github.com:pulthq/pult.git", "ssh://git@github.com/pulthq/pult.git",
+                     "https://github.com/pulthq/pult/tree/main?tab=readme#x", " https://www.github.com/pulthq/pult "]:
+            self.assertEqual(N.repo(link), gh, link)
+        self.assertEqual(N.repo("https://gitlab.com/g/sub/proj.git"), ("https://gitlab.com/g/sub/proj.git", "proj", None))
+        for link in ["", "pulthq/pult", "https://github.com/pulthq", "ext::sh -c touch", "file:///etc/x", "/Users/x/repo",
+                     "https://github.com/../x", "https://github.com/-o/x", "https://github.com/o/.x", "--upload-pack=x"]:
+            self.assertIsNone(N.repo(link), link)
+
+    def test_progress_and_places(self):
+        self.assertEqual(N.progress("Receiving objects:  45% (9/20)\rReceiving objects: 100% (20/20), done.\n"
+                                    "Resolving deltas:  12% (1/8)\r"), ("resolve", 12))
+        self.assertIsNone(N.progress("Cloning into 'x'...\n"))
+        root = TMP / "places"
+        (root / "b").mkdir(parents=True, exist_ok=True)
+        (root / "A").mkdir(exist_ok=True)
+        (root / ".hidden").mkdir(exist_ok=True)
+        (root / "file.txt").write_text("")
+        self.assertEqual(N.dirs(root), ["A", "b"])
+        self.assertTrue(N.inside(root / "b", root))
+        self.assertTrue(N.inside(root, root))
+        self.assertFalse(N.inside(TMP, root))
+        self.assertFalse(N.inside(str(root) + "x", root))
+        (root / "out").symlink_to(TMP) if not (root / "out").exists() else None
+        self.assertFalse(N.inside(root / "out", root))          # a link out of the home folder is outside
+        self.assertIn("Дача", N.describe_prompt(" Дача ", "грядки"))
+
+
 class LoadTest(unittest.TestCase):
     def test_ps_rows(self):
         # macOS ps: a comma as the decimal mark (a locale), days in the elapsed time, minutes past 60 in the processor
@@ -1317,6 +1362,107 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.p.api_session(SID2))["ctx"]["window"], 200000)
         self.assertEqual(self.store.get("ctx_model"), {"claude-opus-5-5": [200000, 32000]})
 
+    async def test_new_project(self):
+        # stage S: a folder in a place picked inside the home folder, git, the topic named by the title at once, the
+        # project in the lists before Claude ever ran there; with a description — the first turn writes CLAUDE.md
+        root = TMP / ("home-" + self._testMethodName)
+        (root / "Documents" / "old").mkdir(parents=True)
+        (root / "Code").mkdir()
+        tabs = TMP / "tab-new.json"
+        tabs.write_text(json.dumps({"folders": [str(root / "Documents")]}))
+        # the test's home is in the temp folder, which Pult otherwise never lists as a project
+        with mock.patch.object(pultd, "NEW_ROOT", root), mock.patch.object(pultd, "TAB_CONF", tabs), \
+                mock.patch.object(pultd, "SKIP_PREFIXES", ("-nothing-",)), mock.patch.object(self.p, "drive", mock.AsyncMock()) as drive:
+            d = await self.p.api_dirs()
+            self.assertEqual((d["show"], d["dirs"], d["tabs"]), (os.path.join("~", "Documents"), ["old"], True))   # ~\Documents on Windows
+            self.assertEqual(d["up"], os.path.realpath(root))
+            up = await self.p.api_dirs(d["up"])
+            self.assertEqual((up["show"], up["up"], up["dirs"]), ("~", None, ["Code", "Documents"]))
+            self.assertFalse((await self.p.api_dirs(up["path"], into="Code"))["tabs"])
+            for bad in [dict(path="/"), dict(path=str(TMP)), dict(path=up["path"], into=".."), dict(path=up["path"], into="nope")]:
+                with self.assertRaises(ValueError):
+                    await self.p.api_dirs(**bad)
+            self.assertEqual(await self.p.api_folder("Дача у моря"), {"name": "dacha_u_morya"})
+            self.assertEqual(await self.p.api_folder("", "git@github.com:o/My.Repo.git"), {"name": "My.Repo"})
+            # empty: a folder with git, a topic named by the title, listed with no transcripts, the place remembered
+            r = await self.p.api_create("Дача у моря", parent=d["path"])
+            dest = os.path.join(d["path"], "dacha_u_morya")
+            self.assertEqual(r, {"pkey": pultd.sanitize(dest), "git": bool(shutil.which("git"))})
+            self.assertTrue(os.path.isdir(dest))
+            self.assertEqual(os.path.isdir(os.path.join(dest, ".git")), bool(shutil.which("git")))
+            self.assertEqual(self.fake.of("createForumTopic")[-1]["name"], "Дача у моря")
+            self.assertEqual(self.store.topic(r["pkey"])["name"], "Дача у моря")
+            drive.assert_not_called()
+            rows = (await self.p.api_projects())["projects"]
+            self.assertIn(("Дача у моря", dest), [(x["name"], x["path"]) for x in rows])
+            self.assertEqual(self.store.get("new_parent"), d["path"])
+            # refusals: nothing that exists is touched
+            for kw, key in [(dict(title="Дача у моря"), "new.err.exists"), (dict(title="x", name="dacha-u-morya"), "new.err.key"),
+                            (dict(title="x", name=".x"), "new.err.name"), (dict(title="中文"), "new.err.name"),
+                            (dict(title="x", parent="/tmp"), "new.err.where"), (dict(title=""), "new.err.title"),
+                            (dict(title="x", how="describe"), "new.err.about"), (dict(title="x", how="clone", link="nope"), "new.err.link"),
+                            (dict(title="x", how="rm"), "err.no_request")]:
+                with self.assertRaises(ValueError, msg=kw) as cm:
+                    await self.p.api_create(**kw)
+                self.assertEqual(str(cm.exception), self.p.t(key, name="dacha_u_morya", other=os.path.join("~", "Documents", "dacha_u_morya"), op="create"), kw)
+            self.assertFalse(os.path.exists(os.path.join(d["path"], "dacha-u-morya")))
+            # with a description: the first turn asks for CLAUDE.md in the new folder, in the project's place
+            r = await self.p.api_create("Огород", how="describe", about="Грядки и полив", parent=up["path"] + "/Code", model="haiku")
+            dest = os.path.join(up["path"], "Code", "ogorod")
+            self.assertEqual(drive.call_args.args[1:3], (dest, N.describe_prompt("Огород", "Грядки и полив")))
+            self.assertEqual((drive.call_args.kwargs["pkey"], drive.call_args.kwargs["model"]), (pultd.sanitize(dest), "haiku"))
+            self.assertEqual(self.p.live[r["sid"]].title, "CLAUDE.md по описанию")
+            # empty with a first task: started as "+" does
+            r = await self.p.api_create("Третий", text="Сделай README", parent=d["path"])
+            self.assertEqual(drive.call_args.args[1:3], (os.path.join(d["path"], "tretiy"), "Сделай README"))
+            self.assertIn("sid", r)
+
+    async def test_new_project_clone(self):
+        # a clone is a job: the app polls it; done — the project is made as an empty one is; a failed clone leaves
+        # nothing; a big repository is asked about first
+        if not shutil.which("git"):
+            self.skipTest("no git")
+        root = TMP / ("home-" + self._testMethodName)
+        (root / "Documents").mkdir(parents=True)
+        origin = TMP / "origin-repo"
+        subprocess.run(["git", "init", "-q", str(origin)], check=True)
+        (origin / "README.md").write_text("hi\n")
+        subprocess.run(["git", "-C", str(origin), "-c", "user.name=t", "-c", "user.email=t@t", "add", "."], check=True)
+        subprocess.run(["git", "-C", str(origin), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"], check=True)
+        local = lambda link: (str(origin), "origin-repo", None) if link == "ok" else None if link == "nope" else (str(TMP / "none"), "none", None)
+        with mock.patch.object(pultd, "NEW_ROOT", root), mock.patch.object(pultd.N, "repo", local), \
+                mock.patch.object(self.p, "drive", mock.AsyncMock()):
+            r = await self.p.api_create(how="clone", link="ok")
+            self.assertIn("job", r)
+            await until(lambda: self.p.jobs[r["job"]]["state"] != "run", timeout=20)
+            j = await self.p.api_job(r["job"])
+            dest = os.path.join(os.path.realpath(root / "Documents"), "origin-repo")
+            self.assertEqual((j["state"], j["pkey"], j["git"]), ("done", pultd.sanitize(dest), True))
+            self.assertEqual(Path(dest, "README.md").read_text(), "hi\n")
+            self.assertEqual(self.store.topic(j["pkey"])["name"], "origin-repo")
+            r = await self.p.api_create(title="Пропал", how="clone", link="gone")
+            await until(lambda: self.p.jobs[r["job"]]["state"] != "run", timeout=20)
+            j = await self.p.api_job(r["job"])
+            self.assertEqual(j["state"], "fail")
+            self.assertTrue(j["error"].startswith("Не получилось склонировать: "), j["error"])
+            self.assertFalse(os.path.exists(os.path.join(os.path.dirname(dest), "propal")))
+            with self.assertRaises(ValueError):
+                await self.p.api_job("nope")
+            with mock.patch.object(self.p, "repo_mb", mock.AsyncMock(return_value=2048)):
+                self.assertEqual(await self.p.api_create(title="Большой", how="clone", link="ok"), {"big": 2048})
+                r = await self.p.api_create(title="Большой", how="clone", link="ok", big=True)
+                await until(lambda: self.p.jobs[r["job"]]["state"] != "run", timeout=20)
+                self.assertEqual(self.p.jobs[r["job"]]["state"], "done")
+
+    async def test_new_project_button(self):
+        # Telegram: "which project" for a text from General ends with "＋ New project" into the app — only with the app
+        await self.p.cmd_projects(None, "new", ("текст", 5))
+        self.assertNotIn("newproject", self.fake.of("sendMessage")[-1].get("reply_markup", ""))
+        self.p.env.update(PULT_APP_LINK="https://t.me/b/pult")
+        await self.p.cmd_projects(None, "new", ("текст", 5))
+        rows = json.loads(self.fake.of("sendMessage")[-1]["reply_markup"])["inline_keyboard"]
+        self.assertEqual(rows[-1], [{"text": "＋ Новый проект", "url": "https://t.me/b/pult?startapp=newproject"}])
+
     async def test_model_choice(self):
         # the model and effort for a session from Telegram: picked for a new task, switched live on a running one
         # (SDK set_model), kept for a resume; a VS Code tab keeps its own
@@ -1575,7 +1721,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.p.stt_state(), {"on": False, "lang": "ru"})
         # the app shows the microphone only when there is a key: the flag rides with the projects (and the session)
         with mock.patch.object(self.p, "list_projects", lambda known: []):
-            self.assertEqual(await self.p.api_projects(), {"projects": [], "stt": False})
+            self.assertEqual(await self.p.api_projects(), {"projects": [], "stt": False, "create": True})
             self.p.stt = FakeStt()
             self.assertTrue((await self.p.api_projects())["stt"])
 

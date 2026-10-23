@@ -2,6 +2,23 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.12.0 — 2026-10-23
+
+- **A new project from the phone.** In the web app, "＋ New project" heads the project list of "+" and sits under
+  Projects; in Telegram it closes the "which project" buttons. Give it any name — the folder's name is made from it
+  (Cyrillic in Latin letters, marks as "_", editable before you create), pick the place folder by folder inside your
+  home folder, and choose how it begins: empty (a folder with git), with a description (the first turn writes
+  `CLAUDE.md` from your words), or a clone of a repository by its link. Its topic appears in the group at once,
+  under the name you gave; a first task, if you add one, starts a session there as "+" does.
+- Nothing that exists is touched: a taken folder is refused, and so is a name Claude Code would mix up with another
+  folder (it turns every mark in a path into "-", so `my_app` and `my-app` side by side are one project to it).
+- A clone goes over https even from a `git@` link (port 22 is often shut), runs at a lower priority with a 15-minute
+  limit, shows its progress in the app, and asks first when the repository is over 1 GB. Private repositories clone
+  when git on the computer knows your login (`gh auth setup-git`, for one).
+- A project made from the phone is in the lists before Claude has ever run in it.
+- `tests/probe_newdir.py` checks that a session starts in a folder made a moment ago (no "trust this folder" question)
+  and writes `CLAUDE.md` there; `tools/newproject_check.py` drives the new screen on the stand in headless Chrome.
+
 ## 0.11.1 — 2026-10-22
 
 - **Crop and rotate a picture before sending it.** In the web app, tap an attached picture's thumbnail (the pencil

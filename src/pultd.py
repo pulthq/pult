@@ -36,6 +36,7 @@ import pult_brief as B
 import pult_hook
 import pult_i18n as I
 import pult_load as L
+import pult_new as N
 import pult_os
 import pult_render as R
 import pult_spend as S
@@ -88,10 +89,11 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 STT_MAX = 4 * 1024 * 1024       # bytes of one recording from the app (5 min at 32 kbit/s ≈ 1.2 MB; base64 must fit the 8 MB frame)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.11.1"
+VERSION = "0.12.0"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
+NEW_ROOT = Path.home()   # a new project and the folder picker stay inside this (stage S)
 EDITOR_DIRS = pult_os.editor_dirs()     # VS Code and its forks (and their remote side): where the tab wrapper is set
 TAB_FILE = "pult-tab.exe" if os.name == "nt" else "pult-tab.sh"   # what claudeCode.claudeProcessWrapper points at
 EXT_DIRS = pult_os.extension_dirs()
@@ -810,6 +812,7 @@ class Pult:
         self.topic_locks = {}
         self.cards_seen = set()        # topics whose card was checked since start (Pult.topic_card)
         self.run_sem = asyncio.Semaphore(MAX_RUNNING)
+        self.jobs = {}                 # job id → a clone for a new project in progress (stage S)
         self._idle = (0.0, None)
         self.here_seen = time.monotonic()   # the owner's last action in a session here (Pult.idle)
         self._agents = (0.0, [])
@@ -982,7 +985,7 @@ class Pult:
             if row and row["thread"]:
                 return row["thread"]
             path = path or self.project_path(pkey)
-            name = self.project_name(pkey, path)
+            name = (row and row["name"]) or self.project_name(pkey, path)       # a new project's title (stage S)
             res = await self.out.submit(1, lambda: self.tg.call("createForumTopic", chat_id=self.chat,
                                                                  name=name[:128]))
             thread = res["message_thread_id"]
@@ -2718,6 +2721,11 @@ class Pult:
             path = known.get(d.name) or decode_pkey(d.name)
             if path and os.path.isdir(path):
                 out.append((max(f.stat().st_mtime for f in files), d.name, path))
+        # a topic's project with no transcripts yet — one made from the phone (stage S): by its folder's time
+        seen = {k for _, k, _ in out}
+        for pkey, path in known.items():
+            if pkey not in seen and not skip_pkey(pkey) and os.path.isdir(path):
+                out.append((os.stat(path).st_mtime, pkey, path))
         return sorted(out, reverse=True)
 
     async def cmd_projects(self, here, mode, pending=None, reply_to=None):
@@ -2728,9 +2736,10 @@ class Pult:
         for _, pkey, path in (await asyncio.to_thread(self.list_projects, known))[:20]:
             tok = self.offer((mode, pkey, path, pending))
             rows.append([{"text": self.project_name(pkey, path), "callback_data": "o:" + tok}])
-        text = self.t("projects." + mode)
-        await self.send(None, text if rows else self.t("projects.none"), buttons=rows,
-                        here=here, reply_to=reply_to)
+        text = self.t("projects." + mode) if rows else self.t("projects.none")
+        if mode == "new" and self.app_url():        # a project that doesn't exist yet — made in the app (stage S)
+            rows.append([{"text": self.t("projects.create"), "url": self.app_url(start="newproject")}])
+        await self.send(None, text, buttons=rows, here=here, reply_to=reply_to)
 
     async def cmd_sessions(self, topic, here):
         if not topic or not topic["path"]:
@@ -3210,7 +3219,8 @@ class Pult:
                         "turns": self.attn.day_of(pkey)[0]})
         # what needs you first, then what works, then what is open, then by recency
         out.sort(key=lambda r: (-(r["mine"] > 0), -(r["work"] + r["ask"] > 0), -(r["open"] > 0), -r["last"]))
-        return {"projects": out, "stt": self.stt_state()["on"]}      # stt: the app shows the microphone only with a key
+        # stt: the app shows the microphone only with a key; create: this daemon makes new projects (stage S)
+        return {"projects": out, "stt": self.stt_state()["on"], "create": True}
 
     async def api_sessions(self, pkey):
         path = self.project_path(pkey)
@@ -3327,6 +3337,220 @@ class Pult:
         sid = str(uuid.uuid4())
         await self.drive(sid, path, self.with_uploads(text, files), None, pkey=pkey, model=model, effort=effort)
         return {"ok": True, "sid": sid}
+
+    # ----- a new project from the phone (stage S) -----
+
+    @staticmethod
+    def tilde(path):
+        root = os.path.realpath(NEW_ROOT)
+        return "~" + path[len(root):] if path == root or path.startswith(root.rstrip(os.sep) + os.sep) else path
+
+    def new_parent(self):
+        """Where the picker opens: the place the last project went into, else ~/Documents, else home."""
+        for p in (self.store.get("new_parent"), str(NEW_ROOT / "Documents"), str(NEW_ROOT)):
+            if p and os.path.isdir(p) and N.inside(p, NEW_ROOT):
+                return os.path.realpath(p)
+        return str(NEW_ROOT)
+
+    def place(self, path):
+        """A folder the owner picked: an existing one inside NEW_ROOT, links followed; else a refusal."""
+        p = os.path.realpath(os.path.expanduser(path)) if path else self.new_parent()
+        if not (os.path.isdir(p) and N.inside(p, NEW_ROOT)):
+            raise ValueError(self.t("new.err.where"))
+        return p
+
+    @staticmethod
+    def tab_folder(path):
+        """Does writing into VS Code tabs cover this folder (the wrapper's list); None — the wrapper isn't set up."""
+        try:
+            folders = json.loads(TAB_CONF.read_text(encoding="utf-8")).get("folders") or []
+        except (OSError, ValueError, AttributeError):
+            return None
+        return any(N.inside(path, os.path.expanduser(f)) for f in folders)
+
+    async def api_dirs(self, path=None, into=None):
+        """The folder picker of a new project: the folders in one place (into — one of them, a step down), a step up,
+        whether tabs are covered there."""
+        p = self.place(path)
+        if into is not None:
+            if into not in await asyncio.to_thread(N.dirs, p):
+                raise ValueError(self.t("new.err.where"))
+            p = self.place(os.path.join(p, into))
+        root = os.path.realpath(NEW_ROOT)
+        return {"path": p, "show": self.tilde(p), "up": None if p == root else os.path.dirname(p),
+                "dirs": await asyncio.to_thread(N.dirs, p), "tabs": self.tab_folder(p)}
+
+    async def api_folder(self, title=None, link=None):
+        """The folder's name the app shows under the title as it is typed: from the title, else from a clone link."""
+        if (title or "").strip():
+            return {"name": N.folder_name(title)}
+        src = N.repo(link)
+        return {"name": src[1] if src and not N.bad_name(src[1]) else ""}
+
+    def key_taken(self, pkey, dest):
+        """Another folder already answers to this project key (Claude Code turns every character but Latin letters
+        and digits into "-"): its path, else None. A key of a folder that is gone is free — it was this path or none."""
+        row = self.store.topic(pkey)
+        if row and row["path"] and row["path"] != dest and os.path.isdir(row["path"]):
+            return row["path"]
+        if (CLAUDE_PROJECTS / pkey).is_dir():
+            other = decode_pkey(pkey)
+            if other and other != dest and os.path.isdir(other):
+                return other
+        return None
+
+    async def api_create(self, title=None, name=None, parent=None, how="empty", about=None, link=None, text=None,
+                         files=None, model=None, effort=None, big=False):
+        """A new project: a folder with git (how=empty), the same with a first turn that writes CLAUDE.md from the
+        owner's description (describe), or a clone (clone — a job, the app asks api_job). Its topic in the group
+        comes at once, named by the title; a first task starts a session there, as "+" does. Nothing that exists
+        is touched: a taken folder or project key is a refusal."""
+        title, about, text = (title or "").strip(), (about or "").strip(), (text or "").strip()
+        given = title                   # a clone without a title: the folder keeps the repository's name as it is
+        if how not in ("empty", "describe", "clone"):
+            raise ValueError(self.t("err.no_request", op="create"))
+        src = None
+        if how == "clone":
+            src = N.repo(link)
+            if not src:
+                raise ValueError(self.t("new.err.link"))
+            title = title or src[1]
+            if not shutil.which("git"):
+                raise ValueError(self.t("new.err.git"))
+        if how == "describe" and not about:
+            raise ValueError(self.t("new.err.about"))
+        if not title:
+            raise ValueError(self.t("new.err.title"))
+        name = (name or "").strip() or (await self.api_folder(given, link if how == "clone" else None))["name"]
+        if N.bad_name(name):
+            raise ValueError(self.t("new.err.name"))
+        model, effort = self.check_choice(model, effort)
+        parent = self.place(parent)
+        dest = os.path.join(parent, name)
+        if os.path.lexists(dest):
+            raise ValueError(self.t("new.err.exists", name=name))
+        pkey = sanitize(dest)
+        other = self.key_taken(pkey, dest)
+        if other:
+            raise ValueError(self.t("new.err.key", other=self.tilde(other)))
+        first = (N.describe_prompt(title, about) if how == "describe" else self.with_uploads(text, files)
+                 if text or files else None)
+        done = lambda git: self.project_made(pkey, dest, title, parent, how, first, model, effort, git)
+        if how == "clone":
+            if not big:
+                mb = await self.repo_mb(src[2])
+                if mb and mb > N.BIG_MB:
+                    return {"big": mb}
+            jid = secrets.token_hex(6)
+            self.jobs = {k: j for k, j in self.jobs.items() if time.time() - j["t0"] < 3600}
+            self.jobs[jid] = {"state": "run", "t0": time.time(), "step": None, "name": name}
+            log("new project: cloning %s into %s" % (src[0], dest))
+            asyncio.create_task(self.clone(jid, src[0], dest, done))
+            return {"job": jid}
+        os.mkdir(dest)
+        return await done(await self.git_init(dest))
+
+    async def api_job(self, job):
+        j = self.jobs.get(str(job))
+        if not j:
+            raise ValueError(self.t("new.err.job"))
+        return dict({k: v for k, v in j.items() if k != "t0"}, sec=int(time.time() - j["t0"]))
+
+    async def git_init(self, dest):
+        """An empty git repository in a new project; False — no git here (the folder stays, the app says so)."""
+        if not shutil.which("git"):
+            return False
+        try:
+            p = await asyncio.create_subprocess_exec("git", "init", "-q", dest, stdin=asyncio.subprocess.DEVNULL,
+                                                     stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+            _, err = await asyncio.wait_for(p.communicate(), 30)
+        except (OSError, asyncio.TimeoutError) as e:
+            log("new project: git init: %r" % e)
+            return False
+        if p.returncode:
+            log("new project: git init: %s" % err.decode(errors="replace").strip()[-200:])
+        return p.returncode == 0
+
+    async def repo_mb(self, slug):
+        """A GitHub repository's size in MB before a clone (gh with the owner's login, else the public API); None —
+        unknown (another host, no network): cloned without asking."""
+        if not slug:
+            return None
+        kb = None
+        if shutil.which("gh"):
+            out = (await self._run("gh", "api", "repos/" + slug, "--jq", ".size", timeout=10)).strip()
+            kb = int(out) if out.isdigit() else None
+        if kb is None:
+            def public():
+                import urllib.request
+                with urllib.request.urlopen("https://api.github.com/repos/" + slug, timeout=8) as r:
+                    return json.loads(r.read()).get("size")
+            try:
+                kb = await asyncio.to_thread(public)
+            except Exception:
+                return None
+        return round(kb / 1024) if isinstance(kb, int) else None
+
+    async def clone(self, jid, url, dest, done):
+        """git clone of a new project, at a lower priority, for N.CLONE_LIMIT at most; its progress goes to the job.
+        A failed clone removes what it made itself; one stopped by the limit is removed here — the folder did not
+        exist before (api_create checked), so it is Pult's own."""
+        job = self.jobs[jid]
+        cmd = ["git", "clone", "--progress", "--", url, dest]
+        if os.name != "nt" and shutil.which("nice"):
+            cmd = ["nice", "-n", "10"] + cmd
+        env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never")
+        tail = ""
+        try:
+            p = await asyncio.create_subprocess_exec(*cmd, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
+                                                     stderr=asyncio.subprocess.PIPE, env=env)
+
+            async def pump():
+                nonlocal tail
+                while True:
+                    b = await p.stderr.read(4096)
+                    if not b:
+                        return
+                    tail = (tail + b.decode(errors="replace"))[-4000:]
+                    job["step"] = N.progress(tail) or job["step"]
+            try:
+                await asyncio.wait_for(asyncio.gather(pump(), p.wait()), N.CLONE_LIMIT)
+            except asyncio.TimeoutError:
+                p.kill()
+                await p.wait()
+                await asyncio.to_thread(shutil.rmtree, dest, True)
+                log("new project: clone stopped after %d s: %s" % (N.CLONE_LIMIT, url))
+                job.update(state="fail", error=self.t("new.err.slow", min=N.CLONE_LIMIT // 60))
+                return
+            if p.returncode:
+                why = [ln.strip() for ln in re.split(r"[\r\n]+", tail) if ln.strip().startswith(("fatal:", "error:"))]
+                log("new project: clone failed: %s" % (why[-1] if why else p.returncode))
+                job.update(state="fail", error=self.t("new.err.clone", why=(why[-1] if why else "git %s" % p.returncode)[:200]))
+                return
+            job.update(state="done", **await done(True))
+        except Exception as e:
+            log("new project: clone: %r" % e)
+            job.update(state="fail", error=self.t("new.err.clone", why=type(e).__name__))
+
+    async def project_made(self, pkey, dest, title, parent, how, first, model, effort, git):
+        """The folder is there: remember the project under its title, open its topic, start the first turn."""
+        row = self.store.topic(pkey)
+        self.store.set_topic(pkey, dest, title, row["thread"] if row and row["path"] == dest else None)
+        self.store.put("new_parent", parent)
+        log("new project: %s (%s%s)" % (dest, how, "" if git else ", no git"))
+        try:
+            await self.thread_for(pkey, dest)
+        except Exception as e:
+            log("new project: topic: %r" % e)
+        self.changed(None)
+        out = {"pkey": pkey, "git": git}
+        if first:
+            sid = str(uuid.uuid4())
+            if how == "describe":
+                self.live_of(sid, pkey).title = self.t("new.describe.session")
+            await self.drive(sid, dest, first, None, pkey=pkey, model=model, effort=effort)
+            out["sid"] = sid
+        return out
 
     async def api_model(self, sid, model=KEEP, effort=KEEP):
         """The model and/or the effort of a session — whichever the app sent ("" — back to the settings). A session

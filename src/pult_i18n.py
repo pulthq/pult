@@ -464,6 +464,29 @@ S = {
                             "a session.",
                       "ru": "Эта тема ещё не привязана к проекту. Выбери проект — привяжу тему и запущу сессию."},
     "projects.none": {"en": "No projects with Claude sessions found.", "ru": "Проектов с сессиями Claude не нашёл."},
+    "projects.create": {"en": "＋ New project", "ru": "＋ Новый проект"},
+    # ----- a new project from the phone (stage S) -----
+    "new.err.title": {"en": "A name is needed", "ru": "Нужно название"},
+    "new.err.name": {"en": "A folder name takes Latin letters, digits, \"_\", \"-\" and \".\": up to 64, starting with a letter "
+                             "or a digit, not ending with a dot",
+                     "ru": "Имя папки — латиница, цифры, «_», «-» и «.»: до 64 знаков, начало — буква или цифра, в конце не точка"},
+    "new.err.where": {"en": "No such folder in your home folder", "ru": "Такой папки в домашней нет"},
+    "new.err.exists": {"en": "There is a \"{name}\" there already — pick another name",
+                       "ru": "Там уже есть «{name}» — выбери другое имя"},
+    "new.err.key": {"en": "Claude Code would mix this project up with {other}: to it, names that differ only in marks are "
+                            "the same. Pick another name",
+                    "ru": "Claude Code спутает этот проект с {other}: для него имена, которые различаются только знаками, — "
+                          "одно и то же. Выбери другое имя"},
+    "new.err.link": {"en": "That doesn't look like a link to a repository (https://github.com/owner/name)",
+                     "ru": "Не похоже на ссылку на репозиторий (https://github.com/кто/что)"},
+    "new.err.git": {"en": "There is no git on the computer — nothing to clone with",
+                    "ru": "На компьютере нет git — клонировать нечем"},
+    "new.err.about": {"en": "Say what the project is about", "ru": "Напиши, о чём проект"},
+    "new.err.job": {"en": "This project is no longer tracked — look in Projects", "ru": "Это создание уже не отслеживается — загляни в «Проекты»"},
+    "new.err.slow": {"en": "The clone took over {min} min and was stopped; its folder is removed",
+                     "ru": "Клон шёл дольше {min} мин и остановлен, папка убрана"},
+    "new.err.clone": {"en": "Couldn't clone: {why}", "ru": "Не получилось склонировать: {why}"},
+    "new.describe.session": {"en": "CLAUDE.md from the description", "ru": "CLAUDE.md по описанию"},
     "sessions.where": {"en": "/sessions — inside a project topic.", "ru": "/sessions — в теме проекта."},
     "sessions.list": {"en": "Recent sessions of this project. Tap one — I'll show its last answer; reply to that to "
                             "continue. 🖥 — open on the computer, 📱 — from Telegram.",
