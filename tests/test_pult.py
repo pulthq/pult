@@ -6,6 +6,7 @@
 import asyncio
 import base64
 import gc
+import io
 import json
 import os
 import re
@@ -19,6 +20,7 @@ import unittest
 from unittest import mock
 import urllib.parse
 import warnings
+import zipfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent / "src"
@@ -872,11 +874,17 @@ class FilesTest(unittest.TestCase):
         start = time.time() - 60
         os.utime(proj / "old.pdf", (start - 600, start - 600))
         os.utime(proj / "a" / "b" / "c.png", (start + 10, start + 10))
-        got = F.turn_files(str(proj), start)
+        got, n = F.turn_files(str(proj), start)
         self.assertEqual(sorted(f["p"] for f in got), sorted(["new.pptx", os.path.join("build", "deck.pdf"), os.path.join("a", "b", "c.png")]))
-        self.assertEqual(got[-1]["p"], os.path.join("a", "b", "c.png"))                       # newest first
-        self.assertEqual(F.turn_files(str(proj), time.time() + 100), [])
-        self.assertEqual(F.turn_files(str(TMP / "no-such"), start), [])
+        self.assertEqual((got[-1]["p"], n), (os.path.join("a", "b", "c.png"), 3))              # newest first
+        with mock.patch.object(F, "TURN_FILES_MAX", 2):                                       # a long list: the newest, and how many in all
+            got, n = F.turn_files(str(proj), start)
+            self.assertEqual((len(got), n), (2, 3))
+        self.assertEqual(F.turn_files(str(proj), time.time() + 100), ([], 0))
+        self.assertEqual(F.turn_files(str(TMP / "no-such"), start), ([], 0))
+        at = time.mktime((2026, 10, 23, 12, 40, 0, 0, 0, -1))
+        self.assertEqual(F.zip_name(str(proj) + os.sep, at), "turnproj-2026-10-23-1240.zip")
+        self.assertEqual([F.size_text(n) for n in (436, 12 * 1024, 2_400_000)], ["436 B", "12 KB", "2.3 MB"])
 
 
 class LoadTest(unittest.TestCase):
@@ -1632,6 +1640,36 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(r["sent"], ["deck.pptx"])
         with self.assertRaises(ValueError):
             await self.p.api_send_files(SID, [".env"])
+        # the screen of a turn's files (stage F4): as one archive — the folders kept, a secret left out, packed files
+        # stored as they are; nothing stays in the temporary folder
+        tmps = lambda: sorted(Path(tempfile.gettempdir()).glob("pult-zip-*"))
+        before = tmps()
+        r = await self.p.api_send_files(SID, ["out/Итог.docx", "deck.pptx", ".env"], zip=True)
+        self.assertEqual((r["sent"], r["refused"]), ([os.path.join("out", "Итог.docx"), "deck.pptx"],
+                                                     [[".env", "похоже на ключи или настройки — не отправляю"]]))
+        self.assertRegex(r["zip"], r"^%s-\d{4}-\d\d-\d\d-\d{4}\.zip$" % re.escape(proj.name))
+        d = self.fake.of("sendDocument")[-1]
+        self.assertEqual((d["_name"], d["caption"], d["message_thread_id"]), (r["zip"], "Файлов: 2", "77"))
+        with zipfile.ZipFile(io.BytesIO(d["_bytes"])) as z:
+            self.assertEqual(sorted(z.namelist()), ["deck.pptx", "out/Итог.docx"])
+            self.assertEqual(z.read("out/Итог.docx"), b"PK-docx")
+            self.assertEqual(z.getinfo("deck.pptx").compress_type, zipfile.ZIP_STORED)
+        self.assertEqual(tmps(), before)
+        # more than ten: one archive anyway (decision Q44)
+        for i in range(11):
+            (proj / ("n%02d.txt" % i)).write_text("x" * 100)
+        n = len(self.fake.of("sendDocument"))
+        r = await self.p.api_send_files(SID, ["n%02d.txt" % i for i in range(11)])
+        self.assertEqual((len(r["sent"]), len(self.fake.of("sendDocument")) - n), (11, 1))
+        self.assertTrue(r["zip"])
+        # too much to pack — refused before packing; an archive that outgrows what Telegram takes — refused, nothing sent
+        with mock.patch.object(F, "ZIP_RAW_MAX", 150), self.assertRaises(ValueError) as e:
+            await self.p.api_send_files(SID, ["n00.txt", "n01.txt"], zip=True)
+        self.assertIn("слишком много для одного архива", str(e.exception))
+        with mock.patch.object(F, "TG_SEND_MAX", 150), self.assertRaises(ValueError) as e:
+            await self.p.api_send_files(SID, ["n00.txt", "n01.txt"], zip=True)
+        self.assertIn("архив выходит больше", str(e.exception))
+        self.assertEqual((len(self.fake.of("sendDocument")) - n, tmps()), (1, before))
         # the command itself, as Claude runs it: the session comes from Claude Code's environment
         # a pipe in the system's code page, as on Windows: the Russian answer must not stop the command (Actions 2026-10-23)
         env = plain_env(PULT_SOCK=os.environ["PULT_SOCK"], CLAUDE_CODE_SESSION_ID=SID, PULT_LANG="ru", PYTHONIOENCODING="cp1252")
@@ -1655,11 +1693,41 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         t0 = time.time() - 5
         (proj / "made.pdf").write_bytes(b"x" * 2048)
         lv = self.p.live_of(SID, PKEY)
-        files = await self.p.files_of_turn(lv, types.SimpleNamespace(started=t0))
-        self.assertEqual([f["p"] for f in files], ["made.pdf"])
-        self.p.outcome(lv, None, "Готово.", files=files)
-        self.assertEqual(self.p.attn.rec[SID]["files"][0]["size"], 2048)
-        self.assertEqual(await self.p.files_of_turn(lv, None), [])
+        files, n = await self.p.files_of_turn(lv, types.SimpleNamespace(started=t0))
+        self.assertEqual(([f["p"] for f in files], files[0]["size"], n), (["made.pdf"], 2048, 1))
+        self.assertEqual(await self.p.files_of_turn(lv, None), ([], 0))
+        os.utime(proj / "made.pdf", (t0 - 60, t0 - 60))
+        # a turn that made files (stage F4): kept, its outcome carries the line to them, the result's button opens that
+        # very turn; the screen goes ‹ › between kept turns and shows each file as it is now
+        self.p.env.update(PULT_APP_LINK="https://t.me/b/pult")
+        await run_hook(ev("UserPromptSubmit", prompt="Сделай отчёт"))
+        (proj / "out").mkdir()
+        (proj / "out" / "report.md").write_text("# Отчёт")
+        await run_hook(ev("Stop", last_assistant_message="Готово.", background_tasks=[]))
+        await until(lambda: (self.p.attn.rec.get(SID) or {}).get("turn_files"))
+        tf = self.p.attn.rec[SID]["turn_files"]
+        self.assertEqual((tf["n"], tf["size"]), (1, len("# Отчёт".encode())))
+        await until(lambda: any("f_%s_%d" % (SID, tf["id"]) in (m.get("reply_markup") or "") for m in self.fake.of("sendMessage")))
+        res = [m for m in self.fake.of("sendMessage") if "f_%s_" % SID in (m.get("reply_markup") or "")][-1]
+        self.assertIn([{"text": "📎 Файлы (1)", "url": "https://t.me/b/pult?startapp=f_%s_%d" % (SID, tf["id"])}],
+                      json.loads(res["reply_markup"])["inline_keyboard"])
+        self.assertLessEqual(len("f_%s_%d" % (SID, tf["id"])), 64)                      # Telegram's startapp limit
+        got = await self.p.api_turn_files(SID)
+        self.assertEqual((got["id"], [f["p"] for f in got["files"]], got["prev"], got["next"], got["project"]),
+                         (tf["id"], [os.path.join("out", "report.md")], None, None, "proj"))
+        tid2 = self.store.add_turn(SID, PKEY, time.time() - 1, 1.0, [{"p": "deck.pptx", "size": 5, "mt": time.time()},
+                                                                     {"p": os.path.join("out", "report.md"), "size": 1, "mt": time.time()}], 2)
+        got = await self.p.api_turn_files(SID)
+        self.assertEqual((got["id"], got["prev"], got["next"], got["n"]), (tid2, tf["id"], None, 2))
+        self.assertEqual([(f["p"], f["gone"], f["size"]) for f in got["files"]],
+                         [("deck.pptx", True, 5), (os.path.join("out", "report.md"), False, len("# Отчёт".encode()))])
+        self.assertEqual((await self.p.api_turn_files(SID, str(tf["id"])))["next"], tid2)
+        self.assertEqual(await self.p.api_turn_files("00000000-0000-4000-8000-000000000000"), {"id": None, "files": []})
+        with self.assertRaises(ValueError):
+            await self.p.api_turn_files("../x")
+        for i in range(pultd.TURNS_KEPT + 3):                         # kept: the latest 50 per session
+            self.store.add_turn("00000000-0000-4000-8000-000000000001", PKEY, 0, 0, [], 0)
+        self.assertEqual(self.store.db.execute("SELECT count(*) FROM turns WHERE sid LIKE '%0001'").fetchone()[0], pultd.TURNS_KEPT)
         out = await run_hook(ev("SessionStart", source="startup"), extra_env={"PULT_SOCK": os.environ["PULT_SOCK"]})
         ctx = json.loads(out)["hookSpecificOutput"]
         self.assertEqual(ctx["hookEventName"], "SessionStart")

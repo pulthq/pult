@@ -272,14 +272,29 @@ async def main():
     r = p.attn.finished(SID4, T.PKEY, 840, D["s4_line"], D["s4_line"], waits=True, now=time.time() - 1500)
     p.attn.briefed(SID4, r["ts"], {"line": D["s4_line"], "you": True, "need": D["s4_need"],
                                    "replies": [D["s4_r1"], D["s4_r2"], D["s4_r3"]]}, True)
-    # stage F: the turn made two files; "To Telegram" is answered here — the stand's projects are made-up paths
-    r["files"] = [{"p": "reports/search-ranking.pdf", "size": 182000, "mt": r["ts"] - 60},
-                  {"p": "search-options.pptx", "size": 2400000, "mt": r["ts"] - 300}]
+    # stage F4: an earlier turn made two files, the last one twelve (one deleted since); "To Telegram" is answered
+    # here — the stand's projects are made-up paths, so the files are said to be there
+    store.add_turn(SID4, T.PKEY, r["ts"] - 3600 - 600, 600, [
+        {"p": "reports/search-ranking.pdf", "size": 182000, "mt": r["ts"] - 3700},
+        {"p": "search-options.pptx", "size": 2400000, "mt": r["ts"] - 3900}], 2)
+    made = [{"p": "reports/search-%02d.png" % i, "size": 90000 + 7000 * i, "mt": r["ts"] - 30 * i} for i in range(1, 10)]
+    made = [{"p": "search-summary.docx", "size": 48000, "mt": r["ts"] - 10},
+            {"p": "drafts/old-plan.md", "size": 3100, "mt": r["ts"] - 20}] + made + [
+            {"p": "search/ranking.py", "size": 12400, "mt": r["ts"] - 400}]
+    tid = store.add_turn(SID4, T.PKEY, r["ts"] - 840, 840, made, 112)
+    r["turn_files"] = {"id": tid, "n": 112, "size": sum(f["size"] for f in made)}
+    real_turn_files = p.api_turn_files
 
-    async def stand_send(sid, paths):
-        print("SEND", sid[:8], json.dumps(paths), flush=True)
-        return {"sent": [x.split("/")[-1] for x in paths], "refused": []}
-    p.api_send_files = stand_send
+    async def stand_turn_files(sid, turn=None):
+        got = await real_turn_files(sid, turn)
+        for f in got.get("files") or []:
+            f["gone"] = f["p"] == "drafts/old-plan.md"
+        return got
+
+    async def stand_send(sid, paths, zip=False):
+        print("SEND", sid[:8], json.dumps(paths), "zip" if zip or len(paths) > 10 else "", flush=True)
+        return {"sent": paths, "zip": "acme-shop-2026-10-23-1240.zip" if zip or len(paths) > 10 else None, "refused": []}
+    p.api_turn_files, p.api_send_files = stand_turn_files, stand_send
     store.touch_session(SID5, PKEY2, path=DESK, title=D["s5_title"])
     r = p.attn.finished(SID5, PKEY2, 300, D["s5_line"], D["s5_line"], waits=True, now=time.time() - 600)
     p.attn.briefed(SID5, r["ts"], {"line": D["s5_line"], "you": False, "need": ""}, True)

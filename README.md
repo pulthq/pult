@@ -50,8 +50,8 @@ phone:
   message field.
 - **Resources** shows how you spend your plan: the curve of each limit, the forecast, who spent it, and the
   computer's load.
-- **Files of the turn** under its outcome: what Claude made or changed in the project, each one a tap away from the
-  project's topic in Telegram.
+- **Files of the turn**: what Claude made or changed in the project — tick the ones you need and send them to the
+  project's topic in Telegram, one by one or as one archive; earlier turns' files stay a swipe away.
 - **A new project** from the phone: a folder anywhere in your home folder — empty with git, with a `CLAUDE.md` that
   Claude writes from your description, or a clone of a repository. Its topic appears in the group at once.
 

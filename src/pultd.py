@@ -22,6 +22,7 @@ import shlex
 import shutil
 import sqlite3
 import sys
+import tempfile
 import time
 import uuid
 import zlib
@@ -86,12 +87,13 @@ USAGE_EVERY = 15 * 60    # usage check for warnings, if there was work on the Ma
 USAGE_NEAR_EVERY = 5 * 60   # …and near the threshold (from 70 %), more often
 WARN_AT = (80, 95)       # % of a limit: a warning with sound in General (decision 2026-10-16)
 SPEND_COLORS = 5         # projects with a colour of their own on the spend screen; the rest are "other"
+TURNS_KEPT = 50                 # turns with files kept per session (stage F4)
 UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the app shrinks them to ~200 KB first)
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_MAX = 4 * 1024 * 1024       # bytes of one recording from the app (5 min at 32 kbit/s ≈ 1.2 MB; base64 must fit the 8 MB frame)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.13.0"
+VERSION = "0.13.1"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -509,6 +511,9 @@ CREATE TABLE IF NOT EXISTS sessions(sid TEXT PRIMARY KEY, pkey TEXT, path TEXT, 
 CREATE TABLE IF NOT EXISTS msgs(msg INTEGER PRIMARY KEY, sid TEXT, kind TEXT, ts REAL);
 CREATE TABLE IF NOT EXISTS usage_log(ts REAL, kind TEXT, pct REAL, resets REAL);
 CREATE INDEX IF NOT EXISTS usage_log_ts ON usage_log(ts);
+CREATE TABLE IF NOT EXISTS turns(id INTEGER PRIMARY KEY, sid TEXT, pkey TEXT, start REAL, ts REAL, dur REAL,
+    n INTEGER, files TEXT);
+CREATE INDEX IF NOT EXISTS turns_sid ON turns(sid, id);
 """
 
 
@@ -561,9 +566,29 @@ class Store:
     def usage_log(self, since):
         return [tuple(r) for r in self.db.execute("SELECT ts, kind, pct, resets FROM usage_log WHERE ts >= ? ORDER BY ts", (since,))]
 
+    def add_turn(self, sid, pkey, start, dur, files, n):
+        """A turn that made or changed files (stage F4): its files stay viewable after the next turn. → its id."""
+        cur = self.db.execute("INSERT INTO turns(sid, pkey, start, ts, dur, n, files) VALUES(?,?,?,?,?,?,?)",
+                              (sid, pkey, start, time.time(), dur, n, json.dumps(files, ensure_ascii=False)))
+        self.db.execute("DELETE FROM turns WHERE sid=? AND id NOT IN (SELECT id FROM turns WHERE sid=? ORDER BY id DESC "
+                        "LIMIT ?)", (sid, sid, TURNS_KEPT))
+        return cur.lastrowid
+
+    def turn(self, sid, tid=None):
+        """A session's turn with files (the latest one when tid is None), with the ids of the one before and after."""
+        r = (self.db.execute("SELECT * FROM turns WHERE sid=? AND id=?", (sid, tid)) if tid is not None else
+             self.db.execute("SELECT * FROM turns WHERE sid=? ORDER BY id DESC LIMIT 1", (sid,))).fetchone()
+        if not r:
+            return None
+        near = lambda q: (self.db.execute(q, (sid, r["id"])).fetchone() or [None])[0]
+        return dict(r, files=json.loads(r["files"] or "[]"),
+                    prev=near("SELECT max(id) FROM turns WHERE sid=? AND id<?"),
+                    next=near("SELECT min(id) FROM turns WHERE sid=? AND id>?"))
+
     def prune(self, days=60):
         self.db.execute("DELETE FROM msgs WHERE ts < ?", (time.time() - days * 86400,))
         self.db.execute("DELETE FROM usage_log WHERE ts < ?", (time.time() - days * 86400,))
+        self.db.execute("DELETE FROM turns WHERE ts < ?", (time.time() - days * 86400,))
 
 
 # ---------- live session state ----------
@@ -1154,7 +1179,7 @@ class Pult:
                 raise
         self.out.edit(msg, go, prio)
 
-    async def send_long(self, pkey, header, md, *, notify, sid, reply_to=None, prio=3, kind="result", files_label=None):
+    async def send_long(self, pkey, header, md, *, notify, sid, reply_to=None, prio=3, kind="result", files_row=None):
         """A long Claude reply. With the app connected: the beginning in the chat and "Read in full" (the whole
         text in the app). Without it: 3500-character chunks, up to six chunks without a file (~20k characters), since
         a file is awkward to read on a phone; beyond that, the first five chunks and the whole text as a file."""
@@ -1165,7 +1190,7 @@ class Pult:
             ids.append(await self.send(pkey, header + "\n" + R.md_to_html(chunks[0]) +
                                        self.t("long.more", n=rest), notify=notify, sid=sid, kind=kind,
                                        prio=prio, reply_to=reply_to, buttons=[self.app_row(sid, self.t("btn.read_all"))] +
-                                       ([self.app_row(sid, files_label)] if files_label else [])))
+                                       ([files_row] if files_row else [])))
             return ids
         if len(chunks) > 6:
             for i, ch in enumerate(chunks[:5]):
@@ -1180,7 +1205,7 @@ class Pult:
             ids.append(await self.send(pkey, (header + "\n" if i == 0 else "") + R.md_to_html(ch),
                                        notify=notify and i == 0, sid=sid, kind=kind, prio=prio,
                                        reply_to=reply_to if i == 0 else None,
-                                       buttons=self.with_app(None, sid, files_label) if last and sid else None))
+                                       buttons=([files_row] if files_row else self.with_app(None, sid)) if last and sid else None))
         return ids
 
     async def send_doc(self, pkey, text, name, caption, sid=None):
@@ -1489,8 +1514,12 @@ class Pult:
         if t is not None:
             await t.created
         notify = await self.loud(lv.driven)
-        files = await self.files_of_turn(lv, t)
-        self.outcome(lv, t, text, fail, seen=bool(t and t.here) and not await self.away(), files=files)
+        files, n = await self.files_of_turn(lv, t)
+        tf = None
+        if files:                                  # kept: the files stay viewable after the next turn (stage F4)
+            tid = self.store.add_turn(lv.sid, lv.pkey, t.started, (t.done[1] - t.started) if t.done else None, files, n)
+            tf = {"id": tid, "n": n, "size": sum(f["size"] for f in files)}
+        self.outcome(lv, t, text, fail, seen=bool(t and t.here) and not await self.away(), files=tf)
         reply_to = t.msg if t else None
         # a message written from Telegram into a tab that was busy: Claude Code absorbs it into the running turn
         # (queued_command, absorbed_mid_turn — 2.1.301, 2026-10-18) and the tab doesn't show it, so no UserPromptSubmit
@@ -1520,7 +1549,7 @@ class Pult:
         await self.send_long(lv.pkey, "%s %s%s\n%s" % ("⚠️" if fail else "✅", self.head(lv), when,
                                                         R.esc(bg) + "\n" if bg else ""), text,
                              notify=notify, sid=lv.sid, reply_to=reply_to,
-                             files_label=self.t("btn.files", n=len(files)) if files else None)
+                             files_row=self.files_row(lv.sid, tf) if tf else None)
 
     # ----- whose move (stage V): each session's last outcome, the model's line, the Home board -----
 
@@ -1532,13 +1561,14 @@ class Pult:
 
     def outcome(self, lv, t, text, fail=None, seen=False, files=None):
         """A turn ended: remember how (pult_attn) and, if the owner allowed it, let the model read the result.
-        seen — the owner typed this turn here and is still at the computer: they watched it end."""
+        seen — the owner typed this turn here and is still at the computer: they watched it end; files — the turn's
+        files as kept ({id, n, size}), or None."""
         waits = not lv.bg                                  # nothing else runs: the next step is the owner's
         line = self.fail_text(fail) if fail else B.first_sentence(text)
         dur = (t.done[1] - t.started) if t and t.done else None
         rec = self.attn.finished(lv.sid, lv.pkey, dur, R.plain(text, 600), line, waits, fail=fail, seen=seen)
         if files:
-            rec["files"] = files                           # the turn's files: the app offers them to Telegram (stage F)
+            rec["turn_files"] = files                      # {id, n, size}: the app's line to the turn's files (stage F4)
             self.attn.save()
         self.changed(lv.sid)
         if not fail and text.strip() and self.prefs()["brief"]:
@@ -2338,7 +2368,7 @@ class Pult:
                 out.write(blob)
             return p
         p = await asyncio.to_thread(save)
-        log("file from Telegram: %s (%d KB)" % (p, len(blob) // 1024))
+        log("file from Telegram: %s (%s)" % (p, F.size_text(len(blob))))
         return "\n\n[Attachment from Telegram: %s]" % p
 
     def hold(self, here, marks, mid):
@@ -2991,6 +3021,11 @@ class Pult:
         url = self.app_url(sid)
         return [{"text": label or self.t("btn.details"), "url": url}] if url else None
 
+    def files_row(self, sid, tf):
+        """"📎 Files (N)" under a result: the app's screen of that very turn's files (stage F4)."""
+        url = self.app_url(start="f_%s_%d" % (sid, tf["id"]))
+        return [{"text": self.t("btn.files", n=tf["n"]), "url": url}] if url else None
+
     def with_app(self, rows, sid, label=None):
         row = self.app_row(sid, label)
         return (rows or []) + [row] if row else rows
@@ -3348,7 +3383,7 @@ class Pult:
         pending = [r for r in lv.pending.values() if not r.fut.done()]
         outcome = None
         if rec and lv.turn is None:
-            outcome = {k: rec.get(k) for k in ("line", "need", "replies", "fail", "ts", "dur", "files")}
+            outcome = {k: rec.get(k) for k in ("line", "need", "replies", "fail", "ts", "dur", "turn_files")}
             outcome.update(state=A.state(pending, False, lv.bg, rec), resume=self.attn.resume.get(sid),
                            reset=self.limit_reset() if rec.get("fail") == "rate_limit" else None)
         # the owner opened it: its outcome no longer calls them — unless it waits for their decision (the model named
@@ -3767,37 +3802,101 @@ class Pult:
             return {"error": self.t("cli.send.usage")}
         if len(paths) > F.SEND_MANY:
             return {"error": self.t("send.err.many", n=F.SEND_MANY)}
-        return await self.send_files(sid, pkey, project, paths, msg.get("caption"))
+        res = await self.send_files(sid, pkey, project, paths, msg.get("caption"))
+        res.pop("paths", None)
+        return res
 
-    async def api_send_files(self, sid, paths):
-        """The app's "To Telegram" under a turn's files (paths inside the project): the same checks as pult send."""
+    async def api_send_files(self, sid, paths, zip=False):
+        """The app's "To Telegram" on the screen of a turn's files (paths inside the project): the same checks as pult
+        send. zip — as one archive; more than SEND_MANY files always go as one (decision Q44)."""
         pkey, project = self.session_project(sid) if SID_RE.fullmatch(sid or "") else (None, None)
         if not project:
             raise ValueError(self.t("send.err.session"))
-        res = await self.send_files(sid, pkey, project, [os.path.join(project, str(p)) for p in (paths or [])][:F.SEND_MANY])
+        paths = [os.path.join(project, str(p)) for p in (paths or []) if p]
+        if zip or len(paths) > F.SEND_MANY:
+            res = await self.send_zip(sid, pkey, project, paths[:F.TURN_FILES_MAX])
+        else:
+            res = await self.send_files(sid, pkey, project, paths)
         if not res["sent"]:
             raise ValueError("; ".join("%s — %s" % (n, why) for n, why in res["refused"]) or self.t("send.err.nothing"))
+        root = os.path.realpath(project)
+        res["sent"] = [os.path.relpath(p, root) for p in res.pop("paths")]       # the app marks them by their paths
         return res
 
-    async def send_files(self, sid, pkey, project, paths, caption=None):
-        """A project's files to its topic, each a document, the caption under the first; replying to the turn that runs.
-        Every file is checked first (pult_files.why_not_send): inside the project, not like a secret, 1 byte to 50 MB.
-        → {"sent": [names], "refused": [[name, why]]}; every file sent is logged."""
-        sent, refused, ok = [], [], []
+    async def api_turn_files(self, sid, turn=None):
+        """The screen of a turn's files (stage F4): a session's turn that made or changed files — the latest one, or
+        the one asked — each file as it is now (gone, or its size today), and the turns before and after it."""
+        if not SID_RE.fullmatch(sid or ""):
+            raise ValueError(self.t("send.err.session"))
+        r = self.store.turn(sid, int(turn) if turn not in (None, "") else None)
+        if not r:
+            return {"id": None, "files": []}
+        project = self.project_path(r["pkey"])
+        files = []
+        for f in r["files"]:
+            p = os.path.join(project, f["p"]) if project else None
+            files.append(dict(f, size=os.path.getsize(p), gone=False) if p and os.path.isfile(p) else dict(f, gone=True))
+        row = self.store.session(sid)
+        return {"id": r["id"], "start": r["start"], "ts": r["ts"], "dur": r["dur"], "n": r["n"], "files": files,
+                "prev": r["prev"], "next": r["next"], "project": self.project_label(r["pkey"]),
+                "title": (row["title"] if row else None) or ""}
+
+    def check_send(self, project, paths):
+        """Each file checked for Telegram (pult_files.why_not_send): inside the project, not like a secret, 1 byte to
+        50 MB. → (real paths that may go, [[name, why]] of those that may not)."""
+        ok, refused = [], []
         for p in paths:
             why = F.why_not_send(p, project)
             if why:
                 refused.append([os.path.basename(p), self.t(why, mb=F.TG_SEND_MAX // 2 ** 20)])
             else:
                 ok.append(os.path.realpath(p))
+        return ok, refused
+
+    async def send_zip(self, sid, pkey, project, paths):
+        """A project's files as one zip to its topic (stage F4): the same checks for each file, the folders inside the
+        project kept; packed in the system's temporary folder and gone after. → like send_files, plus "zip": its name."""
+        ok, refused = self.check_send(project, paths)
+        name = F.zip_name(project)
         if not ok:
-            return {"sent": sent, "refused": refused}
+            return {"sent": [], "paths": [], "refused": refused}
+        raw = sum(os.path.getsize(p) for p in ok)
+        if raw > F.ZIP_RAW_MAX:
+            return {"sent": [], "paths": [], "refused": refused + [[name, self.t("send.err.zip_raw", mb=round(raw / 2 ** 20),
+                                                                      max=F.ZIP_RAW_MAX // 2 ** 20)]]}
+        tmp = tempfile.mkdtemp(prefix="pult-zip-")
+        try:
+            dest = os.path.join(tmp, name)
+            size = await asyncio.to_thread(F.make_zip, project, ok, dest, F.TG_SEND_MAX)
+            if size is None:
+                return {"sent": [], "paths": [], "refused": refused + [[name, self.t("send.err.zip_big", mb=F.TG_SEND_MAX // 2 ** 20)]]}
+            res = await self.send_docs(sid, pkey, [dest], self.t("send.zip.caption", n=len(ok)))
+            if not res["sent"]:
+                return {"sent": [], "paths": [], "refused": refused + res["refused"]}
+            log("archive to Telegram: %s, %d files (%s) from %s" % (name, len(ok), F.size_text(size), sid[:8]))
+            return {"sent": [os.path.basename(p) for p in ok], "paths": ok, "zip": name, "refused": refused}
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    async def send_files(self, sid, pkey, project, paths, caption=None):
+        """A project's files to its topic, each a document, the caption under the first; replying to the turn that runs.
+        Every file is checked first (check_send). → {"sent": [names], "refused": [[name, why]]}; every file sent is logged."""
+        ok, refused = self.check_send(project, paths)
+        if not ok:
+            return {"sent": [], "paths": [], "refused": refused}
+        res = await self.send_docs(sid, pkey, ok, caption)
+        return dict(res, refused=refused + res["refused"])
+
+    async def send_docs(self, sid, pkey, paths, caption=None):
+        """Files (already checked) to a project's topic, each a document. → {"sent": [names], "paths": [those sent],
+        "refused": [[name, why]]}."""
+        sent, done, refused = [], [], []
         thread = await self.thread_for(pkey)
         lv = self.live.get(sid)
         notify = await self.loud(bool(lv and lv.driven))
         reply_to = lv.turn.msg if lv and lv.turn and lv.turn.msg else None
         cap = R.short(str(caption).strip(), 1000) if caption and str(caption).strip() else None
-        for i, p in enumerate(ok):
+        for i, p in enumerate(paths):
             blob = await asyncio.to_thread(Path(p).read_bytes)
             name = os.path.basename(p)
             params = dict(chat_id=self.chat, message_thread_id=thread, caption=cap if i == 0 else None,
@@ -3812,21 +3911,23 @@ class Pult:
                 continue
             self.store.map_msg(res["message_id"], sid, "doc")         # a reply to the file goes to the session
             sent.append(name)
-            log("file to Telegram: %s (%d KB) from %s" % (p, len(blob) // 1024, sid[:8]))
-        return {"sent": sent, "refused": refused}
+            done.append(p)
+            log("file to Telegram: %s (%s) from %s" % (p, F.size_text(len(blob)), sid[:8]))
+        return {"sent": sent, "paths": done, "refused": refused}
 
     async def files_of_turn(self, lv, t):
-        """The project's files the turn made or changed (pult_files.turn_files), for its outcome; [] when unknown."""
+        """The project's files the turn made or changed (pult_files.turn_files), for its outcome: (files, how many in
+        all); ([], 0) when unknown."""
         if t is None or not getattr(t, "started", None):
-            return []
+            return [], 0
         project = self.project_path(lv.pkey)
         if not project or not os.path.isdir(project):
-            return []
+            return [], 0
         try:
             return await asyncio.to_thread(F.turn_files, project, t.started, time.time())
         except Exception as e:
             log("turn files: %r" % e)
-            return []
+            return [], 0
 
     async def api_stt(self, data, mime=None):
         """A recording from the app → its words (the app puts them into the message field). Nothing is kept."""

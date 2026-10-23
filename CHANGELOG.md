@@ -2,6 +2,19 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.13.1 — 2026-10-23
+
+- **The screen of a turn's files.** The outcome card has one line, "📎 Files of the turn: N · size", instead of the
+  list; it opens a screen where you tick the files you need — nothing is ticked at first, since the list holds
+  everything the turn touched — and send them with "To Telegram (k)", one by one or as one zip with the folders
+  inside the project kept. More than ten ticked go only as an archive. A zip is packed in the system's temporary
+  folder and removed after sending; over 50 MB it is refused, and more than 200 MB of files are not packed at all.
+  ‹ › go through the session's earlier turns that had files: Pult keeps the last 50 such turns of each session
+  (paths and sizes, in `state.db`). A file deleted since shows as gone. The "📎 Files (N)" button under a result in
+  Telegram opens that very turn, not the latest one. Up to 100 files per turn are listed (was 30); past that the
+  screen says how many there were.
+- The log shows a small file's size in bytes ("436 B"), not "0 KB".
+
 ## 0.13.0 — 2026-10-23
 
 - **Files to Claude.** A document, a deck, a spreadsheet or a picture sent or forwarded to a project's topic lands in
