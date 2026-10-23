@@ -235,6 +235,65 @@ def _is_table(block):
     return len(rows) >= 2 and all(r.lstrip().startswith("|") for r in rows)
 
 
+# Telegram's six topic icon colours (createForumTopic); the app shows a project's tile in the same one (app.js hue)
+TOPIC_COLORS = (0x6FB9F0, 0xFFD67E, 0xCB86DB, 0x8EEE98, 0xFF93B2, 0xFB6F5F)
+
+
+def topic_color(name):
+    """A project's colour by its name: the same sum over the UTF-8 bytes as the app's hue(), so a new topic's icon and
+    the project's tile in the app match."""
+    h = 0
+    for b in str(name).encode("utf-8"):
+        h = (h * 31 + b) & 0xFFFFFFFF
+    return TOPIC_COLORS[h % len(TOPIC_COLORS)]
+
+
+FOLD_FROM = 700     # a result longer than this (markdown characters) folds: its beginning shows, the rest opens with a tap
+FOLD_LEAD = 320     # the beginning: whole paragraphs up to about this much
+
+
+def folded_html(md):
+    """A reply for Telegram: short — as it is; longer — its first paragraphs, the rest in a folded quote that opens
+    with a tap. Code, links and code blocks stay inside it: Telegram keeps them there (tests/probe_quote.py,
+    2026-10-23 — the Bot API's own rules say it wouldn't). A code block is never cut: it folds whole."""
+    md = (md or "").strip()
+    if len(md) <= FOLD_FROM:
+        return md_to_html(md)
+    blocks = []
+    for b in re.split(r"(```.*?```)", md, flags=re.S):
+        if b.startswith("```") and b.endswith("```") and len(b) >= 6:
+            blocks.append(b)
+        else:
+            blocks.extend(x.strip("\n") for x in b.split("\n\n") if x.strip())
+    lead, n = [], 0
+    for b in blocks:
+        if b.startswith("```") or (lead and (n + len(b) > FOLD_LEAD and n >= 120)):
+            break                                   # a code block folds whole; a lone heading takes the next paragraph
+        if len(b) > FOLD_FROM:                      # one long paragraph: its beginning, to a line or a sentence
+            cut = max(b.rfind("\n", 0, FOLD_LEAD), b.rfind(". ", 0, FOLD_LEAD) + 1)
+            cut = cut if cut > FOLD_LEAD // 3 else FOLD_LEAD
+            lead.append(b[:cut].rstrip())
+            blocks = blocks[:len(lead) - 1] + [b[:cut].rstrip(), b[cut:].lstrip()] + blocks[len(lead):]
+            break
+        lead.append(b)
+        n += len(b)
+    rest = "\n\n".join(blocks[len(lead):]).strip()
+    if not rest:
+        return md_to_html(md)
+    head = md_to_html("\n\n".join(lead)).rstrip("\n")
+    return (head + "\n" if head else "") + "<blockquote expandable>" + md_to_html(rest).strip("\n") + "</blockquote>"
+
+
+def permission_line(tool, inp, cwd=None):
+    """A decided request in one line: what Claude wanted, without the command's full text (it was shown while it
+    waited); a command without a description gets its beginning."""
+    first = permission_text(tool, inp, cwd).split("\n", 1)[0]
+    inp = inp if isinstance(inp, dict) else {}
+    if tool == "Bash" and not inp.get("description") and inp.get("command"):
+        first += " <code>%s</code>" % esc(short(str(inp.get("command")), 80))
+    return first
+
+
 def md_to_html(md):
     out = []
     for part in re.split(r"(```.*?```)", md or "", flags=re.S):

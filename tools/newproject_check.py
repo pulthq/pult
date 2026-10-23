@@ -109,7 +109,7 @@ async def main():
             verdict("the picker opens in ~/Documents with its folders", await until(
                 "(() => { const c = %s; return c && /~\\/Documents/.test(c.textContent) && /acme-shop/.test(c.textContent) && /support-desk/.test(c.textContent); })()" % SHEET))
             await shot("2-picker.png")
-            await tap("[...document.querySelectorAll('.card.pick .opt')].find((b) => b.textContent.startsWith('↑'))")
+            await tap("document.querySelector('.card.pick .opt.up')")
             verdict("up leads home", await until("(() => { const h = document.querySelector('.card.pick .path'); return h && h.textContent === '~'; })()"))
             await tap("[...document.querySelectorAll('.card.pick .opt')].find((b) => /Code/.test(b.textContent))")
             verdict("into Code", await until("document.querySelector('.card.pick .path').textContent === '~/Code'"))

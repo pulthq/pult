@@ -193,7 +193,7 @@ async def main():
     await until(lambda: (p.attn.rec.get(sid5) or {}).get("ts"), what="итог задачи из приложения")
     quiet = [t for t in texts(mark3) if t.startswith(("⏳", "✅"))]
     await p.page_due()
-    mine5 = lambda: [t for t in texts(mark3) if t.startswith("🔴 <b>Reply with exactly")]   # earlier sessions wait too
+    mine5 = lambda: [t for t in texts(mark3) if t.startswith("🟠 <b>Reply with exactly")]   # earlier sessions wait too
     page = mine5()
     log("пейджер: ход и итог в Telegram —", len(quiet), "· вызов:", page[-1].replace("\n", " | ") if page else "НЕТ")
     assert not quiet and len(page) == 1, "the pager posted the wrong things"

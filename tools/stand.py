@@ -48,6 +48,11 @@ D = {
         tickets_done="Sorted **12 tickets**: 3 urgent, 9 can wait. The list is in the report.",
         bg_run="Export the tickets to the CRM", bg_cmd="python scripts/export_tickets.py --to crm",
         job_last="epoch 27/40 · loss 0.31", user="Sam",
+        s4_report="Typo-tolerant search is in. What I did:\n\n- the index keeps trigrams of every product name;\n"
+                  "- a query with one or two typos still finds the product;\n- results are ranked by how close the match is.\n\n"
+                  "Checked on last month's 500 most frequent queries: 97 % find what they found before, and 41 queries that "
+                  "found nothing now find the right product. The slowest query takes 38 ms instead of 31 ms.\n\n"
+                  "There are two ways to rank the results, and on short queries their first pages differ.",
         s4_title="Search: typo-tolerant results", s4_line="Typo-tolerant search works; two ways to rank the results",
         s4_need="Pick the ranking: by popularity or by closeness", s4_r1="By popularity", s4_r2="By closeness",
         s4_r3="Explain the difference", s5_title="Weekly support report",
@@ -72,6 +77,11 @@ D = {
         tickets_done="Разобрал **12 заявок**: 3 срочные, 9 подождут. Список — в отчёте.",
         bg_run="Выгрузка заявок в CRM", bg_cmd="python scripts/export_tickets.py --to crm",
         job_last="эпоха 27/40 · потери 0,31", user="Саша",
+        s4_report="Поиск с опечатками готов. Что сделал:\n\n- индекс хранит триграммы названий товаров;\n"
+                  "- запрос с одной-двумя опечатками всё равно находит товар;\n- результаты сортируются по близости совпадения.\n\n"
+                  "Проверил на 500 самых частых запросах прошлого месяца: 97 % находят то же, что раньше, а 41 запрос, который "
+                  "не находил ничего, теперь находит нужный товар. Самый медленный запрос — 38 мс вместо 31.\n\n"
+                  "Сортировать можно двумя способами, и на коротких запросах первая страница у них разная.",
         s4_title="Поиск: опечатки", s4_line="Поиск с опечатками работает; есть два способа сортировки",
         s4_need="Выбери сортировку: по популярности или по точности", s4_r1="По популярности", s4_r2="По точности",
         s4_r3="Объясни разницу", s5_title="Отчёт поддержки за неделю",
@@ -267,7 +277,7 @@ async def main():
     store.touch_session(SID4, T.PKEY, path=SHOP, title=D["s4_title"])
     (d / (SID4 + ".jsonl")).write_text("\n".join([       # its chat: a long report (folded), then the question
         line("user", D["s4_title"], ago=2500),
-        aline((D["read"] + " ") * 14, "s4a", 2000, ago=2000),
+        aline(D["s4_report"], "s4a", 2000, ago=2000),
         aline(D["s4_line"] + ". " + D["s4_need"] + "?", "s4b", 600, ago=1500)]) + "\n")
     r = p.attn.finished(SID4, T.PKEY, 840, D["s4_line"], D["s4_line"], waits=True, now=time.time() - 1500)
     p.attn.briefed(SID4, r["ts"], {"line": D["s4_line"], "you": True, "need": D["s4_need"],
