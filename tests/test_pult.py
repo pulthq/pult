@@ -1374,7 +1374,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(pultd, "NEW_ROOT", root), mock.patch.object(pultd, "TAB_CONF", tabs), \
                 mock.patch.object(pultd, "SKIP_PREFIXES", ("-nothing-",)), mock.patch.object(self.p, "drive", mock.AsyncMock()) as drive:
             d = await self.p.api_dirs()
-            self.assertEqual((d["show"], d["dirs"], d["tabs"]), ("~/Documents", ["old"], True))
+            self.assertEqual((d["show"], d["dirs"], d["tabs"]), (os.path.join("~", "Documents"), ["old"], True))   # ~\Documents on Windows
             self.assertEqual(d["up"], os.path.realpath(root))
             up = await self.p.api_dirs(d["up"])
             self.assertEqual((up["show"], up["up"], up["dirs"]), ("~", None, ["Code", "Documents"]))
@@ -1404,7 +1404,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
                             (dict(title="x", how="rm"), "err.no_request")]:
                 with self.assertRaises(ValueError, msg=kw) as cm:
                     await self.p.api_create(**kw)
-                self.assertEqual(str(cm.exception), self.p.t(key, name="dacha_u_morya", other="~/Documents/dacha_u_morya", op="create"), kw)
+                self.assertEqual(str(cm.exception), self.p.t(key, name="dacha_u_morya", other=os.path.join("~", "Documents", "dacha_u_morya"), op="create"), kw)
             self.assertFalse(os.path.exists(os.path.join(d["path"], "dacha-u-morya")))
             # with a description: the first turn asks for CLAUDE.md in the new folder, in the project's place
             r = await self.p.api_create("Огород", how="describe", about="Грядки и полив", parent=up["path"] + "/Code", model="haiku")
