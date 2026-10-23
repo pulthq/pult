@@ -6,8 +6,9 @@ import { t, plural, q, setLang, LANG, locale } from "./i18n.js";
 
 const tg = window.Telegram && window.Telegram.WebApp;
 if (tg) { tg.ready(); tg.expand(); }
-// the chart's own colours follow Telegram's theme, not only the phone's (a dark Telegram on a light phone)
-const scheme = () => { if (tg && tg.colorScheme) document.documentElement.dataset.scheme = tg.colorScheme; };
+// the app's own colours (the ones Telegram doesn't send, the chart's) follow Telegram's theme, not only the phone's —
+// when Telegram sent one: outside it (the stand, a browser) its script says "light" anyway, and the phone decides
+const scheme = () => { if (tg && tg.colorScheme && tg.themeParams && tg.themeParams.bg_color) document.documentElement.dataset.scheme = tg.colorScheme; };
 scheme();
 if (tg && tg.onEvent) tg.onEvent("themeChanged", scheme);
 // the language: Telegram's right away, then Pult's own setting (overview / settings carry it)
@@ -29,7 +30,7 @@ const keyStore = {
   set(k) { try { k ? sessionStorage.setItem("pult.resume", k) : sessionStorage.removeItem("pult.resume"); } catch (e) {} },
 };
 const conn = { ws: null, state: "connecting", ready: false, mac: null, seq: 0, wait: new Map(), retry: 0,
-  key: keyStore.get(), why: null };
+  key: keyStore.get(), why: null, fresh: 0 };       // fresh: when the Mac last answered — what's on screen is from then
 const setState = (s) => { conn.state = s; emit("conn"); };
 const setKey = (k) => { conn.key = k || null; keyStore.set(k); };
 
@@ -50,7 +51,7 @@ function connect() {
     else if (m.t === "mac") { conn.mac = m.on; if (!m.on) { conn.ready = false; setState("nomac"); } else if (!conn.ready) setState("auth"); }
     else if (m.t === "res") {
       const w = conn.wait.get(m.id);
-      if (w) { conn.wait.delete(m.id); clearTimeout(w.timer); m.error ? w.reject(new Error(m.error)) : w.resolve(m.data); }
+      if (w) { conn.wait.delete(m.id); clearTimeout(w.timer); if (!m.error) conn.fresh = Date.now(); m.error ? w.reject(new Error(m.error)) : w.resolve(m.data); }
     } else if (m.t === "event") emit("event", m);
   };
   ws.onclose = () => {
@@ -283,10 +284,10 @@ function Attach({ a, disabled, wide }) {
 const PEN = html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20l1.2-4.6L15.8 4.8a2.3 2.3 0 0 1 3.3 3.3L8.6 18.8z"/></svg>`;
 function Thumbs({ a }) {
   return a.files.length ? html`<div class="thumbs">${a.files.map((f, i) => f.doc ? html`<div class="thumb doc" key=${i}>
-    <span class="doc-n">📄 ${f.name}</span>
-    <button class="thumb-x" aria-label=${t("attach.remove")} onClick=${() => a.remove(i)}>×</button></div>` : html`<div class="thumb" key=${i}>
+    <span class="doc-n">${ic("file", 14)} ${f.name}</span>
+    <button class="thumb-x" aria-label=${t("attach.remove")} onClick=${() => a.remove(i)}>${ic("x", 14)}</button></div>` : html`<div class="thumb" key=${i}>
     <button class="thumb-ed" aria-label=${t("edit.open")} onClick=${() => a.edit(i)}><img src=${f.preview} alt=""/>${PEN}</button>
-    <button class="thumb-x" aria-label=${t("attach.remove")} onClick=${() => a.remove(i)}>×</button></div>`)}</div>` : "";
+    <button class="thumb-x" aria-label=${t("attach.remove")} onClick=${() => a.remove(i)}>${ic("x", 14)}</button></div>`)}</div>` : "";
 }
 
 // ---------- the picture editor: turn, mirror, cut ----------
@@ -505,12 +506,15 @@ function Pic({ a }) {
     return () => { alive = false; };
   }, [a.name]);
   if (src) return html`<img class="att" src=${src} alt="" onClick=${open}/>${big && html`<div class="lightbox" onClick=${close}><img src=${src} alt=""/></div>`}`;
-  return html`<span class="att-chip">${(a.image ? "🖼 " : "📄 ") + (a.name.split("/").pop() || t("att.file"))}</span>`;
+  return html`<span class="att-chip">${ic(a.image ? "image" : "file", 14)} ${a.name.split("/").pop() || t("att.file")}</span>`;
 }
 
 // the model of a session from Telegram: aliases Claude Code accepts, plus whatever the settings say
 const MODELS = [["", "model.default"], ["fable", "Fable"], ["opus", "Opus"], ["sonnet", "Sonnet"], ["haiku", "Haiku"]];
 const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
+// the model and the effort for a new session, in words: nothing picked — as Claude Code's own settings say
+const choiceText = (model, effort) => (!model && !effort ? t("pick.as.cc")
+  : [model ? MODELS.find(([m]) => m === model)[1] : t("pick.model.def"), effort ? effortName(effort) : t("pick.effort.def")].join(" · "));
 const effortName = (e) => (!e ? t("pick.default") : EFFORT_N[e] ? t("effort." + e) : e);
 // effort as VS Code draws it by its model name: five dots, as many lit as the level
 const EFFORT_N = { low: 1, medium: 2, high: 3, xhigh: 4, max: 5 };
@@ -521,7 +525,7 @@ function Dots({ e }) {
 }
 // a note over the composer: Telegram's own alert box is capped at 256 characters and shows nothing beyond that
 function Sheet({ title, lines, onClose }) {
-  return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick"><div class="q-t pick-h">${title}<button class="x" aria-label=${t("close")} onClick=${onClose}>×</button></div>
+  return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick"><div class="q-t pick-h">${title}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
     ${lines.map((l, i) => html`<p class="sheet-p" key=${i}>${l}</p>`)}</div>`;
 }
 
@@ -544,7 +548,7 @@ function ModelPick({ sid, choice, now, driven, tab, canModel, canEffort, onDone,
   const notes = [driven ? t("model.next") : tab ? t("model.next") + " " + t("model.tab") : t("model.later"), t("pick.default.note"),
     tab && canEffort ? t("effort.tab") : ""];
   const why = tab && !canModel ? t("model.reload") : tab && !canEffort ? t("effort.reload") : "";
-  return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick"><div class="q-t pick-h">${t("model.pick")}<button class="x" aria-label=${t("close")} onClick=${onClose}>×</button></div>
+  return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick"><div class="q-t pick-h">${t("model.pick")}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
     <div class="pick-cols">
       ${col(t("model"), MODELS.map(([m, label]) => [m, m ? label : t("pick.default")]), cur.model || "", "model", canModel, now.model && modelName(now.model))}
       ${col(t("effort"), EFFORTS.map((e) => [e, effortName(e)]), cur.effort || "", "effort", canEffort, now.effort && effortName(now.effort))}
@@ -611,27 +615,35 @@ function Req({ r, onDone, showWhere = true, showProject = true }) {
   const [why, setWhy] = useState(null);
   const [picks, setPicks] = useState({});
   const [own, setOwn] = useState({});
+  const [done, setDone] = useState(null);      // the answer went: "✓ Allowed" in place of the card, until the list drops it
   const send = async (args) => {
     setBusy(true);
     try {
       const res = await api("answer", Object.assign({ rid: r.rid }, args));
       if (res && res.ok === false) alertBox(res.note || t("failed"));
-      else haptic("success");
+      else {
+        haptic("success");
+        const k = r.kind === "ask" ? "rcpt.ask" : r.kind === "plan" ? (args.act === "y" ? "rcpt.plan.y" : "rcpt.plan.n")
+          : args.act === "a" ? "rcpt.always" : args.act === "y" ? "rcpt.allow" : "rcpt.deny";
+        setDone(k);
+        emit("toast", t(k));         // the list may drop the card at once: the note at the bottom outlives it
+      }
       onDone && onDone();
     } catch (e) { alertBox(e.message); }
     setBusy(false);
   };
-  const where = showWhere && html`<div class="card-h"><b>${r.title}</b>${showProject && r.project !== r.title ? html`<span class="dim"> · ${r.project}</span>` : ""}</div>`;
+  const where = showWhere && html`<div class="card-h">${showProject && r.project ? html`<div class="c-proj">${avatar(r.project, 18)}<span>${r.project}</span></div>` : ""}${r.project !== r.title || !showProject ? html`<b class="c-title">${r.title}</b>` : ""}</div>`;
+  if (done) return html`<div class="card rcpt" role="status">${where}<div class=${"rcpt-l" + (done === "rcpt.deny" || done === "rcpt.plan.n" ? " no" : "")}>${t(done)}</div></div>`;
   if (r.kind === "ask") {
     return html`<div class="card ask">${where}
       ${r.questions.map((qn, i) => r.chosen && r.chosen[i] ? html`<div class="q done"><div class="q-t">${qn.question}</div>→ <b>${r.chosen[i].join(", ")}</b></div>` : html`
-        <div class="q"><div class="q-t">❓ ${qn.question}</div>
+        <div class="q"><div class="kind">${ic("help", 16)} ${t("kind.q")}</div><div class="q-t">${qn.question}</div>
           ${(qn.options || []).map((o) => {
             const on_ = (picks[i] || []).includes(o.label);
             return html`<button class=${"opt" + (on_ ? " on" : "")} disabled=${busy} onClick=${() => {
               if (qn.multiSelect) setPicks(Object.assign({}, picks, { [i]: on_ ? picks[i].filter((x) => x !== o.label) : [...(picks[i] || []), o.label] }));
               else send({ answers: { [i]: [o.label] } });
-            }}><b>${qn.multiSelect ? (on_ ? "☑ " : "☐ ") : ""}${o.label}</b>${o.description ? html`<span class="dim">${o.description}</span>` : ""}</button>`;
+            }}><b>${qn.multiSelect ? html`${ic(on_ ? "boxon" : "box", 16)} ` : ""}${o.label}</b>${o.description ? html`<span class="dim">${o.description}</span>` : ""}</button>`;
           })}
           ${qn.multiSelect && html`<button class="btn" disabled=${busy || !(picks[i] || []).length} onClick=${() => send({ answers: { [i]: picks[i] } })}>${t("done")}</button>`}
           <div class="own"><input placeholder=${t("ask.own")} value=${own[i] || ""} onInput=${(e) => setOwn(Object.assign({}, own, { [i]: e.target.value }))}/>
@@ -641,15 +653,16 @@ function Req({ r, onDone, showWhere = true, showProject = true }) {
   }
   const isPlan = r.kind === "plan";
   return html`<div class="card perm">${where}
-    <div class="perm-h">${isPlan ? t("req.plan") : t("req.perm")}</div>
+    <div class="kind">${ic(isPlan ? "plan" : "shield", 16)} ${isPlan ? t("req.plan") : t("req.perm")}</div>
     ${isPlan ? html`<details class="plan"><summary>${t("plan")}</summary><div class="md" dangerouslySetInnerHTML=${{ __html: md(r.plan) }}/></details>`
       : html`<div class="perm-b" dangerouslySetInnerHTML=${{ __html: r.html }}/>`}
     <div class="row">
       <button class="btn" disabled=${busy} onClick=${() => send({ act: "y" })}>${isPlan ? t("approve") : t("allow")}</button>
       <button class="btn danger" disabled=${busy} onClick=${() => send({ act: "n" })}>${isPlan ? t("reject.plan") : t("deny")}</button>
     </div>
-    ${r.suggest && html`<button class="btn ghost wide" disabled=${busy} onClick=${() => send({ act: "a" })}>${t("always")}</button>`}
-    ${why === null ? html`<button class="link" onClick=${() => setWhy("")}>${isPlan ? t("plan.notes") : t("deny.note")}</button>` : html`
+    <div class="foot quiet">${r.suggest ? html`<button class="link" disabled=${busy} onClick=${() => send({ act: "a" })}>${t("always.short")}</button>` : html`<span></span>`}
+    ${why === null ? html`<button class="link" onClick=${() => setWhy("")}>${isPlan ? t("plan.notes") : t("deny.note.short")}</button>` : ""}</div>
+    ${why === null ? "" : html`
       <div class="own"><input placeholder=${t("tell.claude")} value=${why} onInput=${(e) => setWhy(e.target.value)}/>
         <button class="btn ghost" disabled=${busy || !why.trim()} onClick=${() => send({ act: "n", text: why.trim() })}>${t("send")}</button></div>`}
   </div>`;
@@ -658,7 +671,7 @@ function Req({ r, onDone, showWhere = true, showProject = true }) {
 // ---------- screens ----------
 
 // Claude's background tasks still running after a turn; when one ends, Claude starts a new turn by itself
-const bgLine = (bg) => t("bg", { list: bg.map(q).join(", ") });
+const bgLine = (bg) => html`${ic("bg", 14)} ${t("bg", { list: bg.map(q).join(", ") })}`;
 
 // ---------- the load on the computer ----------
 
@@ -667,16 +680,16 @@ const coresText = (c) => (c >= 0.95 && Math.abs(c - Math.round(c)) < 0.05 ? Math
 const memPct = (l) => (l.mem_total && l.mem_used != null ? Math.round(l.mem_used * 100 / l.mem_total) : null);
 const stateWord = (st) => (st === "work" ? t("load.st.work") : st === "ask" ? t("st.ask") : st === "bg" ? t("st.bg") : "");
 
-// what runs under a session: Claude's command in the background (⚙️) or in a turn (▶), another program (·)
+// what runs under a session: Claude's command in the background (the cog) or in a turn (▶), another program (·)
 function Cmds({ cmds, now }) {
   return cmds.length ? html`<div class="cmds">${cmds.map((c, i) => html`<div class="cmd" key=${i}>
-    <div class="mono">${c.bg ? "⚙️ " : c.claude ? "▶ " : "· "}${c.text}</div>
+    <div class="mono">${c.bg ? ic("bg", 13) : c.claude ? ic("play", 12) : "·"} ${c.text}</div>
     <div class="dim">${[pct(c.cpu), bytes(c.mem), t("load.runs", { dur: nb(dur(now - c.started)) })].join(" · ")}</div></div>`)}</div>` : "";
 }
 
 function LoadRow({ s, now }) {
   return html`<button class="item" onClick=${() => go("#/s/" + s.sid)}>
-    <div class="item-h"><b>${s.driven ? "📱 " : ""}${s.title}</b><b class=${"pct " + level(s.cpu)}>${pct(s.cpu)}</b></div>
+    <div class="item-h"><b>${s.driven ? html`<span class="st-ic">${ic("phone", 14)}</span>` : ""}${s.title}</b><b class=${"pct " + level(s.cpu)}>${pct(s.cpu)}</b></div>
     <div class="dim">${[s.project !== s.title ? s.project : "", stateWord(s.state), bytes(s.mem),
       s.cpu_time != null ? t("load.total", { dur: nb(dur(s.cpu_time)) }) : "", t("load.opened", { when: ago(s.started) })].filter(Boolean).join(" · ")}</div>
     <${Cmds} cmds=${s.cmds} now=${now}/>
@@ -692,7 +705,7 @@ function Load({ embedded }) {
   if (!d.ok) return embedded ? "" : html`<div><h2>${t("load.title")}</h2><div class="empty">${t("load.none")}</div></div>`;
   const l = d.mac, m = memPct(l);
   const busy = d.sessions.filter((s) => !s.idle), idle = d.sessions.filter((s) => s.idle);
-  return html`<div>${embedded ? html`<h3>${t("load.title")}</h3>` : html`<h2>${t("load.title")}</h2>`}
+  return html`<div>${embedded ? "" : html`<h2>${t("load.title")}</h2>`}
     <div class="list">
       <div class="lim"><div class="item-h"><b>${t("load.cpu")}</b><b class=${"pct " + level(l.cpu)}>${pct(l.cpu)}</b></div>
         <div class="meter"><i class=${level(l.cpu)} style=${"width:" + Math.min(100, l.cpu) + "%"}></i></div>
@@ -704,9 +717,9 @@ function Load({ embedded }) {
     <h3>${t("load.sessions", { n: l.claude.n, sessions: plural(l.claude.n, "session"), cpu: pct(l.claude.cpu), mem: bytes(l.claude.mem) })}</h3>
     ${!d.sessions.length && html`<div class="empty">${t("load.nosessions")}</div>`}
     ${busy.length > 0 && html`<div class="list">${busy.map((s) => html`<${LoadRow} key=${s.sid} s=${s} now=${now}/>`)}</div>`}
-    ${idle.length > 0 && html`<h3 class="toggle" onClick=${() => setRest(!rest)}>${t("load.resting", { n: idle.length, mem: bytes(idle.reduce((a, s) => a + s.mem, 0)) })} ${rest ? "▾" : "▸"}</h3>
+    ${idle.length > 0 && html`<h3 class="toggle" onClick=${() => setRest(!rest)}>${t("load.resting", { n: idle.length, mem: bytes(idle.reduce((a, s) => a + s.mem, 0)) })} <span class=${"chev" + (rest ? " open" : "")}>${ic("chev", 14)}</span></h3>
       ${rest && html`<div class="list">${idle.map((s) => html`<${LoadRow} key=${s.sid} s=${s} now=${now}/>`)}</div>`}`}
-    <div class="dim small">${t("load.about")}</div>
+    <${About} text=${t("load.about")}/>
   </div>`;
 }
 
@@ -728,7 +741,7 @@ function BgSheet({ sid, onClose, fixed }) {
           <span>${t("bgs.mem")}</span><b>${bytes(x.mem)}${x.peak ? html` <span class="dim">· ${t("bgs.peak", { mem: bytes(x.peak) })}</span>` : ""}</b>
         </div>`}</div>`;
   return html`<div class="backdrop" onClick=${onClose}></div><div class=${"card pick tall" + (fixed ? " fixed" : "")}>
-    <div class="q-t pick-h">${t("bgs.title")}<button class="x" aria-label=${t("close")} onClick=${onClose}>×</button></div>
+    <div class="q-t pick-h"><span>${ic("bg", 17)} ${t("bgs.title")}</span><button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
     ${!d ? html`<div class="dim">${err || t("loading")}</div>` : !d.ok ? html`<div class="dim">${t("load.none")}</div>` : html`
       ${!d.tasks.length && html`<div class="dim">${t("bgs.none")}</div>`}${d.tasks.map(one)}
       ${d.session && html`<div class="dim small">${t("bgs.session", { cpu: pct(d.session.cpu), mem: bytes(d.session.mem) })}</div>`}`}
@@ -744,9 +757,50 @@ function ModePick({ mode, onSet, pager }) {
   };
   const cur = MODES.includes(mode) ? mode : "auto";
   return html`<div class="modes"><div class="seg">${MODES.map((k) =>
-    html`<button key=${k} class=${k === cur ? "on" : ""} onClick=${() => pick(k)}>${t("mode." + k + ".btn")}</button>`)}</div>
+    html`<button key=${k} class=${k === cur ? "on" : ""} onClick=${() => pick(k)}>${ic({ auto: "auto", mac: "monitor", phone: "phone" }[k], 16)} ${t("mode." + k + ".btn")}</button>`)}</div>
     <div class="dim small">${t("mode." + cur + (pager ? ".pager" : ".about"))}</div></div>`;
 }
+
+// one line-icon set for the whole app (stroke, 24 grid): the same meaning — the same picture on every screen
+const IC = {
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/>',
+  help: '<circle cx="12" cy="12" r="9.5"/><path d="M9.2 9.2a3 3 0 0 1 5.7 1.1c0 2-2.9 2.7-2.9 2.7"/><path d="M12 17h.01"/>',
+  plan: '<rect x="8" y="2.5" width="8" height="4" rx="1"/><path d="M16 4.5h2a2 2 0 0 1 2 2V20a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6.5a2 2 0 0 1 2-2h2"/><path d="M9 12h6M9 16h4"/>',
+  alert: '<path d="m21.7 18-8-14a2 2 0 0 0-3.5 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3"/><path d="M12 9v4M12 17h.01"/>',
+  bg: '<circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M2.5 12h3M18.5 12h3M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>',
+  phone: '<rect x="6" y="2" width="12" height="20" rx="2.6"/><path d="M11 18h2"/>',
+  monitor: '<rect x="2.5" y="3.5" width="19" height="13" rx="2"/><path d="M8 21h8M12 16.5V21"/>',
+  auto: '<path d="M20.5 12a8.5 8.5 0 0 1-14.6 5.9L3.5 15.5"/><path d="M3.5 12a8.5 8.5 0 0 1 14.6-5.9l2.4 2.4"/><path d="M20.5 3.5v5h-5M3.5 20.5v-5h5"/>',
+  msg: '<path d="M20.5 14.5a2 2 0 0 1-2 2H8l-4.5 4v-15a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z"/>',
+  term: '<path d="m4.5 17 5.5-5-5.5-5M12.5 18.5h7"/>',
+  home: '<path d="M3.5 10.5 12 3.5l8.5 7"/><path d="M5.5 9v11a1 1 0 0 0 1 1h3.5v-6h4v6h3.5a1 1 0 0 0 1-1V9"/>',
+  folder: '<path d="M3 7.5V18a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9.5a2 2 0 0 0-2-2h-7l-2-3H5a2 2 0 0 0-2 2z"/>',
+  gauge: '<path d="M4.2 18.5a9 9 0 1 1 15.6 0"/><path d="m12 13.5 4-4.5"/><circle cx="12" cy="13.5" r="1.2"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  chev: '<path d="m9 6 6 6-6 6"/>',
+  down: '<path d="m6 9 6 6 6-6"/>',
+  up: '<path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/>',
+  x: '<path d="M18 6 6 18M6 6l12 12"/>',
+  file: '<path d="M14 2.5H6.5a2 2 0 0 0-2 2v15a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V8z"/><path d="M14 2.5V8h5.5"/>',
+  image: '<rect x="3" y="3.5" width="18" height="17" rx="2.5"/><circle cx="9" cy="9.5" r="1.8"/><path d="m21 15.5-5-5-11 10"/>',
+  mic: '<rect x="9" y="2.5" width="6" height="12" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5v4"/>',
+  play: '<path d="M7 4.5v15l12-7.5z"/>',
+  box: '<rect x="4" y="4" width="16" height="16" rx="3.5"/>',
+  boxon: '<rect x="4" y="4" width="16" height="16" rx="3.5"/><path d="m8.5 12 2.5 2.5 4.5-5"/>',
+  copy: '<rect x="8.5" y="8.5" width="12" height="12" rx="2.2"/><path d="M15.5 8.5V5.7a2.2 2.2 0 0 0-2.2-2.2H5.7a2.2 2.2 0 0 0-2.2 2.2v7.6a2.2 2.2 0 0 0 2.2 2.2h2.8"/>',
+  clip: '<path d="m20.5 11.5-8.6 8.6a5.3 5.3 0 0 1-7.5-7.5l8.6-8.6a3.5 3.5 0 0 1 5 5l-8.6 8.6a1.8 1.8 0 0 1-2.5-2.5l7.9-7.9"/>',
+  info: '<circle cx="12" cy="12" r="9.5"/><path d="M12 16.5v-5M12 7.8h.01"/>',
+};
+const ic = (n, s = 18) => html`<svg class=${"ic ic-" + n} viewBox="0 0 24 24" width=${s} height=${s} fill="none" stroke="currentColor"
+  stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" dangerouslySetInnerHTML=${{ __html: IC[n] }}></svg>`;
+const dot = (k) => html`<i class=${"dot " + k}></i>`;
+const dotted = (xs) => xs.filter(Boolean).map((m, i) => html`${i ? html`<span class="sep">·</span>` : ""}${m}`);
+// a project's own colour, the same on Home, its screen, Resources and its new topic's icon: Telegram's six topic
+// colours, picked by the name's UTF-8 bytes — pult_render.topic_color does the same sum, keep them in step
+const HUES = ["#6fb9f0", "#ffd67e", "#cb86db", "#8eee98", "#ff93b2", "#fb6f5f"];
+const hue = (s) => { let h = 0; for (const b of new TextEncoder().encode(String(s))) h = (h * 31 + b) >>> 0; return HUES[h % HUES.length]; };
+const avatar = (name, size = 28) => html`<span class="av" aria-hidden="true" style=${"background:" + hue(name) + ";width:" + size + "px;height:" + size + "px;font-size:" + Math.round(size * .5) + "px"}>${String(name).replace(/[^\p{L}\p{N}]/gu, "").charAt(0).toUpperCase()}</span>`;
 
 // the Home strip: two small tiles and the way to the settings — where you are (tap — the mode picker) and the limit
 // with the load (tap — Resources). A label over a value, so nothing is cut on a narrow phone. The strip is a setting,
@@ -767,7 +821,7 @@ function Top({ mac, load, usagePct, usageTop, pager, onSet }) {
   const stat = (k, v, cls, label) => html`<span class="tl-c"><span class="tl-l">${label || t(k)}</span><span class=${"tl-v " + cls}>${v}</span></span>`;
   return html`<div class="where">
     <div class="where-h">
-      <button class="where-b" aria-expanded=${open} onClick=${() => setOpen(!open)}><span class="tl-l">${t("mode." + cur + ".btn")}</span><span class="tl-v">${line}</span></button>
+      <button class="where-b" aria-expanded=${open} onClick=${() => setOpen(!open)}><span class="tl-l">${ic({ auto: "auto", mac: "monitor", phone: "phone" }[cur], 14)} ${t("mode." + cur + ".btn")}</span><span class="tl-v">${line}</span></button>
       ${(load || lim != null) && html`<button class="where-b top-load" onClick=${() => go("#/usage")}>${lim != null && stat("top.lim", limText, limCls, usageTop && t("sp.short." + usageTop.key))}${load && stat("top.cpu", pct(load.cpu), quiet(load.cpu, 90))}${m !== null && m >= 90 && stat("top.mem", m + "\u00a0%", "bad")}</button>`}
       <a class="gear" href="#/settings" aria-label=${t("settings")}>${GEAR}</a>
     </div>
@@ -827,7 +881,7 @@ function QuickReply({ sid, stt, onSent }) {
     <input ref=${plainField} placeholder=${t("reply.own")} value=${text} onInput=${(e) => setText(e.target.value)}
       onKeyDown=${(e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); send(); } }}/>
     ${stt ? html`<${Mic} v=${v} disabled=${busy}/>` : ""}
-    ${text.trim() ? html`<button class="btn send" aria-label=${t("send")} disabled=${busy} onClick=${send}>↑</button>` : ""}</div>`;
+    ${text.trim() ? html`<button class="btn send" aria-label=${t("send")} disabled=${busy} onClick=${send}>${ic("up", 18)}</button>` : ""}</div>`;
 }
 
 // "continue when the usage limit resets": Pult says "continue" in the session itself at that time
@@ -853,12 +907,12 @@ function Mine({ r, now, onGot, stt, showProject = true }) {
   const open = () => go("#/s/" + r.sid);
   const sent = () => onGot && onGot(r.sid);
   return html`<div class=${"card mine" + (r.state === "fail" ? " fail" : "")}>
-    <div class="item-h tap" onClick=${open}><b>${r.state === "fail" ? "⚠️ " : ""}${r.title}</b><span class="dim nowrap">${t("mine.waits", { dur: nb(dur(now - r.since)) })}</span></div>
-    ${showProject && r.project && r.project !== r.title && html`<div class="dim small0 tap" onClick=${open}>${r.project}</div>`}
+    <div class="card-h tap" onClick=${open}><div class="c-proj">${showProject && r.project ? html`${avatar(r.project, 18)}<span>${r.project}</span>` : ""}<span class="c-wait">${t("mine.waits", { dur: nb(dur(now - r.since)) })}</span></div>
+      <b class="c-title">${r.state === "fail" ? ic("alert", 16) : ""}${r.title}</b></div>
     ${r.need ? html`<div class="ln dim tap" onClick=${open}>${r.line}</div><div class="now tap" onClick=${open}>${r.need}</div>` : html`<div class="now tap" onClick=${open}>${r.line}</div>`}
     ${r.fail === "rate_limit" ? html`<${ResumeAt} sid=${r.sid} resume=${resume} reset=${r.reset} onSet=${setResume}/>` : html`<${Replies} sid=${r.sid} replies=${r.replies} onSent=${sent}/>`}
     <${QuickReply} sid=${r.sid} stt=${stt} onSent=${sent}/>
-    <div class="foot"><button class="link" disabled=${busy} onClick=${got}>${t("mine.got")}</button><button class="link" onClick=${open}>${t("mine.session")}</button></div>
+    <div class="foot quiet"><span></span><button class="link" disabled=${busy} onClick=${got}>${ic("check", 15)} ${t("mine.got")}</button></div>
   </div>`;
 }
 
@@ -866,9 +920,9 @@ function Mine({ r, now, onGot, stt, showProject = true }) {
 // what waits; a line per project. Gone with the next long break, or with ×
 function Catchup({ c, onClose }) {
   return html`<div class="card catch"><div class="item-h"><b>${t("catch.title")}</b><span class="dim nowrap">${t("catch.since", { hm: agoShort(c.from) })}
-    <button class="x" aria-label=${t("close")} onClick=${onClose}>×</button></span></div>
-    <div class="dim">${[t("catch.turns", { n: c.turns, turns: plural(c.turns, "turn"), p: c.projects }), c.done ? "✓ " + c.done : "", c.mine ? "🔴 " + c.mine : ""].filter(Boolean).join(" · ")}</div>
-    ${c.lines.map((x) => html`<div class="ln tap" key=${x.pkey} onClick=${() => go("#/p/" + encodeURIComponent(x.pkey))}>${x.you ? "🔴" : x.fail ? "⚠️" : "✓"} ${x.name} — ${x.line}</div>`)}</div>`;
+    <button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></span></div>
+    <div class="dim cnts">${[t("catch.turns", { n: c.turns, turns: plural(c.turns, "turn"), p: c.projects }), c.done ? html`<span class="cnt ok">${ic("check", 14)}${c.done}</span>` : "", c.mine ? html`<span class="cnt">${dot("attn")}${c.mine}</span>` : ""].filter(Boolean).map((m, i) => html`${i ? html`<span class="sep">·</span>` : ""}${m}`)}</div>
+    ${c.lines.map((x) => html`<div class="ln tap" key=${x.pkey} onClick=${() => go("#/p/" + encodeURIComponent(x.pkey))}>${x.you ? dot("attn") : x.fail ? ic("alert", 14) : ic("check", 14)} <b>${x.name}</b> — ${x.line}</div>`)}</div>`;
 }
 
 // one session on the board: what it does now or how its last turn ended, in a line or two; in "Running now" (with
@@ -879,24 +933,25 @@ function BoardRow({ r, now, onBg, project }) {
     : r.state === "bg" ? bgChip(r.since, now, bgTap)
     : html`<span class="dim nowrap">${agoShort(r.ts)}</span>`;
   const what = project != null && [project !== r.title ? project : "",
-    r.state === "bg" && r.bg && r.bg.length ? "⚙️ " + r.bg.map(q).join(", ") : r.line ? (r.state === "work" ? "💬 " : "") + r.line : ""].filter(Boolean).join(" · ");
-  const icon = r.state === "done" ? html`<span class="okmark">✓ </span>` : r.driven ? "📱 " : "";
+    r.state === "bg" && r.bg && r.bg.length ? r.bg.map(q).join(", ") : r.line ? r.line : ""].filter(Boolean).join(" · ");
+  const icon = r.state === "work" ? html`<span class="st st-work"></span>` : r.state === "bg" ? html`<span class="st-ic">${ic("bg", 15)}</span>`
+    : r.state === "done" ? html`<span class="st-ic ok">${ic("check", 15)}</span>` : r.driven ? html`<span class="st-ic">${ic("phone", 15)}</span>` : "";
   return html`<button class=${"item brow" + (r.state === "idle" ? " rest" : "") + (r.state === "done" ? " fresh" : "")} onClick=${() => go("#/s/" + r.sid)}>
-    <div class="item-h"><b>${icon}${r.title}</b><span class="meta">${r.ctx != null ? html`<span class=${"pct " + level(r.ctx)}>${r.ctx} %</span>` : ""}${right}</span></div>
+    <div class="item-h"><b class="one">${icon}${r.title}</b><span class="meta">${r.ctx != null && r.ctx >= 90 ? html`<span class="pct bad">${ic("alert", 13)} ${r.ctx} %</span>` : ""}${right}</span></div>
     ${project != null ? what && html`<div class="ln dim">${what}</div>` : html`
-    ${r.line && html`<div class="ln">${r.state === "work" ? "💬 " : ""}${r.line}</div>`}
-    ${r.bg && r.bg.length > 0 && html`<div class="bg tap" onClick=${bgTap}>${bgLine(r.bg)} ›</div>`}`}
+    ${r.line && html`<div class="ln">${r.line}</div>`}
+    ${r.bg && r.bg.length > 0 && html`<div class="bg tap" onClick=${bgTap}>${bgLine(r.bg)} ${ic("chev", 14)}</div>`}`}
   </button>`;
 }
 
 // a project on the board: who works and who waits for you, today's turns; its live sessions; the resting folded
 function ProjectBlock({ p, now, onBg }) {
   const open = () => go("#/p/" + encodeURIComponent(p.pkey));
-  const meta = [p.work ? "🟢 " + p.work : "", p.mine ? "🔴 " + p.mine : "",
+  const meta = [p.work ? html`<span class="cnt">${dot("work")}${p.work}</span>` : "", p.mine ? html`<span class="cnt">${dot("attn")}${p.mine}</span>` : "",
     p.turns ? t("proj.turns", { n: p.turns, turns: plural(p.turns, "turn") }) : "",
-    !p.rows.length && p.resting ? t("proj.resting", { n: p.resting }) : ""].filter(Boolean).join(" · ");
+    !p.rows.length && p.resting ? t("proj.resting", { n: p.resting }) : ""].filter(Boolean);
   return html`<div class="list proj">
-    <button class="item proj-h" onClick=${open}><div class="item-h"><b>${p.name}</b><span class="dim">${meta || t("proj.quiet")}</span></div></button>
+    <button class="item proj-h" onClick=${open}><span class="pname">${avatar(p.name, 34)}<span class="pn"><b>${p.name}</b><span class="dim pmeta">${meta.length ? meta.map((m, i) => html`${i ? html`<span class="sep">·</span>` : ""}${m}`) : t("proj.quiet")}</span></span>${ic("chev", 16)}</span></button>
     ${p.rows.map((r) => html`<${BoardRow} key=${r.sid} r=${r} now=${now} onBg=${onBg}/>`)}
     ${p.rows.length > 0 && p.resting > 0 && html`<button class="item more dim" onClick=${open}>${t("row.resting", { n: p.resting, rest: plural(p.resting, "rest") })}</button>`}
   </div>`;
@@ -951,10 +1006,10 @@ function Home() {
 function Job({ j, now, row }) {
   const [open, setOpen] = useState(false);
   const st = j.ended == null ? html`<${TimeChip} cls="ok" text=${t("job.running", { dur: durShort(now - j.started) })}/>`
-    : j.code === 0 ? html`<span class="chip">✔ ${dur(j.ended - j.started)}</span>`
+    : j.code === 0 ? html`<span class="chip okc">${ic("check", 12)} ${dur(j.ended - j.started)}</span>`
     : html`<span class="chip bad">${j.code == null ? t("job.killed") : t("job.code", { code: j.code })}</span>`;
   return html`<button class="item" onClick=${() => setOpen(!open)}>
-    <div class="item-h"><b class="mono">${j.cmd}</b>${st}</div>
+    <div class="item-h"><b class="mono one">${row ? html`<span class="st-ic">${ic("term", 15)}</span>` : ""}${j.cmd}</b>${st}</div>
     ${row && !open ? html`<div class="ln dim">${[j.project || j.cwd, j.last].filter(Boolean).join(" · ")}</div>` : html`
     <div class="dim">${j.project || j.cwd}${j.ended ? " · " + ago(j.ended) : ""}</div>
     ${!open && j.last && j.ended == null && html`<div class="now mono">${j.last}</div>`}`}
@@ -972,8 +1027,10 @@ function Settings() {
     try { const p = await api("prefs", { [k]: !d.prefs[k] }); set(Object.assign({}, d, { prefs: Object.assign({}, d.prefs, p) })); haptic("success"); }
     catch (e) { alertBox(e.message); }
   };
-  const sw = (k, label, hint) => html`<button class="item" onClick=${() => toggle(k)}>
-    <div class="item-h"><b>${label}</b><span class=${"sw" + (d.prefs[k] ? " on" : "")}></span></div><div class="dim">${hint}</div></button>`;
+  // a switch: one line under it, the rest behind "More"
+  const sw = (k, label, hint, more) => html`<div class="item sw-row">
+    <button class="sw-h" role="switch" aria-checked=${!!d.prefs[k]} onClick=${() => toggle(k)}><b>${label}</b><span class=${"sw" + (d.prefs[k] ? " on" : "")}></span></button>
+    <div class="dim">${hint}</div>${more ? html`<${About} text=${more} label=${t("more")}/>` : ""}</div>`;
   const setLangPref = async (k) => {
     try { await api("prefs", { lang: k }); set(Object.assign({}, d, { prefs: Object.assign({}, d.prefs, { lang: k }) })); useLang(k); haptic("success"); }
     catch (e) { alertBox(e.message); }
@@ -989,7 +1046,7 @@ function Settings() {
     setKbusy(false);
   };
   return html`<div><h2>${t("settings")}</h2>
-    <h3>${t("notifications")}</h3><div class="list">${sw("pager", t("pager"), t("pager.about"))}${d.prefs.pager ? "" : sw("vehi", t("vehi"), t("vehi.about"))}${sw("brief", t("brief"), t("brief.about"))}</div>
+    <h3>${t("notifications")}</h3><div class="list">${sw("pager", t("pager"), t("pager.short"), t("pager.about"))}${d.prefs.pager ? "" : sw("vehi", t("vehi"), t("vehi.about"))}${sw("brief", t("brief"), t("brief.short"), t("brief.about"))}</div>
     <h3>${t("where")}</h3>
     <${ModePick} mode=${d.prefs.mode} pager=${d.prefs.pager} onSet=${(m) => set(Object.assign({}, d, { prefs: Object.assign({}, d.prefs, { mode: m }) }))}/>
     ${d.prefs.pace ? html`<h3>${t("pace")}</h3>
@@ -1017,6 +1074,13 @@ function Settings() {
 }
 
 // the app's recent logins: when, from which network and device, how — and a way to log every window out
+// logins in a row from the same window, network and device read as one line: "8 times", the latest time
+const runs = (xs) => xs.reduce((out, x) => {
+  const last = out[out.length - 1];
+  if (last && last.ok === x.ok && last.how === x.how && last.net === x.net && last.dev === x.dev) last.n += 1;
+  else out.push(Object.assign({ n: 1 }, x));
+  return out;
+}, []);
 function Logins() {
   const [d] = useLive(() => api("logins"), [], () => false);
   if (!d) return "";
@@ -1026,9 +1090,9 @@ function Logins() {
   };
   return html`<h3>${t("logins")}</h3><div class="list"><div class="item static">
     ${d.locked ? html`<div class="warn">${t("logins.locked", { files: d.locked })}</div>` : ""}
-    ${d.logins.slice(0, 8).map((x, i) => html`<div class="login" key=${i}>
-      <span class=${x.ok ? "" : "bad"}>${x.ok ? "✓" : "✕"} ${ago(x.ts)}</span>
-      <span class="dim">${[t("logins.how." + x.how), x.net, x.dev].filter(Boolean).join(" · ")}</span></div>`)}
+    ${runs(d.logins).slice(0, 8).map((x, i) => html`<div class="login" key=${i}>
+      <span class=${x.ok ? "ok" : "bad"}>${ic(x.ok ? "check" : "x", 14)} ${ago(x.ts)}</span>
+      <span class="dim">${[t("logins.how." + x.how), x.net, x.dev, x.n > 1 ? t("logins.times", { n: x.n, times: plural(x.n, "time") }) : ""].filter(Boolean).join(" · ")}</span></div>`)}
     ${d.logins.length ? "" : html`<div class="dim">${t("logins.none")}</div>`}
     <button class="link danger" onClick=${out}>${t("logins.out")}</button>
   </div></div>`;
@@ -1039,12 +1103,13 @@ function Projects() {
   const [d, err] = useLive(() => api("projects"), []);          // live: the counts change with every turn
   if (!d) return html`<${Loading} err=${err}/>`;
   const add = d.create && html`<div class="stick"><button class="btn wide" onClick=${() => go("#/newproject")}>${t("np.create")}</button></div>`;
-  if (!d.projects.length) return html`<div><h3>${t("projects")}</h3><div class="empty">${t("projects.none")}</div>${add}</div>`;
-  return html`<div><h3>${t("projects")}</h3><div class="list">${d.projects.map((p) => html`
-    <button class=${"item brow" + (p.mine || p.work || p.open ? "" : " rest")} key=${p.pkey} onClick=${() => go("#/p/" + encodeURIComponent(p.pkey))}>
-      <div class="item-h"><b>${p.name}</b><span class="meta dim">${[p.work ? "🟢 " + p.work : "", p.mine ? "🔴 " + p.mine : "",
-        p.turns ? t("proj.turns", { n: p.turns, turns: plural(p.turns, "turn") }) : agoShort(p.last)].filter(Boolean).join(" · ")}</span></div>
-      <div class="ln">${p.line || html`<span class="dim path">${p.path}</span>`}</div></button>`)}</div>${add}</div>`;
+  if (!d.projects.length) return html`<div><h2>${t("projects")}</h2><div class="empty">${t("projects.none")}</div>${add}</div>`;
+  return html`<div><h2>${t("projects")}</h2><div class="list">${d.projects.map((p) => html`
+    <button class=${"item proj-h" + (p.mine || p.work || p.open ? "" : " rest")} key=${p.pkey} onClick=${() => go("#/p/" + encodeURIComponent(p.pkey))}>
+      <span class="pname">${avatar(p.name, 34)}<span class="pn"><b>${p.name}</b><span class="dim pmeta">${dotted([
+        p.work ? html`<span class="cnt">${dot("work")}${p.work}</span>` : "", p.mine ? html`<span class="cnt">${dot("attn")}${p.mine}</span>` : "",
+        p.turns ? t("proj.turns", { n: p.turns, turns: plural(p.turns, "turn") }) : agoShort(p.last)])}</span>
+        <span class="ln pline">${p.line || html`<span class="path">${p.path}</span>`}</span></span>${ic("chev", 16)}</span></button>`)}</div>${add}</div>`;
 }
 
 // a project's screen — its board, large: what waits for you (answer right here), what runs, today's outcomes, then
@@ -1059,19 +1124,18 @@ function Project({ pkey }) {
   const onBg = (s) => { setBgFor(s.sid); openBg(); };
   const gone = (sid) => set(Object.assign({}, d, { mine: d.mine.filter((r) => r.sid !== sid) }));
   const waits = d.pending.length + d.mine.length;
-  const sum = [d.live.length ? "🟢 " + d.live.length : "", waits ? "🔴 " + waits : "",
-    d.turns ? t("sum.today", { n: d.turns, turns: plural(d.turns, "turn"), dur: dur(d.secs) }) : t("proj.quiet")].filter(Boolean).join(" · ");
+  const sum = d.turns ? t("sum.today", { n: d.turns, turns: plural(d.turns, "turn"), dur: dur(d.secs) }) : t("proj.quiet");
   return html`<div class="project">
-    <h2>${d.name}</h2><div class="sum dim">${sum}</div>
+    <div class="ph">${avatar(d.name, 44)}<div><h2>${d.name}</h2><div class="sum dim">${sum}</div></div></div>
     ${waits > 0 && html`<h3>${t("proj.waits", { n: waits })}</h3>
       ${d.pending.map((r) => html`<${Req} key=${r.rid} r=${r} showProject=${false}/>`)}
       ${d.mine.map((r) => html`<${Mine} key=${r.sid} r=${Object.assign({ reset: d.reset }, r)} now=${now} onGot=${gone} stt=${d.stt} showProject=${false}/>`)}`}
     ${d.live.length > 0 && html`<h3>${t("proj.live", { n: d.live.length })}</h3><div class="list">${d.live.map((r) => html`<${BoardRow} key=${r.sid} r=${r} now=${now} onBg=${onBg}/>`)}</div>`}
     ${d.today.length > 0 && html`<h3>${t("proj.today")}</h3><div class="list">${d.today.map((r) => html`<${BoardRow} key=${r.sid} r=${r} now=${now} onBg=${onBg}/>`)}</div>`}
     ${!waits && !d.live.length && !d.today.length && html`<div class="empty small">${t("proj.nothing")}</div>`}
-    ${d.earlier.length > 0 && html`<h3 class="toggle" onClick=${() => setMore(!more)}>${t("proj.earlier", { n: d.earlier.length })} ${more ? "▾" : "▸"}</h3>
+    ${d.earlier.length > 0 && html`<h3 class="toggle" onClick=${() => setMore(!more)}>${t("proj.earlier", { n: d.earlier.length })} <span class=${"chev" + (more ? " open" : "")}>${ic("chev", 14)}</span></h3>
       ${more && html`<div class="list">${d.earlier.map((x) => html`<button class="item brow rest" key=${x.sid} onClick=${() => go("#/s/" + x.sid)}>
-        <div class="item-h"><b>${x.driven ? "📱 " : ""}${x.title}</b><span class="meta"><span class="dim nowrap">${agoShort(x.last)}</span></span></div>
+        <div class="item-h"><b>${x.driven ? html`<span class="st-ic">${ic("phone", 14)}</span>` : ""}${x.title}</b><span class="meta"><span class="dim nowrap">${agoShort(x.last)}</span></span></div>
         ${x.line ? html`<div class="ln">${x.line}</div>` : x.open ? html`<div class="ln">${t("open.mac")}</div>` : ""}</button>`)}</div>`}`}
     <div class="stick"><button class="btn wide" onClick=${() => go("#/new?pkey=" + encodeURIComponent(pkey))}>${t("project.new")}</button></div>
     ${bgFor && html`<${BgSheet} sid=${bgFor} fixed=${true} onClose=${closeBg}/>`}
@@ -1089,10 +1153,10 @@ function Steps({ steps }) {
   const label = tools.length + " " + plural(tools.length, "step");
   const last = steps[steps.length - 1];
   return html`<div class="steps">
-    <button class="steps-h" onClick=${() => setOpen(!open)}>${open ? "▾" : "▸"} ${steps[0].ts ? hhmm(toDate(steps[0].ts)) + " · " : ""}${label}${bad ? " · ⚠️ " + bad : ""}
+    <button class="steps-h" onClick=${() => setOpen(!open)}><span class=${"chev" + (open ? " open" : "")}>${ic("chev", 14)}</span>${label}${bad ? html` · <span class="bad">${t("steps.bad", { n: bad })}</span>` : ""}
       <span class="dim">${open ? "" : " · " + (last.k === "update" ? brief(last.text, 90) : last.step)}</span></button>
     ${open && steps.map((s, n) => s.k === "update" ? html`<div class="upd" key=${"u" + n}>${s.text}</div>` : html`<div class="step" key=${s.id}>
-      <button class="step-h" onClick=${() => setOne(one === s.id ? null : s.id)}><span class="dim">${s.ts ? hhmm(toDate(s.ts)) + " " : ""}</span>${s.ok === false ? "⚠️ " : ""}${s.step}</button>
+      <button class="step-h" onClick=${() => setOne(one === s.id ? null : s.id)}><span class="dim">${s.ts ? hhmm(toDate(s.ts)) + " " : ""}</span>${s.ok === false ? html`<span class="bad">${ic("alert", 13)} </span>` : ""}${s.step}</button>
       ${one === s.id && html`<pre>${s.input}</pre>${s.out ? html`<pre class="out">${s.out}</pre>` : ""}`}</div>`)}
   </div>`;
 }
@@ -1144,7 +1208,7 @@ function TextMsg({ i, fold }) {
 // the files the turn made or changed in the project (stage F4): one line in the outcome, a tap opens their screen
 const fsize = (b) => (b >= 1048576 ? t("size.mb", { n: num(b / 1048576, 1) }) : t("size.kb", { n: Math.max(1, Math.round(b / 1024)) }));
 function TurnLine({ sid, tf }) {
-  return html`<a class="tfline" href=${"#/f/" + sid + "?t=" + tf.id}><span>📎 ${t("files.line", { n: tf.n, size: fsize(tf.size) })}</span><span class="dim">›</span></a>`;
+  return html`<a class="tfline" href=${"#/f/" + sid + "?t=" + tf.id}><span>${ic("clip", 17)} ${t("files.line", { n: tf.n, size: fsize(tf.size) })}</span><span class="dim">${ic("chev", 16)}</span></a>`;
 }
 
 // the screen of a turn's files: ‹ › through the session's turns that had files; nothing ticked at first, since the
@@ -1205,7 +1269,7 @@ function TurnFilesScreen({ sid, turn }) {
       <label class="tf-zip"><input type="checkbox" checked=${asZip} disabled=${forced || busy} onChange=${() => setZip(!zip)}/>
         <span>${t("files.zip")}${forced ? html`<span class="dim"> · ${t("files.zip_forced", { n: ZIP_FROM })}</span>` : ""}</span></label>
       <button class="btn wide" disabled=${!chosen.length || busy} onClick=${send}>${busy ? "…" : t("files.send_n", { n: chosen.length })}</button>
-      ${note && html`<div class="dim tf-note">✓ ${note}</div>`}
+      ${note && html`<div class="dim tf-note">${ic("check", 14)} ${note}</div>`}
     </div>
   </div>`;
 }
@@ -1217,14 +1281,14 @@ function Outcome({ sid, out, state, now }) {
   const gotIt = async () => {
     try { await api("seen", { sid }); haptic("success"); setGot(true); } catch (err) { alertBox(err.message); }
   };
-  const head = state === "fail" ? "⚠️ " + (out.line || t("out.failed")) : state === "you" ? "🔴 " + t("out.waits", { dur: dur(now - out.ts) }) : "✓ " + t("out.done");
+  const head = state === "fail" ? html`${ic("alert", 14)} ${out.line || t("out.failed")}` : state === "you" ? html`${dot("attn")}${t("out.waits", { dur: dur(now - out.ts) })}` : html`${ic("check", 14)} ${t("out.done")}`;
   return html`<div class=${"card outcome" + (mine ? " mine" : "") + (state === "fail" ? " fail" : "")}>
     <div class="k">${head}${out.dur ? " · " + t("home.took", { dur: dur(out.dur) }) : ""}</div>
     ${state !== "fail" && out.line && html`<div class="o-l"><b>${t("out.line")}</b> ${out.line}</div>`}
     ${out.need && html`<div class="o-l"><b>${t("out.need")}</b> ${out.need}</div>`}
     ${out.fail === "rate_limit" ? html`<${ResumeAt} sid=${sid} resume=${resume} reset=${out.reset} onSet=${setResume}/>` : html`<${Replies} sid=${sid} replies=${out.replies}/>`}
     ${out.turn_files && html`<${TurnLine} sid=${sid} tf=${out.turn_files}/>`}
-    ${mine && (out.need || state === "fail") && html`<div class="foot">${got ? html`<span class="dim">✓ ${t("mine.got")}</span>` : html`<button class="link" onClick=${gotIt}>${t("mine.got")}</button>`}</div>`}
+    ${mine && (out.need || state === "fail") && html`<div class="foot quiet"><span></span>${got ? html`<span class="dim">${ic("check", 14)} ${t("mine.got")}</span>` : html`<button class="link" onClick=${gotIt}>${ic("check", 15)} ${t("mine.got")}</button>`}</div>`}
   </div>`;
 }
 
@@ -1372,7 +1436,7 @@ function Session({ sid }) {
   // the context gauge, the same number VS Code shows: used ÷ (window − the reserve for the answer)
   const pct = info.ctx && info.stats ? Math.min(100, Math.round(info.stats.context * 100 / info.ctx.usable)) : null;
   // the status under the message field: where the text goes (a tab, a copy), the model, the context gauge
-  const dest = lv.tab ? t("dest.tab") : lv.open ? t("dest.copy") : "";
+  const dest = lv.tab ? html`${ic("monitor", 13)} ${t("dest.tab")}` : lv.open ? html`${ic("copy", 13)} ${t("dest.copy")}` : "";
   const ctxText = info.stats && info.stats.model ? (pct !== null ? t("ctx.pct", { pct, win: kilo(info.ctx.window) }) : t("context", { n: kilo(info.stats.context) })) : "";
   // two steady lines: the model with its effort (a tap picks them) · where the text goes and the context gauge
   // the model: the one picked for the session, else the one its last request used; the effort — the same way
@@ -1385,23 +1449,23 @@ function Session({ sid }) {
   const explain = () => { setNote([lv.tab ? t("ex.tab") : lv.open ? t("ex.copy") : t("ex.session"),
     info.stats && info.stats.model ? t("ex.model", { m: modelName(info.stats.model) }) + (info.switch ? "" : " " + (lv.tab ? t("model.reload") : t("model.fixed"))) : "",
     effortNow ? t("ex.effort", { e: effortName(effortNow).toLowerCase() }) + (lv.tab && info.switch && !info.switch_effort ? " " + t("effort.reload") : "") : "",
-    info.stats && info.stats.model ? t("ex.ctx", { n: kilo(info.stats.context), win: pct !== null ? t("ex.ctx.win", { w: kilo(info.ctx.window), pct }) : "" }) : ""
+    info.stats && info.stats.model ? t("ex.ctx", { n: kilo(info.stats.context), win: pct !== null ? t("ex.ctx.win", { w: kilo(info.ctx.window), pct }) : "" }) : "",
+    // the last turn's figures — once in the session's header, now here: the header keeps the title and the state
+    ts ? t("turn.stats", { n: ts.req, requests: plural(ts.req, "request"), out: kilo(ts.out) }) + (ts.think ? t("turn.think", { n: kilo(ts.think) }) : "") : ""
   ].filter(Boolean)); openNote(); };
   const line1 = (modelText || canPick) && html`<button class=${"mchip" + (canPick ? " on" : "")} onClick=${canPick ? () => (pick ? closePick() : openPick()) : explain}>
-    <span>${modelText || t("model")}</span>${effortNow && html`<${Dots} e=${effortNow}/>`}${canPick ? html`<span class="caret">▾</span>` : ""}</button>`;
+    <span>${modelText || t("model")}</span>${effortNow && html`<${Dots} e=${effortNow}/>`}${canPick ? html`<span class="caret">${ic("down", 13)}</span>` : ""}</button>`;
   const line2 = (dest || ctxText) && html`<button class="where" onClick=${explain}>${dest}${dest && ctxText ? " · " : ""}<span class=${pct >= 90 ? "bad" : pct >= 70 ? "warn" : ""}>${ctxText}</span></button>`;
   return html`<div class="session">
     <div class="sess-h"><h2>${info.title}</h2><div class="dim">${info.project !== info.title ? html`<a class="crumb" href=${"#/p/" + encodeURIComponent(info.pkey)}>${info.project}</a>` : ""} ${st}</div>
-      ${info.stats && info.stats.model && html`<div class="stats">${[modelName(info.stats.model), info.stats.effort && t("effort.is", { e: effortName(info.stats.effort).toLowerCase() })].filter(Boolean).join(" · ")} · <span class=${pct >= 90 ? "bad" : pct >= 70 ? "warn" : ""}>${t("context", { n: kilo(info.stats.context) })}${pct !== null ? t("context.pct", { pct, win: kilo(info.ctx.window) }) : ""}</span><br/>
-        ${t("turn.stats", { n: ts.req, requests: plural(ts.req, "request"), out: kilo(ts.out) })}${ts.think ? t("turn.think", { n: kilo(ts.think) }) : ""}</div>`}
-      ${lv.bg && lv.bg.length > 0 && html`<button class="bg tap plain" onClick=${openBgs}>${bgLine(lv.bg)} ›</button>`}</div>
+      ${lv.bg && lv.bg.length > 0 && html`<button class="bg tap plain" onClick=${openBgs}>${bgLine(lv.bg)} ${ic("chev", 14)}</button>`}</div>
     ${s.before != null && html`<button class="link center earlier" disabled=${early} onClick=${earlier}>${t(early ? "earlier.loading" : "earlier")}</button>`}
     ${pin && html`<button class="pinned" onClick=${() => { setFull(pin); openFull(); }}><span class="pin-in"><span class="pin-bar"></span>
-      <span class="pin-body"><span class="pin-h">${t("pin.you")}${pin.ts ? " · " + hhmm(toDate(pin.ts)) : ""}${pin.att && pin.att.length ? " · 📎 " + pin.att.length : ""}</span>
+      <span class="pin-body"><span class="pin-h">${t("pin.you")}${pin.ts ? " · " + hhmm(toDate(pin.ts)) : ""}${pin.att && pin.att.length ? html` · ${ic("clip", 12)} ${pin.att.length}` : ""}</span>
       <span class="pin-tx">${pin.text}</span></span></span></button>`}
     ${(shown.current = group(s.items)).map((i, n, all) => i.k === "day" ? html`<div class="day" key=${i.key}>${i.label}</div>`
       : i.k === "steps" ? html`<${Steps} key=${i.key} steps=${i.steps}/>`
-      : i.k === "user" ? html`<div class="msg me" key=${n} data-n=${n}>${i.voice ? html`<span class="mic-i">🎤</span>` : ""}${i.text}${i.att && i.att.length ? html`<div class="atts">${i.att.map((a, k) => html`<${Pic} key=${k} a=${a}/>`)}</div>` : ""}<${At} ts=${i.ts} mid=${i.mid}/></div>`
+      : i.k === "user" ? html`<div class="msg me" key=${n} data-n=${n}>${i.voice ? html`<span class="mic-i">${ic("mic", 14)}</span>` : ""}${i.text}${i.att && i.att.length ? html`<div class="atts">${i.att.map((a, k) => html`<${Pic} key=${k} a=${a}/>`)}</div>` : ""}<${At} ts=${i.ts} mid=${i.mid}/></div>`
       : i.k === "note" ? html`<div class="note" key=${n}>${i.text}${i.ts ? " · " + hhmm(toDate(i.ts)) : ""}</div>`
       : i.k === "update" ? html`<div class="upd solo" key=${n}>${i.text}</div>`
       : html`<${TextMsg} key=${n} i=${i} fold=${i.text.length > LONG && all.slice(n + 1).some((x) => x.k === "text")}/>`)}
@@ -1441,7 +1505,7 @@ const LAST_NEW = {
 
 function ProjectPick({ projects, cur, onPick, onClose, create }) {
   return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick tall fixed">
-    <div class="q-t pick-h">${t("new.pick.title")}<button class="x" aria-label=${t("close")} onClick=${onClose}>×</button></div>
+    <div class="q-t pick-h">${t("new.pick.title")}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
     ${create && html`<button class="opt add" onClick=${() => { onClose(); go("#/newproject"); }}>${t("np.create")}</button>`}
     ${projects.map((x) => html`<button key=${x.pkey} class=${"opt" + (x.pkey === cur ? " on" : "")} onClick=${() => onPick(x.pkey)}>${x.name}</button>`)}</div>`;
 }
@@ -1450,7 +1514,7 @@ function ChoicePick({ model, effort, onPick, onClose }) {
   const col = (title, items, on, key) => html`<div class="pick-col"><div class="pick-t">${title}</div>
     ${items.map(([v, label]) => html`<button key=${v} class=${"opt" + (v === on ? " on" : "")} onClick=${() => onPick({ [key]: v })}>${label}</button>`)}</div>`;
   return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick tall fixed">
-    <div class="q-t pick-h">${t("model.pick")}<button class="x" aria-label=${t("close")} onClick=${onClose}>×</button></div>
+    <div class="q-t pick-h">${t("model.pick")}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
     <div class="pick-cols">
       ${col(t("model"), MODELS.map(([m, label]) => [m, m ? label : t("pick.default")]), model, "model")}
       ${col(t("effort"), EFFORTS.map((e) => [e, effortName(e)]), effort, "effort")}
@@ -1483,10 +1547,10 @@ function NewTask({ pkey }) {
   };
   const cur = d.projects.find((x) => x.pkey === p);
   const close = () => setSheet(null);
-  return html`<div><h2>${t("new.title")}</h2>
+  return html`<div class="form"><h2>${t("new.title")}</h2>
     <label class="lbl">${t("new.project")}</label>
     <button class=${"field" + (p ? "" : " empty")} onClick=${() => setSheet({ k: "project", list: d.projects })}>
-      <span>${p ? (cur ? cur.name : p) : t("new.pick")}</span><span class="dim">▾</span></button>
+      <span>${p ? (cur ? cur.name : p) : t("new.pick")}</span><span class="dim">${ic("down", 18)}</span></button>
     <label class="lbl">${t("new.what")}</label>
     <textarea ref=${plainField} rows="6" placeholder=${t("new.placeholder")} value=${text} onKeyDown=${sendKey(() => { if (!busy && p && (text.trim() || a.files.length)) send(); }, setText)} onInput=${(e) => setText(e.target.value)}/>
     <${Thumbs} a=${a}/>
@@ -1494,7 +1558,7 @@ function NewTask({ pkey }) {
     ${d.stt ? html`<${Mic} v=${v} disabled=${busy} wide=${true}/>` : ""}
     <label class="lbl">${t("model.pick")}</label>
     <button class="field" onClick=${() => setSheet({ k: "model" })}>
-      <span>${model ? MODELS.find(([m]) => m === model)[1] : t("pick.default")} · ${effort ? effortName(effort) : t("pick.default")}</span><span class="dim">▾</span></button>
+      <span>${choiceText(model, effort)}</span><span class="dim">${ic("down", 18)}</span></button>
     <button class="btn wide" disabled=${busy || !p || (!text.trim() && !a.files.length)} onClick=${send}>${t("new.start")}</button>
     <div class="dim small">${t("new.about")}</div>
     ${sheet && sheet.k === "project" && html`<${ProjectPick} projects=${sheet.list} cur=${p} create=${d.create} onClose=${close} onPick=${(k) => { setP(k); haptic("success"); close(); }}/>`}
@@ -1517,11 +1581,11 @@ function FolderPick({ start, onPick, onClose }) {
   const load = (args) => api("dirs", args).then((x) => { setD(x); setErr(null); }).catch((e) => setErr(e.message));
   useEffect(() => { load(start ? { path: start } : {}); }, []);
   return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick tall fixed">
-    <div class="q-t pick-h"><span class="path">${d ? d.show : "…"}</span><button class="x" aria-label=${t("close")} onClick=${onClose}>×</button></div>
+    <div class="q-t pick-h"><span class="path">${d ? d.show : "…"}</span><button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
     ${err && html`<div class="pick-why">${err}</div>`}
     ${d && html`<button class="btn wide" onClick=${() => onPick(d)}>${t("np.pick.here")}</button>
-      ${d.up && html`<button class="opt" onClick=${() => load({ path: d.up })}>↑ ${t("np.pick.up")}</button>`}
-      ${d.dirs.map((n) => html`<button key=${n} class="opt" onClick=${() => load({ path: d.path, into: n })}>📁 ${n}</button>`)}
+      ${d.up && html`<button class="opt up" onClick=${() => load({ path: d.up })}>${ic("up", 16)} ${t("np.pick.up")}</button>`}
+      ${d.dirs.map((n) => html`<button key=${n} class="opt" onClick=${() => load({ path: d.path, into: n })}>${ic("folder", 16)} ${n}</button>`)}
       ${!d.dirs.length && html`<div class="dim small">${t("np.pick.none")}</div>`}`}
   </div>`;
 }
@@ -1588,13 +1652,13 @@ function NewProject() {
   const ready = !busy && place && name.trim() && (title.trim() || how === "clone") && (how !== "describe" || about.trim()) && (how !== "clone" || link.trim());
   const step = job && job.step ? t(STEPS[job.step[0]], { p: job.step[1] }) : "";
   const close = () => setSheet(null);
-  return html`<div><h2>${t("np.title")}</h2>
+  return html`<div class="form"><h2>${t("np.title")}</h2>
     <label class="lbl">${t("np.name")}</label>
     <input ref=${plainField} value=${title} placeholder=${t("np.name.ph")} onInput=${(e) => setTitle(e.target.value)}/>
     <label class="lbl">${t("np.folder")}</label>
     <input ref=${plainField} class="mono" value=${name} placeholder=${t("np.folder.ph")} onInput=${(e) => { setEdited(true); setName(e.target.value.trim()); }}/>
     <label class="lbl">${t("np.where")}</label>
-    <button class="field" onClick=${() => setSheet("dir")}><span class="path">${place ? place.show : "…"}</span><span class="dim">▾</span></button>
+    <button class="field" onClick=${() => setSheet("dir")}><span class="path">${place ? place.show : "…"}</span><span class="dim">${ic("down", 18)}</span></button>
     ${place && place.tabs === false && html`<div class="dim small np-hint">${t("np.notabs")}</div>`}
     <label class="lbl">${t("np.how")}</label>
     ${HOWS.map((h) => html`<button key=${h} class=${"opt" + (how === h ? " on" : "")} onClick=${() => setHow(h)}>${t("np." + h)}<span class="dim">${t("np." + h + ".about")}</span></button>`)}
@@ -1608,7 +1672,7 @@ function NewProject() {
     ${d && d.stt && html`<${Mic} v=${v} disabled=${busy} wide=${true}/>`}
     ${(how === "describe" || text.trim() || a.files.length > 0) && html`<label class="lbl">${t("model.pick")}</label>
       <button class="field" onClick=${() => setSheet("model")}>
-        <span>${model ? MODELS.find(([m]) => m === model)[1] : t("pick.default")} · ${effort ? effortName(effort) : t("pick.default")}</span><span class="dim">▾</span></button>`}
+        <span>${choiceText(model, effort)}</span><span class="dim">${ic("down", 18)}</span></button>`}
     <button class="btn wide" disabled=${!ready} onClick=${() => create()}>${busy ? (job ? t("np.cloning") + (step ? " · " + step : "") + " · " + dur(job.sec) : "…") : t("np.go")}</button>
     <div class="dim small">${t("np.help")}</div>
     ${sheet === "dir" && html`<${FolderPick} start=${place && place.path} onClose=${close} onPick=${(x) => { setPlace(x); haptic("success"); close(); }}/>`}
@@ -1627,7 +1691,8 @@ const shours = (h) => nb(h >= 10 ? t("dur.h", { n: Math.round(h) }) : h >= 1 ? t
 const sameDay = (a, b) => a.toDateString() === b.toDateString();
 const spWhen = (ts) => { const d = toDate(ts); return (sameDay(d, new Date()) ? "" : t("weekdays").split(" ")[d.getDay()] + " ") + hhmm(d); };
 const durLong = (sec) => (sec >= 86400 ? t("dur.d", { n: Math.floor(sec / 86400) }) + (Math.floor(sec % 86400 / 3600) ? " " + t("dur.h", { n: Math.floor(sec % 86400 / 3600) }) : "") : dur(sec));
-const spColor = (c) => (c == null ? "var(--c0)" : "var(--c" + (c + 1) + ")");
+// a project in the spend: its own colour (the tile's); the rest, grouped, grey
+const spColor = (p) => (!p || p.color == null ? "var(--c0)" : hue(p.name));
 
 function verdict(L) {
   const left = Math.max(0, L.t1 - L.now);
@@ -1697,7 +1762,7 @@ function PaceChart({ L }) {
         <div class="v">${t("sp.tip.spent", { d: "+" + pct(b[0]), c: pct(cums[i]) })}</div>
         <div>${b[1] || b[2] ? t("sp.tip.at", { who: (b[1] ? t("sp.tip.n", { n: b[1], sessions: plural(b[1], "session") }) : "")
           + (b[1] && b[2] ? t("sp.tip.and") : "") + (b[2] ? t("sp.tip.n", { n: b[2], sessions: plural(b[2], "agent") }) : "") }) : t("sp.tip.idle")}</div>
-        ${b[3].map(([j, v]) => html`<div><i class="k" style=${"background:" + spColor((L.projects[j] || {}).color)}></i>${(L.projects[j] || {}).name} · ${pct(v)}</div>`)}
+        ${b[3].map(([j, v]) => html`<div><i class="k" style=${"background:" + spColor(L.projects[j])}></i>${(L.projects[j] || {}).name} · ${pct(v)}</div>`)}
         ${b[4] ? html`<div><i class="k" style="background:var(--pace)"></i>${t("sp.elsewhere")} · ${pct(b[4])}</div>` : ""}`;
     } else if (L.rate != null) {
       cx = hx;
@@ -1757,7 +1822,7 @@ function SpendTable({ L }) {
 
 // what spent the limit: a project keeps its colour, the five biggest have one, the rest are "other"
 function Spent({ L }) {
-  const parts = L.projects.filter((p) => p.color != null).map((p) => [p.name, p.pct, spColor(p.color), p.sh]);
+  const parts = L.projects.filter((p) => p.color != null).map((p) => [p.name, p.pct, spColor(p), p.sh]);
   const rest = L.projects.filter((p) => p.color == null);
   const restPct = rest.reduce((a, p) => a + p.pct, 0);
   if (restPct >= 0.3) parts.push([t("sp.other"), restPct, "var(--c0)", L.per_sh ? restPct / L.per_sh : null]);
@@ -1776,7 +1841,7 @@ function Spend() {
   const [busy, setBusy] = useState(false);
   useNow(30000);
   if (!d && err) return html`<${Usage}/>`;          // an older Pult on the computer, or no reading: the old screen says why
-  if (!d) return html`<div><h2>${t("res.title")}</h2><${Loading}/></div>`;
+  if (!d) return html`<${Loading}/>`;
   if (!d.limits.length) return html`<${Usage}/>`;
   const by = Object.fromEntries(d.limits.map((x) => [x.key, x]));
   // the week opens first — the budget that has to last; the window only when it runs out first and the week doesn't
@@ -1790,7 +1855,7 @@ function Spend() {
   };
   const share = (name) => (d.shares || []).find((x) => name.indexOf(x.name) >= 0);
   const chip = { pace: "ok", under: "info", over: "bad" }[L.state];
-  return html`<div><h2>${t("res.title")}</h2>
+  return html`<div>
     ${d.limits.length > 1 && html`<div class="seg spend-seg">${d.limits.map((x) => html`<button key=${x.key} class=${x === L ? "on" : ""}
       onClick=${() => setKey(x.key)}>${t("sp.short." + x.key)}</button>`)}</div>`}
     <div class="card spend">
@@ -1814,23 +1879,35 @@ function Spend() {
         <div class="dim">${sh ? t("sp.share", { used: sh.used, allow: sh.allow }) + " · " : ""}${t("usage.reset", { when: spWhen(x.resets_at) })}</div></div>`; })}
     </div>
     <${Spent} L=${L}/>
-    <div class="dim small">${t("sp.about")}${L.per_sh ? " " + t("sp.about.sh", { per: pct(L.per_sh), limit: t("sp.of." + L.key) }) : ""}${d.fable_x >= 1.5 ? " " + t("sp.about.fable", { x: num(d.fable_x, 1) }) : ""}</div>
     ${d.extra && d.extra.enabled && html`<div class="dim small">${t("usage.extra", { used: d.extra.used ?? 0, limit: d.extra.limit ?? "—", cur: d.extra.currency || "" })}</div>`}
-    <button class="btn ghost wide" disabled=${busy} onClick=${refresh}>${busy ? t("refreshing") : t("refresh")}</button>
-    <div class="dim small">${t("usage.updated", { ago: ago(d.ts) })}</div>
+    <div class="res-foot"><span class="dim">${t("usage.updated", { ago: ago(d.ts) })}</span>
+      <button class="link" disabled=${busy} onClick=${refresh}>${busy ? t("refreshing") : t("refresh")}</button></div>
+    <${About} text=${t("sp.about") + (L.per_sh ? " " + t("sp.about.sh", { per: pct(L.per_sh), limit: t("sp.of." + L.key) }) : "")
+      + (d.fable_x >= 1.5 ? " " + t("sp.about.fable", { x: num(d.fable_x, 1) }) : "") + " " + t("usage.alerts")}/>
   </div>`;
 }
 
-// Resources: can I keep working — the plan's limits, the computer's load, Pult itself
+// Resources: can I keep working — the plan's limits, or the computer's load; two sections, not five screens of one
+const RES = ["lim", "pc"];
+const resStore = {
+  get() { try { const k = sessionStorage.getItem("pult.res"); return RES.includes(k) ? k : "lim"; } catch (e) { return "lim"; } },
+  set(k) { try { sessionStorage.setItem("pult.res", k); } catch (e) {} },
+};
 function Resources() {
-  const [st] = useLive(() => api("settings"), [], () => false);
-  return html`<div><${Spend}/><${Load} embedded=${true}/>
-    ${st && html`<h3>${t("res.pult")}</h3><div class="list"><div class="item static">
-      <div>${t("status.pult", { v: st.version, mac: st.mac.away ? t("mac.away", { dur: dur(st.mac.idle) }) : t("mac.here") })}</div>
-      <div class="dim">${t("status.tg", { how: t("tg." + (st.telegram === "proxy" ? "proxy" : "direct")) })}</div>
-      <div class="dim">${st.hooks.length ? t("status.hooks", { n: st.hooks.length }) : t("status.nohooks")}${st.hooks_missing && st.hooks_missing.length ? " · " + t("status.hooks_missing", { list: st.hooks_missing.join(", ") }) : ""}</div>
-    </div></div>`}
+  const [sec, setSec] = useState(resStore.get);
+  const pick = (k) => { setSec(k); resStore.set(k); };
+  return html`<div><h2>${t("res.title")}</h2>
+    <div class="subtabs" role="tablist">${RES.map((k) => html`<button key=${k} role="tab" aria-selected=${sec === k} class=${sec === k ? "on" : ""}
+      onClick=${() => pick(k)}>${t("res." + k)}</button>`)}</div>
+    ${sec === "pc" ? html`<${Load} embedded=${true}/>` : html`<${Spend}/>`}
   </div>`;
+}
+
+// "how it's counted": behind ⓘ, not on the screen all the time
+function About({ text, label }) {
+  const [open, setOpen] = useState(false);
+  return html`<button class="about-b" aria-expanded=${open} onClick=${() => setOpen(!open)}>${ic("info", 15)} ${label || t("about.how")}</button>
+    ${open && html`<div class="dim small about-t">${text}</div>`}`;
 }
 
 function Usage() {
@@ -1843,7 +1920,7 @@ function Usage() {
     setBusy(false);
   };
   if (!d) return html`<div><${Loading} err=${err && t("usage.failed", { err })}/><${Today}/></div>`;
-  return html`<div><h2>${t("res.title")}</h2><h3>${t("usage")}</h3>
+  return html`<div><h3>${t("usage")}</h3>
     <div class="dim">${d.plan ? t("usage.plan", { plan: d.plan.charAt(0).toUpperCase() + d.plan.slice(1) }) : ""}</div>
     <div class="list">${d.limits.map((x) => html`<div class="lim" key=${x.name}>
       <div class="item-h"><b>${x.name}</b><b class=${"pct " + level(x.percent)}>${x.percent} %</b></div>
@@ -1870,15 +1947,27 @@ function Today() {
     <div class="dim small">${t("today.about")}</div>`;
 }
 
+// nothing to show yet: loading — or, with the Mac away, why nothing comes (the data lives only on the Mac, nothing is kept
+// in the phone), instead of "Loading…" for ever under the banner
 function Loading({ err }) {
-  return html`<div class="empty">${err || t("loading")}</div>`;
+  const c = useConn();
+  return html`<div class="empty">${err || (c.state === "nomac" ? t("loading.nomac") : c.state === "denied" ? "" : t("loading"))}</div>`;
+}
+
+// a short note at the bottom of the screen for a moment — an answer went — outliving the card it came from
+function Toast() {
+  const [m, setM] = useState(null);
+  useEffect(() => on("toast", (text) => setM({ text, k: Date.now() })), []);
+  useEffect(() => { if (!m) return undefined; const id = setTimeout(() => setM(null), 1800); return () => clearTimeout(id); }, [m]);
+  return m ? html`<div class="toast" role="status" key=${m.k}>${m.text}</div>` : "";
 }
 
 function Banner() {
   const c = useConn();
   const text = c.state === "denied" ? t(["expired", "out", "locked"].includes(c.why) ? "banner.denied." + c.why : "banner.denied")
     : ["connecting", "offline", "auth", "nomac"].includes(c.state) ? t("banner." + c.state) : "";
-  return text ? html`<div class=${"banner " + c.state}>${text}</div>` : "";
+  const stale = c.fresh && ["offline", "nomac"].includes(c.state) ? " " + t("banner.stale", { hm: hhmm(new Date(c.fresh)) }) : "";
+  return text ? html`<div class=${"banner " + c.state} role="status">${text}${stale}</div>` : "";
 }
 
 function App() {
@@ -1901,10 +1990,10 @@ function App() {
     : r.name === "load" ? html`<${Load}/>`
     : r.name === "settings" ? html`<${Settings}/>`
     : html`<${Home}/>`;
-  const tab = (name, h, label) => html`<a class=${r.name === name ? "on" : ""} href=${h}>${label}</a>`;
+  const tab = (name, h, label, icon) => html`<a class=${(r.name === name ? "on" : "") + (name === "new" ? " new" : "")} href=${h}><span class="ti">${ic(icon, name === "new" ? 22 : 22)}</span><span class="tl">${label}</span></a>`;
   return html`<${Banner}/><main class=${r.name === "s" ? "with-composer" : ""}>${screen}</main>
-    ${r.name !== "s" && html`<nav class="tabs">${tab("home", "#/", t("tab.home"))}${tab("projects", "#/projects", t("tab.projects"))}${tab("usage", "#/usage", t("tab.res"))}${tab("new", "#/new", "＋")}</nav>`}
-    <${EditHost}/>`;
+    ${r.name !== "s" && html`<nav class="tabs">${tab("home", "#/", t("tab.home"), "home")}${tab("projects", "#/projects", t("tab.projects"), "folder")}${tab("usage", "#/usage", t("tab.res"), "gauge")}${tab("new", "#/new", t("tab.new"), "plus")}</nav>`}
+    <${EditHost}/><${Toast}/>`;
 }
 
 render(html`<${App}/>`, document.getElementById("app"));

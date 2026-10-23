@@ -73,6 +73,7 @@ FOCUS_IDLE = 2 * 3600   # a topic forgets its current session after this long wi
 VEHI = (10 * 60, 30 * 60, 60 * 60)   # long-turn milestones; with sound if the owner is away (decision 2026-10-16)
 TICK = 60                # s; refresh "working N min" this often, even without events
 NOW_LEN = 300            # characters of Claude's reply in the "now" line
+YOU_LEN = 160            # characters of the owner's prompt in a result's head (one message per turn)
 STALE = 20 * 60          # s without events: check whether the session is alive (a tab may close without SessionEnd)
 BRIEF_DIR = HOME / "brief"   # an empty folder the result-reading model runs in (pult_brief): no project, no settings
 APP_ON = 45              # s: the app said "on screen" this recently — the owner is looking at it (stage V)
@@ -93,7 +94,7 @@ UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_MAX = 4 * 1024 * 1024       # bytes of one recording from the app (5 min at 32 kbit/s ≈ 1.2 MB; base64 must fit the 8 MB frame)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.13.1"
+VERSION = "0.14.0"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -606,6 +607,7 @@ class Turn:
         self.now = None           # Claude's latest reply in this turn
         self.muted = False        # 🔕 — no milestones until the turn ends
         self.vehi = None
+        self.vehi_ids = []        # the milestones' messages: removed when the result comes (one message per turn)
         self.note = None          # the turn was started by Claude itself: "⚙️ Background task finished …"
         self.here = False         # the owner typed the prompt at this computer (not from Telegram or the app)
 
@@ -1015,8 +1017,10 @@ class Pult:
                 return row["thread"]
             path = path or self.project_path(pkey)
             name = (row and row["name"]) or self.project_name(pkey, path)       # a new project's title (stage S)
+            # the icon in the project's own colour — the app's tile for it is the same (existing topics keep theirs:
+            # editForumTopic can't change a colour)
             res = await self.out.submit(1, lambda: self.tg.call("createForumTopic", chat_id=self.chat,
-                                                                 name=name[:128]))
+                                                                 name=name[:128], icon_color=R.topic_color(name)))
             thread = res["message_thread_id"]
             self.store.set_topic(pkey, path, name, thread)
             log("topic created:", name)
@@ -1046,15 +1050,17 @@ class Pult:
         text = self.t("topic.intro", name=R.esc(name), path=R.esc(path or "?"))
         buttons = self.card_buttons(pkey)
         sig = "%s|%s" % (self.lang(), buttons[0][0]["url"] if buttons else "")
-        status = self._status.get(pkey) if buttons and self.pager() else None
-        if status:                                  # stage V: the pinned bar shows who works and who waits
-            text = "<b>%s</b>\n%s" % (R.esc(status), text)
-            sig += "|" + status
         focus = self.focus_of(pkey)
         if focus:
             title = R.short(self.session_label(focus), 60)
             text = self.t("card.focus", name=I.q(R.esc(title))) + "\n" + text
             sig += "|%s:%08x" % (focus[:8], zlib.crc32(title.encode()))
+        # stage V: the pinned bar shows who works and who waits — and Telegram shows only the card's first line there, so
+        # the status goes above the topic's current session (under it, it was hidden whenever the topic had one)
+        status = self._status.get(pkey) if buttons and self.pager() else None
+        if status:
+            text = "<b>%s</b>\n%s" % (R.esc(status), text)
+            sig += "|" + status
         cards = self.store.get("cards") or {}
         entry = cards.get(str(thread))
         mid, old, pinned = entry or (None, None, False)
@@ -1187,14 +1193,14 @@ class Pult:
         ids = []
         if len(chunks) > 1 and sid and self.app_live():
             rest = len(md) - len(chunks[0])
-            ids.append(await self.send(pkey, header + "\n" + R.md_to_html(chunks[0]) +
+            ids.append(await self.send(pkey, header + "\n" + R.folded_html(chunks[0]) +
                                        self.t("long.more", n=rest), notify=notify, sid=sid, kind=kind,
                                        prio=prio, reply_to=reply_to, buttons=[self.app_row(sid, self.t("btn.read_all"))] +
                                        ([files_row] if files_row else [])))
             return ids
         if len(chunks) > 6:
             for i, ch in enumerate(chunks[:5]):
-                ids.append(await self.send(pkey, (header + "\n" if i == 0 else "") + R.md_to_html(ch),
+                ids.append(await self.send(pkey, (header + "\n" if i == 0 else "") + R.folded_html(ch),
                                            notify=notify and i == 0, sid=sid, kind=kind, prio=prio,
                                            reply_to=reply_to if i == 0 else None))
             ids.append(await self.send_doc(pkey, md, "%s.md" % (sid or "text")[:8],
@@ -1202,10 +1208,11 @@ class Pult:
             return ids
         for i, ch in enumerate(chunks):
             last = i == len(chunks) - 1
-            ids.append(await self.send(pkey, (header + "\n" if i == 0 else "") + R.md_to_html(ch),
+            ids.append(await self.send(pkey, (header + "\n" if i == 0 else "") + R.folded_html(ch),
                                        notify=notify and i == 0, sid=sid, kind=kind, prio=prio,
                                        reply_to=reply_to if i == 0 else None,
-                                       buttons=([files_row] if files_row else self.with_app(None, sid)) if last and sid else None))
+                                       # the turn's files and Details side by side: both open the app
+                                       buttons=([files_row + (self.app_row(sid) or [])] if files_row else self.with_app(None, sid)) if last and sid else None))
         return ids
 
     async def send_doc(self, pkey, text, name, caption, sid=None):
@@ -1370,9 +1377,9 @@ class Pult:
             if t.now:
                 text += "\n💬 " + R.esc(R.plain(t.now, NOW_LEN))
             tok = self.offer(("mute", t, text))
-            await self.send(lv.pkey, text, reply_to=t.msg, notify=True, prio=2, sid=lv.sid, kind="vehi",
-                            buttons=[[{"text": self.t("btn.mute"), "callback_data": "m:" + tok}] +
-                                     (self.app_row(lv.sid) or [])])
+            t.vehi_ids.append(await self.send(lv.pkey, text, reply_to=t.msg, notify=True, prio=2, sid=lv.sid, kind="vehi",
+                                              buttons=[[{"text": self.t("btn.mute"), "callback_data": "m:" + tok}] +
+                                                       (self.app_row(lv.sid) or [])]))
 
     def result_seen(self, sid):
         """A turn's result in the SDK stream of Pult's own session. An interrupted turn gets no Stop hook, only the
@@ -1546,8 +1553,22 @@ class Pult:
             if r:
                 r["paged"] = True              # the answer itself is the call
                 self.attn.save()
-        await self.send_long(lv.pkey, "%s %s%s\n%s" % ("⚠️" if fail else "✅", self.head(lv), when,
-                                                        R.esc(bg) + "\n" if bg else ""), text,
+        you = ""
+        if not self.pager() and t and t.msg:
+            # one message per turn without the app as well: the result takes the turn message's place (it said the
+            # same title and time — three times with the quote); what was asked moves into the result's head when
+            # there is no message of the owner's to reply to (typed at the computer, or Claude's own turn)
+            asyncio.create_task(self.drop(t.msg))
+            reply_to = sent[0] if sent and sent[0] else t.reply_to
+            if not reply_to and t.prompt:
+                you = self.t("turn.you", text=R.esc(I.q(R.short(R.prompt_text(t.prompt), YOU_LEN)))) + "\n"
+            elif not reply_to and t.note:
+                you = "<i>%s</i>\n" % R.esc(t.note)
+        for mid in (t.vehi_ids if t else []):
+            if mid:
+                asyncio.create_task(self.drop(mid))
+        await self.send_long(lv.pkey, "%s %s%s\n%s%s" % ("⚠️" if fail else "✅", self.head(lv), when, you,
+                                                          R.esc(bg) + "\n" if bg else ""), text,
                              notify=notify, sid=lv.sid, reply_to=reply_to,
                              files_row=self.files_row(lv.sid, tf) if tf else None)
 
@@ -1584,7 +1605,7 @@ class Pult:
 
     def mark_seen(self, sid, said=None):
         """The owner saw a session's outcome (opened it, answered it, "Got it", a new turn): it rests, and a call
-        about it in Telegram folds into "✓ … · line" without buttons. said — their answer, from wherever it came:
+        about it in Telegram folds into "✔️ … · line" without buttons. said — their answer, from wherever it came:
         the call shows it too."""
         r = self.attn.rec.get(sid)
         fresh = self.attn.seen(sid)
@@ -1596,10 +1617,10 @@ class Pult:
         return fresh
 
     def fold_page(self, sid, r, mark=None):
-        """A call in Telegram the owner has dealt with: one line "✓ title · line" without buttons; with mark (HTML) —
+        """A call in Telegram the owner has dealt with: one line "✔️ title · line" without buttons; with mark (HTML) —
         "→ what they answered or decided", and the call stays so for good."""
         lv = self.live.get(sid) or self.stub(sid, r["pkey"])
-        text = "✓ <b>%s</b> · %s" % (R.esc(lv.title or self.title(lv)), R.esc(r["line"] or ""))
+        text = "✔️ <b>%s</b> · %s" % (R.esc(lv.title or self.title(lv)), R.esc(r["line"] or ""))
         self.edit(r["page"], text + ("\n→ " + mark if mark else ""), [], prio=3 if mark else 6)
         if mark:
             r["page"] = None
@@ -1646,7 +1667,7 @@ class Pult:
         """One call in the project's topic: what came out, what is needed, ready replies (or "continue after the
         reset"), the way into the app right at that session. With sound: the owner isn't looking."""
         lv = self.live.get(sid) or self.stub(sid, r["pkey"])
-        text = "%s <b>%s</b>\n%s" % ("⚠️" if r.get("fail") else "🔴", R.esc(lv.title or self.title(lv)), R.esc(r["line"] or ""))
+        text = "%s <b>%s</b>\n%s" % ("⚠️" if r.get("fail") else "🟠", R.esc(lv.title or self.title(lv)), R.esc(r["line"] or ""))
         if r.get("need"):
             text += "\n<b>%s</b>" % R.esc(r["need"])
         rows = []
@@ -1984,7 +2005,9 @@ class Pult:
         if not req or req.fut.done():
             return self.t("note.decided")
         plan = req.kind == "plan"
-        place, for_claude = self.t("where." + where), {"tg": "Telegram", "app": "the Pult app"}.get(where, where)
+        # tapped right here in Telegram: no need to say where; from the app — said
+        place = "" if where == "tg" else self.t("where." + where)
+        for_claude = {"tg": "Telegram", "app": "the Pult app"}.get(where, where)
         if act == "y":
             self.decide(req, {"behavior": "allow"}, self.t("dec.approved" if plan else "dec.allowed", where=place))
         elif act == "a" and req.suggestions:
@@ -2022,9 +2045,9 @@ class Pult:
                                        "→ <b>%s</b> · " % R.esc(got) if got else "", R.esc(note))
             elif req.kind == "plan":
                 text = self.req_head(req, "📋") + self.t("plan.decided", note=R.esc(note))
-            else:
-                text = "%s%s\n<b>%s</b>" % (self.req_head(req, "✋"),
-                                            R.permission_text(req.tool, req.inp, lv.cwd if lv else None), R.esc(note))
+            else:                                  # decided: one line — the command was shown while it waited
+                text = "%s%s → <b>%s</b>" % (self.req_head(req, "✋"),
+                                             R.permission_line(req.tool, req.inp, lv.cwd if lv else None), R.esc(note))
             self.edit(m, text, [], prio=3)
         self.changed(req.sid)
 
@@ -2923,7 +2946,7 @@ class Pult:
 
     def panel_buttons(self):
         m = self.mode()
-        rows = [[{"text": ("✓ " if k == m else "") + self.t("mode.%s.btn" % k), "callback_data": "w:" + k} for k in MODES]]
+        rows = [[{"text": ("✔️ " if k == m else "") + self.t("mode.%s.btn" % k), "callback_data": "w:" + k} for k in MODES]]
         if self.app_url():
             rows.append([{"text": self.t("panel.open"), "url": self.app_url()}])
         return rows

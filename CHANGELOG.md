@@ -2,6 +2,67 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.14.0 — 2026-10-23
+
+- **One look across the app.** What waits for you — a permission, a question, a turn that needs you — has one warm
+  bar and dot; red is kept for failures, refusals and a limit that runs out; green for what works and what is done.
+  One set of line icons replaces the emoji the app used as icons (they drew differently on Android and on a Mac):
+  permission, question, background, command, computer, phone, files, close, carets. Claude's options and the ready
+  replies are one outlined button; your own answer is one round field everywhere, its button shows up once there is
+  text. A five-step type scale and one card radius.
+- **Home.** "Running now" is a line per session: a beating dot, the title, the time; the context share shows only
+  when it is nearly full. "Your move" cards share one head — the project, the title, what kind of question, how long it
+  waits. "Always allow" and "Deny with a note" are a quiet line under Allow and Deny, no longer the biggest button;
+  "Open the session ›" is gone, the title opens it.
+- **A colour for each project.** A tile with its first letter, in one of Telegram's six topic colours, on Home, the
+  list of projects, the project's screen and in Resources' "what spent the window". A topic Pult creates from now on
+  gets the same colour for its icon (Telegram doesn't let a bot recolour existing ones).
+- **The session's header** keeps the title, the project and the state; the model, the effort and the context live by
+  the message field only, as in VS Code. The last turn's figures moved into the sheet a tap on that line opens.
+- **Resources** has two sections, Limits and Computer, instead of five screens of scrolling; "how it's counted" sits
+  behind ⓘ; Pult's own state lives in Settings only.
+- **Settings**: one line under each switch, the rest behind "More"; logins in a row from the same device read as one
+  line ("6 times"). New task and New project: fields in the card's colour, readable on the page; nothing picked for the
+  model reads "As in Claude Code's settings", not "Default · Default". A disabled button is grey, not a pale blue.
+- The tab bar has icons; New is the accent button.
+- **Telegram: a long result folds.** Its first paragraphs show, the rest sits in a quote that opens with a tap — code,
+  links and code blocks included (Telegram keeps them inside, though the Bot API's rules say it wouldn't; a probe,
+  `tests/probe_quote.py`, checks it). A code block is never cut in two.
+- **Telegram: one message per turn without the app too.** The result takes the place of the turn's "⏳ working"
+  message (both said the title and the time, and the quote said it a third time); what you asked shows in the
+  result's head when there is no message of yours to reply to. A long turn's reminders go with it.
+- **Telegram: a decided request is one line** — "✋ title · Run a command: «Deploy» → ✔️ allowed" — without the
+  command's full text again and without "from Telegram" when it was decided right there.
+- **Telegram: one sign per meaning.** ⏳ works, ✅ a result, ✔️ decided or done, 🟠 waits for you (it was a red dot, the
+  colour of an error), ✋ a permission, ❓ a question, ⚠️ a failure (jobs too, instead of ❌ and ✖), ⚙️ a job. Allow and
+  Deny buttons are plain words; "♾ Always allow" and "🔕 Only the result" fit a phone's row. Files and Details sit side
+  by side under a result. The topic's pinned card drops the folder's path; `/status` says "idle", not "waiting for you",
+  for a session that isn't asking anything.
+
+- **The README is pictures first.** The mark, one line on what Pult does, an opening animation with the computer's
+  Claude Code tab next to the phone (a question on both, Allow on the phone, the tab goes on), install in one line,
+  how it works in three steps, five features with one phone screen each — light and dark, through `<picture>`. It
+  is 110 lines instead of 260: requirements, platforms, commands, security and troubleshooting moved to `guide/`.
+  `tools/media.py` draws every picture from the stand in both languages and both themes; `tools/hero.py` draws the
+  animation from Pult's own messages.
+- **Pult has a mark**: a remote — its body, the button and the warm light of "Claude waits for you".
+- A checkbox in the app follows the theme (the files of a turn in the dark).
+
+## 0.13.2 — 2026-10-23
+
+- **The web app follows Telegram's theme.** The colours Telegram doesn't send (fields, choice buttons, code blocks, the
+  green and the yellow) followed the phone's own theme: a light Telegram on a dark phone drew them white on a white
+  card. Outside Telegram (the stand, a browser) the phone's theme still decides.
+- **An answer from the app says so.** Allow, Deny, an approved plan or an answered question shows "✓ Allowed" (and the
+  like) at once: in the card while it stays, and as a short note at the bottom of the screen, since the list may drop
+  the card right away.
+- **The computer offline.** Opened while the computer is away, a screen says nothing can be shown — everything comes
+  straight from it, nothing is kept in the phone — instead of "Loading…" for ever; with data already on screen, the
+  banner says what time it is from.
+- **The topic's pinned card** puts "who works, who waits" first: Telegram shows only the first line in the pinned bar,
+  and the topic's current session (🎯) stood above it.
+- "Claude finished without text" shows in italics in Telegram, not between literal underscores.
+
 ## 0.13.1 — 2026-10-23
 
 - **The screen of a turn's files.** The outcome card has one line, "📎 Files of the turn: N · size", instead of the

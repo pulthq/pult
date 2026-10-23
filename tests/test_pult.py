@@ -236,6 +236,29 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(R.plain("## Итог\n- **жирно** и `код` [файл](src/a.py)\n```\nx\n```", 100),
                          "Итог жирно и код файл …")
 
+    def test_folded(self):
+        # a short reply stays as it is; a long one shows its first paragraphs, the rest folds into a quote that opens with
+        # a tap — code and links stay inside (Telegram keeps them there: tests/probe_quote.py)
+        self.assertEqual(R.folded_html("Готово: **27 тестов**"), "Готово: <b>27 тестов</b>")
+        md = "## Итог\n\nВсе **27 тестов** зелёные.\n\n" + "\n\n".join("Пункт %d: `код %d` и [стенд](https://example.com)." % (i, i) for i in range(30))
+        h = R.folded_html(md)
+        lead, rest = h.split("\n<blockquote expandable>")
+        self.assertIn("Все <b>27 тестов</b> зелёные.", lead)                   # a lone heading took the next paragraph
+        self.assertTrue(rest.endswith("</blockquote>"))
+        self.assertIn("<code>код 29</code>", rest)
+        self.assertIn('<a href="https://example.com">стенд</a>', rest)
+        self.assertNotIn("Пункт 29", lead)
+        # a code block keeps whole on either side
+        h = R.folded_html("Сделал так:\n\n```\n" + "\n".join("строка %d" % i for i in range(80)) + "\n```")
+        self.assertEqual(h.count("<pre>"), 1)
+        self.assertEqual(h.count("</pre>"), 1)
+
+    def test_permission_line(self):
+        # a decided request in one line: the headline; a command without a description — its beginning
+        self.assertEqual(R.permission_line("Bash", {"command": "git push", "description": "Отправить"}), "Выполнить команду: <b>«Отправить»</b>")
+        self.assertEqual(R.permission_line("Bash", {"command": "git push"}), "Выполнить команду <code>git push</code>")
+        self.assertNotIn("\n", R.permission_line("Edit", {"file_path": "/x/a.py", "old_string": "a", "new_string": "b\nc"}, "/x"))
+
     def test_permission_text(self):
         t = R.permission_text("Bash", {"command": "ls -la", "description": "Список файлов"})
         self.assertIn("Выполнить команду: <b>«Список файлов»</b>", t)
@@ -1226,7 +1249,12 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<b>отчёт</b>", result["text"])
         self.assertEqual(result["message_thread_id"], "77")
         self.assertEqual(result["disable_notification"], "false")      # the Mac is idle — with sound
-        self.assertEqual(self.store.msg(int(json.loads(result["reply_parameters"])["message_id"]))["sid"], SID)
+        # one message per turn: the result says what was asked, the turn message goes (it said the same title and time)
+        self.assertIn("\n<i>Ты: «Сделай отчёт по продажам»</i>\n", result["text"])
+        self.assertNotIn("reply_parameters", result)
+        self.assertEqual(self.store.msg(intro_id(self.fake, result))["sid"], SID)
+        turn_id = intro_id(self.fake, next(d for d in self.fake.of("sendMessage") if "Сделай отчёт" in d["text"] and "⏳" in d["text"]))
+        await until(lambda: any(str(d["message_id"]) == str(turn_id) for d in self.fake.of("deleteMessage")))
         for t in self.sent():                                            # no session ids, no paths, no steps
             self.assertNotIn("#s", t)
             self.assertNotIn("a.md", t)
@@ -1300,9 +1328,9 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
                                        cwd=str(proj / "sub"))
         self.assertEqual(code, 3)                                     # the command's exit code is passed through
         self.assertIn("шаг 2", out)                                # output goes to the terminal, as without the wrapper
-        await until(lambda: any("❌" in t for t in self.texts()))
+        await until(lambda: any(t.startswith("⚠️") for t in self.texts()))
         start = next(d for d in self.fake.of("sendMessage") if d["text"].startswith("⚙️"))
-        end = next(d for d in self.fake.of("sendMessage") if d["text"].startswith("❌"))
+        end = next(d for d in self.fake.of("sendMessage") if d["text"].startswith("⚠️"))
         self.assertEqual(start["message_thread_id"], "55")            # project topic is picked by the job's folder
         self.assertIn("ошибка, код 3", end["text"])
         self.assertIn("шаг 2", end["text"])                           # tail of the output
@@ -1368,7 +1396,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.fake.of("sendMessage")[-1]["disable_notification"], "true")
         await self.p.on_callback({"id": "c", "from": {"id": OWNER}, "data": "w:phone", "message": {"message_id": 999}})
         self.assertEqual(self.p.mode(), "phone")
-        await until(lambda: any("✓ 📱 Телефон" in d.get("reply_markup", "") for d in self.fake.of("editMessageText")))
+        await until(lambda: any("✔️ 📱 Телефон" in d.get("reply_markup", "") for d in self.fake.of("editMessageText")))
         # help: sections as buttons; a section opens by editing the same message
         await self.p.on_message(dict(base, message_id=3, text="/help"))
         h = self.fake.of("sendMessage")[-1]
@@ -1489,6 +1517,8 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(os.path.isdir(dest))
             self.assertEqual(os.path.isdir(os.path.join(dest, ".git")), bool(shutil.which("git")))
             self.assertEqual(self.fake.of("createForumTopic")[-1]["name"], "Дача у моря")
+            # its icon in the project's own colour: the app's tile is the same (app.js hue() gives index 5 for this name)
+            self.assertEqual(str(self.fake.of("createForumTopic")[-1]["icon_color"]), str(R.TOPIC_COLORS[5]))
             self.assertEqual(self.store.topic(r["pkey"])["name"], "Дача у моря")
             drive.assert_not_called()
             rows = (await self.p.api_projects())["projects"]
@@ -1709,7 +1739,9 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((tf["n"], tf["size"]), (1, len("# Отчёт".encode())))
         await until(lambda: any("f_%s_%d" % (SID, tf["id"]) in (m.get("reply_markup") or "") for m in self.fake.of("sendMessage")))
         res = [m for m in self.fake.of("sendMessage") if "f_%s_" % SID in (m.get("reply_markup") or "")][-1]
-        self.assertIn([{"text": "📎 Файлы (1)", "url": "https://t.me/b/pult?startapp=f_%s_%d" % (SID, tf["id"])}],
+        # the turn's files and Details in one row: both open the app
+        self.assertIn([{"text": "📎 Файлы (1)", "url": "https://t.me/b/pult?startapp=f_%s_%d" % (SID, tf["id"])},
+                       {"text": "Подробнее", "url": "https://t.me/b/pult?startapp=s_" + SID}],
                       json.loads(res["reply_markup"])["inline_keyboard"])
         self.assertLessEqual(len("f_%s_%d" % (SID, tf["id"])), 64)                      # Telegram's startapp limit
         got = await self.p.api_turn_files(SID)
@@ -2360,7 +2392,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await self.p.page_due()
         page = self.fake.of("sendMessage")[-1]
         # the session's own title (its first prompt until it has a name) — the topic already says the project
-        self.assertEqual(page["text"], "🔴 <b>Сделай кэш</b>\nДва варианта кэша\n<b>Выбери А или Б</b>")
+        self.assertEqual(page["text"], "🟠 <b>Сделай кэш</b>\nДва варианта кэша\n<b>Выбери А или Б</b>")
         self.assertEqual(page["disable_notification"], "false")
         kb = json.loads(page["reply_markup"])["inline_keyboard"]
         self.assertEqual(kb[0], [{"text": "А — память", "callback_data": "r:%s:0" % SID}, {"text": "Б — SQLite", "callback_data": "r:%s:1" % SID}])
@@ -2393,7 +2425,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await self.p.page_due()
         self.assertEqual(len(self.fake.of("sendMessage")), n + 1)                     # away now — paged
         await self.p.api_seen(SID)
-        await until(lambda: any(t.startswith("✓ <b>Сделай кэш</b> · Готово, жду решения.") for t in self.texts("editMessageText")))
+        await until(lambda: any(t.startswith("✔️ <b>Сделай кэш</b> · Готово, жду решения.") for t in self.texts("editMessageText")))
         # a restart: outcomes from before it are not paged again in a burst
         self.p.attn.rec[SID].update(seen=False, paged=False)
         self.p.attn.rec[SID].pop("paged")
@@ -2404,7 +2436,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.p.expect[SID] = 555
         await run_hook(ev("UserPromptSubmit", prompt="Как дела?"))
         # a call that was only seen is answered by the next prompt, from wherever it came — it says with what
-        await until(lambda: "✓ <b>Сделай кэш</b> · Готово, жду решения.\n→ «Как дела?»" in self.texts("editMessageText"))
+        await until(lambda: "✔️ <b>Сделай кэш</b> · Готово, жду решения.\n→ «Как дела?»" in self.texts("editMessageText"))
         replies_555 = lambda: [d for d in self.fake.of("sendMessage") if '"message_id": 555' in d.get("reply_parameters", "")]
         await until(lambda: replies_555())                                            # the turn's message, under theirs
         await run_hook(ev("Stop", last_assistant_message="Всё хорошо.", background_tasks=[]))
@@ -2414,7 +2446,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(res["reply_parameters"])["message_id"], 555)
         self.assertEqual(self.fake.of("deleteMessage")[-1]["message_id"], str(intro_id(self.fake, replies_555()[0])))
         await self.p.page_due()
-        self.assertFalse(any("Всё хорошо" in t and t.startswith("🔴") for t in self.texts()))   # the answer was the call
+        self.assertFalse(any("Всё хорошо" in t and t.startswith("🟠") for t in self.texts()))   # the answer was the call
 
     async def test_pager_requests_and_limit(self):
         # as a pager, a permission request waits in the app while the owner is at the computer and is posted once
@@ -2445,7 +2477,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await self.p.on_callback({"id": "c3", "from": {"id": OWNER}, "data": "z:" + SID})
         self.assertAlmostEqual(self.p.attn.resume[SID], reset + 60, delta=1)
         hm = time.strftime("%H:%M", time.localtime(self.p.attn.resume[SID]))
-        await until(lambda: any(t.startswith("✓ <b>Дальше</b> · ") and t.endswith("\n→ Продолжу в " + hm)
+        await until(lambda: any(t.startswith("✔️ <b>Дальше</b> · ") and t.endswith("\n→ Продолжу в " + hm)
                                 for t in self.texts("editMessageText")))
         self.assertIsNone(self.p.attn.rec[SID]["page"])          # decided: "continue" later won't redo the call
         self.assertEqual((await self.p.api_overview())["usage_pct"], 100)
@@ -2463,7 +2495,10 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.store.set_topic(PKEY, "/Users/x/proj", "proj", 77)
         self.p.attn.rec[SID]["seen"] = False
         await self.p.cards_status()
-        await until(lambda: any(t.startswith("<b>🔴 ждут тебя: 1") for t in self.sent()))
+        await until(lambda: any(t.startswith("<b>🟠 ждут тебя: 1") for t in self.sent()))
+        # with a current session the status stays the first line: the pinned bar shows only that one
+        self.p.set_focus(PKEY, SID)
+        await until(lambda: any(t.startswith("<b>🟠 ждут тебя: 1") and "\n🎯 Сейчас: " in t for t in self.texts("editMessageText")))
 
     async def test_catchup(self):
         # "While you were away": the app comes back after an hour or more — the turns since, what is done, what waits
@@ -2975,7 +3010,15 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         d = out["hookSpecificOutput"]["decision"]
         self.assertEqual(d["behavior"], "allow")
         self.assertEqual(d["updatedPermissions"], [{"type": "addRules"}])
-        await until(lambda: any("разрешено и запомнено" in t for t in self.texts("editMessageText")))
+        # the edit goes through the outgoing queue: a slow Actions runner took over 5 s (macOS, v0.13.1 on main)
+        await until(lambda: any("разрешено и больше не спросит" in t for t in self.texts("editMessageText")), timeout=15)
+        # a decision tapped right in Telegram says no "from Telegram": the exact line
+        proc = await run_hook(ev("PermissionRequest", tool_name="Bash", tool_input={"command": "git status"}), wait=False)
+        await until(lambda: len(self.fake.buttons("p:")) > 0 and self.fake.buttons("p:")[-1].split(":")[1] != rid)
+        rid2 = self.fake.buttons("p:")[-1].split(":")[1]
+        await self.p.on_callback({"id": "3", "from": {"id": OWNER}, "data": "p:%s:y" % rid2})
+        await proc.stdout.read()
+        await until(lambda: any(t.endswith(" → <b>✔️ разрешено</b>") for t in self.texts("editMessageText")), timeout=15)
 
     async def test_permission_deny_by_reply(self):
         # a hook whose console isn't UTF-8 (Windows uses the system code page) still reads and writes UTF-8

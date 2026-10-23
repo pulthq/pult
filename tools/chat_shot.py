@@ -6,9 +6,10 @@ request with its buttons. The bubbles are a plain rendering of Pult's own output
 the README never shows real projects and the picture follows the code.
 
   STAND_LANG=ru ~/.local/share/pult/venv/bin/python tools/chat_shot.py chat.ru.png
-  STAND_LANG=ru ~/.local/share/pult/venv/bin/python tools/chat_shot.py media/demo.ru.gif     # tools/media.py runs this
+  STAND_LANG=ru ~/.local/share/pult/venv/bin/python tools/chat_shot.py demo.ru.gif
 
-A .gif goes on to the README's opening animation: the same run, frame by frame, on a phone-sized screen — the
+A .gif is the topic's animation (the README's opening picture until stage D6; now tools/hero.py draws that, with the
+computer's tab next to the phone): the same run, frame by frame, on a phone-sized screen — the
 result of a turn, your next message, Claude at work, a permission request with the phone's notification, a tap on
 Allow, the turn going on, its result. Frames are drawn with tools/shot.py and joined with ffmpeg.
 """
@@ -102,7 +103,8 @@ def bubble(kind, body_html, when, name=None, buttons=None):
 
 
 def state(fake):
-    """Every message as it stands now: sends in order, edits applied (FakeTg numbers the calls from 1001)."""
+    """Every message as it stands now: sends in order, edits applied, deleted ones gone — a turn's "⏳ working" message
+    leaves when its result comes (FakeTg numbers the calls from 1001)."""
     msgs, order = {}, []
     for k, (m, d) in enumerate(fake.calls):
         mid = 1000 + k + 1
@@ -112,6 +114,8 @@ def state(fake):
             order.append(mid)
         elif m == "editMessageText" and int(d["message_id"]) in msgs:
             msgs[int(d["message_id"])] = dict(text=d.get("text", ""), kb=kb)
+        elif m == "deleteMessage" and int(d["message_id"]) in msgs:
+            order.remove(int(d["message_id"]))
     return [dict(msgs[mid], mid=mid) for mid in order]
 
 
@@ -242,7 +246,8 @@ async def animate(p, fake, msgs, result, turn2, perm, hm):
     end = state(fake)
     now = {m["mid"]: m for m in end}
     done = [m for m in end if m["text"].startswith("✅")][-1]
-    frames.append((phone([first, me(), bot(now[turn2], 6 * 60), bot(now[perm], 20, now[perm]["kb"]), bot(done, 0)]), 3.4))
+    last = [bot(now[turn2], 6 * 60)] if turn2 in now else []           # one message per turn: the result took its place
+    frames.append((phone([first, me()] + last + [bot(now[perm], 20, now[perm]["kb"]), bot(done, 0)]), 3.4))
     gif(frames, OUT)
     print("animation", OUT, "%.0f KB" % (OUT.stat().st_size / 1024))
 
