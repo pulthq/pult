@@ -588,7 +588,7 @@ const start = tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param;
 if ((!location.hash || tgHash(location.hash)) && start) {
   const h = start.startsWith("s_") ? "#/s/" + start.slice(2) : start.startsWith("p_") ? "#/p/" + encodeURIComponent(start.slice(2))
     : start === "new" ? "#/new" : start === "usage" ? "#/usage" : start === "settings" ? "#/settings" : start === "projects" ? "#/projects"
-    : start === "load" ? "#/load" : null;
+    : start === "load" ? "#/load" : start === "newproject" ? "#/newproject" : null;
   if (h) { history.replaceState(null, "", h); stack[0] = h; }
 }
 
@@ -1026,12 +1026,13 @@ function Logins() {
 function Projects() {
   const [d, err] = useLive(() => api("projects"), []);          // live: the counts change with every turn
   if (!d) return html`<${Loading} err=${err}/>`;
-  if (!d.projects.length) return html`<div><h3>${t("projects")}</h3><div class="empty">${t("projects.none")}</div></div>`;
+  const add = d.create && html`<div class="stick"><button class="btn wide" onClick=${() => go("#/newproject")}>${t("np.create")}</button></div>`;
+  if (!d.projects.length) return html`<div><h3>${t("projects")}</h3><div class="empty">${t("projects.none")}</div>${add}</div>`;
   return html`<div><h3>${t("projects")}</h3><div class="list">${d.projects.map((p) => html`
     <button class=${"item brow" + (p.mine || p.work || p.open ? "" : " rest")} key=${p.pkey} onClick=${() => go("#/p/" + encodeURIComponent(p.pkey))}>
       <div class="item-h"><b>${p.name}</b><span class="meta dim">${[p.work ? "🟢 " + p.work : "", p.mine ? "🔴 " + p.mine : "",
         p.turns ? t("proj.turns", { n: p.turns, turns: plural(p.turns, "turn") }) : agoShort(p.last)].filter(Boolean).join(" · ")}</span></div>
-      <div class="ln">${p.line || html`<span class="dim path">${p.path}</span>`}</div></button>`)}</div></div>`;
+      <div class="ln">${p.line || html`<span class="dim path">${p.path}</span>`}</div></button>`)}</div>${add}</div>`;
 }
 
 // a project's screen — its board, large: what waits for you (answer right here), what runs, today's outcomes, then
@@ -1356,9 +1357,10 @@ const LAST_NEW = {
   set(k) { try { localStorage.setItem("pult.newPkey", k); } catch (e) {} },
 };
 
-function ProjectPick({ projects, cur, onPick, onClose }) {
+function ProjectPick({ projects, cur, onPick, onClose, create }) {
   return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick tall fixed">
     <div class="q-t pick-h">${t("new.pick.title")}<button class="x" aria-label=${t("close")} onClick=${onClose}>×</button></div>
+    ${create && html`<button class="opt add" onClick=${() => { onClose(); go("#/newproject"); }}>${t("np.create")}</button>`}
     ${projects.map((x) => html`<button key=${x.pkey} class=${"opt" + (x.pkey === cur ? " on" : "")} onClick=${() => onPick(x.pkey)}>${x.name}</button>`)}</div>`;
 }
 
@@ -1413,8 +1415,122 @@ function NewTask({ pkey }) {
       <span>${model ? MODELS.find(([m]) => m === model)[1] : t("pick.default")} · ${effort ? effortName(effort) : t("pick.default")}</span><span class="dim">▾</span></button>
     <button class="btn wide" disabled=${busy || !p || (!text.trim() && !a.files.length)} onClick=${send}>${t("new.start")}</button>
     <div class="dim small">${t("new.about")}</div>
-    ${sheet && sheet.k === "project" && html`<${ProjectPick} projects=${sheet.list} cur=${p} onClose=${close} onPick=${(k) => { setP(k); haptic("success"); close(); }}/>`}
+    ${sheet && sheet.k === "project" && html`<${ProjectPick} projects=${sheet.list} cur=${p} create=${d.create} onClose=${close} onPick=${(k) => { setP(k); haptic("success"); close(); }}/>`}
     ${sheet && sheet.k === "model" && html`<${ChoicePick} model=${model} effort=${effort} onClose=${close}
+      onPick=${(c) => { if ("model" in c) setModel(c.model); if ("effort" in c) setEffort(c.effort); haptic("success"); }}/>`}
+  </div>`;
+}
+
+// ---------- a new project (stage S) ----------
+// A folder on the computer for something Claude hasn't worked on yet. The folder's name follows the title (the
+// computer turns it into Latin — one rule for the app and the daemon) until the owner edits it; the place is picked
+// level by level inside the home folder; three ways to begin. The computer checks everything again on "Create".
+
+const HOWS = ["empty", "describe", "clone"];
+const STEPS = { receive: "np.step.receive", resolve: "np.step.resolve", files: "np.step.files" };
+
+function FolderPick({ start, onPick, onClose }) {
+  const [d, setD] = useState(null);
+  const [err, setErr] = useState(null);
+  const load = (args) => api("dirs", args).then((x) => { setD(x); setErr(null); }).catch((e) => setErr(e.message));
+  useEffect(() => { load(start ? { path: start } : {}); }, []);
+  return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick tall fixed">
+    <div class="q-t pick-h"><span class="path">${d ? d.show : "…"}</span><button class="x" aria-label=${t("close")} onClick=${onClose}>×</button></div>
+    ${err && html`<div class="pick-why">${err}</div>`}
+    ${d && html`<button class="btn wide" onClick=${() => onPick(d)}>${t("np.pick.here")}</button>
+      ${d.up && html`<button class="opt" onClick=${() => load({ path: d.up })}>↑ ${t("np.pick.up")}</button>`}
+      ${d.dirs.map((n) => html`<button key=${n} class="opt" onClick=${() => load({ path: d.path, into: n })}>📁 ${n}</button>`)}
+      ${!d.dirs.length && html`<div class="dim small">${t("np.pick.none")}</div>`}`}
+  </div>`;
+}
+
+function NewProject() {
+  const [d] = useLive(() => api("projects"), [], () => false);       // only for the microphone: shown with a key
+  const [title, setTitle] = useState("");
+  const [name, setName] = useState("");
+  const [edited, setEdited] = useState(false);       // the owner typed the folder's name: it no longer follows the title
+  const [place, setPlace] = useState(null);           // {path, show, tabs}
+  const [how, setHow] = useState("empty");
+  const [about, setAbout] = useState("");
+  const [link, setLink] = useState("");
+  const [text, setText] = useState("");
+  const [model, setModel] = useState("");
+  const [effort, setEffort] = useState("");
+  const [sheet, setSheet] = useState(null);           // "dir" | "model"
+  const [busy, setBusy] = useState(false);
+  const [job, setJob] = useState(null);               // a clone in progress: {step, sec}
+  const a = useAttach();
+  const howRef = useRef(how);
+  howRef.current = how;
+  const add = (set) => (w) => set((c) => (c ? c.replace(/\s+$/, "") + " " : "") + w);
+  const v = useRecorder((w) => (howRef.current === "describe" ? add(setAbout) : add(setText))(w));
+  const alive = useRef(true);
+  useEffect(() => () => { alive.current = false; }, []);
+  useEffect(() => { if (conn.ready) api("dirs").then(setPlace).catch(() => {}); return on("ready", () => !place && api("dirs").then(setPlace).catch(() => {})); }, []);
+  useEffect(() => {                                    // the folder's name, as the computer will make it
+    if (edited) return;
+    const src = how === "clone" ? link : "";
+    if (!title.trim() && !src.trim()) { setName(""); return; }
+    const timer = setTimeout(() => api("folder", { title, link: src }).then((r) => alive.current && !edited && setName(r.name)).catch(() => {}), 300);
+    return () => clearTimeout(timer);
+  }, [title, link, how, edited]);
+  const finish = (r) => {
+    haptic("success");
+    if (r.git === false) alertBox(t("np.nogit"));
+    go(r.sid ? "#/s/" + r.sid : "#/p/" + encodeURIComponent(r.pkey));
+  };
+  const watch = (job) => new Promise((ok, no) => {
+    const tick = () => api("job", { job }).then((j) => {
+      if (!alive.current) return ok(null);
+      if (j.state === "run") { setJob(j); setTimeout(tick, 1000); }
+      else if (j.state === "done") ok(j);
+      else no(new Error(j.error));
+    }).catch(no);
+    tick();
+  });
+  const create = async (big = false) => {
+    setBusy(true);
+    try {
+      let r = await api("create", { title, name, parent: place && place.path, how, about, link, text, files: a.payload(), model, effort, big });
+      if (r.big) {
+        setBusy(false);
+        if (await confirmBox(t("np.big", { mb: r.big }))) return create(true);
+        return;
+      }
+      if (r.job) r = await watch(r.job);
+      if (r) finish(r);
+    }
+    catch (e) { alertBox(e.message); }
+    if (alive.current) { setBusy(false); setJob(null); }
+  };
+  const ready = !busy && place && name.trim() && (title.trim() || how === "clone") && (how !== "describe" || about.trim()) && (how !== "clone" || link.trim());
+  const step = job && job.step ? t(STEPS[job.step[0]], { p: job.step[1] }) : "";
+  const close = () => setSheet(null);
+  return html`<div><h2>${t("np.title")}</h2>
+    <label class="lbl">${t("np.name")}</label>
+    <input ref=${plainField} value=${title} placeholder=${t("np.name.ph")} onInput=${(e) => setTitle(e.target.value)}/>
+    <label class="lbl">${t("np.folder")}</label>
+    <input ref=${plainField} class="mono" value=${name} placeholder=${t("np.folder.ph")} onInput=${(e) => { setEdited(true); setName(e.target.value.trim()); }}/>
+    <label class="lbl">${t("np.where")}</label>
+    <button class="field" onClick=${() => setSheet("dir")}><span class="path">${place ? place.show : "…"}</span><span class="dim">▾</span></button>
+    ${place && place.tabs === false && html`<div class="dim small np-hint">${t("np.notabs")}</div>`}
+    <label class="lbl">${t("np.how")}</label>
+    ${HOWS.map((h) => html`<button key=${h} class=${"opt" + (how === h ? " on" : "")} onClick=${() => setHow(h)}>${t("np." + h)}<span class="dim">${t("np." + h + ".about")}</span></button>`)}
+    ${how === "clone" && html`<label class="lbl">${t("np.link")}</label>
+      <input ref=${plainField} type="url" inputmode="url" value=${link} placeholder="https://github.com/…" onInput=${(e) => setLink(e.target.value)}/>`}
+    ${how === "describe" ? html`<label class="lbl">${t("np.about")}</label>
+      <textarea ref=${plainField} rows="5" placeholder=${t("np.about.ph")} value=${about} onInput=${(e) => setAbout(e.target.value)}/>`
+    : html`<label class="lbl">${t("np.task")}</label>
+      <textarea ref=${plainField} rows="4" placeholder=${t("new.placeholder")} value=${text} onInput=${(e) => setText(e.target.value)}/>
+      <${Thumbs} a=${a}/><${Attach} a=${a} disabled=${busy} wide=${true}/>`}
+    ${d && d.stt && html`<${Mic} v=${v} disabled=${busy} wide=${true}/>`}
+    ${(how === "describe" || text.trim() || a.files.length > 0) && html`<label class="lbl">${t("model.pick")}</label>
+      <button class="field" onClick=${() => setSheet("model")}>
+        <span>${model ? MODELS.find(([m]) => m === model)[1] : t("pick.default")} · ${effort ? effortName(effort) : t("pick.default")}</span><span class="dim">▾</span></button>`}
+    <button class="btn wide" disabled=${!ready} onClick=${() => create()}>${busy ? (job ? t("np.cloning") + (step ? " · " + step : "") + " · " + dur(job.sec) : "…") : t("np.go")}</button>
+    <div class="dim small">${t("np.help")}</div>
+    ${sheet === "dir" && html`<${FolderPick} start=${place && place.path} onClose=${close} onPick=${(x) => { setPlace(x); haptic("success"); close(); }}/>`}
+    ${sheet === "model" && html`<${ChoicePick} model=${model} effort=${effort} onClose=${close}
       onPick=${(c) => { if ("model" in c) setModel(c.model); if ("effort" in c) setEffort(c.effort); haptic("success"); }}/>`}
   </div>`;
 }
@@ -1697,6 +1813,7 @@ function App() {
     : r.name === "p" ? html`<${Project} pkey=${r.id}/>`
     : r.name === "projects" ? html`<${Projects}/>`
     : r.name === "new" ? html`<${NewTask} pkey=${r.q.get("pkey")}/>`
+    : r.name === "newproject" ? html`<${NewProject}/>`
     : r.name === "usage" ? html`<${Resources}/>`
     : r.name === "load" ? html`<${Load}/>`
     : r.name === "settings" ? html`<${Settings}/>`

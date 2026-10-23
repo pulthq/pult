@@ -412,3 +412,7 @@ table.tv { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 
 table.tv th, table.tv td { text-align: right; padding: 4px 6px; border-top: 1px solid var(--line); }
 table.tv th:first-child, table.tv td:first-child { text-align: left; }
 table.tv th { color: var(--muted); font-weight: 500; }
+
+/* a new project (stage S): "＋ New project" heads the project picker; the note under the place */
+.opt.add { color: var(--link); font-weight: 600; }
+.np-hint { margin: 6px 2px 0; }

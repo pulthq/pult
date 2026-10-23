@@ -1,7 +1,7 @@
 """Web app test stand: a local relay (127.0.0.1:18097) + the daemon with a fake Telegram and made-up sessions:
 one working, one waiting for a permission, one waiting for an answer, jobs without Claude, a final result. Login
 is signed with test keys (tests/test_web.py). Prints the screen URLs (HOME, SESS, USAGE, SETTINGS, NEW, PROJ, PROJECTS,
-LOAD), stays up HOLD s.
+LOAD, NEWPROJ), stays up HOLD s.
 
   HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out &
   ~/.local/share/pult/venv/bin/python tools/shot.py "$(grep ^HOME /tmp/stand.out | cut -d' ' -f2)" home.png 412 4 [dark]
@@ -164,6 +164,18 @@ async def main():
     p.out = pultd.Outbox(rate=60000, burst=1000)
     p._agents = (time.monotonic() + 1e6, [{"sessionId": SID3, "cwd": "/Users/x/blog"}])
     pultd.EDIT_EVERY = 0.2
+    # stage S: a made-up home folder for "New project" (the stand's temp folder, listed like a real one); the first
+    # turn of a new project is not started — the stand never runs Claude
+    home = T.TMP / "stand-home"
+    for d in ("Documents/acme-shop", "Documents/support-desk", "Code"):
+        (home / d).mkdir(parents=True, exist_ok=True)
+    pultd.NEW_ROOT, pultd.SKIP_PREFIXES = home, ("-nothing-",)
+    pultd.TAB_CONF = T.TMP / "stand-tab.json"
+    pultd.TAB_CONF.write_text(json.dumps({"folders": [str(home / "Documents")]}))
+
+    async def no_drive(sid, path, text, *a, **kw):
+        print("DRIVE", path, json.dumps(text[:80], ensure_ascii=False), flush=True)
+    p.drive = no_drive
     sock = await asyncio.start_unix_server(p.handle_conn, path=os.environ["PULT_SOCK"])
     runner = web.AppRunner(relay.app())
     await runner.setup()
@@ -312,6 +324,8 @@ async def main():
           urllib.parse.quote(init("s_" + SID4)), flush=True)       # a session that waits for you: its outcome card
     print("PROJECTS http://127.0.0.1:18097/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
           urllib.parse.quote(init("projects")), flush=True)
+    print("NEWPROJ http://127.0.0.1:18097/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
+          urllib.parse.quote(init("newproject")), flush=True)
     if os.environ.get("STAND_DUMP") == "1":            # what went to Telegram — the README's examples come from here
         await asyncio.sleep(2)
         for m, d in fake.calls:
