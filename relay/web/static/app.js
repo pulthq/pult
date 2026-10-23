@@ -599,7 +599,8 @@ const start = tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param;
 if ((!location.hash || tgHash(location.hash)) && start) {
   const h = start.startsWith("s_") ? "#/s/" + start.slice(2) : start.startsWith("p_") ? "#/p/" + encodeURIComponent(start.slice(2))
     : start === "new" ? "#/new" : start === "usage" ? "#/usage" : start === "settings" ? "#/settings" : start === "projects" ? "#/projects"
-    : start === "load" ? "#/load" : start === "newproject" ? "#/newproject" : null;
+    : start === "load" ? "#/load" : start === "newproject" ? "#/newproject"
+    : /^f_[0-9a-f-]{36}_\d+$/.test(start) ? "#/f/" + start.slice(2, 38) + "?t=" + start.slice(39) : null;
   if (h) { history.replaceState(null, "", h); stack[0] = h; }
 }
 
@@ -1140,31 +1141,72 @@ function TextMsg({ i, fold }) {
 // no card — the whole answer is right above
 // the session's last outcome at the end of the chat; one that waits for a decision stays "your move" on Home after
 // reading — "Got it" here puts it to rest without an answer
-// the files the turn made or changed in the project (stage F): each can go to the project's topic in Telegram
+// the files the turn made or changed in the project (stage F4): one line in the outcome, a tap opens their screen
 const fsize = (b) => (b >= 1048576 ? t("size.mb", { n: num(b / 1048576, 1) }) : t("size.kb", { n: Math.max(1, Math.round(b / 1024)) }));
-const SHOW_FILES = 5;
-function TurnFiles({ sid, files }) {
-  const [state, setState] = useState({});       // path → "…" while sending, "✓" once sent
-  const [more, setMore] = useState(false);
-  const mark = (paths, v) => setState((x) => Object.assign({}, x, ...paths.map((p) => ({ [p]: v }))));
-  const go = async (paths) => {
-    mark(paths, "…");
+function TurnLine({ sid, tf }) {
+  return html`<a class="tfline" href=${"#/f/" + sid + "?t=" + tf.id}><span>📎 ${t("files.line", { n: tf.n, size: fsize(tf.size) })}</span><span class="dim">›</span></a>`;
+}
+
+// the screen of a turn's files: ‹ › through the session's turns that had files; nothing ticked at first, since the
+// list is everything the turn touched, side files too (decision Q43); more than ZIP_FROM go only as one archive (Q44)
+const ZIP_FROM = 10;
+function turnWhen(ts) {
+  const d = toDate(ts);
+  return d.toDateString() === new Date().toDateString() ? hhmm(d) : d.toLocaleDateString(locale(), { day: "numeric", month: "short" }) + " " + hhmm(d);
+}
+function TurnFilesScreen({ sid, turn }) {
+  const [cur, setCur] = useState(turn);
+  useEffect(() => setCur(turn), [turn]);
+  const [d, err] = useLive(() => api("turn_files", { sid, turn: cur }), [sid, cur], () => false, 600000);
+  const [pick, setPick] = useState({});
+  const [sent, setSent] = useState({});
+  const [zip, setZip] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  useEffect(() => { setPick({}); setSent({}); setZip(false); setNote(""); }, [cur]);
+  if (!d) return html`<${Loading} err=${err}/>`;
+  if (!d.id) return html`<div><h2>${t("files.turn")}</h2><div class="empty">${t("files.none")}</div></div>`;
+  const can = d.files.filter((f) => !f.gone);
+  const chosen = can.filter((f) => pick[f.p]).map((f) => f.p);
+  const all = can.length > 0 && chosen.length === can.length;
+  const forced = chosen.length > ZIP_FROM;
+  const asZip = forced || zip;
+  const toggle = (p) => setPick((x) => Object.assign({}, x, { [p]: !x[p] }));
+  const toggleAll = () => setPick(all ? {} : Object.fromEntries(can.map((f) => [f.p, true])));
+  const send = async () => {
+    setBusy(true);
+    setNote("");
     try {
-      const r = await api("send_files", { sid, paths });
+      const r = await api("send_files", { sid, paths: chosen, zip: asZip });
       haptic("success");
-      paths.forEach((p) => mark([p], r.sent.includes(p.split(/[\\/]/).pop()) ? "✓" : ""));
+      setSent((x) => Object.assign({}, x, ...r.sent.map((p) => ({ [p]: true }))));
+      setPick({});
+      setNote(r.zip ? t("files.zip_sent", { name: r.zip }) : t("files.n_sent", { n: r.sent.length }));
       if (r.refused && r.refused.length) alertBox(r.refused.map(([n, w]) => n + " — " + w).join("\n"));
-    } catch (e) { mark(paths, ""); alertBox(e.message); }
+    } catch (e) { alertBox(e.message); } finally { setBusy(false); }
   };
-  const shown = more ? files : files.slice(0, SHOW_FILES);
-  const left = files.filter((f) => state[f.p] !== "✓").map((f) => f.p).slice(0, 10);
-  return html`<div class="tfiles"><div class="o-l"><b>${t("files.turn")}</b></div>
-    ${shown.map((f) => { const cut = Math.max(f.p.lastIndexOf("/"), f.p.lastIndexOf("\\")); return html`<div class="tfile" key=${f.p}>
-      <span class="tf-n">📄 ${f.p.slice(cut + 1)}<span class="dim"> · ${fsize(f.size)}${cut > 0 ? " · " + f.p.slice(0, cut) : ""}</span></span>
-      ${state[f.p] === "✓" ? html`<span class="dim nowrap">✓ ${t("files.sent")}</span>`
-        : html`<button class="link nowrap" disabled=${state[f.p] === "…"} onClick=${() => go([f.p])}>${state[f.p] === "…" ? "…" : t("files.send")}</button>`}</div>`; })}
-    ${files.length > SHOW_FILES && !more && html`<button class="link" onClick=${() => setMore(true)}>${t("files.more", { n: files.length - SHOW_FILES })}</button>`}
-    ${files.length > 1 && left.length > 1 && html`<button class="link" onClick=${() => go(left)}>${t("files.all")}</button>`}
+  return html`<div class="tfs">
+    <div class="tf-nav">
+      <button class="nv" aria-label=${t("files.prev")} disabled=${d.prev == null} onClick=${() => setCur(d.prev)}>‹</button>
+      <div class="tf-h"><b>${t("files.turn_at", { at: turnWhen(d.start) })}${d.dur ? " · " + t("home.took", { dur: dur(d.dur) }) : ""}</b>
+        <a class="dim" href=${"#/s/" + sid}>${d.project}${d.title ? " · " + d.title : ""}</a></div>
+      <button class="nv" aria-label=${t("files.next")} disabled=${d.next == null} onClick=${() => setCur(d.next)}>›</button>
+    </div>
+    <div class="list">
+      <label class="tf-row tf-all"><input type="checkbox" checked=${all} disabled=${!can.length || busy} onChange=${toggleAll}/>
+        <span class="tf-n"><b>${t("files.all_pick")}</b></span><span class="dim nowrap">${t("files.count", { n: chosen.length, of: can.length })}</span></label>
+      ${d.files.map((f) => { const cut = Math.max(f.p.lastIndexOf("/"), f.p.lastIndexOf("\\")); return html`<label class=${"tf-row" + (f.gone ? " gone" : "")} key=${f.p}>
+        <input type="checkbox" checked=${!!pick[f.p]} disabled=${f.gone || busy} onChange=${() => toggle(f.p)}/>
+        <span class="tf-n">${f.p.slice(cut + 1)}<span class="dim"> · ${f.gone ? t("files.gone") : fsize(f.size)}${cut > 0 ? " · " + f.p.slice(0, cut) : ""}</span>${sent[f.p] ? html`<span class="tf-ok"> · ✓ ${t("files.sent")}</span>` : ""}</span>
+      </label>`; })}
+    </div>
+    ${d.n > d.files.length && html`<div class="dim small">${t("files.cut", { n: d.files.length, total: d.n })}</div>`}
+    <div class="stick tf-go">
+      <label class="tf-zip"><input type="checkbox" checked=${asZip} disabled=${forced || busy} onChange=${() => setZip(!zip)}/>
+        <span>${t("files.zip")}${forced ? html`<span class="dim"> · ${t("files.zip_forced", { n: ZIP_FROM })}</span>` : ""}</span></label>
+      <button class="btn wide" disabled=${!chosen.length || busy} onClick=${send}>${busy ? "…" : t("files.send_n", { n: chosen.length })}</button>
+      ${note && html`<div class="dim tf-note">✓ ${note}</div>`}
+    </div>
   </div>`;
 }
 
@@ -1181,7 +1223,7 @@ function Outcome({ sid, out, state, now }) {
     ${state !== "fail" && out.line && html`<div class="o-l"><b>${t("out.line")}</b> ${out.line}</div>`}
     ${out.need && html`<div class="o-l"><b>${t("out.need")}</b> ${out.need}</div>`}
     ${out.fail === "rate_limit" ? html`<${ResumeAt} sid=${sid} resume=${resume} reset=${out.reset} onSet=${setResume}/>` : html`<${Replies} sid=${sid} replies=${out.replies}/>`}
-    ${out.files && out.files.length > 0 && html`<${TurnFiles} sid=${sid} files=${out.files}/>`}
+    ${out.turn_files && html`<${TurnLine} sid=${sid} tf=${out.turn_files}/>`}
     ${mine && (out.need || state === "fail") && html`<div class="foot">${got ? html`<span class="dim">✓ ${t("mine.got")}</span>` : html`<button class="link" onClick=${gotIt}>${t("mine.got")}</button>`}</div>`}
   </div>`;
 }
@@ -1364,7 +1406,7 @@ function Session({ sid }) {
       : i.k === "update" ? html`<div class="upd solo" key=${n}>${i.text}</div>`
       : html`<${TextMsg} key=${n} i=${i} fold=${i.text.length > LONG && all.slice(n + 1).some((x) => x.k === "text")}/>`)}
     ${lv.state === "work" && html`<div class="working">${t("working")}</div>`}
-    ${out && lv.state !== "work" && !info.pending.length && (outState === "you" || outState === "fail" || out.need || (out.replies && out.replies.length) || out.resume || (out.files && out.files.length))
+    ${out && lv.state !== "work" && !info.pending.length && (outState === "you" || outState === "fail" || out.need || (out.replies && out.replies.length) || out.resume || out.turn_files)
       && html`<${Outcome} key=${out.ts} sid=${sid} out=${out} state=${outState} now=${now}/>`}
     ${info.pending.map((r) => html`<${Req} key=${r.rid} r=${r} showWhere=${false}/>`)}
     <div ref=${bottom}></div>
@@ -1850,6 +1892,7 @@ function App() {
     return () => tg.BackButton.offClick(back);
   }, [r.name, r.id]);
   const screen = r.name === "s" ? html`<${Session} sid=${r.id}/>`
+    : r.name === "f" ? html`<${TurnFilesScreen} sid=${r.id} turn=${r.q.get("t")}/>`
     : r.name === "p" ? html`<${Project} pkey=${r.id}/>`
     : r.name === "projects" ? html`<${Projects}/>`
     : r.name === "new" ? html`<${NewTask} pkey=${r.q.get("pkey")}/>`

@@ -173,7 +173,7 @@ flowchart LR
 | `src/pult_spend.py` | usage pace: transcripts in slots, the curve, the forecast |
 | `src/pult_load.py` | the load each session puts on the computer, from one process snapshot |
 | `src/pult_new.py` | a new project: the folder's name from any title, the checks, the clone link |
-| `src/pult_files.py` | files to and from the phone: names, the project's inbox, what may be sent, the turn's files |
+| `src/pult_files.py` | files to and from the phone: names, the project's inbox, what may be sent, the turn's files, archives |
 | `src/pult_os.py` | everything that differs between macOS, Linux and Windows |
 | `src/pult_stt.py` | voice to text (Groq Whisper, your key) |
 | `src/pultctl.py`, `src/pult_setup.py` | the `pult` command; install, the setup wizard, the report, uninstall |
@@ -184,7 +184,7 @@ flowchart LR
 | What | Where |
 |---|---|
 | code and its Python environment | `~/.local/share/pult/` (the installer copies it there) |
-| state: topics, sessions, outcomes, usage readings | `~/.local/share/pult/state.db` (SQLite) |
+| state: topics, sessions, outcomes, the turns' files, usage readings | `~/.local/share/pult/state.db` (SQLite) |
 | secrets: bot token, your ID, relay secret, voice key | `~/.config/pult/env`, mode 600 |
 | hooks | `~/.claude/settings.json`, entries that name `pult_hook.py` |
 | the tab wrapper | the VS Code setting `claudeCode.claudeProcessWrapper` (you add the line) |

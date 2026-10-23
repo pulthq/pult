@@ -1,6 +1,7 @@
-"""Files in the app (stage F) in headless Chrome over DevTools, on the stand: a turn's files under its outcome — one
-to Telegram, then the rest at once; a document in the message field is a chip with its name, a picture stays a
-thumbnail; a document over the app's limit is refused.
+"""Files in the app (stage F) in headless Chrome over DevTools, on the stand: the outcome's line to the turn's files;
+their screen — nothing ticked, a deleted file can't be, one goes alone, all of them only as one archive, ‹ to the
+turn before; a document in the message field is a chip with its name, a picture stays a thumbnail; a document over
+the app's limit is refused.
   STAND_LANG=ru HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out &
   ~/.local/share/pult/venv/bin/python tools/files_check.py "$(grep '^SESS4 ' /tmp/stand.out | cut -d' ' -f2)" [out_dir]
 Screenshots go to out_dir (a temporary folder by default). Exit 1 on a failed check. Selectors are by class and order,
@@ -95,17 +96,38 @@ async def main():
             await cmd("Runtime.enable")
             await cmd("Emulation.setDeviceMetricsOverride", width=412, height=915, deviceScaleFactor=2, mobile=True)
             await cmd("Page.navigate", url=URL)
-            ok = await until("document.querySelectorAll('.tfile').length === 2", 150)
-            verdict("the outcome lists the turn's two files", ok, await js("document.querySelectorAll('.tfile').length"))
+            ok = await until("!!document.querySelector('.tfline')", 150)
+            line = await js("(document.querySelector('.tfline') || {}).textContent")
+            verdict("the outcome has one line to the turn's files", ok and "112" in (line or ""), line)
             await js(alerts)
             await js("window.scrollTo(0, document.documentElement.scrollHeight)")
-            await shot("1-files.png")
-            await js("document.querySelector('.tfile .link').click()")
-            verdict("one goes to Telegram and is marked sent", await until("!document.querySelector('.tfile:first-child .link') && /✓/.test(document.querySelector('.tfile').textContent)"))
-            verdict("All to Telegram is gone with one file left", await until("document.querySelectorAll('.tfiles > .link').length === 0"))
-            await js("document.querySelector('.tfile:last-child .link').click()")
-            verdict("the second too", await until("document.querySelectorAll('.tfile .link').length === 0"))
-            await shot("2-sent.png")
+            await shot("1-line.png")
+            await js("document.querySelector('.tfline').click()")
+            verdict("its screen lists the twelve files under All", await until("document.querySelectorAll('.tf-row').length === 13", 100),
+                    await js("document.querySelectorAll('.tf-row').length"))
+            verdict("the list says it was cut", await js("/112/.test(document.querySelector('.tfs > .small').textContent)"))
+            btn = "document.querySelector('.tf-go .btn')"
+            verdict("nothing ticked, the button is off", await js("[...document.querySelectorAll('.tf-row input')].every((i) => !i.checked) && %s.disabled" % btn))
+            verdict("the deleted file can't be ticked", await js("document.querySelector('.tf-row.gone input').disabled"))
+            await shot("2-screen.png")
+            await js("document.querySelectorAll('.tf-row')[1].click()")
+            verdict("one ticked: the button counts it, the archive is a choice", await until("!%s.disabled && /\\(1\\)/.test(%s.textContent) && !document.querySelector('.tf-zip input').disabled" % (btn, btn)))
+            await js("%s.click()" % btn)
+            verdict("it goes alone and is marked sent", await until("document.querySelectorAll('.tf-ok').length === 1 && !document.querySelector('.tf-zip input').checked"))
+            await js("document.querySelector('.tf-all').click()")
+            verdict("All ticks the eleven that are there; over ten — only as an archive",
+                    await until("/\\(11\\)/.test(%s.textContent) && document.querySelector('.tf-zip input').checked && document.querySelector('.tf-zip input').disabled" % btn))
+            await shot("3-all.png")
+            await js("%s.click()" % btn)
+            verdict("they go as one archive", await until("/\\.zip/.test((document.querySelector('.tf-note') || {}).textContent || '') && document.querySelectorAll('.tf-ok').length === 11"))
+            await shot("4-zip.png")
+            await js("document.querySelector('.tf-nav .nv').click()")
+            verdict("‹ shows the turn before: two files, ticks gone, nothing earlier",
+                    await until("document.querySelectorAll('.tf-row').length === 3 && !document.querySelectorAll('.tf-ok').length && document.querySelector('.tf-nav .nv').disabled"))
+            verdict("› leads back", await js("!document.querySelectorAll('.tf-nav .nv')[1].disabled"))
+            await shot("5-before.png")
+            await js("history.back()")
+            await until("!!document.querySelector('.tfline')", 100)
             # the message field: a document is a chip with its name, a picture a thumbnail, a too big document refused
             await attach(doc)
             verdict("a document is a chip with its name", await until("(() => { const c = document.querySelector('.thumb.doc .doc-n'); return c && /смета\\.pdf/.test(c.textContent); })()"))

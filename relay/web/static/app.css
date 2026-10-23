@@ -420,7 +420,22 @@ table.tv th { color: var(--muted); font-weight: 500; }
 /* files (stage F): a document in the draft is a chip with its name; the turn's files under its outcome */
 .thumb.doc { width: auto; max-width: 220px; display: flex; align-items: center; padding: 0 28px 0 10px; }
 .thumb.doc .doc-n { font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tfiles { margin-top: 8px; }
-.tfile { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 3px 0; }
-.tfile .tf-n { min-width: 0; overflow-wrap: anywhere; }
-.tfile .link, .tfiles > .link { padding-top: 2px; }
+/* the turn's files (stage F4): a line in the outcome, and their screen — ticks, "as one archive", the button under the thumb */
+.tfline { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 8px; padding-top: 8px;
+  border-top: 1px solid var(--line); color: var(--link); text-decoration: none; font-weight: 600; }
+.tf-nav { display: flex; align-items: center; gap: 8px; margin: 6px 0 12px; }
+.tf-nav .nv { flex: none; width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line); background: var(--card);
+  color: var(--ink); font-size: 22px; line-height: 1; cursor: pointer; }
+.tf-nav .nv:disabled { opacity: .3; cursor: default; }
+.tf-h { flex: 1; min-width: 0; text-align: center; }
+.tf-h b { display: block; font-size: 16px; }
+.tf-h a { display: block; font-size: 13.5px; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tf-row { display: flex; align-items: center; gap: 12px; padding: 11px 14px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.tf-row:last-child { border-bottom: 0; }
+.tf-row input, .tf-zip input { flex: none; width: 20px; height: 20px; margin: 0; accent-color: var(--accent); }
+.tf-row .tf-n { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.tf-row .tf-n .dim { font-size: 13.5px; }
+.tf-row.gone { cursor: default; } .tf-row.gone .tf-n { color: var(--muted); }
+.tf-ok { color: var(--ok); font-size: 13.5px; }
+.tf-zip { display: flex; align-items: center; gap: 12px; padding: 4px 2px 2px; cursor: pointer; }
+.tf-note { font-size: 13.5px; margin-top: 6px; overflow-wrap: anywhere; }

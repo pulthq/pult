@@ -2,7 +2,7 @@
 to Telegram, which files a turn made or changed. Standard library only; pultd downloads, sends and asks. Design:
 docs/project.html, stage F.
 """
-import fnmatch, os, re, time, unicodedata
+import fnmatch, os, re, time, unicodedata, zipfile
 
 TG_GET_MAX = 20 * 1024 * 1024      # Telegram hands bots files up to this (Bot API, getFile)
 TG_SEND_MAX = 50 * 1024 * 1024     # and takes documents from bots up to this (sendDocument)
@@ -10,7 +10,12 @@ SEND_MANY = 10                     # files in one `pult send`
 HOLD = 600                         # s: files that came without words wait this long for the owner's next message
 INBOX = "inbox"                    # <project>/inbox/<date>/ — files from the owner (decision Q38)
 NAME_MAX = 120
-TURN_FILES_MAX = 30                # files a turn made, newest first
+TURN_FILES_MAX = 100               # files a turn made, newest first (stage F4: 30 → 100)
+ZIP_RAW_MAX = 200 * 1024 * 1024    # bytes of files packed into one archive, at most: past it nothing is packed
+# already packed: into an archive as they are, no second squeeze
+STORED_EXT = {".zip", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic",
+              ".mp4", ".mov", ".m4v", ".webm", ".mkv", ".mp3", ".m4a", ".ogg", ".opus", ".docx", ".xlsx", ".pptx",
+              ".odt", ".ods", ".odp", ".epub", ".jar", ".apk"}
 SCAN_MAX = 20000                   # entries walked in a project at a turn's end, at most
 SCAN_TIME = 1.0                    # s, at most
 SKIP_DIRS = {"node_modules", "__pycache__", "venv", "site-packages", "dist-packages"}   # deliverables may sit in build/: kept
@@ -109,17 +114,22 @@ def why_not_send(path, project):
     return None
 
 
+def size_text(n):
+    """A size for the log: 436 B, 12 KB, 2.3 MB — a small file is not "0 KB"."""
+    return "%d B" % n if n < 1024 else "%d KB" % round(n / 1024) if n < 1024 * 1024 else "%.1f MB" % (n / 1048576)
+
+
 def temp_like(name):
     return any(fnmatch.fnmatchcase(name, pat) for pat in TEMP_NAMES)
 
 
 def turn_files(project, since, until=None):
-    """The project's files made or changed from `since` (a turn's start) to `until`: [{p: path inside the project,
-    size, mt}], newest first, at most TURN_FILES_MAX. Hidden folders, dependencies and caches, the owner's inbox and
-    lock files are skipped; the walk stops after SCAN_MAX entries or SCAN_TIME s."""
+    """The project's files made or changed from `since` (a turn's start) to `until`: ([{p: path inside the project,
+    size, mt}] newest first, at most TURN_FILES_MAX; how many there were in all). Hidden folders, dependencies and
+    caches, the owner's inbox and lock files are skipped; the walk stops after SCAN_MAX entries or SCAN_TIME s."""
     root = os.path.realpath(project)
     if not os.path.isdir(root):
-        return []
+        return [], 0
     t0, seen, out = time.monotonic(), 0, []
     stack = [root]
     while stack:
@@ -148,4 +158,24 @@ def turn_files(project, since, until=None):
                 if st.st_mtime >= since - 1 and (until is None or st.st_mtime <= until + 1):
                     out.append((st.st_mtime, os.path.relpath(e.path, root), st.st_size))
     out.sort(reverse=True)
-    return [{"p": rel, "size": size, "mt": round(mt, 1)} for mt, rel, size in out[:TURN_FILES_MAX]]
+    return [{"p": rel, "size": size, "mt": round(mt, 1)} for mt, rel, size in out[:TURN_FILES_MAX]], len(out)
+
+
+def zip_name(project, now=None):
+    """An archive of a project's files: <project>-YYYY-MM-DD-HHMM.zip."""
+    stem = safe_name(os.path.basename(os.path.realpath(project).rstrip(os.sep)), "files")
+    return "%s-%s.zip" % (stem, time.strftime("%Y-%m-%d-%H%M", time.localtime(now)))
+
+
+def make_zip(project, paths, dest, limit=TG_SEND_MAX):
+    """Files of a project (checked: real paths inside it) → a zip at dest, each under its path inside the project, so
+    two README.md from different folders stay apart. → the archive's size, or None as soon as it outgrows limit."""
+    root = os.path.realpath(project)
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
+        for p in paths:
+            packed = os.path.splitext(p)[1].lower() in STORED_EXT
+            z.write(p, os.path.relpath(p, root), compress_type=zipfile.ZIP_STORED if packed else zipfile.ZIP_DEFLATED)
+            if z.fp.tell() > limit:
+                return None
+    size = os.path.getsize(dest)
+    return size if size <= limit else None

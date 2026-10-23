@@ -482,6 +482,11 @@ S = {
                      "ru": "больше {mb} МБ — Telegram не берёт у ботов файлы крупнее; сожми или разбей"},
     "send.err.tg": {"en": "Telegram refused: {why}", "ru": "Telegram отказал: {why}"},
     "send.err.nothing": {"en": "Nothing to send", "ru": "Нечего отправлять"},
+    "send.err.zip_raw": {"en": "{mb} MB of files is too much for one archive (up to {max} MB) — pick fewer",
+                         "ru": "{mb} МБ файлов — слишком много для одного архива (до {max} МБ), отметь меньше"},
+    "send.err.zip_big": {"en": "the archive grows over {mb} MB — Telegram takes no bigger files from bots; pick fewer",
+                         "ru": "архив выходит больше {mb} МБ — Telegram не берёт у ботов файлы крупнее; отметь меньше"},
+    "send.zip.caption": {"en": "Files: {n}", "ru": "Файлов: {n}"},
     "cli.send.usage": {"en": "pult send FILE… [-m TEXT] — files to the owner's phone, into the project's Telegram topic; "
                              "run it from a Claude Code session",
                        "ru": "pult send ФАЙЛ… [-m ТЕКСТ] — файлы владельцу на телефон, в тему проекта в Telegram; "

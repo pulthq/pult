@@ -242,9 +242,10 @@ async def main():
         assert time.monotonic() - t9 < 180, "не дождался: итог хода с файлом"
         await asyncio.sleep(0.3)
     sent9 = [d for m, d in calls if m == "sendDocument"][docs:]
-    log("файл в теме:", len(sent9), "· файлы хода:", [f["p"] for f in p.attn.rec[sid9].get("files") or []])
+    kept9 = [f["p"] for f in (p.store.turn(sid9) or {}).get("files") or []]
+    log("файл в теме:", len(sent9), "· файлы хода:", kept9, p.attn.rec[sid9].get("turn_files"))
     assert sent9 and (PROJ / "report.md").exists(), "pult send didn't deliver the file"
-    assert "report.md" in [f["p"] for f in p.attn.rec[sid9].get("files") or []], "the turn's files miss report.md"
+    assert "report.md" in kept9, "the turn's files miss report.md"
     # a new project from the phone (stage S): a folder made a moment ago gets git, a topic named by its title and a
     # first turn that writes CLAUDE.md from the description (permission mode here is "default": Write asks)
     pultd.NEW_ROOT = TMP
