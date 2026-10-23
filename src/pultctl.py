@@ -3,7 +3,7 @@
 environment is broken (`python3 ~/.local/share/pult/pultctl.py …`). `pult help` lists the commands.
 
 Installing, the setup, the service, the report and removal live in pult_setup.py; here — the commands themselves,
-the status, the tab switch and `pult run`.
+the status, the tab switch, `pult run` and `pult send`.
 """
 import codecs
 import collections
@@ -187,6 +187,53 @@ def cmd_run(argv):
     return code
 
 
+def cmd_send(argv):
+    """pult send FILE… [-m CAPTION]: files to the owner's phone, into the Telegram topic of the project the Claude
+    session works in. Claude runs it; Claude Code names the session in the command's environment
+    (CLAUDE_CODE_SESSION_ID), and the daemon checks every file (pult_files.why_not_send)."""
+    caption, files, i = None, [], 0
+    while i < len(argv):
+        if argv[i] in ("-m", "--message") and i + 1 < len(argv):
+            caption, i = argv[i + 1], i + 2
+            continue
+        files.append(argv[i])
+        i += 1
+    if not files:
+        print(T("cli.send.usage"))
+        return 2
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if not sid:
+        print(T("cli.send.nosession"), file=sys.stderr)
+        return 2
+    msg = {"op": "send", "sid": sid, "paths": [os.path.abspath(f) for f in files], "caption": caption}
+    try:
+        s = S.pult_os.link_connect(S.SOCK)
+        s.settimeout(900)                       # up to ten files of 50 MB through Telegram's queue
+        s.sendall(json.dumps(msg, ensure_ascii=False).encode() + b"\n")
+        buf = b""
+        while not buf.endswith(b"\n"):
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+        s.close()
+        res = json.loads(buf.decode("utf-8") or "{}")
+    except (OSError, ValueError):
+        print(T("cli.send.nodaemon"), file=sys.stderr)
+        return 1
+    if not res:                                 # a daemon from before 0.13 takes it for a hook event and says nothing
+        print(T("cli.send.old"), file=sys.stderr)
+        return 1
+    if res.get("error"):
+        print(res["error"], file=sys.stderr)
+        return 1
+    for n in res.get("sent") or []:
+        print(T("cli.send.sent", name=n))
+    for n, why in res.get("refused") or []:
+        print(T("cli.send.refused", name=n, why=why), file=sys.stderr)
+    return 0 if res.get("sent") and not res.get("refused") else 1
+
+
 def main(argv):
     I.set_lang(S.cli_lang())
     cmd, rest = (argv[0] if argv else ""), argv[1:]
@@ -212,6 +259,8 @@ def main(argv):
         return S.cmd_stt(rest)
     elif cmd == "run":
         return cmd_run(rest)
+    elif cmd == "send":
+        return cmd_send(rest)
     elif cmd == "report":
         return S.cmd_report()
     elif cmd == "uninstall":

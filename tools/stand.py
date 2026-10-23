@@ -272,6 +272,14 @@ async def main():
     r = p.attn.finished(SID4, T.PKEY, 840, D["s4_line"], D["s4_line"], waits=True, now=time.time() - 1500)
     p.attn.briefed(SID4, r["ts"], {"line": D["s4_line"], "you": True, "need": D["s4_need"],
                                    "replies": [D["s4_r1"], D["s4_r2"], D["s4_r3"]]}, True)
+    # stage F: the turn made two files; "To Telegram" is answered here — the stand's projects are made-up paths
+    r["files"] = [{"p": "reports/search-ranking.pdf", "size": 182000, "mt": r["ts"] - 60},
+                  {"p": "search-options.pptx", "size": 2400000, "mt": r["ts"] - 300}]
+
+    async def stand_send(sid, paths):
+        print("SEND", sid[:8], json.dumps(paths), flush=True)
+        return {"sent": [x.split("/")[-1] for x in paths], "refused": []}
+    p.api_send_files = stand_send
     store.touch_session(SID5, PKEY2, path=DESK, title=D["s5_title"])
     r = p.attn.finished(SID5, PKEY2, 300, D["s5_line"], D["s5_line"], waits=True, now=time.time() - 600)
     p.attn.briefed(SID5, r["ts"], {"line": D["s5_line"], "you": False, "need": ""}, True)

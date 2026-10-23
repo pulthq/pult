@@ -465,6 +465,36 @@ S = {
                       "ru": "Эта тема ещё не привязана к проекту. Выбери проект — привяжу тему и запущу сессию."},
     "projects.none": {"en": "No projects with Claude sessions found.", "ru": "Проектов с сессиями Claude не нашёл."},
     "projects.create": {"en": "＋ New project", "ru": "＋ Новый проект"},
+    # ----- files to and from the phone (stage F) -----
+    "files.big": {"en": "📎 {name} — {mb} MB: Telegram hands bots files up to 20 MB. Put it into the project on the computer, "
+                        "or send a smaller one (a zip, parts).",
+                  "ru": "📎 {name} — {mb} МБ: Telegram отдаёт ботам файлы до 20 МБ. Положи его в проект на компьютере "
+                        "или пришли поменьше (архивом, частями)."},
+    "btn.files": {"en": "📎 Files ({n})", "ru": "📎 Файлы ({n})"},
+    "send.err.session": {"en": "Pult doesn't know this session or its project folder",
+                         "ru": "Пульт не знает этой сессии или папки её проекта"},
+    "send.err.many": {"en": "At most {n} files at once", "ru": "Не больше {n} файлов за раз"},
+    "send.err.outside": {"en": "not inside this project's folder", "ru": "не в папке этого проекта"},
+    "send.err.none": {"en": "no such file", "ru": "такого файла нет"},
+    "send.err.secret": {"en": "looks like keys or settings — not sent", "ru": "похоже на ключи или настройки — не отправляю"},
+    "send.err.empty": {"en": "the file is empty", "ru": "файл пустой"},
+    "send.err.big": {"en": "over {mb} MB — Telegram takes no bigger files from bots; zip or split it",
+                     "ru": "больше {mb} МБ — Telegram не берёт у ботов файлы крупнее; сожми или разбей"},
+    "send.err.tg": {"en": "Telegram refused: {why}", "ru": "Telegram отказал: {why}"},
+    "send.err.nothing": {"en": "Nothing to send", "ru": "Нечего отправлять"},
+    "cli.send.usage": {"en": "pult send FILE… [-m TEXT] — files to the owner's phone, into the project's Telegram topic; "
+                             "run it from a Claude Code session",
+                       "ru": "pult send ФАЙЛ… [-m ТЕКСТ] — файлы владельцу на телефон, в тему проекта в Telegram; "
+                             "запускать из сессии Claude Code"},
+    "cli.send.nosession": {"en": "pult send works inside a Claude Code session: the project is found by the session "
+                                 "(CLAUDE_CODE_SESSION_ID)",
+                           "ru": "pult send работает внутри сессии Claude Code: проект находится по сессии "
+                                 "(CLAUDE_CODE_SESSION_ID)"},
+    "cli.send.nodaemon": {"en": "Pult isn't running — nothing was sent", "ru": "Пульт не запущен — ничего не отправлено"},
+    "cli.send.old": {"en": "This Pult can't send files yet — update it (bash install.sh)",
+                     "ru": "Этот Пульт ещё не умеет отправлять файлы — обнови его (bash install.sh)"},
+    "cli.send.sent": {"en": "sent: {name}", "ru": "отправлено: {name}"},
+    "cli.send.refused": {"en": "not sent: {name} — {why}", "ru": "не отправлено: {name} — {why}"},
     # ----- a new project from the phone (stage S) -----
     "new.err.title": {"en": "A name is needed", "ru": "Нужно название"},
     "new.err.name": {"en": "A folder name takes Latin letters, digits, \"_\", \"-\" and \".\": up to 64, starting with a letter "
@@ -541,6 +571,7 @@ S = {
               "  pult app [off]                the web app on your own server\n"
               "  pult stt [off]                voice input: a Groq key for speech recognition\n"
               "  pult run -- COMMAND           run a command; its start, progress and end go to Telegram\n"
+              "  pult send FILE… [-m TEXT]     files to your phone, into the project's topic (Claude runs it)\n"
               "  pult report                   versions and state for a bug report (no tokens, IDs or messages)\n"
               "  pult uninstall                remove Pult from this computer\n\n"
               "Hooks and the tab wrapper are picked up when a session starts: after changing them, run Reload Window "
@@ -556,6 +587,7 @@ S = {
               "  pult app [off]                веб-приложение на своём сервере\n"
               "  pult stt [off]                голосовой ввод: ключ Groq для распознавания речи\n"
               "  pult run -- КОМАНДА           выполнить команду; старт, ход и конец — в Telegram\n"
+              "  pult send ФАЙЛ… [-m ТЕКСТ]    файлы тебе на телефон, в тему проекта (запускает Claude)\n"
               "  pult report                   версии и состояние для сообщения об ошибке (без токенов, ID и переписки)\n"
               "  pult uninstall                удалить Пульт с этого компьютера\n\n"
               "Хуки и обёртка вкладок подхватываются при запуске сессии: после их смены — Reload Window в VS Code.",

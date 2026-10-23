@@ -1156,7 +1156,7 @@ def cmd_report():
 
 
 # Pult's own files: removal touches only these, never a whole folder it doesn't know
-HOME_FILES = ("pultd.py", "pult_hook.py", "pult_render.py", "pult_web.py", "pult_i18n.py", "pult_stt.py", "pult_load.py", "pult_new.py", "pult_spend.py", "pult_attn.py", "pult_brief.py", "pult_os.py", "pult_setup.py",
+HOME_FILES = ("pultd.py", "pult_hook.py", "pult_render.py", "pult_web.py", "pult_i18n.py", "pult_stt.py", "pult_load.py", "pult_new.py", "pult_files.py", "pult_spend.py", "pult_attn.py", "pult_brief.py", "pult_os.py", "pult_setup.py",
               "pultctl.py", "pult_tab.py", "pult-tab.sh", "pult-tab.exe", "pult-tab.exe.new", "requirements.txt", "state.db",
               "state.db-journal", "state.db-wal", "state.db-shm", "pult.sock", "pult.sock.tmp", "venv", "__pycache__")
 CONF_FILES = ("env", "env.tmp", "tab.json", "tab-off")

@@ -92,9 +92,9 @@ def plain(md, n):
 
 # ---------- the owner's attachments ----------
 
-# what Claude reads under a message with a picture or a file: the path on the computer (pultd.with_attachments,
+# what Claude reads under a message with a picture or a file: the path on the computer (pultd.take_files,
 # with_uploads). People see the text without it, and "📎 picture" instead
-_ATT = re.compile(r"[ \n]*\[Attachment from (?:Telegram|the Pult app): ([^\]\n]+)\]")
+_ATT = re.compile(r"[ \n]*\[Attachment from (?:Telegram|the Pult app): ([^\n]+?)\](?=\n|$)")   # a name may hold "] "
 ATT_DEFAULT = "Have a look at the attachment."
 IMAGE_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp")
 # words that came by voice (pultd.hear_message): Claude is told so — misheard words are to be expected; people

@@ -157,6 +157,8 @@ flowchart LR
 | A restart doesn't kill work | `pult restart` / `stop` / `install.sh` refuse while sessions from the phone are busy (`pult busy`) |
 | The computer stays closed | Telegram: long polling; relay: an outbound WebSocket; no listening ports |
 | Settings stay yours | the hooks go into `~/.claude/settings.json` with a backup; `pult hooks off` and `pult uninstall` undo it |
+| A file goes back only from its project | `pult send` and "To Telegram" take files inside the session's project folder only (links followed), nothing like keys or settings, up to 50 MB; only to your group |
+| A new project overwrites nothing | only a new folder inside your home folder; a taken one is refused, and so is a name Claude Code would mix up with another project's; a clone goes to git as an https link only |
 
 ## Code map
 
@@ -170,6 +172,8 @@ flowchart LR
 | `src/pult_attn.py`, `src/pult_brief.py` | "whose move": each session's outcome; an optional one-line summary by a small model |
 | `src/pult_spend.py` | usage pace: transcripts in slots, the curve, the forecast |
 | `src/pult_load.py` | the load each session puts on the computer, from one process snapshot |
+| `src/pult_new.py` | a new project: the folder's name from any title, the checks, the clone link |
+| `src/pult_files.py` | files to and from the phone: names, the project's inbox, what may be sent, the turn's files |
 | `src/pult_os.py` | everything that differs between macOS, Linux and Windows |
 | `src/pult_stt.py` | voice to text (Groq Whisper, your key) |
 | `src/pultctl.py`, `src/pult_setup.py` | the `pult` command; install, the setup wizard, the report, uninstall |

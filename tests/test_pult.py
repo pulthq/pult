@@ -4,9 +4,11 @@
   ~/.local/share/pult/venv/bin/python tests/test_pult.py
 """
 import asyncio
+import base64
 import gc
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -32,6 +34,7 @@ import pult_hook  # noqa: E402
 import pult_i18n as I  # noqa: E402
 import pult_load as L  # noqa: E402
 import pult_new as N  # noqa: E402
+import pult_files as F  # noqa: E402
 import pult_os  # noqa: E402
 import pult_render as R  # noqa: E402
 import pult_stt as STT  # noqa: E402
@@ -59,6 +62,13 @@ class FakeTg:
         ctype = req.headers.get("content-type", "")
         data = {k: v[0] for k, v in urllib.parse.parse_qs(req.content.decode()).items()} \
             if ctype.startswith("application/x-www-form-urlencoded") else {}
+        if ctype.startswith("multipart/form-data"):           # sendDocument: fields, and the file as _name / _bytes
+            raw = req.content
+            for m in re.finditer(rb'name="(\w+)"(?:; filename="([^"]*)")?[^\r\n]*\r\n(?:[^\r\n]+\r\n)*\r\n(.*?)\r\n--', raw, re.S):
+                if m.group(2) is not None:
+                    data["_name"], data["_bytes"] = m.group(2).decode(), m.group(3)
+                else:
+                    data[m.group(1).decode()] = m.group(3).decode()
         self.calls.append((method, data))
         self.next_id += 1
         if method == "sendMessage" and data.get("message_thread_id") in self.dead_threads:
@@ -545,6 +555,11 @@ class HelpersTest(unittest.TestCase):
         self.assertEqual(pultctl.strip_ours(hooks), {"PreToolUse": hooks["PreToolUse"]})
 
 
+def intro_id_of(fake, data):
+    """The message_id the fake gave a call's data dict (ids go up by one per call, starting at 1001)."""
+    return 1001 + next(i for i, (m, d) in enumerate(fake.calls) if d is data)
+
+
 def intro_id(fake, data):
     """The message_id the fake gave a sendMessage call (ids go up by one per call, starting at 1001)."""
     return 1001 + next(i for i, (m, d) in enumerate(fake.calls) if d is data)
@@ -787,6 +802,81 @@ class NewProjectTest(unittest.TestCase):
         (root / "out").symlink_to(TMP) if not (root / "out").exists() else None
         self.assertFalse(N.inside(root / "out", root))          # a link out of the home folder is outside
         self.assertIn("Дача", N.describe_prompt(" Дача ", "грядки"))
+
+
+class FilesTest(unittest.TestCase):
+    """Stage F without the daemon: names for files from the phone, what may go back to Telegram, a turn's files."""
+
+    def test_names(self):
+        for given, name in [("../../etc/passwd", "passwd"), ("a/b\\c.pdf", "c.pdf"), (".env", "env"),
+                            ("re:port?.docx", "re_port_.docx"), ("CON.txt", "_CON.txt"), ("", "file"), ("  ", "file"),
+                            ("Отчёт [финал].docx", "Отчёт [финал].docx"), ("-rf", "rf")]:
+            self.assertEqual(F.safe_name(given), name, given)
+        long = F.safe_name("я" * 200 + ".pptx")
+        self.assertTrue(long.endswith(".pptx") and len(long) == F.NAME_MAX)
+        d = TMP / "names"
+        d.mkdir(exist_ok=True)
+        (d / "a.pdf").write_text("x")
+        (d / "a (2).pdf").write_text("x")
+        self.assertEqual(os.path.basename(F.unique(str(d), "a.pdf")), "a (3).pdf")
+        self.assertEqual(os.path.basename(F.unique(str(d), "b.pdf")), "b.pdf")
+        self.assertTrue(F.drop_dir("/p", time.mktime((2026, 10, 23, 12, 0, 0, 0, 0, -1))).endswith(os.path.join("inbox", "2026-10-23")))
+
+    def test_git_exclude(self):
+        proj = TMP / "gitproj"
+        (proj / ".git" / "info").mkdir(parents=True, exist_ok=True)
+        (proj / ".git" / "info" / "exclude").write_text("# git's own\n*.log")
+        self.assertTrue(F.exclude_inbox(str(proj)))
+        self.assertFalse(F.exclude_inbox(str(proj)))                      # once
+        self.assertEqual((proj / ".git" / "info" / "exclude").read_text().count("/inbox/"), 1)
+        self.assertIn("*.log\n# files", (proj / ".git" / "info" / "exclude").read_text())
+        (TMP / "plain").mkdir(exist_ok=True)
+        self.assertFalse(F.exclude_inbox(str(TMP / "plain")))
+
+    def test_what_may_go(self):
+        proj = TMP / "sendproj"
+        (proj / "out").mkdir(parents=True, exist_ok=True)
+        (proj / "sub" / ".ssh").mkdir(parents=True, exist_ok=True)
+        ok = proj / "out" / "Отчёт.docx"
+        ok.write_bytes(b"PK..")
+        (proj / ".env").write_text("TOKEN=1")
+        (proj / "sub" / ".ssh" / "config").write_text("x")
+        (proj / "server.pem").write_text("x")
+        (proj / "credentials.json").write_text("{}")
+        (proj / "empty.txt").write_text("")
+        big = proj / "big.zip"
+        with open(big, "wb") as f:
+            f.truncate(F.TG_SEND_MAX + 1)
+        outside = TMP / "outside.txt"
+        outside.write_text("x")
+        link_out = proj / "report.pdf"
+        if not link_out.exists():
+            link_out.symlink_to(outside)
+        link_secret = proj / "notes.txt"
+        if not link_secret.exists():
+            link_secret.symlink_to(proj / ".env")
+        self.assertIsNone(F.why_not_send(str(ok), str(proj)))
+        for path, why in [(outside, "send.err.outside"), (link_out, "send.err.outside"), (proj / ".env", "send.err.secret"),
+                          (link_secret, "send.err.secret"), (proj / "sub" / ".ssh" / "config", "send.err.secret"),
+                          (proj / "server.pem", "send.err.secret"), (proj / "credentials.json", "send.err.secret"),
+                          (proj / "empty.txt", "send.err.empty"), (big, "send.err.big"), (proj / "nope.pdf", "send.err.none"),
+                          (proj / "out", "send.err.none"), (str(proj) + "x/a.txt", "send.err.outside")]:
+            self.assertEqual(F.why_not_send(str(path), str(proj)), why, path)
+
+    def test_turn_files(self):
+        proj = TMP / "turnproj"
+        for rel in ["old.pdf", "new.pptx", "build/deck.pdf", "a/b/c.png", ".git/index", "node_modules/x.js", "inbox/2026-10-23/in.pdf",
+                    "~$new.pptx", ".hidden.txt", "__pycache__/m.pyc", ".claude/settings.json"]:
+            (proj / rel).parent.mkdir(parents=True, exist_ok=True)
+            (proj / rel).write_text(rel)
+        start = time.time() - 60
+        os.utime(proj / "old.pdf", (start - 600, start - 600))
+        os.utime(proj / "a" / "b" / "c.png", (start + 10, start + 10))
+        got = F.turn_files(str(proj), start)
+        self.assertEqual(sorted(f["p"] for f in got), sorted(["new.pptx", os.path.join("build", "deck.pdf"), os.path.join("a", "b", "c.png")]))
+        self.assertEqual(got[-1]["p"], os.path.join("a", "b", "c.png"))                       # newest first
+        self.assertEqual(F.turn_files(str(proj), time.time() + 100), [])
+        self.assertEqual(F.turn_files(str(TMP / "no-such"), start), [])
 
 
 class LoadTest(unittest.TestCase):
@@ -1462,6 +1552,142 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await self.p.cmd_projects(None, "new", ("текст", 5))
         rows = json.loads(self.fake.of("sendMessage")[-1]["reply_markup"])["inline_keyboard"]
         self.assertEqual(rows[-1], [{"text": "＋ Новый проект", "url": "https://t.me/b/pult?startapp=newproject"}])
+
+    async def test_files_from_telegram(self):
+        # stage F: a file in a project topic lands in <project>/inbox/<date>/ under its own name and goes on with its
+        # caption; without words it waits for the next message (👌); an album goes once; over 20 MB — a line back
+        proj = TMP / ("proj-" + self._testMethodName)
+        (proj / ".git").mkdir(parents=True)
+        self.store.set_topic(PKEY, str(proj), "proj", 77)
+        base = {"from": {"id": OWNER}, "chat": {"id": CHAT}, "message_thread_id": 77, "is_topic_message": True}
+        doc = lambda name, size=10, **kw: {"document": dict({"file_id": "BQAC" + name, "file_name": name, "file_size": size}, **kw)}
+        self.fake.file_bytes = b"%PDF-1.7 test"
+        day = F.drop_dir(str(proj))
+        with mock.patch.object(self.p, "route", mock.AsyncMock()) as route, mock.patch.object(pultd, "ALBUM_WAIT", 0.05):
+            await self.p.on_message(dict(base, message_id=31, caption="Сравни с прошлым", **doc("Отчёт [v2].pdf")))
+            body = route.call_args.args[3]
+            self.assertTrue(body.startswith("Сравни с прошлым\n\n[Attachment from Telegram: "))
+            self.assertEqual(R.attachments(body), ("Сравни с прошлым", [os.path.join(day, "Отчёт [v2].pdf")]))
+            self.assertEqual(Path(day, "Отчёт [v2].pdf").read_bytes(), b"%PDF-1.7 test")
+            self.assertIn("/inbox/", (proj / ".git" / "info" / "exclude").read_text())
+            # no words: the files wait; the next text takes them along; a photo gets its own name
+            route.reset_mock()
+            await self.p.on_message(dict(base, message_id=32, **doc("Отчёт [v2].pdf")))
+            await self.p.on_message(dict(base, message_id=33, photo=[{"file_id": "AgAD", "file_size": 10}]))
+            route.assert_not_called()
+            await until(lambda: len(self.fake.of("setMessageReaction")) == 2)
+            await self.p.on_message(dict(base, message_id=34, text="Что тут нового?"))
+            text, paths = R.attachments(route.call_args.args[3])
+            self.assertEqual(text, "Что тут нового?")
+            self.assertEqual([os.path.basename(x) for x in paths][0], "Отчёт [v2] (2).pdf")
+            self.assertTrue(os.path.basename(paths[1]).startswith("photo-") and paths[1].endswith(".jpg"))
+            route.reset_mock()
+            await self.p.on_message(dict(base, message_id=35, text="И ещё"))          # taken once
+            self.assertEqual(R.attachments(route.call_args.args[3])[1], [])
+            # an album: three messages, the caption on the second; it goes once, after the last file
+            route.reset_mock()
+            for i, (name, cap) in enumerate([("a.pptx", None), ("b.docx", "Собери в одну"), ("c.xlsx", None)]):
+                kw = dict(base, message_id=40 + i, media_group_id="g1", **doc(name))
+                if cap:
+                    kw["caption"] = cap
+                await self.p.on_message(kw)
+            route.assert_not_called()
+            await until(lambda: route.called)
+            text, paths = R.attachments(route.call_args.args[3])
+            self.assertEqual((text, [os.path.basename(x) for x in paths]), ("Собери в одну", ["a.pptx", "b.docx", "c.xlsx"]))
+            self.assertEqual(route.call_args.args[4], 41)                             # the message with the caption
+            # too big for a bot: nothing downloaded, the owner is told, Claude is told what didn't come
+            route.reset_mock()
+            n = len(self.fake.of("getFile"))
+            await self.p.on_message(dict(base, message_id=50, caption="Глянь", **doc("huge.zip", 25 * 1024 * 1024)))
+            self.assertEqual(len(self.fake.of("getFile")), n)
+            self.assertIn("huge.zip — 25 МБ", self.texts()[-1])
+            self.assertIn("did not come: huge.zip, 25 MB", route.call_args.args[3])
+        # in General, outside any project: Pult's own inbox, as before
+        with mock.patch.object(self.p, "route", mock.AsyncMock()) as route:
+            await self.p.on_message({"from": {"id": OWNER}, "chat": {"id": CHAT}, "message_id": 60, "caption": "x", **doc("g.pdf")})
+            self.assertIn(str(pultd.HOME / "inbox"), route.call_args.args[3])
+
+    async def test_send_files(self):
+        # pult send: the session named in the command's environment → its project topic; only the project's files,
+        # nothing like a secret; the app's "To Telegram" goes the same way
+        proj = TMP / ("proj-" + self._testMethodName)
+        (proj / "out").mkdir(parents=True)
+        (proj / "out" / "Итог.docx").write_bytes(b"PK-docx")
+        (proj / "deck.pptx").write_bytes(b"PK-pptx")
+        (proj / ".env").write_text("TOKEN=1")
+        self.store.set_topic(PKEY, str(proj), "proj", 77)
+        self.store.touch_session(SID, PKEY, path=str(proj))
+        res = await self.p.on_send({"sid": SID, "paths": [str(proj / "out" / "Итог.docx"), str(proj / ".env"), "/etc/hosts"],
+                                    "caption": "Готово"})
+        self.assertEqual(res["sent"], ["Итог.docx"])
+        self.assertEqual(res["refused"], [[".env", "похоже на ключи или настройки — не отправляю"], ["hosts", "не в папке этого проекта"]])
+        d = self.fake.of("sendDocument")[-1]
+        self.assertEqual((d["_name"], d["_bytes"], d["caption"], d["message_thread_id"], d["chat_id"]),
+                         ("Итог.docx", b"PK-docx", "Готово", "77", str(CHAT)))
+        self.assertEqual(self.store.msg(intro_id_of(self.fake, d))["sid"], SID)     # a reply to the file goes to the session
+        self.assertEqual(await self.p.on_send({"sid": "nope", "paths": ["a"]}), {"error": "Пульт не знает этой сессии или папки её проекта"})
+        self.assertIn("error", await self.p.on_send({"sid": SID, "paths": ["x"] * 11}))
+        r = await self.p.api_send_files(SID, ["deck.pptx"])
+        self.assertEqual(r["sent"], ["deck.pptx"])
+        with self.assertRaises(ValueError):
+            await self.p.api_send_files(SID, [".env"])
+        # the command itself, as Claude runs it: the session comes from Claude Code's environment
+        env = plain_env(PULT_SOCK=os.environ["PULT_SOCK"], CLAUDE_CODE_SESSION_ID=SID, PULT_LANG="ru")
+        p = await asyncio.create_subprocess_exec(sys.executable, str(HERE / "pultctl.py"), "send", "deck.pptx", "-m", "Вот",
+                                                 cwd=str(proj), env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        out, err = await p.communicate()
+        self.assertEqual((p.returncode, out.decode().strip()), (0, "отправлено: deck.pptx"), err)
+        self.assertEqual(self.fake.of("sendDocument")[-1]["caption"], "Вот")
+        env.pop("CLAUDE_CODE_SESSION_ID")
+        p = await asyncio.create_subprocess_exec(sys.executable, str(HERE / "pultctl.py"), "send", "deck.pptx", cwd=str(proj),
+                                                 env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        await p.communicate()
+        self.assertEqual(p.returncode, 2)
+
+    async def test_turn_files_and_context(self):
+        # a turn's files ride with its outcome (the app offers them to Telegram); a session learns about pult send at
+        # its start — from the hook, only while the daemon runs
+        proj = TMP / ("proj-" + self._testMethodName)
+        proj.mkdir()
+        self.store.set_topic(PKEY, str(proj), "proj", 77)
+        t0 = time.time() - 5
+        (proj / "made.pdf").write_bytes(b"x" * 2048)
+        lv = self.p.live_of(SID, PKEY)
+        files = await self.p.files_of_turn(lv, types.SimpleNamespace(started=t0))
+        self.assertEqual([f["p"] for f in files], ["made.pdf"])
+        self.p.outcome(lv, None, "Готово.", files=files)
+        self.assertEqual(self.p.attn.rec[SID]["files"][0]["size"], 2048)
+        self.assertEqual(await self.p.files_of_turn(lv, None), [])
+        out = await run_hook(ev("SessionStart", source="startup"), extra_env={"PULT_SOCK": os.environ["PULT_SOCK"]})
+        ctx = json.loads(out)["hookSpecificOutput"]
+        self.assertEqual(ctx["hookEventName"], "SessionStart")
+        self.assertIn("pult send", ctx["additionalContext"])
+        self.assertEqual(await run_hook(ev("SessionStart", source="startup"), extra_env={"PULT_SOCK": str(TMP / "нет.sock")}), "")
+        self.assertEqual(await run_hook(ev("Stop"), extra_env={"PULT_SOCK": os.environ["PULT_SOCK"]}), "")
+
+    async def test_project_inbox_pictures(self):
+        # the app shows a picture from a project's inbox in the chat; nothing outside it, nothing but pictures
+        proj = TMP / ("proj-" + self._testMethodName)
+        day = Path(F.drop_dir(str(proj)))
+        day.mkdir(parents=True)
+        png = b"\x89PNG\r\n\x1a\n" + b"\0" * 32
+        (day / "план 1.png").write_bytes(png)
+        (day / "notes.pdf").write_bytes(b"%PDF")
+        self.store.set_topic(PKEY, str(proj), "proj", 77)
+        att = pultd.PW.inbox_name(str(day / "план 1.png"))
+        self.assertEqual(att, {"name": day.name + "/план 1.png", "image": True, "inbox": True, "pkey": pultd.sanitize(str(proj))})
+        self.store.set_topic(att["pkey"], str(proj), "proj", 78)
+        self.assertEqual(base64.b64decode((await self.p.api_inbox(att["name"], att["pkey"]))["data"]), png)
+        for name in [day.name + "/notes.pdf", day.name + "/../../x.png", "../план 1.png", "2026-10/план 1.png"]:
+            with self.assertRaises(ValueError, msg=name):
+                await self.p.api_inbox(name, att["pkey"])
+        self.assertEqual(pultd.PW.inbox_name("/a/inbox/2026-10/app-1.jpg"), {"name": "2026-10/app-1.jpg", "image": True, "inbox": True})
+        self.assertEqual(pultd.PW.inbox_name("/x/Downloads/a.pdf"), {"name": "a.pdf", "image": False, "inbox": False})
+        # a document from the app goes to the project's inbox too
+        body = self.p.with_uploads("Посмотри", [{"name": "смета.xlsx", "data": base64.b64encode(b"PK-xlsx").decode()}], str(proj))
+        self.assertEqual(Path(R.attachments(body)[1][0]).read_bytes(), b"PK-xlsx")
+        self.assertEqual(Path(R.attachments(body)[1][0]).parent, day)
 
     async def test_model_choice(self):
         # the model and effort for a session from Telegram: picked for a new task, switched live on a running one

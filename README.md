@@ -33,6 +33,7 @@ remote control.
 | **Every session, nothing to start** | VS Code tabs and terminal sessions appear in their project's topic through Claude Code's hooks, including the ones you opened before leaving. |
 | **Answer from anywhere** | Permission requests and Claude's questions come with buttons. The dialog on the computer stays open too: whichever answer comes first decides. |
 | **Write back, even into an open tab** | A reply continues that session, `/new` starts one. With the optional tab wrapper, your message appears in the VS Code tab as if typed there. Photos and files reach Claude too; voice messages turn into text with a free Groq key. |
+| **Files both ways** | Forward documents, decks or pictures to a project's topic: they land in the project's `inbox/<date>/` under their own names, an album goes as one message, and files without words wait for your next one. Ask for a result and Claude sends it back to the topic with `pult send` — only files of that project, nothing that looks like a key. |
 | **Pick the model and effort** | Fable, Opus, Sonnet or Haiku and how hard Claude thinks, for one session — a running one switches at once. |
 | **See your plan's pace** | Each limit, the week and the 5-hour window, as a curve against the even pace, with a forecast: on pace, under (how many hours of a session's work would go unused) or over (when it runs out). Under it, how many sessions worked at once. |
 | **Called only when it matters** | With the web app, Telegram becomes a pager: it rings when Claude waits for you and you're neither in the app nor at the computer. Reminders on long turns, warnings at 80 % and 95 % of a limit. |
@@ -49,6 +50,8 @@ phone:
   message field.
 - **Resources** shows how you spend your plan: the curve of each limit, the forecast, who spent it, and the
   computer's load.
+- **Files of the turn** under its outcome: what Claude made or changed in the project, each one a tap away from the
+  project's topic in Telegram.
 - **A new project** from the phone: a folder anywhere in your home folder — empty with git, with a `CLAUDE.md` that
   Claude writes from your description, or a clone of a repository. Its topic appears in the group at once.
 

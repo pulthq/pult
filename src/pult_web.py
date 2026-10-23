@@ -228,12 +228,18 @@ def _short(s, n):
 
 
 def inbox_name(path):
-    """A path in the owner's inbox → what the app may ask for ("2026-10/app-1.jpg"), with a flag for pictures;
-    a file elsewhere keeps only its name and can't be shown."""
+    """A path the owner sent → what the app may ask for, with a flag for pictures: "2026-10/app-1.jpg" in Pult's own
+    inbox; "2026-10-23/plan.png" and the project's key in a project's inbox/ (files from Telegram, stage F). A file
+    elsewhere keeps only its name and can't be shown."""
     path = str(path)
     parts = path.replace("\\", "/").split("/")
-    inside = len(parts) >= 3 and parts[-3] == "inbox"
-    return {"name": "/".join(parts[-2:]) if inside else parts[-1], "image": R.is_image(path), "inbox": inside}
+    out = {"name": parts[-1], "image": R.is_image(path), "inbox": False}
+    if len(parts) >= 4 and parts[-3] == "inbox":
+        if re.fullmatch(r"\d{4}-\d{2}", parts[-2]):
+            out.update(name="/".join(parts[-2:]), inbox=True)
+        elif re.fullmatch(r"\d{4}-\d{2}-\d{2}", parts[-2]):
+            out.update(name="/".join(parts[-2:]), inbox=True, pkey=re.sub(r"[^a-zA-Z0-9]", "-", "/".join(parts[:-3])))
+    return out
 
 
 def transcript_page(path, before=None, after=None, cwd=None, page=PAGE):

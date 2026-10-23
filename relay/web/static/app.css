@@ -416,3 +416,11 @@ table.tv th { color: var(--muted); font-weight: 500; }
 /* a new project (stage S): "＋ New project" heads the project picker; the note under the place */
 .opt.add { color: var(--link); font-weight: 600; }
 .np-hint { margin: 6px 2px 0; }
+
+/* files (stage F): a document in the draft is a chip with its name; the turn's files under its outcome */
+.thumb.doc { width: auto; max-width: 220px; display: flex; align-items: center; padding: 0 28px 0 10px; }
+.thumb.doc .doc-n { font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tfiles { margin-top: 8px; }
+.tfile { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 3px 0; }
+.tfile .tf-n { min-width: 0; overflow-wrap: anywhere; }
+.tfile .link, .tfiles > .link { padding-top: 2px; }
