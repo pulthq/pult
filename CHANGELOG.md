@@ -4,6 +4,9 @@ Versions 0.x come before the first public release. Newest first.
 
 ## 0.15.2 — 2026-10-24
 
+- **On Windows, Settings → Pult no longer sees an update that isn't there.** Git for Windows checks Pult's files out
+  with CRLF line ends and stores them with LF, so the installed files never matched the commit, and any later commit —
+  docs alone — looked like a new version. A file now matches its commit either way.
 - **Ticks on your message, as in a messenger.** Claude reads a message sent while it works only at its turn's next
   step, sometimes a minute later, and until then the session showed nothing. Now the message is in the chat as soon
   as you tap Send: a clock while it goes, ✓ when the computer has it ("Claude will read it after the current step"),

@@ -99,12 +99,16 @@ def git(repo, *args, timeout=15, raw=False):
     return p.stdout if raw else p.stdout.decode("utf-8", "replace").strip()
 
 
-def blob(path):
-    """The git blob id of a file — what `git ls-tree` gives for the same bytes; None if it isn't there."""
+def blob(path, lf=False):
+    """The git blob id of a file — what `git ls-tree` gives for the same bytes; None if it isn't there. lf=True — of
+    its bytes with CRLF line ends made LF: what git stores for a text file checked out with core.autocrlf (Git for
+    Windows sets it), so a file installed from such a checkout matches its commit."""
     try:
         data = Path(path).read_bytes()
     except OSError:
         return None
+    if lf:
+        data = data.replace(b"\r\n", b"\n")
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
 
@@ -145,7 +149,7 @@ def check(manifest=None):
     if head == m.get("commit"):
         return out              # nothing committed since (an install from uncommitted files is newer, not older)
     want = tree(src, head)
-    if not want or all(blob(HOME / name) == b for name, b in want.items()):
+    if not want or all(b in (blob(HOME / name), blob(HOME / name, lf=True)) for name, b in want.items()):
         return out
     base = m.get("commit")
     if base and git(src, "merge-base", "--is-ancestor", base, head) is not None:

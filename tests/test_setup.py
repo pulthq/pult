@@ -684,6 +684,19 @@ class UpdateTest(Base):
         self.assertTrue(U.check()["failed"])
         self.assertEqual(U.check({})["repo"], None)              # no record of the source: no way to tell
 
+    def test_check_crlf(self):
+        # a checkout with core.autocrlf (Git for Windows): the files are CRLF in the folder and installed so, LF in the
+        # commit — a commit that didn't touch them is nothing to install (Actions on Windows, 2026-10-24)
+        for name in ("pultd.py", "pult_update.py", "pult_x.py"):
+            p = S.HOME / name
+            p.write_bytes(p.read_bytes().replace(b"\n", b"\r\n"))
+        self.files({"docs/journal.md": "j2\n"})
+        self.commit("Pult: journal")
+        self.assertFalse(U.check()["ready"])
+        self.files({"src/pult_x.py": "x = 2\n"})
+        self.commit("Pult: x is two")
+        self.assertTrue(U.check()["ready"])                      # a real change still counts
+
     def test_installed_from_uncommitted_files(self):
         # install.sh from a folder with uncommitted changes: they are newer than HEAD, not older
         self.files({"src/pult_x.py": "x = 9\n"})
