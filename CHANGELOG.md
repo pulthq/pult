@@ -10,7 +10,7 @@ Versions 0.x come before the first public release. Newest first.
   own links count from its folder), code and text with line numbers (a link to `#L124` puts that line in the middle,
   marked), a project's HTML page drawn with no script running, a picture on the whole screen, a folder as a list, and
   the folder in a file's header lists that folder. Anything else says the app can't show it, and **To Telegram** under
-  any file sends it to the project's topic. The rule is the one of To Telegram: only files inside the session's
+  any file sends it to the project's topic (Windows line ends show as plain ones). The rule is the one of To Telegram: only files inside the session's
   project, nothing that looks like keys or settings. `tools/fileview_check.py` drives it with taps on the stand
   (`STAND_FILES=1`).
 - **Voice: "speak" waits for sound even after Telegram's microphone question.** Telegram on Android asks for the

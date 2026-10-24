@@ -162,8 +162,8 @@ def image_kind(blob):
 def show_file(real):
     """A project file for the app's screen: {kind, size, mt} and what to show. kind "pic" with data (its bytes) and
     pic (png / jpg / gif / webp, told by the bytes, at most SHOW_PIC_MAX); "md", "html" (by the extension) or "text"
-    with text — UTF-8 with no NUL, at most SHOW_TEXT_MAX bytes, cut at a line's end (cut: the rest is left out);
-    anything else is "other": Telegram opens it."""
+    with text — UTF-8 with no NUL, at most SHOW_TEXT_MAX bytes, cut at a line's end (cut: the rest is left out),
+    Windows line ends made plain; anything else is "other": Telegram opens it."""
     st = os.stat(real)
     out = {"size": st.st_size, "mt": int(st.st_mtime)}
     with open(real, "rb") as f:
@@ -184,7 +184,7 @@ def show_file(real):
         if not cut or e.start < len(blob) - 3:            # a letter cut in two at the very end is no reason
             return dict(out, kind="other")
         text = blob[:e.start].decode("utf-8")
-    return dict(out, kind=SHOW_AS.get(os.path.splitext(real)[1].lower(), "text"), text=text, cut=cut)
+    return dict(out, kind=SHOW_AS.get(os.path.splitext(real)[1].lower(), "text"), text=text.replace("\r\n", "\n"), cut=cut)
 
 
 def show_dir(real):

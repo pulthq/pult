@@ -1773,6 +1773,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         (proj / "bin.dat").write_bytes(b"\x00\x01\x02")
         (proj / "cp1251.txt").write_bytes("привет".encode("cp1251"))
         (proj / "empty.txt").write_text("")
+        (proj / "crlf.txt").write_bytes(b"a\r\nb\r\n")                       # Windows line ends: no \r at each line's end
         (proj / "long.txt").write_text("".join("строка %d\n" % i for i in range(100)))
         (proj / ".env").write_text("TOKEN=1")
         (proj / ".git" / "config").write_text("[core]")
@@ -1789,6 +1790,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await f(SID, str(proj / "page.html")))["kind"], "html")          # an absolute path inside the project
         self.assertEqual((await f(SID, "file://" + str(proj / "CLAUDE.md")))["p"], "CLAUDE.md")
         self.assertEqual([(await f(SID, n))["kind"] for n in ("bin.dat", "cp1251.txt", "empty.txt")], ["other", "other", "text"])
+        self.assertEqual((await f(SID, "crlf.txt"))["text"], "a\nb\n")
         with mock.patch.object(F, "SHOW_TEXT_MAX", 40):                                   # a long text: its start, cut at a line
             r = await f(SID, "long.txt")
         self.assertEqual((r["cut"], r["text"]), (True, "строка 0\nстрока 1\n"))
@@ -1796,7 +1798,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await f(SID, "docs/img/a b.png"))["kind"], "other")
         # folders: folders first, then by name; no temporary files; secrets listed but locked
         r = await f(SID, "")
-        self.assertEqual((r["p"], r["kind"], r["n"]), ("", "dir", 9))
+        self.assertEqual((r["p"], r["kind"], r["n"]), ("", "dir", 10))
         self.assertEqual([(e["n"], e["dir"], e["lock"]) for e in r["entries"][:3]], [(".git", True, True), ("docs", True, False), (".env", False, True)])
         self.assertNotIn(".DS_Store", [e["n"] for e in r["entries"]])
         r = await f(SID, "docs/")
