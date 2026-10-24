@@ -43,6 +43,7 @@ import pult_os
 import pult_render as R
 import pult_spend as S
 import pult_stt as STT
+import pult_update as U
 import pult_web as PW
 
 HOME = Path(os.environ.get("PULT_HOME") or "~/.local/share/pult").expanduser()
@@ -75,6 +76,8 @@ TICK = 60                # s; refresh "working N min" this often, even without e
 NOW_LEN = 300            # characters of Claude's reply in the "now" line
 YOU_LEN = 160            # characters of the owner's prompt in a result's head (one message per turn)
 STALE = 20 * 60          # s without events: check whether the session is alive (a tab may close without SessionEnd)
+OUT_READ = 30            # s a message just read stays in the outbox: the app shows it until the transcript has it
+OUT_GONE = 10 * 60       # s a message that didn't reach Claude stays in the outbox: the app shows it crossed out
 BRIEF_DIR = HOME / "brief"   # an empty folder the result-reading model runs in (pult_brief): no project, no settings
 APP_ON = 45              # s: the app said "on screen" this recently — the owner is looking at it (stage V)
 AWAY_LOCKABLE = 300      # s: where the screen lock can be read, away after this long without input (locked — at once)
@@ -92,9 +95,10 @@ TURNS_KEPT = 50                 # turns with files kept per session (stage F4)
 UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the app shrinks them to ~200 KB first)
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
+STT_WORDS_MAX = 280             # characters of the owner's own words for Whisper: with the sentence, within Groq's 896 bytes
 STT_MAX = 4 * 1024 * 1024       # bytes of one recording from the app (5 min at 32 kbit/s ≈ 1.2 MB; base64 must fit the 8 MB frame)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.14.0"
+VERSION = "0.15.2"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -610,6 +614,7 @@ class Turn:
         self.vehi_ids = []        # the milestones' messages: removed when the result comes (one message per turn)
         self.note = None          # the turn was started by Claude itself: "⚙️ Background task finished …"
         self.here = False         # the owner typed the prompt at this computer (not from Telegram or the app)
+        self.prompt_id = None     # Claude Code's id of the turn: a message absorbed into it comes with the same one
 
 
 class Req:
@@ -624,6 +629,7 @@ class Req:
         self.kind = "ask" if tool == "AskUserQuestion" else "plan" if tool == "ExitPlanMode" else "perm"
         self.fut = asyncio.get_running_loop().create_future()
         self.msgs = []            # [(message_id, question index or None)]
+        self.closed = None        # (note, answers) once decided: a message still on its way gets the same line on arrival
         self.chosen = {}          # question → [answers]
         self.picks = {}           # multi-select question → checked options
         self.ts = time.time()     # since when it waits for the owner
@@ -688,13 +694,57 @@ class Driven:
         self.result = asyncio.Event()
         self.bg = set()           # the process's background tasks: while they run, the process is not closed
         self.model = None         # the main model, from system/init: picks the entry in the result's modelUsage
+        self.queued = None        # since when a message waits for a place among the MAX_RUNNING turns
+        self.waiting = None       # that message's words, for the app and the topic
+        self.jump = asyncio.Event()       # "Start now": this turn goes over the limit, once
+        self.dropped = asyncio.Event()    # Stop while it waits: the message goes
+        self.queue_msg = None     # the topic's "⏳ in the queue" message, removed once the turn starts
         self.task = asyncio.create_task(self.run())
 
     @property
     def busy(self):
-        """A turn is running — our own query, or one Claude Code started itself when a background task finished."""
+        """A turn is running — our own query, or one Claude Code started itself when a background task finished —
+        or a message waits in the queue for one."""
+        return self.running or self.queued is not None
+
+    @property
+    def running(self):
         lv = self.d.live.get(self.sid)
         return self.asking or bool(lv and lv.turn)
+
+    async def slot(self, text, origin):
+        """A place among the MAX_RUNNING turns from Telegram and the app → True (taken: give it back), False (over the
+        limit: "Start now"), None (Stop while it waited: the message is dropped). While it waits the session is "in
+        the queue" — in the app, and in the topic when the message came from Telegram. A queue nobody could see made
+        a 4th question look dead: it waited 4 minutes, the owner sent it again, it ran twice (2026-10-23)."""
+        sem = self.d.run_sem
+        if not sem.locked():
+            await sem.acquire()
+            return True
+        self.queued, self.waiting = time.time(), R.short(R.prompt_text(text), 300)
+        self.jump.clear()
+        self.dropped.clear()
+        log("Telegram session %s: in the queue, %d turns run" % (self.sid[:8], MAX_RUNNING))
+        await self.d.queue_shown(self, origin)
+        take = asyncio.ensure_future(sem.acquire())
+        jump, drop = asyncio.ensure_future(self.jump.wait()), asyncio.ensure_future(self.dropped.wait())
+        try:
+            await asyncio.wait({take, jump, drop}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            jump.cancel()
+            drop.cancel()
+            if not take.done():
+                take.cancel()
+            await asyncio.gather(take, jump, drop, return_exceptions=True)
+            got = take.done() and not take.cancelled() and take.exception() is None
+            waited = time.time() - self.queued
+            self.queued = self.waiting = None
+            if self.dropped.is_set() and got:
+                sem.release()
+            await self.d.queue_gone(self)
+        how = "dropped" if self.dropped.is_set() else "a place came" if got else "started over the limit"
+        log("Telegram session %s: out of the queue after %d s — %s" % (self.sid[:8], waited, how))
+        return None if self.dropped.is_set() else got
 
     async def say(self, text, origin):
         """A message for this session. During our query's turn it goes straight to Claude Code, which reads it at the
@@ -720,6 +770,15 @@ class Driven:
         if None in items:
             self.q.put_nowait(None)              # the process has ended: the loop still has to see that
         dropped = len([x for x in items if x is not None])
+        for x in items:
+            if x is not None:
+                self.d.out_set(self.sid, "gone", x[0])
+        lv = self.d.live.get(self.sid)
+        if self.queued is not None:              # the message waiting for a place goes too
+            self.dropped.set()
+            dropped += 1
+            if not (lv and lv.turn):
+                return dropped                   # no turn runs: nothing to interrupt
         if self.client:
             await self.client.interrupt()
         return dropped
@@ -795,7 +854,11 @@ class Driven:
                         if item is None:
                             break
                         text, origin = item
-                        async with self.d.run_sem:
+                        took = await self.slot(text, origin)
+                        if took is None:
+                            self.d.out_set(self.sid, "gone", text)       # Stop while it waited for a place
+                            continue
+                        try:
                             self.result.clear()
                             self.d.expect[self.sid] = origin
                             try:
@@ -805,6 +868,9 @@ class Driven:
                             finally:
                                 self.asking = False
                                 self.d.expect.pop(self.sid, None)
+                        finally:
+                            if took:
+                                self.d.run_sem.release()
                 finally:
                     reader.cancel()
                 if reader.done() and not reader.cancelled():
@@ -817,6 +883,7 @@ class Driven:
         finally:
             self.d.driven.pop(self.sid, None)
             self.client = None
+            self.d.out_gone_all(self.sid)
 
 
 # ---------- daemon ----------
@@ -834,6 +901,7 @@ class Pult:
         self.expect = {}               # sid → the owner's message the turn replies to
         self.tabs = {}                 # wrapper pid → a VS Code tab we can write into (stage 2)
         self.tab_expect = {}           # sid → (owner's message, text) sent into the tab
+        self.outbox = {}               # sid → the owner's messages on their way to Claude: the app's ticks (Q56)
         self.offers = {}               # button token → data (session copy, open a session, project)
         self.decided_msgs = {}         # messages whose choice was made with a button: a second tap does nothing
         self.req_by_rid = {}
@@ -874,6 +942,10 @@ class Pult:
         self.choice = store.get("choice") or {}         # sid → {"model", "effort"} the owner picked for a session from Telegram
         self._env_mt = env_mtime()     # the settings file as of now: a key added later by `pult stt` is picked up (refresh_stt)
         self.stt = self.make_stt()     # pult_stt.Stt when PULT_STT_KEY is set — voice input
+        self.t_start = time.time()
+        self.health = {}               # reached Telegram / the app's server — health.json, for the installer (stage U)
+        self._upd = (0.0, None)        # what the source folder has (pult_update.check), kept a minute
+        self.upd_wait = None           # the owner asked to install once Pult's sessions are free: since when
 
     # ----- this computer's environment -----
 
@@ -904,6 +976,50 @@ class Pult:
         time since their last action in a session here — a prompt typed, a permission answered (or Pult's start)."""
         v = await self.input_idle()
         return v if v is not None else time.monotonic() - self.here_seen
+
+    # ----- the owner's messages on their way to Claude: the ticks (decision Q56) -----
+    # Claude Code reads a message sent while it works only at the turn's next step (absorbed_mid_turn), up to a minute
+    # later; the app showed nothing until then (the owner, 2026-10-24). A message here is "sent" once Claude Code or
+    # Pult's queue has it, "read" when its UserPromptSubmit comes — one per message, in the order sent, also when two
+    # are read at one step (probe_midturn.py two, 2.1.300) — and "gone" if Stop drops it or the process ends first
+
+    def out_add(self, sid, body, tg=None, react=None):
+        """body — the words as they go to Claude; tg, react — the Telegram message and the reaction it got (✍ — the
+        session was busy: 👀 once Claude reads it). → the message's id for the app."""
+        now = time.time()
+        box = [o for o in self.outbox.get(sid) or []
+               if o["st"] == "sent" or now - o["at"] < (OUT_READ if o["st"] == "read" else OUT_GONE)]
+        o = {"id": secrets.token_hex(4), "body": body, "ts": now, "at": now, "st": "sent", "tg": tg, "react": react}
+        self.outbox[sid] = box + [o]
+        self.changed(sid)
+        return o["id"]
+
+    def out_drop(self, sid, oid):
+        """The hand-off failed: the app says so itself, and the words stay in its field."""
+        self.outbox[sid] = [o for o in self.outbox.get(sid) or [] if o["id"] != oid]
+
+    def out_set(self, sid, st, body=None):
+        """The first message still on its way — with these words, when given — is read or gone → it, or None."""
+        for o in self.outbox.get(sid) or []:
+            if o["st"] == "sent" and (body is None or o["body"].strip() == str(body).strip()):
+                o["st"], o["at"] = st, time.time()
+                if st == "read" and o["tg"] and o["react"] == "✍":
+                    asyncio.create_task(self.react(o["tg"], "👀"))
+                self.changed(sid)
+                return o
+        return None
+
+    def out_gone_all(self, sid):
+        """The session's process or tab is gone: what hadn't reached Claude won't."""
+        while self.out_set(sid, "gone"):
+            pass
+
+    def out_view(self, sid):
+        """For the session screen: each message as the transcript will show it, with its id and state."""
+        now = time.time()
+        return [dict(PW.user_item(PW.user_text(o["body"]), o["ts"]), id=o["id"], st=o["st"])
+                for o in self.outbox.get(sid) or []
+                if o["st"] == "sent" or now - o["at"] < (OUT_READ if o["st"] == "read" else OUT_GONE)]
 
     def seen_here(self, lv):
         if not lv.driven:
@@ -1299,9 +1415,9 @@ class Pult:
             lines += ["", "💬 " + R.esc(R.plain(t.now, NOW_LEN))]
         return "\n".join(lines)
 
-    def start_turn(self, lv, prompt=None, reply_to=None, note=None):
+    def start_turn(self, lv, prompt=None, reply_to=None, note=None, pid=None):
         t = lv.turn = Turn(prompt, reply_to)
-        t.note = note
+        t.note, t.prompt_id = note, pid
         asyncio.create_task(self.turn_updater(lv, t))
         t.vehi = asyncio.create_task(self.vehi(lv, t))
         self.changed(lv.sid)
@@ -1422,8 +1538,9 @@ class Pult:
         dr = self.driven.get(sid)
         if dr and not lv.driven:
             # a session from Telegram was opened on the Mac: Pult releases its process so that two
-            # processes don't write to the same session; a running turn is not interrupted
-            if not dr.busy:
+            # processes don't write to the same session; a running turn is not interrupted (a message still in the
+            # queue goes: the session is the Mac's now)
+            if not dr.running:
                 dr.task.cancel()
                 log("session %s moved to the Mac — Pult's process closed" % sid[:8])
                 if dr.bg:
@@ -1439,7 +1556,17 @@ class Pult:
                 self.store.set_topic(pkey, path, self.project_name(pkey, path), None)
         if name in ("UserPromptSubmit", "Stop", "StopFailure"):
             self.store.touch_session(sid, pkey)          # the topic's recent sessions, for the "where to send" question
-        if name == "UserPromptSubmit":
+        if name == "UserPromptSubmit" and lv.turn and ev.get("prompt_id") and ev["prompt_id"] == lv.turn.prompt_id:
+            # a message absorbed into the running turn — the owner's, sent mid-turn (Driven.say, a busy tab), or another
+            # session's SendMessage: Claude Code gives it a UserPromptSubmit of its own, but with the running turn's
+            # prompt_id (tests/probe_midturn.py, 2.1.300 and 2.1.301). The turn and its "working N" go on: each such
+            # message used to end the turn and start one from zero (2026-10-24: sessions writing to each other showed
+            # "working 28 s" 19 min into a turn). The turn's result answers the latest message from Telegram
+            lv.turn.reply_to = self.expect.get(sid) or lv.turn.reply_to
+            lv.turn.last = time.time()
+            self.changed(sid)      # the app re-reads the session now: the message is in the transcript, read by Claude
+            self.out_set(sid, "read", ev.get("prompt"))
+        elif name == "UserPromptSubmit":
             self.resolve_all(lv, self.t("req.decided_mac"))
             self.finish_turn(lv, "⏹")
             notes = R.task_notes(ev.get("prompt"))
@@ -1453,7 +1580,7 @@ class Pult:
                                                    if b.get("id") == n["id"]), None) or self.t("task.default")
                 ended = {n["id"] for n in notes}
                 lv.bg = [b for b in lv.bg if b.get("id") not in ended]
-                t = self.start_turn(lv, note=R.task_notes_text(notes))
+                t = self.start_turn(lv, note=R.task_notes_text(notes), pid=ev.get("prompt_id"))
                 lv.run = lv.run or t.started
             else:
                 origin = self.expect.get(sid)
@@ -1463,9 +1590,10 @@ class Pult:
                 lv.title = lv.title or R.short(R.attachments(ev.get("prompt"))[0], 60) or None
                 if not origin:
                     self.seen_here(lv)                         # typed here
-                t = self.start_turn(lv, None if origin else ev.get("prompt"), reply_to=origin)
+                t = self.start_turn(lv, None if origin else ev.get("prompt"), reply_to=origin, pid=ev.get("prompt_id"))
                 t.here = not origin and not lv.driven
                 lv.run = t.started
+                self.out_set(sid, "read", ev.get("prompt"))
         elif name in ("PostToolUse", "PostToolUseFailure"):
             tool, inp = ev.get("tool_name"), ev.get("tool_input")
             for r in list(lv.pending.values()):
@@ -1480,7 +1608,7 @@ class Pult:
                 began, own = await asyncio.to_thread(
                     lambda p: (prompt_started(p), prompt_started(p, owner=True)), lv.transcript) \
                     if lv.transcript else (None, None)
-                t = self.start_turn(lv)
+                t = self.start_turn(lv, pid=ev.get("prompt_id"))
                 if began and began < t.started:
                     t.started = began              # the turn began before Pult saw it (a restart mid-turn)
                     t.changed.set()
@@ -1507,6 +1635,7 @@ class Pult:
         elif name == "SessionEnd":
             self.resolve_all(lv, self.t("req.session_closed"))
             self.finish_turn(lv, "⏹")
+            self.out_gone_all(sid)
             self.live.pop(sid, None)
             if not lv.driven:                  # a session from Telegram only rests: Pult closes its idle process
                 self.clear_focus(sid)
@@ -1741,7 +1870,7 @@ class Pult:
     def card_status(self, pkey, rows):
         """The first line of a topic's pinned card (stage V): who works, who waits since when — the topic's pinned bar
         shows it; editing it never rings."""
-        work = sum(1 for r in rows if r["state"] in ("work", "bg"))
+        work = sum(1 for r in rows if r["state"] in ("work", "bg", "queue"))
         mine = [r for r in rows if r["state"] in A.MINE]
         parts = [self.t("card.st.work", n=work)] if work else []
         if mine:
@@ -1962,6 +2091,8 @@ class Pult:
                 if m:
                     req.msgs.append((m, i))
                     self.req_by_msg[m] = (req, i)
+                    if req.closed:             # decided while this one was on its way
+                        self.close_req_msgs(req, *req.closed, only=[(m, i)])
             return
         if req.kind == "plan":
             plan = str(req.inp.get("plan") or "")
@@ -1985,6 +2116,8 @@ class Pult:
         if m:
             req.msgs.append((m, None))
             self.req_by_msg[m] = (req, None)
+            if req.closed:                     # decided while it was on its way: the buttons go at once
+                self.close_req_msgs(req, *req.closed, only=[(m, None)])
 
     def q_buttons(self, req, i):
         q = (req.inp.get("questions") or [])[i]
@@ -2035,9 +2168,12 @@ class Pult:
         lv = self.live.get(req.sid) or self.stub(req.sid)
         return "%s %s%s\n" % (icon, self.head(lv), " · " + what if what else "")
 
-    def close_req_msgs(self, req, note, answers=None):
+    def close_req_msgs(self, req, note, answers=None, only=None):
+        """The request's messages say how it was decided, without buttons. A message still being sent when the decision
+        came (a tap, the computer's dialog or the app in that moment) is closed as soon as its id is known — only."""
+        req.closed = (note, answers)
         lv = self.live.get(req.sid)
-        for m, i in req.msgs:
+        for m, i in only or req.msgs:
             if i is not None:
                 q = (req.inp.get("questions") or [])[i]
                 got = (answers or {}).get(q.get("question")) or ", ".join(req.chosen.get(i, []))
@@ -2137,6 +2273,9 @@ class Pult:
         elif data.startswith("r:") and data.count(":") == 2:
             _, sid, i = data.split(":")
             note = await self.on_reply_button(sid, int(i)) if i.isdigit() else self.t("note.stale")
+        elif data.startswith("j:"):
+            res = await self.api_jump(data[2:])
+            note = self.t("note.jump") if res["ok"] else res["note"]
         elif data.startswith("z:"):
             try:
                 at = (await self.api_resume_at(data[2:], 0))["at"]
@@ -2548,7 +2687,8 @@ class Pult:
 
     def make_stt(self):
         key = (self.env.get("PULT_STT_KEY") or "").strip()
-        return STT.Stt(key, proxy=self.env.get("PULT_PROXY") or None) if key else None
+        return STT.Stt(key, proxy=self.env.get("PULT_PROXY") or None,
+                       model=(self.env.get("PULT_STT_MODEL") or "").strip() or None) if key else None
 
     def refresh_stt(self):
         """A key set or removed with `pult stt` while the daemon runs: the settings file changed — read the voice
@@ -2558,7 +2698,7 @@ class Pult:
             return
         self._env_mt = mt
         fresh = load_env()
-        for k in ("PULT_STT_KEY", "PULT_STT_LANG"):
+        for k in ("PULT_STT_KEY", "PULT_STT_LANG", "PULT_STT_MODEL"):
             if fresh.get(k):
                 self.env[k] = fresh[k]
             else:
@@ -2575,14 +2715,15 @@ class Pult:
 
     def stt_state(self):
         self.refresh_stt()
-        return {"on": bool(self.stt), "lang": self.stt_lang() or "auto"}
+        return {"on": bool(self.stt), "lang": self.stt_lang() or "auto", "words": self.store.get("stt_words") or ""}
 
     def stt_prompt(self):
-        """Vocabulary for Whisper: Pult's terms and the project names, with punctuation — so the words come out
-        spelled right and punctuated (Whisper follows the prompt's style)."""
-        names = [r["name"] for r in self.store.db.execute(
-            "SELECT name FROM topics WHERE name IS NOT NULL ORDER BY name LIMIT 30").fetchall()]
-        return self.t("stt.prompt", projects=", ".join(names) or "—")
+        """What Whisper is told before the recording: a sentence in the language spoken, with the terms people say
+        to Claude, and the owner's own words (Settings → Voice input) — so they come out spelled right and punctuated
+        (Whisper follows the prompt's style). Folder names stay out: nobody says my_api_v2 aloud. The words go
+        last, nearest the recording; the whole is cut to what Groq takes (pult_stt.fit)."""
+        words = self.store.get("stt_words") or ""
+        return STT.fit(self.t("stt.prompt") + (" " + self.t("stt.prompt.words", words=words) if words else ""))
 
     async def hear(self, blob, kind):
         """A recording → its words. Raises pult_stt.SttError — "no key" and "nothing heard" included."""
@@ -2590,6 +2731,9 @@ class Pult:
         if not self.stt:
             raise STT.SttError("stt.nokey")
         text = await self.stt.transcribe(blob, kind, language=self.stt_lang(), prompt=self.stt_prompt())
+        text, cut = STT.scrub(text)
+        if cut:
+            log("voice: Whisper's phantom cut off: %s" % " | ".join(cut))
         if not text:
             raise STT.SttError("stt.empty")
         return text
@@ -2693,14 +2837,18 @@ class Pult:
         quote = bool(trow and trow["thread"] == here)    # a reply in the same topic the session lives in
         if sid in self.driven:
             dr = self.driven[sid]
-            await self.react(origin, "✍" if dr.busy else "👀")
+            mark = "✍" if dr.busy else "👀"
+            await self.react(origin, mark)
+            self.out_add(sid, text, tg=origin, react=mark)
             await dr.say(text, origin if quote else None)
             return
         tab = self.tab_for(sid)
         if tab:
             # open in a tab with Pult's wrapper: write straight into it (stage 2)
+            mark = "✍" if sid in self.live and self.live[sid].turn else "👀"
+            self.out_add(sid, text, tg=origin, react=mark)
             await self.to_tab(tab, text, origin if quote else None)
-            await self.react(origin, "✍" if sid in self.live and self.live[sid].turn else "👀")
+            await self.react(origin, mark)
             return
         # open on the Mac: `claude agents` says so (research preview), or it sent events
         # and there was no SessionEnd; the second sign backs up the first in case the command goes away
@@ -2754,6 +2902,7 @@ class Pult:
         lv = self.live_of(sid, pkey)
         lv.driven, lv.cwd = True, path
         lv.title = lv.title or R.short(R.attachments(text)[0], 60) or None
+        self.out_add(sid, text, tg=origin, react="👀")
         dr = self.driven[sid] = Driven(self, sid, path, resume=resume, fork=fork,
                                        model=choice.get("model"), effort=choice.get("effort"))
         dr.q.put_nowait((text, origin if quote else None))
@@ -3072,10 +3221,17 @@ class Pult:
         seen = [lv.bg_seen.get(b.get("id")) for b in lv.bg]
         return min([s for s in seen if s], default=None)
 
+    def queued(self, sid):
+        """Since when the session's message waits in the queue (Driven.slot), or None."""
+        dr = self.driven.get(sid)
+        return dr.queued if dr else None
+
     def live_item(self, lv):
         t = lv.turn
+        q = self.queued(lv.sid)
         return {"sid": lv.sid, "title": self.title(lv), "project": self.project_label(lv.pkey), "pkey": lv.pkey,
-                "driven": lv.driven, "state": "ask" if lv.pending else "work" if t else "idle",
+                "driven": lv.driven, "state": "ask" if lv.pending else "work" if t else "queue" if q else "idle",
+                "queued": q, "waiting": self.driven[lv.sid].waiting if q else None, "slots": MAX_RUNNING,
                 "started": t.started if t else None, "run": (lv.run or t.started) if t else None, "prompt": R.short(R.prompt_text(t.prompt), 300) if t and t.prompt else None,
                 "note": t.note if t else None, "now": R.plain(t.now, NOW_LEN) if t and t.now else None,
                 "bg": [R.short(b.get("description") or b.get("command") or self.t("task.default"), 80) for b in lv.bg],
@@ -3084,7 +3240,7 @@ class Pult:
     def req_item(self, req):
         lv = self.live.get(req.sid) or self.stub(req.sid)
         d = {"rid": req.rid, "sid": req.sid, "kind": req.kind, "tool": req.tool, "title": self.title(lv),
-             "project": self.project_label(lv.pkey), "suggest": bool(req.suggestions)}
+             "project": self.project_label(lv.pkey), "suggest": bool(req.suggestions), "since": req.ts}
         if req.kind == "ask":
             d["questions"] = req.inp.get("questions") or []
             d["chosen"] = {str(i): v for i, v in req.chosen.items()}
@@ -3117,7 +3273,7 @@ class Pult:
     async def api_overview(self):
         agents = await self.agents()
         idle = await self.idle()
-        shown = {sid for sid, lv in self.live.items() if lv.turn or lv.pending or lv.bg}
+        shown = {sid for sid, lv in self.live.items() if lv.turn or lv.pending or lv.bg or self.queued(sid)}
         opened = []
         for a in agents:
             sid = a.get("sessionId")
@@ -3131,7 +3287,7 @@ class Pult:
                 "pending": [self.req_item(r) for r in self.req_by_rid.values() if not r.fut.done()],
                 "open": opened, "recent": list(self.recent),
                 "jobs": [self.job_item(j) for j in self.jobs.values()] + [self.job_item(j) for j in self.jobs_done],
-                **await self.board(agents)}
+                "update": await self.update_row(), **await self.board(agents)}
 
     async def api_seen(self, sid):
         """"Got it" on a card of "Your move": the outcome is seen without opening the session."""
@@ -3169,11 +3325,13 @@ class Pult:
                 continue
             t = lv.turn
             pending = [r for r in lv.pending.values() if not r.fut.done()]
-            st = A.state(pending, t is not None, lv.bg or (sid in self.driven and self.driven[sid].bg), rec or None)
+            q = self.queued(sid)
+            st = A.state(pending, t is not None, lv.bg or (sid in self.driven and self.driven[sid].bg), rec or None, q)
             since = min(getattr(r, "ts", 0) or time.time() for r in pending) if pending else (lv.run or t.started) if t \
-                else (st == "bg" and self.bg_since(lv)) or rec.get("ts")
+                else q if st == "queue" else (st == "bg" and self.bg_since(lv)) or rec.get("ts")
             line = (R.plain(t.now, NOW_LEN) if t.now else R.short(R.prompt_text(t.prompt), 160) if t.prompt
-                    else t.note or "") if t else rec.get("line") or ""
+                    else t.note or "") if t else R.short(self.driven[sid].waiting or "", 160) if st == "queue" \
+                else rec.get("line") or ""
             # on the board a session sits under its project: its own title, or its first prompt, never the project again
             rows.append({"sid": sid, "pkey": lv.pkey, "title": lv.title or self.title(lv), "state": st, "since": since,
                          "ts": rec.get("ts"), "line": line, "need": rec.get("need") or "", "replies": rec.get("replies") or [],
@@ -3213,7 +3371,7 @@ class Pult:
                 r["ctx"] = await self.ctx_pct(r["sid"])
             projects.append({"pkey": pkey, "name": self.name_of(pkey, rs), "rows": shown, "rows_all": rs,
                              "resting": sum(1 for r in rs if A.resting(r, now)),
-                             "work": sum(1 for r in rs if r["state"] in ("work", "bg")),
+                             "work": sum(1 for r in rs if r["state"] in ("work", "bg", "queue")),
                              "mine": sum(1 for r in rs if r["state"] in A.MINE), "turns": turns, "secs": secs})
         mine = A.sort_rows([dict(r, project=p["name"]) for p in projects for r in p["rows_all"] if r["state"] in ("you", "fail")])
         projects = A.sort_projects(projects)
@@ -3235,7 +3393,7 @@ class Pult:
         pending = [self.req_item(r) for r in self.req_by_rid.values()
                    if not r.fut.done() and (self.live.get(r.sid) or self.stub(r.sid)).pkey == pkey]
         mine = A.sort_rows([r for r in rows if r["state"] in ("you", "fail")])
-        live = A.sort_rows([r for r in rows if r["state"] in ("work", "bg")])
+        live = A.sort_rows([r for r in rows if r["state"] in ("work", "bg", "queue")])
         today = sorted([r for r in rows if r["state"] in ("done", "idle") and (r["ts"] or 0) >= midnight],
                        key=lambda r: -(r["ts"] or 0))
         for r in live + today:
@@ -3434,7 +3592,8 @@ class Pult:
                 "live": live, "page": page, "stats": stats, "choice": self.choice.get(sid) or {}, "switch": switch,
                 "switch_effort": switch_effort, "stt": self.stt_state()["on"],
                 "ctx": {"window": ctx[0], "max_out": ctx[1], "usable": ctx_usable(ctx[0], ctx[1])} if ctx else None,
-                "pending": [self.req_item(r) for r in lv.pending.values() if not r.fut.done()]}
+                "pending": [self.req_item(r) for r in lv.pending.values() if not r.fut.done()],
+                "out": self.out_view(sid)}
 
     async def api_answer(self, rid, act=None, answers=None, text=None):
         req = self.req_by_rid.get(rid)
@@ -3473,14 +3632,28 @@ class Pult:
             if how == "fork" and not fork:
                 return {"ok": False, "need": "fork"}
         body = self.with_uploads(text, files, self.session_project(sid)[1])
+        oid = None
         if how == "session":
-            await self.driven[sid].say(body, None)
+            oid = self.out_add(sid, body)          # before the hand-off: its hook may come before we are back
+            try:
+                await self.driven[sid].say(body, None)
+            except Exception:
+                self.out_drop(sid, oid)
+                raise
         elif how == "tab":
-            await self.to_tab(tab, body, None)
+            oid = self.out_add(sid, body)
+            try:
+                await self.to_tab(tab, body, None)
+            except Exception:
+                self.out_drop(sid, oid)
+                raise
         else:
+            # a resumed session (or a copy — a new session) gets its message into the outbox in drive()
             await self.drive(sid, cwd, body, None, resume=sid if how == "resume" else None, fork=how == "fork", pkey=pkey)
+            if how == "resume":
+                oid = next((o["id"] for o in reversed(self.outbox.get(sid) or []) if o["body"] == body), None)
         self.mark_seen(sid, body)                  # answered: the outcome is behind, and a call about it says with what
-        return {"ok": True, "how": how}
+        return {"ok": True, "how": how, "out": oid}
 
     @staticmethod
     def check_choice(model, effort):
@@ -3952,8 +4125,9 @@ class Pult:
             log("turn files: %r" % e)
             return [], 0
 
-    async def api_stt(self, data, mime=None):
-        """A recording from the app → its words (the app puts them into the message field). Nothing is kept."""
+    async def api_stt(self, data, mime=None, notes=None):
+        """A recording from the app → its words (the app puts them into the message field). Nothing is kept. notes —
+        how the recording went, from the app's level meter, for the log: whether the start of the words got lost."""
         try:
             blob = base64.b64decode(str(data or ""), validate=True)
         except (ValueError, binascii.Error):
@@ -3964,8 +4138,43 @@ class Pult:
             text = await self.hear(blob, mime or "audio/webm")
         except STT.SttError as e:
             raise ValueError(self.stt_why(e)) from None
-        log("voice from the app: %d KB → %d characters" % (len(blob) // 1024, len(text)))
+        log("voice from the app: %d KB%s → %d characters (%s)" % (len(blob) // 1024, self.stt_notes(notes), len(text),
+                                                                  getattr(self.stt, "model", "?")))
         return {"text": text}
+
+    @staticmethod
+    def stt_notes(n):
+        """The app's figures of one recording as a piece of the log line; anything odd is left out. secs — its
+        length; ready — ms from the tap until sound came; voice — ms from then until the first loud window (0: the
+        owner was already speaking, the start may be lost); first — the loudest dB in that first second; peak — the
+        loudest overall."""
+        if not isinstance(n, dict):
+            return ""
+        num = lambda k, lo, hi: n.get(k) if isinstance(n.get(k), (int, float)) and lo <= n[k] <= hi else None
+        out = []
+        if num("secs", 0, 3600) is not None:
+            out.append("%.0f s" % n["secs"])
+        if num("ready", 0, 60000) is not None:
+            out.append("sound %.2f s after the tap" % (n["ready"] / 1000))
+        if num("voice", 0, 3600000) is not None:
+            out.append("voice from +%.1f s" % (n["voice"] / 1000))
+        elif n.get("voice") is None and "voice" in n:
+            out.append("no voice heard")
+        if num("first", -200, 10) is not None:
+            out.append("first second %.0f dB" % n["first"])
+        if num("peak", -200, 10) is not None:
+            out.append("loudest %.0f dB" % n["peak"])
+        return ", " + ", ".join(out) if out else ""
+
+    async def api_stt_words(self, words=""):
+        """The owner's own words for Whisper (Settings → Voice input): names and terms, comma-separated; "" clears."""
+        w = ", ".join(x for x in (" ".join(p.split()) for p in re.split(r"[,;\n]", str(words or ""))) if x)
+        if len(w) > STT_WORDS_MAX:                                    # whole words only
+            w = w[:STT_WORDS_MAX]
+            w = w[:max(w.rfind(","), w.rfind(" "))].rstrip(" ,")
+        self.store.put("stt_words", w)
+        log("voice input: own words %s" % ("set (%d characters)" % len(w) if w else "cleared"))
+        return {"words": w}
 
     async def api_stt_key(self, key=""):
         """The Groq key from the app's settings: checked with Groq, then written to the settings file on this
@@ -4192,7 +4401,175 @@ class Pult:
             log("stop: session %s, waiting messages dropped" % sid[:8])
         return {"ok": True}
 
+    async def api_jump(self, sid):
+        """"Start now": a turn waiting in the queue goes over the MAX_RUNNING limit, once."""
+        dr = self.driven.get(sid)
+        if not dr or dr.queued is None:
+            return {"ok": False, "note": self.t("note.not_queued")}
+        dr.jump.set()
+        return {"ok": True}
+
+    async def queue_shown(self, dr, origin):
+        """A message waits for a place among the MAX_RUNNING turns: the app shows the session in the queue; a message
+        from the topic is answered there, with "Start now"."""
+        self.changed(dr.sid)
+        if not origin:
+            return
+        lv = self.live.get(dr.sid) or self.stub(dr.sid)
+        text = "⏳ %s · %s\n%s" % (self.head(lv), self.t("queue.state"), self.t("queue.why", n=MAX_RUNNING))
+        rows = [[{"text": self.t("btn.jump"), "callback_data": "j:" + dr.sid}] + (self.app_row(dr.sid) or [])]
+        try:
+            dr.queue_msg = await self.send(lv.pkey, text, reply_to=origin, buttons=rows, sid=dr.sid, kind="queue")
+        except TgError as e:
+            log("the queue's message not sent: %s" % e)
+
+    async def queue_gone(self, dr):
+        """Out of the queue — the turn starts, or Stop dropped it: the topic's message goes (one message per turn)."""
+        self.changed(dr.sid)
+        mid, dr.queue_msg = dr.queue_msg, None
+        if mid:
+            asyncio.create_task(self.drop(mid))
+
     # ----- loops -----
+
+    # ----- updating Pult from its folder (stage U) -----
+
+    def note_health(self, **kw):
+        """health.json: this daemon is up, and whether it has reached Telegram and the app's server. The installer
+        counts an update in only once the new daemon has said so (pult_update.Installer.healthy)."""
+        self.health.update(kw)
+        try:
+            U.write(U.HEALTH, dict(self.health, pid=os.getpid(), version=VERSION, started=self.t_start))
+        except OSError as e:
+            log("health.json:", e)
+
+    async def update_check(self, age=60):
+        """What the source folder has (pult_update.check), at most `age` s old: it takes a few short git commands, and
+        the app asks again on every change it hears of."""
+        t, v = self._upd
+        if v is None or time.monotonic() - t >= age:
+            v = await asyncio.to_thread(U.check)
+            self._upd = (time.monotonic(), v)
+        return v
+
+    async def update_view(self, age=60):
+        """The app's "Pult" block. state: ok — nothing newer; ready — a commit to install; busy — one, but a restart
+        would cut Pult's own sessions off (busy_report); wait — the owner asked to install once they are free; run —
+        installing; fail — this commit didn't come up (the old version is back); na — no way here (no git source,
+        Windows). The history goes with every state."""
+        hist = [{k: h.get(k) for k in ("ts", "from", "to", "how", "ok", "why")} for h in U.history()[:10]]
+        v = {"have": VERSION, "hist": hist, "state": "ok"}
+        run = U.running()
+        if run:
+            return dict(v, state="run", next=run.get("to"), step=run.get("step"))
+        if pult_os.KIND == "windows":
+            return dict(v, state="na", why="windows")          # not yet (Q53): install.ps1
+        c = await self.update_check(age)
+        if not c.get("repo"):
+            return dict(v, state="na", why="norepo")
+        home = str(Path.home())
+        v.update(dir="~" + c["repo"][len(home):] if c["repo"].startswith(home + os.sep) else c["repo"], commit=c.get("short"))
+        if not c.get("ready"):
+            return v
+        v.update(next=c["version"], news=c["news"])
+        if c.get("failed"):
+            st = U.read(U.STATUS, {}) or {}
+            return dict(v, state="fail", why=st.get("why"), detail=st.get("detail"), back=bool(st.get("back")),
+                        back_ok=st.get("back_ok", True))
+        busy = [{"project": b["project"], "title": b["title"], "turn": b["turn"], "n": b["n"]} for b in self.busy_report()]
+        return dict(v, busy=busy, state="wait" if self.upd_wait else "busy" if busy else "ready")
+
+    async def update_row(self):
+        """Home's line about an update — only while there is something to do or to know."""
+        try:
+            v = await self.update_view()
+        except Exception as e:
+            log("update:", repr(e))
+            return None
+        if v["state"] in ("ok", "na"):
+            return None
+        return {"state": v["state"], "have": v["have"], "next": v.get("next"), "back": v.get("back"),
+                "left": len(v.get("busy") or [])}
+
+    def emit_update(self):
+        if self.web:
+            self.web.emit("update")
+
+    async def api_update(self):
+        return await self.update_view(10)
+
+    async def api_update_go(self):
+        """"Install": only what the view says is ready, from the folder install.sh wrote down — the phone sends the
+        tap and nothing else (no arguments: an extra one fails the call)."""
+        v = await self.update_view(0)
+        if v["state"] != "ready":
+            raise ValueError(self.t("upd.cant.busy" if v["state"] in ("busy", "wait") else "upd.cant"))
+        await self.update_start("app")
+        return await self.update_view()
+
+    async def api_update_wait(self):
+        """"Install once they're free": update_tick starts it when no session of Pult's own runs."""
+        v = await self.update_view(0)
+        if v["state"] not in ("busy", "ready", "wait"):
+            raise ValueError(self.t("upd.cant"))
+        if not self.upd_wait:
+            self.upd_wait = time.time()
+            log("update: %s goes in once Pult's sessions are free" % v.get("next"))
+        self.emit_update()
+        return await self.update_view()
+
+    async def api_update_cancel(self):
+        if self.upd_wait:
+            log("update: no longer waiting")
+        self.upd_wait = None
+        self.emit_update()
+        return await self.update_view()
+
+    async def update_start(self, how):
+        """The installer, outside this service (pult_update.spawn): it stops this daemon, so "installing" is written
+        first — the next daemon and the app read it from update.json."""
+        c = await self.update_check()
+        self.upd_wait = None
+        U.write(U.STATUS, {"state": "run", "step": "start", "commit": c["head"], "from": VERSION, "to": c["version"],
+                           "how": how, "ts": time.time(), "pid": None})
+        log("update: installing %s (%s) — %s" % (c["version"], c["short"], how))
+        ok = await asyncio.to_thread(U.spawn, c["head"], how, sys.executable)
+        if not ok:
+            U.write(U.STATUS, {"state": "fail", "why": "spawn", "commit": c["head"], "from": VERSION, "to": c["version"],
+                               "back": False, "reported": True, "ts": time.time()})
+            self._upd = (0.0, None)
+            raise ValueError(self.t("upd.cant.spawn"))
+        self.emit_update()
+
+    async def update_watch(self):
+        """Every 5 s (stage U): install once Pult's sessions are free, when the owner asked to; say once, in General,
+        that an update didn't come up."""
+        while True:
+            await asyncio.sleep(5)
+            try:
+                await self.update_tick()
+            except Exception as e:
+                log("update:", repr(e))
+
+    async def update_tick(self):
+        st = U.read(U.STATUS, {}) or {}
+        if st.get("state") == "fail" and st.get("reported") is False:
+            st["reported"] = True
+            U.write(U.STATUS, st)
+            why = self.t("upd.why." + str(st.get("why")))
+            if why.startswith("upd.why."):
+                why = str(st.get("why"))
+            await self.send(None, self.t("upd.failed" if st.get("back") else "upd.failed.kept", to=R.esc(str(st.get("to"))),
+                                         back=R.esc(VERSION), why=R.esc(why)), notify=True, prio=1)
+            self._upd = (0.0, None)
+            self.emit_update()
+        if self.upd_wait:
+            v = await self.update_view()
+            if v["state"] == "wait" and not v.get("busy"):
+                await self.update_start("app_wait")
+            elif v["state"] not in ("wait", "run"):
+                self.upd_wait = None             # nothing to install any more (installed from the terminal, say)
+                self.emit_update()
 
     def busy_report(self):
         """What stopping the daemon would cut off (`pult busy`, a restart asks first): Pult's own sessions — their
@@ -4298,6 +4675,7 @@ class Pult:
             delay = min(delay * 2, TG_REACH[1])
         if said:
             log("Telegram reachable after %d s" % (time.monotonic() - t0))
+        self.note_health(telegram=True)
         await self.setup_commands()
         await asyncio.gather(self.poll(), self.tab_version_watch(), self.ensure_panel(), self.menu_watch())
 
@@ -4425,11 +4803,12 @@ async def amain():
     log("Pult started; group:", p.chat, "; link: 127.0.0.1:%d" % server.sockets[0].getsockname()[1]
         if pult_os.link_tcp() else "; socket: " + SOCK)
     # the panel is sent via the message queue, so it must run alongside it, or startup hangs (seen 2026-10-16, 0.6.0)
-    jobs = [p.out.run(), p.telegram_start(), p.usage_watch(), p.attention_watch()]
+    jobs = [p.out.run(), p.telegram_start(), p.usage_watch(), p.attention_watch(), p.update_watch()]
     if env.get("PULT_RELAY_URL") and env.get("PULT_RELAY_SECRET"):
         p.web = PW.Web(p, env["PULT_RELAY_URL"], env["PULT_RELAY_SECRET"], token, p.allowed,
                        proxy=env.get("PULT_PROXY") or None, manifest=WEB_MANIFEST)
         jobs += [p.web.run(), p.web.guard()]
+    p.note_health(telegram=False, relay=False if p.web else None)     # None: no app server to reach
     async with server:
         await asyncio.gather(*jobs)
 

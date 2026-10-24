@@ -2,6 +2,86 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.15.2 — 2026-10-24
+
+- **Ticks on your message, as in a messenger.** Claude reads a message sent while it works only at its turn's next
+  step, sometimes a minute later, and until then the session showed nothing. Now the message is in the chat as soon
+  as you tap Send: a clock while it goes, ✓ when the computer has it ("Claude will read it after the current step"),
+  ✓✓ when Claude has read it; every message of yours in the chat has ✓✓. One stopped before Claude read it is crossed
+  out, and a tap puts its words back in the field. In a Telegram topic the ✍ reaction on your message turns into 👀
+  when Claude reads it. `tools/ticks_check.py` drives it with real taps on the stand (`STAND_TICKS`).
+- **"Answer sent" stays three seconds.** The computer drops an answered request at once, so the line that replaced the
+  card was gone before it could be read. It now stays 3 s, with a bar along its bottom running out, on Home, a
+  project's screen and in a session; the note that popped up at the bottom of the screen with the same words is gone.
+- **"Your move" is one line by time.** Questions, permissions and the sessions that wait for you went in two groups,
+  each from the longest waiting down; now they are one list, the newest on top and the longest waiting at the bottom,
+  on Home and a project's screen. A question or a permission says how long it waits, as a session's card does (the
+  computer now sends when it began to wait; with an older one, requests stay on top). `tools/ask_check.py` checks
+  both on the stand.
+- **Install an update from the app.** Pult now remembers the git checkout `install.sh` ran from. When a commit there
+  changes Pult's own files, Settings → Pult says so ("0.15.1 is ready", with the commits' subjects) and **Install** puts
+  it in; Home shows one line about it only while there is something to do. If a restart would cut off a turn, a queued
+  message or a background task of Pult's own sessions, the button waits: the block lists what runs, and
+  **Install once they're free** does it the moment they finish (**Cancel** any time). Only committed files go in, so
+  half-made work in the folder stays out, and nothing is downloaded. The installer runs outside the service it
+  restarts (macOS: a session of its own; Linux: `systemd-run --user`), keeps the installed files, and counts the
+  update in only once the new daemon has stayed up and reached the app's server — otherwise it puts the old version back
+  by itself, says why in Telegram, and doesn't offer that commit again. Settings keeps the last installs: when, which
+  versions, from the app or the terminal, and how it went. Windows: not yet (update with `install.ps1`).
+  `tools/update_check.py` drives every state on the stand (`STAND_UPD`); `tools/update_live.py` installs, updates and
+  rolls back a second Pult as a real launchd service; `tests/probe_update.py` holds the launchd and systemd facts.
+- **"Working N" no longer restarts on a message mid-turn.** A message absorbed into a running turn — yours, sent while
+  Claude works, or another session's — comes with a hook of its own, and Pult took it for a new turn: a session that
+  had worked for 19 minutes showed "working 28 s". Claude Code gives such a message the running turn's `prompt_id`;
+  Pult now keeps the turn and its start, and the turn's result still answers your latest message. The app's session
+  shows the message the moment Claude reads it.
+- **A turn waiting in the queue shows, and can start now.** Up to three turns from Telegram and the app run at once;
+  a fourth used to wait without a sign — its session looked dead, and a question sent again ran twice. Now the session is
+  "in the queue" with the time it waits: an amber chip on Home under Running now (counted apart) and in the session's
+  header, a card that says why, with **Start now** — the turn goes over the limit, once. A message from the topic gets
+  the same answer there, with the button; it is deleted as soon as the turn starts. Stop while it waits drops the
+  message (before, it still ran once a place freed). `tools/queue_check.py` drives it on the stand (`STAND_QUEUE=1`).
+- **Pictures on the whole screen, as in Telegram.** A tap on a picture in a session, or on a thumbnail before sending,
+  opens it over everything: pinch or double-tap to zoom, drag the zoomed picture, swipe sideways through the message's
+  pictures (1 / 3), swipe up or down — or Back — to close; a single tap hides the bars. Before sending, the viewer has
+  Crop (the editor) and Remove; the thumbnail no longer opens the editor straight away. `tools/viewer_check.py` drives
+  it with real touches on the stand; `STAND_PORT` runs a second stand beside one already up.
+- **Home from a session.** A session has no tab bar — the message box takes its place — so the only way out was Telegram's
+  Back, and after starting a session that led to the finished form first. The session's header now starts with the
+  Home icon (Home › project · state), and so does the bar that stays at the top while you scroll. The new task and new
+  project forms step out of the history once they start a session: Back leads to where the form was opened from.
+  `tools/compose_check.py` drives it with real taps on the stand.
+- **A question of several parts stays open until all are answered.** Claude's question can have several parts, and
+  the computer takes the answers one by one; but in the app an answer to the first part replaced the whole card with
+  "Answer sent", and the other parts showed up only after the app was opened again. Now an answered part shows its answer
+  and the next one waits in the same card; "Answer sent" comes with the last part. `tools/ask_check.py` drives it with
+  real taps on the stand (`STAND_ASK2=1`).
+- **Picture and File are two choices.** In Telegram on Android the app's file picker is handed to the phone as it is:
+  a picker for pictures opens the gallery, a picker for any file opens the phone's file manager — and on some phones that
+  came straight back with nothing, so since 0.13.0 a screenshot couldn't be attached from the app there. The new task and new
+  project forms now show **Picture** and **File** side by side; in a session the paperclip opens a menu of the two.
+- **Where you are, in a session.** A session opens at its last message, so its header — the title, the project, the
+  state — was off the top of the screen. Once the header scrolls away, a bar at the top keeps the project (its colour
+  tile and name, a tap opens it), the session's title and its state; your last message stays pinned under it.
+  `tools/compose_check.py` drives both with real taps on the stand.
+- **Voice input hears the whole sentence.** Whisper drops the first syllable when a recording starts quietly, which is
+  what a phone's own sound processing does: its gain control starts low and ramps up. The app's microphone now records
+  without the phone's echo cancellation, noise suppression and gain control, shows "Microphone…" until sound really
+  flows and only then buzzes and turns the dot red; the dot breathes with your voice, and 0.3 s more is recorded after
+  Stop so the last word isn't cut.
+- **No more made-up words over silence.** A recording without a voice isn't sent ("No voice was heard"), and the
+  subtitle credits Whisper writes over silence ("Продолжение следует...", "Thanks for watching") are cut off the end
+  of the words, from Telegram voice messages too.
+- **Better words.** The default model is `whisper-large-v3` (free on Groq with the same limits and speed;
+  `PULT_STT_MODEL=whisper-large-v3-turbo` brings the fast one back). Whisper is prompted with a sentence in your
+  language instead of a list of folder names, plus **Your words** — names and terms you add in Settings → Voice input.
+  The prompt is kept within Groq's real limit, 896 bytes (a longer one is refused).
+- Each recording from the app leaves one line in the log: how long the microphone took, when the voice began, how loud,
+  which model — the recording itself is still kept nowhere.
+- A permission request decided while its message was still on its way to Telegram — on the computer, in the app or by
+  a tap in that very moment — kept its Allow and Deny buttons for ever: the decision found no message to close yet.
+  Now the message closes as soon as it arrives. (This was also why `test_permission_allow` failed now and then.)
+
 ## 0.14.0 — 2026-10-23
 
 - **One look across the app.** What waits for you — a permission, a question, a turn that needs you — has one warm

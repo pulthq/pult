@@ -3,7 +3,7 @@
 
 Run (uses a little of the subscription, ~40 s; with no argument, the claude the SDK carries — the one Pult's own
 sessions run on):
-  ~/.local/share/pult/venv/bin/python tests/probe_midturn.py [interrupt] [path to the claude binary]
+  ~/.local/share/pult/venv/bin/python tests/probe_midturn.py [interrupt|stop|two] [path to the claude binary]
 Turn 1: Claude calls Bash `sleep 4; echo step N` for N = 1..5, one call at a time, then replies DONE.
 ~7 s in (step 2 running), a second prompt: stop, no more tools, reply HALTED.
   Absorbed: Claude reads it at the next tool boundary — one result, HALTED, steps 3..5 not run.
@@ -11,6 +11,10 @@ Turn 1: Claude calls Bash `sleep 4; echo step N` for N = 1..5, one call at a tim
 With `interrupt` — right after the second prompt, an interrupt: is the waiting prompt dropped, or does it run as
 the next turn (what the owner saw from Pult's own queue on 2026-10-21)? With `stop` — an interrupt alone, ~7 s in,
 no second prompt. Both print the hook events: does an interrupted turn get a Stop (Pult closes a turn on it)?
+Each hook event is printed with its prompt_id: an absorbed prompt gets its own UserPromptSubmit, but with the
+running turn's prompt_id; a prompt run as a turn of its own — a new one (Pult tells the two apart by it).
+With `two` — two prompts mid-turn, a second apart, both read at the same step: does each get a UserPromptSubmit of
+its own, in the order sent (the app's ticks mark each message read by its hook)?
 User settings are not loaded (setting_sources=[]); PULT_OFF=1, so the real Pult does not see the events.
 """
 import asyncio, json, sys, tempfile, time
@@ -20,7 +24,8 @@ from claude_agent_sdk import (AssistantMessage, ClaudeAgentOptions, ClaudeSDKCli
 
 INTERRUPT = "interrupt" in sys.argv[1:]
 STOP = "stop" in sys.argv[1:]
-ARGS = [a for a in sys.argv[1:] if a not in ("interrupt", "stop")]
+TWO = "two" in sys.argv[1:]
+ARGS = [a for a in sys.argv[1:] if a not in ("interrupt", "stop", "two")]
 TMP = Path(tempfile.mkdtemp(prefix="pult-mid-"))
 LOG = TMP / "hooks.jsonl"
 HOOK = TMP / "hook.py"
@@ -29,7 +34,7 @@ d = json.load(sys.stdin)
 d["_t"] = time.time()
 open(os.environ["HOOK_LOG"], "a").write(json.dumps(d, ensure_ascii=False) + "\\n")
 """)
-EVENTS = ["UserPromptSubmit", "Stop", "StopFailure", "SessionEnd"]
+EVENTS = ["UserPromptSubmit", "PostToolUse", "Stop", "StopFailure", "SessionEnd"]
 T0 = time.time()
 
 
@@ -81,6 +86,10 @@ async def main():
         else:
             say("--- second prompt mid-turn")
             await c.query("Stop the test now: make no more tool calls and reply with one word: HALTED.")
+            if TWO:
+                await asyncio.sleep(1)
+                say("--- third prompt mid-turn")
+                await c.query("And after HALTED add the word TWO.")
         if INTERRUPT:
             await asyncio.sleep(0.5)
             say("--- interrupt")
@@ -91,8 +100,8 @@ async def main():
     say("--- хуки:")
     for line in LOG.read_text().splitlines() if LOG.exists() else []:
         d = json.loads(line)
-        print("%5.1f %s %s" % (d["_t"] - T0, d.get("hook_event_name"),
-                               repr((d.get("prompt") or d.get("last_assistant_message") or "")[:50])), flush=True)
+        print("%5.1f %s %s %s" % (d["_t"] - T0, d.get("hook_event_name"), (d.get("prompt_id") or "-")[:8],
+                                  repr((d.get("prompt") or d.get("last_assistant_message") or "")[:50])), flush=True)
     say("--- транскрипт: user, attachment и queue-operation")
     for f in Path.home().glob(".claude/projects/*%s*/*.jsonl" % TMP.name.replace("_", "-")):
         for line in f.read_text().splitlines():

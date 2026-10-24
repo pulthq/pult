@@ -9,7 +9,7 @@ continuing the same session; a fork of a session "open on the Mac";
 a background command — "in the background" in the result, the load view finds its process, a turn when it ends,
 the next prompt with its own result; that result is the owner's move on Home until the session is opened.
 With Telegram as a pager: a task from the app makes no turn or result message; its question is paged once.
-A message from the app mid-turn reaches Claude in that turn, and the app shows it as written mid-turn.
+A message from the app mid-turn reaches Claude in that turn, the app shows it as written mid-turn, its ticks say read.
 Stop from the app closes the interrupted turn, though Claude Code sends no Stop hook for it.
 A new project "with a description" (stage S): git, its topic by the title, a first turn that writes CLAUDE.md.
 A file made in a session goes to the project's topic with `pult send`, and the turn's outcome lists it (stage F).
@@ -204,7 +204,9 @@ async def main():
     sid6 = (await p.api_new(pkey5, "This is a test of a long turn. Call the Bash tool with command `sleep 4; echo step N` "
                             "for N = 1, 2, 3, 4, 5 - one call at a time, waiting for each to finish. Then reply with one "
                             "word: DONE. If a new message from the user comes in meanwhile, follow it instead."))["sid"]
-    await until(lambda: p.driven.get(sid6) and p.driven[sid6].asking, what="долгий ход")
+    await until(lambda: p.driven.get(sid6) and p.driven[sid6].asking and p.live.get(sid6) and p.live[sid6].turn,
+                what="долгий ход")
+    turn6, run6 = p.live[sid6].turn, p.live[sid6].run
     await asyncio.sleep(8)
     r = await p.api_send(sid6, "Stop the test now: make no more tool calls and reply with one word: HALTED.")
     await until(lambda: (p.attn.rec.get(sid6) or {}).get("ts"), what="итог долгого хода")
@@ -216,6 +218,15 @@ async def main():
     log("посреди хода:", r.get("how"), "· шагов:", len(bash), "· в приложении:", [i["text"][:30] for i in mid])
     assert r.get("how") == "session" and 0 < len(bash) < 5, "the message waited for the turn's end"
     assert len(mid) == 1 and "HALTED" in mid[0]["text"], "the app doesn't show the message written mid-turn"
+    # the absorbed message has a UserPromptSubmit of its own, with the turn's prompt_id: the turn goes on, and "working
+    # N" counts from the first prompt (2026-10-24: "working 28 s" 19 min into a turn)
+    log("посреди хода: тот же ход —", p.live[sid6].turn in (None, turn6), "· закрыт:", turn6.done and turn6.done[0],
+        "· начало захода то же:", p.live[sid6].run == run6)
+    assert turn6.done and turn6.done[0] == "✔️" and p.live[sid6].run == run6, "the mid-turn message started a turn"
+    # its ticks (Q56): sent → read by its own UserPromptSubmit, at the step Claude read it
+    out6 = [o for o in p.outbox.get(sid6) or [] if o["id"] == r.get("out")]
+    log("галочки:", out6 and out6[0]["st"], "· прочитано через %.1f с" % (out6[0]["at"] - out6[0]["ts"]) if out6 else "")
+    assert out6 and out6[0]["st"] == "read", "the mid-turn message wasn't marked read"
     # Stop from the app: an interrupted turn gets no Stop hook, only its result — Pult closes the turn itself, so the
     # session doesn't stay "working" and its process can go idle (2026-10-21, a session after Stop)
     sid7 = (await p.api_new(pkey5, "This is a test of a long turn. Call the Bash tool with command `sleep 4; echo step N` "

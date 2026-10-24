@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
-"""Pult: speech to text for voice messages — Groq's Whisper API (whisper-large-v3-turbo). It needs a key
-(PULT_STT_KEY); without one, voice input is simply off. A recording goes to Groq and is kept nowhere on this
-computer.
+"""Pult: speech to text for voice messages — Groq's Whisper API (whisper-large-v3; PULT_STT_MODEL picks another). It
+needs a key (PULT_STT_KEY); without one, voice input is simply off. A recording goes to Groq and is kept nowhere on
+this computer.
 
 Facts (console.groq.com/docs/speech-to-text, checked 2026-10-18): POST /openai/v1/audio/transcriptions, multipart
-file + model + language + prompt (≤ 224 tokens) + response_format; flac, mp3, mp4, mpeg, mpga, m4a, ogg, wav, webm;
-a file of up to 25 MB on the free tier; the minimum billed length is 10 s.
+file + model + language + prompt + response_format; flac, mp3, mp4, mpeg, mpga, m4a, ogg, wav, webm; a file of up to
+25 MB on the free tier; the minimum billed length is 10 s. Checked on a live key 2026-10-23 (tests/probe_stt.py): the
+prompt is refused above 896 bytes of UTF-8 (the docs say 224 tokens); both models answer in 0.4 s and share the free
+limits; on silence Whisper writes subtitle credits ("Продолжение следует...") and its no_speech_prob doesn't tell.
 """
+import re
+
 import httpx
 
 BASE = "https://api.groq.com/openai/v1/"
-MODEL = "whisper-large-v3-turbo"
+MODEL = "whisper-large-v3"           # Groq: 10.3 % WER against the turbo's 12 %, the same speed and free limits
+PROMPT_MAX = 896                     # bytes of UTF-8 — Groq refuses a longer prompt outright
 MAX_BYTES = 20 * 1024 * 1024        # the Bot API hands out files up to 20 MB; Groq's free tier takes 25
 KEY_CHARS = r"[A-Za-z0-9_\-]{20,200}"
 # the file name tells Groq the container — by the MIME type the app or Telegram reports
@@ -18,6 +23,35 @@ EXT = {"audio/ogg": "ogg", "audio/oga": "ogg", "audio/opus": "ogg", "audio/webm"
        "audio/mp4": "m4a", "video/mp4": "mp4", "audio/x-m4a": "m4a", "audio/m4a": "m4a", "audio/aac": "m4a",
        "audio/mpeg": "mp3", "audio/mp3": "mp3", "audio/wav": "wav", "audio/x-wav": "wav", "audio/flac": "flac"}
 KNOWN = ("flac", "mp3", "mp4", "mpeg", "mpga", "m4a", "ogg", "wav", "webm")
+
+
+# What Whisper writes over silence: film subtitle credits it learned from. Only at the very end of the words, where
+# a pause before "Stop" leaves them; nobody ends a message to Claude with these
+PHANTOM = re.compile(
+    r"(?:^|(?<=[\s.,!?…]))(?:продолжение следует|редактор субтитров\b.{0,80}|корректор\s+[А-ЯЁ]\.\s?[А-ЯЁ][а-яё]+"
+    r"|субтитры (?:сделал|делал|создавал|создал|подготовил|подогнал)\w*\b.{0,40}|спасибо за просмотр"
+    r"|подписывайтесь на (?:наш )?канал\b.{0,40}|thanks? (?:you )?for watching|subtitles by the amara\.org community)"
+    r"[\s.!…]*$", re.I)
+
+
+def scrub(text):
+    """Whisper's phantoms off the end of the words → (what is left, [what was cut])."""
+    cut = []
+    while True:
+        m = PHANTOM.search(text)
+        if not m:
+            return text, cut
+        cut.insert(0, m.group().strip())
+        text = text[:m.start()].rstrip()
+
+
+def fit(prompt, limit=PROMPT_MAX):
+    """The prompt cut to what Groq takes: whole words, at most `limit` bytes of UTF-8."""
+    b = prompt.encode()
+    if len(b) <= limit:
+        return prompt
+    s = b[:limit].decode(errors="ignore")
+    return s[:s.rfind(" ")].rstrip(" ,;:") if " " in s else s
 
 
 class SttError(Exception):
@@ -41,8 +75,9 @@ def ext_of(kind):
 class Stt:
     """One Groq account. Through the proxy first if one is set (PULT_PROXY); if that fails, directly — like Tg."""
 
-    def __init__(self, key, proxy=None, transport=None):
+    def __init__(self, key, proxy=None, transport=None, model=None):
         self.key = key
+        self.model = model or MODEL
         t = httpx.Timeout(60, connect=10)
         if transport is not None:       # tests: one transport, or one per route
             self.clients = [httpx.AsyncClient(transport=x, timeout=t)
@@ -95,11 +130,11 @@ class Stt:
             raise SttError("stt.e.format", kind=str(kind)[:40])
         if len(blob) > MAX_BYTES:
             raise SttError("stt.e.big")
-        data = {"model": MODEL, "response_format": "json", "temperature": "0"}
+        data = {"model": self.model, "response_format": "json", "temperature": "0"}
         if language:
             data["language"] = language
         if prompt:
-            data["prompt"] = prompt[:800]
+            data["prompt"] = fit(prompt)
         r = await self._send("POST", "audio/transcriptions", data=data,
                              files={"file": ("voice." + ext, blob, "application/octet-stream")})
         if r.status_code != 200:

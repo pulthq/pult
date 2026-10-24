@@ -114,8 +114,10 @@ async def main():
                 await js("document.querySelector(%s).click()" % json.dumps(sel))
                 await asyncio.sleep(0.3)
 
-            async def edit():                # open the editor on the first thumbnail, once its picture is drawn
-                await tap(".thumb-ed")
+            async def edit():                # the first thumbnail → the viewer → Crop, once the editor's picture is drawn
+                await tap(".thumb-view")
+                await until("!!document.querySelector('.viewer .v-bar')")
+                await tap(".v-bar .v-b")
                 await until("!!document.querySelector('.ed-stage canvas')")
                 await asyncio.sleep(0.2)
 

@@ -14,7 +14,7 @@ RECENT = 3 * 3600       # s: a resting session with an outcome this fresh is sti
 CTX_WARN = 85           # % of the context window: time to compact or start a new session
 
 # a session's state, in the order the owner should look at them
-ORDER = {"ask": 0, "fail": 1, "you": 2, "work": 3, "bg": 4, "done": 5, "idle": 6}
+ORDER = {"ask": 0, "fail": 1, "you": 2, "work": 3, "queue": 4, "bg": 5, "done": 6, "idle": 7}
 MINE = ("ask", "fail", "you")          # the owner's move
 
 
@@ -93,14 +93,16 @@ class Attn:
         return (self.day.get("p") or {}).get(pkey, [0, 0]) if self.day.get("d") == today() else [0, 0]
 
 
-def state(pending, working, bg, rec):
-    """The session's state: ask (waits for an answer), work, bg (Claude goes on by itself after a background task),
-    fail / you (ended and the owner hasn't seen it: broke off / needs them), done (ended, unseen, only a report),
-    idle (rests)."""
+def state(pending, working, bg, rec, queued=None):
+    """The session's state: ask (waits for an answer), work, queue (a message waits for a place among the turns
+    that may run at once), bg (Claude goes on by itself after a background task), fail / you (ended and the owner
+    hasn't seen it: broke off / needs them), done (ended, unseen, only a report), idle (rests)."""
     if pending:
         return "ask"
     if working:
         return "work"
+    if queued:
+        return "queue"
     fresh = rec and not rec.get("seen")
     if fresh and rec.get("fail"):
         return "fail"                    # even with a background task: its turn would hit the same error
@@ -126,7 +128,7 @@ def sort_projects(projects):
     """Projects where the owner is needed first (the longest waiting), then those at work, then by recency."""
     def key(p):
         mine = [r["since"] or 0 for r in p["rows_all"] if r["state"] in MINE]
-        work = any(r["state"] in ("work", "bg") for r in p["rows_all"])
+        work = any(r["state"] in ("work", "bg", "queue") for r in p["rows_all"])
         last = max([r.get("ts") or r.get("since") or 0 for r in p["rows_all"]] or [0])
         return (0 if mine else 1 if work else 2, min(mine) if mine else -last)
     return sorted(projects, key=key)
