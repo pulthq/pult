@@ -513,6 +513,7 @@ S = {
     "send.err.outside": {"en": "not inside this project's folder", "ru": "не в папке этого проекта"},
     "send.err.none": {"en": "no such file", "ru": "такого файла нет"},
     "send.err.secret": {"en": "looks like keys or settings — not sent", "ru": "похоже на ключи или настройки — не отправляю"},
+    "show.err.secret": {"en": "looks like keys or settings — not shown", "ru": "похоже на ключи или настройки — не показываю"},
     "send.err.empty": {"en": "the file is empty", "ru": "файл пустой"},
     "send.err.big": {"en": "over {mb} MB — Telegram takes no bigger files from bots; zip or split it",
                      "ru": "больше {mb} МБ — Telegram не берёт у ботов файлы крупнее; сожми или разбей"},

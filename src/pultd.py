@@ -98,7 +98,7 @@ ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends i
 STT_WORDS_MAX = 280             # characters of the owner's own words for Whisper: with the sentence, within Groq's 896 bytes
 STT_MAX = 4 * 1024 * 1024       # bytes of one recording from the app (5 min at 32 kbit/s ≈ 1.2 MB; base64 must fit the 8 MB frame)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.15.2"
+VERSION = "0.15.3"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -296,17 +296,7 @@ def ctx_usable(window, max_out):
     return max(1, window - min(max_out, CTX_OUT_CAP) - CTX_RESERVE)
 
 
-def image_kind(blob):
-    """png / jpg / gif / webp by the first bytes of the file, else None: only pictures are taken from the app."""
-    if blob[:8] == b"\x89PNG\r\n\x1a\n":
-        return "png"
-    if blob[:3] == b"\xff\xd8\xff":
-        return "jpg"
-    if blob[:6] in (b"GIF87a", b"GIF89a"):
-        return "gif"
-    if blob[:4] == b"RIFF" and blob[8:12] == b"WEBP":
-        return "webp"
-    return None
+image_kind = F.image_kind                # png / jpg / gif / webp by the first bytes, else None
 
 
 def prompt_started(path, owner=False, tail=512 * 1024):
@@ -1449,9 +1439,14 @@ class Pult:
             except asyncio.TimeoutError:
                 pass
             t.changed.clear()
-            if not t.done and not await self.alive(lv, t):
+            # a turn another one took the place of (two events at once each started one) is nobody's: nothing would
+            # ever end it, and this loop would go on for good (2026-10-24: two such turns, a log line a minute for hours)
+            if not t.done and lv.turn is not t:
+                log("turn %s: a newer turn took its place — closing" % lv.sid[:8])
+                self.finish_turn(lv, "⏹", t)
+            elif not t.done and not await self.alive(lv, t):
                 log("turn %s: the session is gone from the Mac — closing" % lv.sid[:8])
-                self.finish_turn(lv, "⏹")
+                self.finish_turn(lv, "⏹", t)
             if not t.done:
                 await asyncio.sleep(EDIT_EVERY)
                 await self.refresh_now(lv, t)
@@ -1512,14 +1507,16 @@ class Pult:
             log("turn %s: a result without Stop (interrupted) — closing" % lv.sid[:8])
             self.finish_turn(lv, "⏹")
 
-    def finish_turn(self, lv, mark):
-        t = lv.turn
+    def finish_turn(self, lv, mark, t=None):
+        """Ends the session's turn — or t, a turn of its that is no longer the session's own."""
+        t = t or lv.turn
         if t and not t.done:
             t.done = (mark, time.time())
             t.changed.set()
             if t.vehi:
                 t.vehi.cancel()
-        lv.turn = None
+        if lv.turn is t:
+            lv.turn = None
         self.changed(lv.sid)
         return t
 
@@ -4037,6 +4034,29 @@ class Pult:
                 "prev": r["prev"], "next": r["next"], "project": self.project_label(r["pkey"]),
                 "title": (row["title"] if row else None) or ""}
 
+    async def api_file(self, sid, p="", base=""):
+        """A project's file or folder for the app's screen — a link in Claude's words tapped there (stage F5). p — the
+        path as the link gives it, from the project's folder or, with base, from the folder of the project file whose
+        page the link sits in. The rule is Telegram's: inside the project, nothing like keys or settings. → {p: the path
+        inside the project ("" — its folder), kind: dir | pic | md | html | text | other, and entries | data | text}."""
+        pkey, project = self.session_project(sid) if SID_RE.fullmatch(sid or "") else (None, None)
+        if not project:
+            raise ValueError(self.t("send.err.session"))
+        path = F.link_target(project, p, base)
+        why = F.why_not_show(path, project)
+        if why:
+            raise ValueError(self.t(why))
+        root, real = os.path.realpath(project), os.path.realpath(path)
+        rel = "" if real == root else os.path.relpath(real, root).replace(os.sep, "/")
+        head = {"p": rel, "project": self.project_label(pkey)}
+        if os.path.isdir(real):
+            entries, n = await asyncio.to_thread(F.show_dir, real)
+            return dict(head, kind="dir", entries=entries, n=n)
+        got = await asyncio.to_thread(F.show_file, real)
+        if "data" in got:
+            got["data"] = base64.b64encode(got["data"]).decode()
+        return dict(head, **got)
+
     def check_send(self, project, paths):
         """Each file checked for Telegram (pult_files.why_not_send): inside the project, not like a secret, 1 byte to
         50 MB. → (real paths that may go, [[name, why]] of those that may not)."""
@@ -4145,7 +4165,9 @@ class Pult:
     @staticmethod
     def stt_notes(n):
         """The app's figures of one recording as a piece of the log line; anything odd is left out. secs — its
-        length; ready — ms from the tap until sound came; voice — ms from then until the first loud window (0: the
+        length; asked — ms the phone took to give the microphone when the app asked for it anew (Telegram on Android
+        asks the owner every time: then the tap's time is the owner's); ready — ms from the microphone given (the tap,
+        when it was kept) until sound came; voice — ms from then until the first loud window (0: the
         owner was already speaking, the start may be lost); first — the loudest dB in that first second; peak — the
         loudest overall."""
         if not isinstance(n, dict):
@@ -4154,8 +4176,11 @@ class Pult:
         out = []
         if num("secs", 0, 3600) is not None:
             out.append("%.0f s" % n["secs"])
+        asked = num("asked", 0, 600000) is not None
+        if asked:
+            out.append("microphone asked anew: %.1f s" % (n["asked"] / 1000))
         if num("ready", 0, 60000) is not None:
-            out.append("sound %.2f s after the tap" % (n["ready"] / 1000))
+            out.append("sound %.2f s after %s" % (n["ready"] / 1000, "it" if asked else "the tap"))
         if num("voice", 0, 3600000) is not None:
             out.append("voice from +%.1f s" % (n["voice"] / 1000))
         elif n.get("voice") is None and "voice" in n:

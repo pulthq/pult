@@ -218,6 +218,21 @@ document.addEventListener("click", (e) => {
   const a = e.target.closest && e.target.closest("a[data-ext]");
   if (a) { e.preventDefault(); tg && tg.openLink ? tg.openLink(a.href) : window.open(a.href, "_blank", "noopener"); }
 });
+// a link to a project file in Claude's words opens it over the screen (stage F5): the session's project, from the
+// chat's address or the card's own; inside a file's page the path counts from that file's folder (data-base)
+const openFile = (a) => {
+  const box = a.closest("[data-sid]");
+  const sid = box ? box.dataset.sid : (/^#\/s\/([0-9a-f-]{36})/.exec(location.hash) || [])[1];
+  if (sid) emit("file", { sid, p: a.dataset.file, base: (box && box.dataset.base) || "" });
+};
+document.addEventListener("click", (e) => {
+  const a = e.target.closest && e.target.closest("a[data-file]");
+  if (a) { e.preventDefault(); openFile(a); }
+});
+document.addEventListener("keydown", (e) => {
+  const a = e.key === "Enter" && e.target.closest && e.target.closest("a[data-file]");
+  if (a) { e.preventDefault(); openFile(a); }
+});
 
 // ---------- pictures from the phone ----------
 
@@ -589,7 +604,7 @@ function Viewer({ job, onClose, then }) {
     ${items.map((x, k) => {
       if (Math.abs(k - at) > 1) return "";
       const d = size(x), cur = k === at;
-      return html`<div key=${x.src || x.a.name} class="v-pic" style=${{ transform: "translate3d(" + ((k - at) * step + pull.x) + "px," + (cur ? pull.y : 0) + "px,0)" }}>
+      return html`<div key=${x.src || (x.a ? x.a.name : "wait")} class="v-pic" style=${{ transform: "translate3d(" + ((k - at) * step + pull.x) + "px," + (cur ? pull.y : 0) + "px,0)" }}>
         ${x.src ? html`<img src=${x.src} alt="" draggable="false" onLoad=${(e) => { const n = [e.target.naturalWidth, e.target.naturalHeight]; setItems((all) => all.map((y) => (y === x ? { ...y, nat: n } : y))); }}
           style=${d ? { width: d[0] + "px", height: d[1] + "px", transform: cur ? "translate(" + z.x + "px," + z.y + "px) scale(" + z.s + ")" : "" } : { visibility: "hidden" }}/>`
           : html`<span class="v-wait">${ic("image", 40)}</span>`}</div>`;
@@ -599,6 +614,7 @@ function Viewer({ job, onClose, then }) {
     ${job.crop && html`<div class="v-bar">
       <button class="v-b" onClick=${() => { const f = items[at].f; then(() => job.crop(f)); }}>${CROP}<span>${t("view.crop")}</span></button>
       <button class="v-b" onClick=${drop}>${TRASH}<span>${t("attach.remove")}</span></button></div>`}
+    ${job.send && html`<div class="v-bar"><button class="v-b" disabled=${!items[at].src} onClick=${job.send}>${ic("send", 22)}<span>${t("fv.send")}</span></button></div>`}
   </div>`;
 }
 // one viewer for the whole app, over everything, like the editor; opened through the history — Back closes it
@@ -632,14 +648,19 @@ const MIC_AUDIO = { echoCancellation: false, noiseSuppression: false, autoGainCo
 // session (the owner saw it at each tap, 2026-10-18). So the microphone is asked for once and kept while the app is on
 // the screen: recordings reuse the stream, muted in between; it is let go when the app goes to the background or after
 // MIC_HOLD without a recording — the next tap asks again, once
+// Telegram's own code (DrKLO/Telegram 12.10.4, BotWebViewContainer.onPermissionRequest) asks at every request and keeps
+// nothing, and the owner's visits are 20–60 s: so the question comes at almost every first recording of a visit. The
+// owner keeps it so (decision Q58) rather than hold the microphone in the background
 const MIC_HOLD = 10 * 60 * 1000;
 let mic = null, micTimer = 0;
 const dropMic = () => { clearTimeout(micTimer); meterOff(); if (actx && actx.state === "running") actx.suspend().catch(() => {}); if (mic) { mic.getTracks().forEach((tr) => tr.stop()); mic = null; } };
+// → [the stream, ms the phone took when it was asked anew (the owner's answer to Telegram's question in it) or null]
 async function getMic() {
   clearTimeout(micTimer);
-  if (mic && mic.getTracks().some((tr) => tr.readyState === "live")) { mic.getTracks().forEach((tr) => { tr.enabled = true; }); return mic; }
+  if (mic && mic.getTracks().some((tr) => tr.readyState === "live")) { mic.getTracks().forEach((tr) => { tr.enabled = true; }); return [mic, null]; }
+  const t0 = Date.now();
   mic = await navigator.mediaDevices.getUserMedia({ audio: MIC_AUDIO });
-  return mic;
+  return [mic, Date.now() - t0];
 }
 const restMic = () => { if (mic) mic.getTracks().forEach((tr) => { tr.enabled = false; }); clearTimeout(micTimer); micTimer = setTimeout(dropMic, MIC_HOLD); };
 document.addEventListener("visibilitychange", () => { if (document.hidden) dropMic(); });
@@ -699,11 +720,13 @@ function useRecorder(onText) {
   const toggle = async () => {
     if (st !== "idle") return stop();
     if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder)) return alertBox(t("rec.unsupported"));
-    const t0 = Date.now();
     audioCtx();                                   // within the tap itself: a browser lets audio start only from one
     setSt("wait");
-    let stream;
-    try { stream = await getMic(); } catch (e) { dropMic(); setSt("idle"); return alertBox(t("rec.denied")); }
+    let stream, asked;
+    try { [stream, asked] = await getMic(); } catch (e) { dropMic(); setSt("idle"); return alertBox(t("rec.denied")); }
+    // the wait for sound counts from the microphone given, not from the tap: Telegram's question took its own time,
+    // and "speak" right after it, before sound flows, was what lost the first syllable
+    const t0 = Date.now();
     const mime = REC_MIME.find((m) => MediaRecorder.isTypeSupported(m)) || "";
     let rec;
     try { rec = new MediaRecorder(stream, Object.assign({ audioBitsPerSecond: 32000 }, mime ? { mimeType: mime } : {})); }
@@ -727,6 +750,7 @@ function useRecorder(onText) {
       setSt("busy");
       const r1 = (v) => Math.round(v * 10) / 10;
       const notes = { secs: r1((Date.now() - x.live) / 1000) };
+      if (asked !== null) notes.asked = asked;
       if (x.heard) Object.assign(notes, { ready: x.live - t0, voice: x.voice, first: r1(x.first), peak: r1(x.peak) });
       try {
         const url = await new Promise((ok, no) => { const f = new FileReader(); f.onload = () => ok(f.result); f.onerror = no; f.readAsDataURL(blob); });
@@ -965,7 +989,7 @@ function Req({ r, onDone, showWhere = true, showProject = true }) {
   const isPlan = r.kind === "plan";
   return html`<div class="card perm">${where}
     <div class="kind">${ic(isPlan ? "plan" : "shield", 16)} ${isPlan ? t("req.plan") : t("req.perm")}</div>
-    ${isPlan ? html`<details class="plan"><summary>${t("plan")}</summary><div class="md" dangerouslySetInnerHTML=${{ __html: md(r.plan) }}/></details>`
+    ${isPlan ? html`<details class="plan"><summary>${t("plan")}</summary><div class="md" data-sid=${r.sid} dangerouslySetInnerHTML=${{ __html: md(r.plan) }}/></details>`
       : html`<div class="perm-b" dangerouslySetInnerHTML=${{ __html: r.html }}/>`}
     <div class="row">
       <button class="btn" disabled=${busy} onClick=${() => send({ act: "y" })}>${isPlan ? t("approve") : t("allow")}</button>
@@ -1104,6 +1128,9 @@ const IC = {
   clip: '<path d="m20.5 11.5-8.6 8.6a5.3 5.3 0 0 1-7.5-7.5l8.6-8.6a3.5 3.5 0 0 1 5 5l-8.6 8.6a1.8 1.8 0 0 1-2.5-2.5l7.9-7.9"/>',
   info: '<circle cx="12" cy="12" r="9.5"/><path d="M12 16.5v-5M12 7.8h.01"/>',
   clock: '<circle cx="12" cy="12" r="9.5"/><path d="M12 7v5l3.2 2"/>',
+  back: '<path d="m15 6-6 6 6 6"/>',
+  send: '<path d="M21.5 2.5 10.5 13.5"/><path d="m21.5 2.5-7 19-4-8-8-4z"/>',
+  lock: '<rect x="4.5" y="10.5" width="15" height="11" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>',
 };
 const ic = (n, s = 18) => html`<svg class=${"ic ic-" + n} viewBox="0 0 24 24" width=${s} height=${s} fill="none" stroke="currentColor"
   stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" dangerouslySetInnerHTML=${{ __html: IC[n] }}></svg>`;
@@ -1717,6 +1744,111 @@ function TurnFilesScreen({ sid, turn }) {
       <button class="btn wide" disabled=${!chosen.length || busy} onClick=${send}>${busy ? "…" : t("files.send_n", { n: chosen.length })}</button>
       ${note && html`<div class="dim tf-note">${ic("check", 14)} ${note}</div>`}
     </div>
+  </div>`;
+}
+
+// ---------- a project's file from a link in Claude's words (stage F5) ----------
+
+// the tap opens it over the screen, the chat stays where it was underneath; a folder lists its files, and the folder
+// in a file's header lists that folder — each step one more in the history, Back goes one down. What may be opened is
+// the computer's call, by Telegram's rule: inside the project, nothing like keys or settings
+const FV_LINES = 2000;                    // lines put on the screen at once, "More lines" adds as many
+const PIC_EXT = /\.(png|jpe?g|gif|webp)$/i;
+const lit = (s) => s.replace(/[%#]/g, encodeURIComponent);     // a real name as a link: % and # stay themselves
+function FileHost() {
+  const [trail, setTrail] = useState([]);
+  useEffect(() => on("file", (x) => { overlays++; history.pushState({ overlay: true }, ""); setTrail((tr) => tr.concat([x])); }), []);
+  const open = trail.length > 0;
+  useEffect(() => {
+    if (!open) return undefined;
+    const onPop = () => { overlays = Math.max(0, overlays - 1); setTrail((tr) => tr.slice(0, -1)); };
+    addEventListener("popstate", onPop);
+    return () => removeEventListener("popstate", onPop);
+  }, [open]);
+  useNoFold(open);
+  useEffect(() => {                     // a link in a plan on Home: Telegram's Back closes the file, not the app
+    if (!open || !tg || !tg.BackButton) return undefined;
+    tg.BackButton.show();
+    return () => { if (parse().name === "home") tg.BackButton.hide(); };
+  }, [open]);
+  // every step stays mounted under the next one: Back finds the folder or the page scrolled where it was
+  return trail.map((x, k) => html`<${FileView} key=${k} job=${x}/>`);
+}
+function FileView({ job }) {
+  const cut = job.p.indexOf("#");
+  const path = cut < 0 ? job.p : job.p.slice(0, cut);
+  const line = +((/^L(\d+)/.exec(cut < 0 ? "" : job.p.slice(cut + 1)) || [])[1] || 0);
+  const [d, setD] = useState(null);
+  const [err, setErr] = useState("");
+  const [asText, setAsText] = useState(!!line);       // a page (md, html) as its text: a link to a line wants the text
+  const [upto, setUpto] = useState(Math.max(FV_LINES, line + 200));
+  const [busy, setBusy] = useState(false);
+  const body = useRef(null);
+  // a computer before stage F5 doesn't know the request: say what to do, not "no such request"
+  useEffect(() => { api("file", { sid: job.sid, p: path, base: job.base || "" })
+    .then(setD, (e) => setErr(/: file$/.test(e.message) ? t("fv.old") : e.message)); }, []);
+  const lines = useMemo(() => {
+    if (!d || d.text == null) return null;
+    const ls = d.text.split("\n");
+    if (ls.length > 1 && ls[ls.length - 1] === "") ls.pop();
+    return ls;
+  }, [d]);
+  useEffect(() => {                                     // a link to a line: that line in the middle, marked
+    const el = line && body.current && body.current.querySelector("#L" + line);
+    if (el) el.scrollIntoView({ block: "center" });
+  }, [d, asText]);
+  const close = () => history.back();
+  const openAt = (p) => emit("file", { sid: job.sid, p: lit(p), base: "" });
+  const send = async () => {
+    setBusy(true);
+    try { await api("send_files", { sid: job.sid, paths: [d.p] }); haptic("success"); emit("toast", t("fv.sent")); }
+    catch (e) { alertBox(e.message); } finally { setBusy(false); }
+  };
+  if ((d && d.kind === "pic") || (!d && !err && PIC_EXT.test(path))) {
+    const item = d ? { src: "data:image/" + (d.pic === "jpg" ? "jpeg" : d.pic) + ";base64," + d.data } : {};
+    return html`<${Viewer} key=${d ? "pic" : "wait"} job=${{ items: [item], send: d && !busy ? send : null }} onClose=${close} then=${() => {}}/>`;
+  }
+  const last = (x) => x.slice(x.lastIndexOf("/") + 1);
+  const folderOf = (x) => x.slice(0, Math.max(0, x.lastIndexOf("/")));
+  const name = d ? (d.p ? last(d.p) : d.project) : last(path.replace(/\/+$/, "")) || path;
+  const isDir = d && d.kind === "dir";
+  const page = d && (d.kind === "md" || d.kind === "html") && d.size > 0;
+  // a file's folder, or a folder's own folder: a tap lists it (the project's name stands for its top folder)
+  const up = d && (d.p || !isDir) ? html`<button class="link fv-dir" onClick=${() => openAt(folderOf(d.p))}>${ic("folder", 14)} ${folderOf(d.p) || d.project}</button>` : null;
+  const sub = !d ? null : isDir ? dotted([up, t("fv.items", { n: d.n, items: plural(d.n, "item") })])
+    : dotted([up, fsize(d.size), t("fv.changed", { at: turnWhen(d.mt) })]);
+  let view;
+  if (err) view = html`<div class="empty">${err}</div>`;
+  else if (!d) view = html`<div class="empty">${t("loading")}</div>`;
+  else if (isDir) {
+    view = html`${d.entries.length ? html`<div class="list fv-list">${d.entries.map((x) => html`<button key=${x.n} class=${"fv-row" + (x.lock ? " lock" : "")}
+        disabled=${x.lock} onClick=${() => openAt((d.p ? d.p + "/" : "") + x.n)}>
+        ${ic(x.lock ? "lock" : x.dir ? "folder" : PIC_EXT.test(x.n) ? "image" : "file", 18)}<span class="fv-n">${x.n}</span>
+        ${x.dir ? html`<span class="dim">${ic("chev", 16)}</span>` : html`<span class="dim nowrap">${fsize(x.size)}</span>`}</button>`)}</div>`
+      : html`<div class="empty">${t("fv.dir_empty")}</div>`}
+      ${d.n > d.entries.length && html`<div class="dim small">${t("fv.dir_cut", { n: d.entries.length, total: d.n })}</div>`}`;
+  } else if (d.kind === "other") view = html`<div class="empty">${t("fv.other")}</div>`;
+  else if (!d.size) view = html`<div class="empty">${t("fv.empty")}</div>`;
+  else if (page && !asText && d.kind === "md") {
+    view = html`<div class="md fv-md" data-sid=${job.sid} data-base=${folderOf(d.p)} dangerouslySetInnerHTML=${{ __html: md(d.text) }}/>`;
+  } else if (page && !asText) {
+    // the project's own page, drawn but dead: no script runs in it (no allow-scripts, and the app's own rules hold in it),
+    // nothing in it reaches the app or the network
+    view = html`<iframe class="fv-page" sandbox="" srcdoc=${d.text} title=${name}></iframe>`;
+  } else {
+    view = html`<div class="fv-code">${lines.slice(0, upto).map((l, k) => html`<div class=${"ln" + (k + 1 === line ? " hit" : "")} id=${"L" + (k + 1)}>
+        <span class="n">${k + 1}</span><span class="c">${l || " "}</span></div>`)}</div>
+      ${lines.length > upto && html`<button class="link more2" onClick=${() => setUpto(upto + FV_LINES)}>${t("fv.more_lines", { n: lines.length - upto })}</button>`}`;
+  }
+  return html`<div class="fv" role="dialog" aria-label=${name}>
+    <div class="fv-top">
+      <button class="fv-b" aria-label=${t("fv.back")} onClick=${close}>${ic("back", 24)}</button>
+      <div class="fv-h"><b>${name}</b>${sub && html`<div class="dim">${sub}</div>`}</div>
+      ${page && html`<button class="chip fv-t" onClick=${() => setAsText(!asText)}>${t(asText ? "fv.page" : "fv.text")}</button>`}
+    </div>
+    <div ref=${body} class=${"fv-body" + (page && !asText && d.kind === "html" ? " full" : "")}>${view}
+      ${d && d.cut && html`<div class="dim small fv-cut">${t("fv.cut", { total: fsize(d.size) })}</div>`}</div>
+    ${d && !isDir && d.size > 0 && html`<div class="fv-bar"><button class="btn wide" disabled=${busy} onClick=${send}>${ic("send", 18)} ${busy ? "…" : t("fv.send")}</button></div>`}
   </div>`;
 }
 
@@ -2485,7 +2617,7 @@ function App() {
   const tab = (name, h, label, icon) => html`<a class=${(r.name === name ? "on" : "") + (name === "new" ? " new" : "")} href=${h}><span class="ti">${ic(icon, name === "new" ? 22 : 22)}</span><span class="tl">${label}</span></a>`;
   return html`<${Banner}/><main class=${r.name === "s" ? "with-composer" : ""}>${screen}</main>
     ${r.name !== "s" && html`<nav class="tabs">${tab("home", "#/", t("tab.home"), "home")}${tab("projects", "#/projects", t("tab.projects"), "folder")}${tab("usage", "#/usage", t("tab.res"), "gauge")}${tab("new", "#/new", t("tab.new"), "plus")}</nav>`}
-    <${EditHost}/><${ViewHost}/><${Toast}/>`;
+    <${EditHost}/><${ViewHost}/><${FileHost}/><${Toast}/>`;
 }
 
 render(html`<${App}/>`, document.getElementById("app"));

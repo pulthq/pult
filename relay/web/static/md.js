@@ -1,5 +1,6 @@
 // Pult: markdown of Claude's replies → HTML. Safe by design: all text is escaped first,
-// only our own tags are inserted; links are http(s) only and open through Telegram (data-ext).
+// only our own tags are inserted; web links are http(s) only and open through Telegram (data-ext); a link to a
+// project file has no address at all — the app opens it over the screen (data-file), the computer decides what it shows.
 // The app can give Claude commands, so foreign HTML from a reply must never run inside it.
 // A link's words can't hide where it leads: unless they show that very address, it follows in brackets (a web page
 // may talk Claude into writing a link). Non-Latin names stay in their xn-- form, so a look-alike letter doesn't pass.
@@ -21,8 +22,11 @@ function inline(s) {
   const hold = (h) => "\u0000" + (keep.push(h) - 1) + "\u0000";
   s = s.replace(/`([^`\n]+)`/g, (_, c) => hold("<code>" + esc(c) + "</code>"));
   s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, t, u) => hold(link(t, u)));
-  // a link to a project file [name](path) can't be opened on the phone: show the name, and the path as code
-  s = s.replace(/\[([^\]\n]+)\]\(([^\s)]+)\)/g, (_, t, u) => hold(t === u || u.endsWith("/" + t) ? "<code>" + esc(u) + "</code>" : esc(t) + " <code>" + esc(u) + "</code>"));
+  // a link to a project file [name](path), as Claude writes them (stage F5): a tap opens it in the app. Any other
+  // scheme (mailto:, vscode:…) or a bare #anchor can't be opened on the phone: the name, and the target as code
+  s = s.replace(/\[([^\]\n]+)\]\(([^\s)]+)\)/g, (_, t, u) => hold(!/^[a-z][\w+.-]+:(?!\/\/\/)/i.test(u) && !u.startsWith("#")
+    ? '<a class="flink" role="link" tabindex="0" data-file="' + esc(u) + '">' + esc(t) + "</a>"
+    : t === u || u.endsWith("/" + t) ? "<code>" + esc(u) + "</code>" : esc(t) + " <code>" + esc(u) + "</code>"));
   s = esc(s);
   s = s.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
   s = s.replace(/(^|[^\w*])\*(?!\s)([^*\n]+?)\*(?![\w*])/g, "$1<i>$2</i>");

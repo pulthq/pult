@@ -13,7 +13,8 @@ into the public README: STAND_LANG=en|ru picks the texts, STAND_XSS=1 adds marku
 gives the question a second one, a second session waiting for you and a permission older than it, STAND_QUEUE=1 puts a turn in the queue (all places taken), STAND_UPD=ok|ready|busy|
 wait|run|fail shows Settings → Pult and Home's line in that state (no installer ever runs), STAND_PORT=<port> runs a
 second stand beside one already up. STAND_TICKS=<s> opens the first session in a tab that reads each message <s> s
-later, as Claude Code does at its turn's next step — a message with "#gone" is dropped instead (tools/ticks_check.py)."""
+later, as Claude Code does at its turn's next step — a message with "#gone" is dropped instead (tools/ticks_check.py).
+STAND_FILES=1 gives the shop a real folder with made-up files and ends the chat with links to them (tools/fileview_check.py)."""
 import asyncio, base64, hashlib, hmac, json, os, random, sys, time, urllib.parse
 from pathlib import Path
 
@@ -169,6 +170,36 @@ def ev(name, sid, cwd=SHOP, **kw):
     return dict(hook_event_name=name, session_id=sid, transcript_path=str(folder / (sid + ".jsonl")), cwd=cwd, **kw)
 
 
+# STAND_FILES=1: the shop's own folder, made up, and the last reply's links into it — a page, a line of code, a project
+# page, a picture, a folder, a file the app can't show, a secret and a file outside the project
+FILE_LINKS = {"en": "Files: [README.md](README.md) · [errors.py:12](checkout/errors.py#L12) · [design.html](docs/design.html) · "
+                    "[screen.png](media/screen.png) · [media/](media/) · [export.bin](data/export.bin) · [.env](.env) · [hosts](/etc/hosts)",
+              "ru": "Файлы: [README.md](README.md) · [errors.py:12](checkout/errors.py#L12) · [design.html](docs/design.html) · "
+                    "[screen.png](media/screen.png) · [media/](media/) · [export.bin](data/export.bin) · [.env](.env) · [hosts](/etc/hosts)"}
+
+
+def shop_files():
+    root = Path(os.environ["PULT_HOME"]).parent / "acme-shop"
+    for d in ("checkout", "docs", "media", "data"):
+        (root / d).mkdir(parents=True, exist_ok=True)
+    (root / "README.md").write_text("# Acme shop\n\nThe checkout lives in [checkout/](checkout/), its error texts in "
+                                    "[errors.py](checkout/errors.py).\n\n- **cards** — Visa, Mastercard\n- **timeouts** — 30 s\n\n"
+                                    "```\nmake test\n```\n")
+    (root / "checkout" / "errors.py").write_text("".join(
+        ["\"\"\"Checkout errors: what the customer reads.\"\"\"\n", "\n"]
+        + ["ERR_%d = \"Something went wrong (%d)\"\n" % (i, i) for i in range(1, 10)]
+        + ["DECLINED = \"Card declined — try another card\"\n", "TIMEOUT = \"Timed out — try again\"\n"]
+        + ["# a long line that has to wrap on a phone: " + "lorem ipsum " * 12 + "\n"]
+        + ["X_%d = %d\n" % (i, i) for i in range(40)]))
+    (root / "docs" / "design.html").write_text("<!doctype html><style>body{font:16px sans-serif;padding:12px}h1{color:#2a78d6}</style>"
+                                              "<h1>Checkout design</h1><p>Errors say why and what to do.</p>"
+                                              "<script>parent.postMessage('ran', '*')</script>")
+    (root / "media" / "screen.png").write_bytes(png_sample())
+    (root / "data" / "export.bin").write_bytes(bytes(range(256)) * 4)
+    (root / ".env").write_text("TOKEN=made-up\n")
+    return root
+
+
 async def main():
     pultd.CLAUDE_PROJECTS = Path(T.TP).parent.parent      # made-up transcripts only: never the Mac's own sessions
     fake = T.FakeTg()
@@ -178,6 +209,8 @@ async def main():
     store.put("lang_tg", LANG)                                   # the language of the bot and the app
     store.set_topic(T.PKEY, SHOP, "acme-shop", 77)
     store.set_topic(PKEY2, DESK, "support-desk", 78)
+    if os.environ.get("STAND_FILES") == "1":                 # stage F5: links in Claude's words open the project's files
+        store.set_topic(T.PKEY, str(shop_files()), "acme-shop", 77)
     p = pultd.Pult({"PULT_ALLOWED_USER_IDS": str(T.OWNER), "PULT_FORCE_AWAY": "1"}, tg, store)
     p.out = pultd.Outbox(rate=60000, burst=1000)
     p._agents = (time.monotonic() + 1e6, [{"sessionId": SID3, "cwd": "/Users/x/blog"}])
@@ -287,7 +320,7 @@ async def main():
         line("assistant", [{"type": "text", "text": summary}]),
         line("user", "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n<summary>%s</summary>\n"
                      "</task-notification>" % D["bg_done"]),
-        aline(D["after_bg"], "u5", 1400),
+        aline(D["after_bg"] + ("\n\n" + FILE_LINKS[LANG] if os.environ.get("STAND_FILES") == "1" else ""), "u5", 1400),
     ]) + "\n")
     store.touch_session(T.SID, T.PKEY, path=SHOP, title=D["title"])
     p.set_ctx(T.SID, 200000, 32000, model="claude-opus-5-5")        # the context gauge, as a turn's result reports it
