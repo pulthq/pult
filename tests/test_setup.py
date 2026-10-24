@@ -689,7 +689,7 @@ class UpdateTest(Base):
         # commit — a commit that didn't touch them is nothing to install (Actions on Windows, 2026-10-24)
         for name in ("pultd.py", "pult_update.py", "pult_x.py"):
             p = S.HOME / name
-            p.write_bytes(p.read_bytes().replace(b"\n", b"\r\n"))
+            p.write_bytes(p.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))   # CRLF here and on Windows
         self.files({"docs/journal.md": "j2\n"})
         self.commit("Pult: journal")
         self.assertFalse(U.check()["ready"])
