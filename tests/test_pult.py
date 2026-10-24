@@ -1345,6 +1345,18 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await until(lambda: t.done)
         self.assertEqual(t.done[0], "⏹")
 
+    async def test_superseded_turn(self):
+        # two events at once each started a turn: the first one is nobody's — it closes itself, the session's own
+        # goes on (2026-10-24: such a turn said "the session is gone" every minute for hours, closing the wrong one)
+        lv = self.p.live_of(SID, PKEY)
+        t1 = self.p.start_turn(lv, "задача")
+        t2 = self.p.start_turn(lv, "задача")
+        t1.changed.set()
+        await until(lambda: t1.done)
+        self.assertEqual((t1.done[0], lv.turn, t2.done), ("⏹", t2, None))
+        self.p.finish_turn(lv, "✔️")
+        self.assertEqual((t2.done[0], lv.turn), ("✔️", None))
+
     async def run_cli(self, *cmd, cwd=None, sock=None):
         env = plain_env(PULT_SOCK=sock or os.environ["PULT_SOCK"])            # pult.cmd gives -X utf8 to itself only
         p = await asyncio.create_subprocess_exec(sys.executable, *(["-X", "utf8"] if os.name == "nt" else []),
@@ -1746,6 +1758,66 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
                                                  env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         await p.communicate()
         self.assertEqual(p.returncode, 2)
+
+    async def test_file_view(self):
+        # a link in Claude's words tapped in the app (stage F5): the project's file or folder, by Telegram's rule —
+        # inside the project, nothing like a secret; a link in a file's own page counts from that file's folder
+        proj = TMP / ("proj-" + self._testMethodName)
+        (proj / "docs" / "img").mkdir(parents=True)
+        (proj / ".git").mkdir()
+        (proj / "docs" / "handoff.md").write_text("# Передача\n\n[CLAUDE.md](../CLAUDE.md)\n")
+        (proj / "CLAUDE.md").write_text("правила\n")
+        png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+        (proj / "docs" / "img" / "a b.png").write_bytes(png)
+        (proj / "page.html").write_text("<p>привет</p>")
+        (proj / "bin.dat").write_bytes(b"\x00\x01\x02")
+        (proj / "cp1251.txt").write_bytes("привет".encode("cp1251"))
+        (proj / "empty.txt").write_text("")
+        (proj / "crlf.txt").write_bytes(b"a\r\nb\r\n")                       # Windows line ends: no \r at each line's end
+        (proj / "long.txt").write_text("".join("строка %d\n" % i for i in range(100)))
+        (proj / ".env").write_text("TOKEN=1")
+        (proj / ".git" / "config").write_text("[core]")
+        (proj / ".DS_Store").write_bytes(b"x")
+        self.store.set_topic(PKEY, str(proj), "proj", 77)
+        self.store.touch_session(SID, PKEY, path=str(proj))
+        f = self.p.api_file
+        r = await f(SID, "docs/handoff.md")
+        self.assertEqual((r["p"], r["kind"], r["text"][:10], r["cut"], r["project"]), ("docs/handoff.md", "md", "# Передача", False, "proj"))
+        r = await f(SID, "../CLAUDE.md", base="docs")
+        self.assertEqual((r["p"], r["kind"], r["text"]), ("CLAUDE.md", "md", "правила\n"))
+        r = await f(SID, "docs/img/a%20b.png")
+        self.assertEqual((r["p"], r["kind"], r["pic"], base64.b64decode(r["data"])), ("docs/img/a b.png", "pic", "png", png))
+        self.assertEqual((await f(SID, str(proj / "page.html")))["kind"], "html")          # an absolute path inside the project
+        self.assertEqual((await f(SID, "file://" + str(proj / "CLAUDE.md")))["p"], "CLAUDE.md")
+        self.assertEqual([(await f(SID, n))["kind"] for n in ("bin.dat", "cp1251.txt", "empty.txt")], ["other", "other", "text"])
+        self.assertEqual((await f(SID, "crlf.txt"))["text"], "a\nb\n")
+        with mock.patch.object(F, "SHOW_TEXT_MAX", 40):                                   # a long text: its start, cut at a line
+            r = await f(SID, "long.txt")
+        self.assertEqual((r["cut"], r["text"]), (True, "строка 0\nстрока 1\n"))
+        with mock.patch.object(F, "SHOW_PIC_MAX", 10):                                    # a picture too big for the frame
+            self.assertEqual((await f(SID, "docs/img/a b.png"))["kind"], "other")
+        # folders: folders first, then by name; no temporary files; secrets listed but locked
+        r = await f(SID, "")
+        self.assertEqual((r["p"], r["kind"], r["n"]), ("", "dir", 10))
+        self.assertEqual([(e["n"], e["dir"], e["lock"]) for e in r["entries"][:3]], [(".git", True, True), ("docs", True, False), (".env", False, True)])
+        self.assertNotIn(".DS_Store", [e["n"] for e in r["entries"]])
+        r = await f(SID, "docs/")
+        self.assertEqual((r["p"], [e["n"] for e in r["entries"]]), ("docs", ["img", "handoff.md"]))
+        # refused: outside the project, like a secret, gone, an unknown session
+        for p_, why in (("/etc/hosts", "не в папке этого проекта"), ("../x", "не в папке этого проекта"),
+                        ("../../CLAUDE.md", "не в папке этого проекта"), (".env", "не показываю"), (".git", "не показываю"),
+                        (".git/config", "не показываю"), ("nope.md", "такого файла нет")):
+            with self.assertRaises(ValueError, msg=p_) as e:
+                await f(SID, p_, base="docs" if p_.startswith("../../") else "")
+            self.assertIn(why, str(e.exception), p_)
+        if os.name != "nt":                                   # a link out of the project (Windows: links need rights)
+            (proj / "link.md").symlink_to("/etc/hosts")
+            with self.assertRaises(ValueError) as e:
+                await f(SID, "link.md")
+            self.assertIn("не в папке этого проекта", str(e.exception))
+        with self.assertRaises(ValueError) as e:
+            await f("00000000-0000-4000-8000-000000000000", "CLAUDE.md")
+        self.assertIn("Пульт не знает этой сессии", str(e.exception))
 
     async def test_turn_files_and_context(self):
         # a turn's files ride with its outcome (the app offers them to Telegram); a session learns about pult send at

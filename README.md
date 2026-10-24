@@ -72,7 +72,8 @@ Each limit against the even pace, with a forecast: on pace, under or over — an
 
 ### Files both ways
 
-Forward documents to a project's topic — they land in the project. What Claude made comes back with a tap.
+Forward documents to a project's topic — they land in the project. What Claude made comes back with a tap. A file
+Claude links to in a reply opens right in the app: a page, code at the very line, a picture or a folder.
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="media/f-files.en.dark.png"><img src="media/f-files.en.png" width="330" alt="Files of a turn: the files Claude made or changed, to tick and send to Telegram one by one or as one archive"></picture></p>
 

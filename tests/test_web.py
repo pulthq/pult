@@ -142,6 +142,28 @@ class InitTest(unittest.TestCase):
         self.assertIn("(xn--", lines[2])
         self.assertNotIn('"onmouseover', lines[3])                         # the address stays inside its quotes
 
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_file_links_in_the_app(self):
+        # a link to a project file is a tap with no address (stage F5); another scheme or a bare anchor stays words
+        md = (HERE.parent / "relay" / "web" / "static" / "md.js").as_uri()
+        cases = ["[handoff.md](docs/handoff.md)", "[run:12](bin/run#L12)", "[probe/](tools/probe/)", "[x](mailto:a@b.c)",
+                 "[a](#top)", "[q](a\\\"onclick=alert(1))", "[j](javascript:alert(1))", "[f](file:///tmp/a.md)"]
+        js = "import {md} from %s; for (const s of %s) console.log(md(s));" % (json.dumps(md), json.dumps(cases))
+        out = subprocess.run(["node", "--input-type=module", "-e", js], capture_output=True, text=True, timeout=30)
+        lines = out.stdout.splitlines()
+        self.assertEqual(len(lines), len(cases), out.stderr)
+        self.assertIn('data-file="docs/handoff.md">handoff.md</a>', lines[0])
+        self.assertIn('data-file="bin/run#L12">run:12</a>', lines[1])
+        self.assertIn('data-file="tools/probe/"', lines[2])
+        for k in (0, 1, 2, 7):
+            self.assertNotIn("href", lines[k])
+        self.assertEqual(lines[3], "<p>x <code>mailto:a@b.c</code></p>")
+        self.assertEqual(lines[4], "<p>a <code>#top</code></p>")
+        self.assertNotIn('" onclick', lines[5].replace("&quot;", "Q"))
+        self.assertIn("&quot;", lines[5])
+        self.assertNotIn("data-file", lines[6])
+        self.assertIn('data-file="file:///tmp/a.md"', lines[7])
+
 
 class TranscriptTest(unittest.TestCase):
     def setUp(self):

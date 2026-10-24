@@ -2,6 +2,27 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.15.3 — 2026-10-24
+
+- **A link to a project file in Claude's words opens it in the app.** Claude writes file links like
+  `[ARCHITECTURE.md](ARCHITECTURE.md)`; the app showed them as a name and a path that couldn't be opened. Now a tap opens
+  the file over the chat, and Back returns to the same place in it: Markdown as a page (Text shows the source, and its
+  own links count from its folder), code and text with line numbers (a link to `#L124` puts that line in the middle,
+  marked), a project's HTML page drawn with no script running, a picture on the whole screen, a folder as a list, and
+  the folder in a file's header lists that folder. Anything else says the app can't show it, and **To Telegram** under
+  any file sends it to the project's topic (Windows line ends show as plain ones). The rule is the one of To Telegram: only files inside the session's
+  project, nothing that looks like keys or settings. `tools/fileview_check.py` drives it with taps on the stand
+  (`STAND_FILES=1`).
+- **Voice: "speak" waits for sound even after Telegram's microphone question.** Telegram on Android asks for the
+  microphone at every new request and remembers nothing, so the first recording of a visit waits for that answer.
+  The 1.5 s wait for sound counted from the tap, so after a slow answer "speak" came at once, before sound flowed —
+  the very thing that lost the first syllable. It now counts from the moment the microphone is given, and the
+  computer's log tells how long the question took ("microphone asked anew: N s").
+- **A turn left behind no longer runs for good.** When two events of a session started a turn at the same moment, the
+  first one belonged to nobody: nothing ever ended it, and once the session went quiet Pult logged "the session is
+  gone from the Mac" every minute, closing the wrong turn. A turn now closes itself — within a minute once another
+  one has taken its place, or once its session is gone.
+
 ## 0.15.2 — 2026-10-24
 
 - **On Windows, Settings → Pult no longer sees an update that isn't there.** Git for Windows checks Pult's files out
