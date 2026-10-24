@@ -516,6 +516,7 @@ class ChainTest(ChainBase):
         pending = (await self.call(ws, "overview"))["data"]["pending"]
         self.assertEqual(len(pending), 1)
         self.assertIn("git push", pending[0]["html"])
+        self.assertLess(abs(pending[0]["since"] - time.time()), 30)          # "your move" orders it by time with the rest
         res = await self.call(ws, "answer", rid=pending[0]["rid"], act="y")
         self.assertTrue(res["data"]["ok"])
         out = json.loads((await proc.stdout.read()).decode())

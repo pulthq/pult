@@ -264,6 +264,10 @@ S = {
     "turn.done": {"en": "done in {dur}", "ru": "готово за {dur}"},
     "turn.stopped": {"en": "interrupted after {dur}", "ru": "прервано через {dur}"},
     "turn.failed": {"en": "broke off after {dur}", "ru": "оборвался через {dur}"},
+    "queue.state": {"en": "in the queue", "ru": "в очереди"},
+    "queue.why": {"en": "Up to {n} tasks from the phone run at once, and all places are taken: this one starts as soon as one ends.",
+                  "ru": "С телефона идут не больше {n} задач разом, все места заняты: начну, как только одна закончится."},
+    "btn.jump": {"en": "▶️ Start now", "ru": "▶️ Начать сейчас"},
     "turn.you": {"en": "<i>You: {text}</i>", "ru": "<i>Ты: {text}</i>"},
     "att.image": {"en": "📎 picture", "ru": "📎 снимок"},
     "att.file": {"en": "📎 file", "ru": "📎 файл"},
@@ -283,12 +287,16 @@ S = {
     "stt.e.net": {"en": "no connection to Groq ({why})", "ru": "нет связи с Groq ({why})"},
     "stt.e.format": {"en": "unknown recording format: {kind}", "ru": "неизвестный формат записи: {kind}"},
     "stt.e.groq": {"en": "Groq: {msg}", "ru": "Groq: {msg}"},
-    # the vocabulary Whisper is shown: Pult's terms, punctuated, and the project names — it copies the spelling
-    # and the punctuation style (not shown to people)
+    # what Whisper is told before a recording (not shown to people): a sentence in the language spoken, punctuated,
+    # with the terms people say to Claude — it copies the spelling and the punctuation style; the owner's own words
+    # (Settings → Voice input) go after it. Mind Groq's 896 bytes: a Russian letter takes two (pult_stt.fit)
     "stt.prompt": {
-        "en": "Pult, Claude Code, VS Code, Telegram, GitHub: deploy, commit, hook, relay, tab, session. Projects: {projects}.",
-        "ru": "Пульт, Claude Code, VS Code, Telegram, GitHub: деплой, коммит, хук, посредник, вкладка, сессия. Проекты: {projects}.",
+        "en": "This is a voice message to Claude Code about code and a project: commit, deploy, hook, session, tab, "
+              "VS Code, Telegram, GitHub, Pult.",
+        "ru": "Это голосовое сообщение для Claude Code о коде и проекте. Говорю по-русски, вставляю английские слова: "
+              "Claude, VS Code, Telegram, GitHub. Коммит, деплой, хук, сессия, вкладка, Пульт.",
     },
+    "stt.prompt.words": {"en": "Also: {words}.", "ru": "Ещё слова: {words}."},
     "vehi": {"en": "⏳ {head} · has been working for {dur}", "ru": "⏳ {head} · работает уже {dur}"},
     "vehi.muted": {"en": "\n<i>🔕 no more reminders — only the result will come</i>",
                    "ru": "\n<i>🔕 вех больше не будет — придёт только итог</i>"},
@@ -330,6 +338,8 @@ S = {
     "note.stale": {"en": "this button is outdated", "ru": "кнопка устарела"},
     "note.stale_retry": {"en": "this button is outdated — repeat the command", "ru": "кнопка устарела — повтори команду"},
     "note.muted": {"en": "only the result until the turn ends", "ru": "до конца хода — только итог"},
+    "note.jump": {"en": "starting over the limit", "ru": "начинаю сверх лимита"},
+    "note.not_queued": {"en": "it isn't waiting any more", "ru": "уже не ждёт"},
     "note.bound": {"en": "topic bound to {name}", "ru": "тема привязана к {name}"},
     "note.starting_in": {"en": "starting in {name}", "ru": "запускаю в {name}"},
     "note.sending_to": {"en": "sending to {name}", "ru": "отправляю в {name}"},
@@ -435,6 +445,33 @@ S = {
                            "отвечает приложению.\nСам только что обновлял сервер — выложи ещё раз. Иначе проверь сервер."},
     "files.match": {"en": "✅ The app files on the server match your deploy again — the app is open.",
                     "ru": "✅ Файлы приложения на сервере снова совпадают с выложенными — приложение открыто."},
+    # stage U: installing an update from the app
+    "upd.cant": {"en": "Nothing to install right now — open Settings again.",
+                 "ru": "Сейчас ставить нечего — открой «Настройки» заново."},
+    "upd.cant.busy": {"en": "Not now: a restart would cut off Pult's sessions that are working. "
+                            "Install once they're free.",
+                      "ru": "Сейчас нельзя: перезапуск оборвёт работающие сессии Пульта. "
+                            "Поставь, когда освободятся."},
+    "upd.cant.spawn": {"en": "Couldn't start the installer. Install from the terminal: bash install.sh",
+                       "ru": "Не запустился установщик. Поставь из терминала: bash install.sh"},
+    "upd.failed": {"en": "⚠️ <b>Pult {to} didn't come up</b> — {back} is back and works as before.\nWhy: {why}.\n"
+                         "Details — in the app: Settings → Pult.",
+                   "ru": "⚠️ <b>Пульт {to} не поднялся</b> — вернул {back}, всё работает как прежде.\nПричина: {why}.\n"
+                         "Подробности — в приложении: Настройки → Пульт."},
+    "upd.failed.kept": {"en": "⚠️ <b>Pult {to} wasn't installed</b> — {back} stays.\nWhy: {why}.",
+                        "ru": "⚠️ <b>Пульт {to} не поставлен</b> — остался {back}.\nПричина: {why}."},
+    "upd.dead": {"en": "⚠️ Pult didn't start after the update to {to}, nor after going back to {back}. "
+                       "On the computer, in Pult's folder: bash install.sh — and see pult status.",
+                 "ru": "⚠️ Пульт не запустился ни после обновления до {to}, ни после возврата к {back}. "
+                       "На компьютере, в папке Пульта: bash install.sh — и посмотри pult status."},
+    "upd.why.restarts": {"en": "it kept restarting — it crashes at start", "ru": "перезапускался снова и снова — падает при запуске"},
+    "upd.why.no_start": {"en": "it didn't start", "ru": "не запустился"},
+    "upd.why.no_relay": {"en": "it didn't reach the app's server in 90 s", "ru": "не связался с сервером приложения за 90 с"},
+    "upd.why.no_commit": {"en": "the folder no longer has that commit", "ru": "в папке больше нет этого коммита"},
+    "upd.why.no_source": {"en": "Pult doesn't know which folder it was installed from", "ru": "Пульт не знает, из какой папки его ставили"},
+    "upd.why.pip": {"en": "the dependencies didn't install", "ru": "не поставились зависимости"},
+    "upd.why.error": {"en": "the installer failed", "ru": "сбой установщика"},
+    "upd.why.spawn": {"en": "the installer didn't start", "ru": "не запустился установщик"},
     "tg.conflict": {"en": "⚠️ Someone else receives this bot's messages (Telegram answers 409). If no second Pult runs "
                           "with this bot, the bot token has leaked: @BotFather → /revoke, then <code>pult setup</code> "
                           "asks for the new one.",

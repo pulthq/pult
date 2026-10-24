@@ -82,7 +82,8 @@ Telegram — чтобы позвать, мини-приложение внутр
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="media/f-newproject.ru.dark.png"><img src="media/f-newproject.ru.png" width="330" alt="«Новый проект» в приложении: название, папка, где положить и как начать: пустой, с описанием или с GitHub"></picture></p>
 
 И ещё: голосовые в текст, модель и раздумья для каждой сессии, пейджер, который знает, за компьютером ли ты,
-`pult run` для своих долгих команд. **[Всё целиком](guide/usage.ru.md)**.
+галочки у твоего сообщения — отправлено, Claude прочёл, — `pult run` для своих долгих команд, обновление из приложения
+после `git pull` (macOS, Linux). **[Всё целиком](guide/usage.ru.md)**.
 
 ## Рядом с официальными способами
 

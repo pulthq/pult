@@ -70,6 +70,19 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 - **Behind a VPN** Telegram may be out of reach right after logon; Pult waits for it.
 - **Not on Windows yet:** the computer's load on Resources. The log: `~\.local\state\pult\pult.log`.
 
+## Update
+
+```
+cd pult
+git pull
+```
+
+Then tap **Install** in the web app (Settings → Pult), or run `./install.sh` again. The button installs what is
+committed in this folder, and only once a commit changed Pult's own files. If a restart would cut off sessions started
+from the phone, it lists them and offers **Install once they're free**. A new version that doesn't come up is replaced
+by the old one on its own, and Telegram says why. Settings → Pult keeps the last installs. On Windows, run
+`install.ps1` again.
+
 ## Turn it off, remove it
 
 - `pult hooks off`, then Reload Window: Pult stops seeing sessions. `pult tab off`: new tabs start without the

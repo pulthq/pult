@@ -40,6 +40,7 @@ import pult_files as F  # noqa: E402
 import pult_os  # noqa: E402
 import pult_render as R  # noqa: E402
 import pult_stt as STT  # noqa: E402
+import pult_update as U  # noqa: E402
 import pultd  # noqa: E402
 
 I.set_lang("ru")          # the original checks are in Russian; English ones — EnglishTest
@@ -1112,6 +1113,38 @@ class SttTest(unittest.IsolatedAsyncioTestCase):
         for k in ("stt.e.key", "stt.e.limit", "stt.e.big", "stt.e.groq", "stt.e.net", "stt.e.format"):
             self.assertIn(k, I.S)                                   # every reason has words in both languages
 
+    async def test_model_and_prompt(self):
+        # large-v3 unless told otherwise; the prompt is cut to Groq's 896 bytes of UTF-8 at a word (a longer one is
+        # refused outright — 2026-10-23)
+        seen, tr = self.handler()
+        self.assertEqual(STT.Stt("k" * 24, transport=tr).model, "whisper-large-v3")
+        await STT.Stt("k" * 24, transport=tr, model="whisper-large-v3-turbo").transcribe(b"x" * 10, "audio/webm",
+                                                                                          prompt="Пульт, " * 200)
+        self.assertIn(b'name="model"\r\n\r\nwhisper-large-v3-turbo', seen[0].content)
+        cut = STT.fit("Пульт, " * 200)
+        self.assertLessEqual(len(cut.encode()), STT.PROMPT_MAX)
+        self.assertGreater(len(cut.encode()), STT.PROMPT_MAX - 20)
+        self.assertTrue(cut.endswith("Пульт"), cut[-10:])
+        self.assertIn(cut.encode(), seen[0].content)
+        self.assertEqual(STT.fit("коротко."), "коротко.")
+
+    def test_scrub(self):
+        # Whisper's subtitle credits over silence are cut off the end; the same words inside a sentence stay
+        cases = {
+            "Продолжение следует...": ("", ["Продолжение следует..."]),
+            "Сделай деплой. Продолжение следует...": ("Сделай деплой.", ["Продолжение следует..."]),
+            "Посмотри логи. Редактор субтитров А.Семкин Корректор А.Егорова":
+                ("Посмотри логи.", ["Редактор субтитров А.Семкин Корректор А.Егорова"]),
+            "Привет. Субтитры сделал DimaTorzok": ("Привет.", ["Субтитры сделал DimaTorzok"]),
+            "Готово. Спасибо за просмотр! Продолжение следует...":
+                ("Готово.", ["Спасибо за просмотр!", "Продолжение следует..."]),
+            "Thanks for watching!": ("", ["Thanks for watching!"]),
+            "Это продолжение следует логике.": ("Это продолжение следует логике.", []),
+            "Посмотри, что следует дальше.": ("Посмотри, что следует дальше.", []),
+        }
+        for text, want in cases.items():
+            self.assertEqual(STT.scrub(text), want, text)
+
     async def test_proxy_fallback(self):
         # the proxy route fails → the direct one answers and stays the first choice afterwards
         _, dead = self.handler(raise_=httpx.ProxyError("no proxy"))
@@ -1809,7 +1842,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         Path(TP).write_text("")
         control = mock.AsyncMock(return_value={})
         client = SimpleNamespace(set_model=mock.AsyncMock(), _query=SimpleNamespace(_send_control_request=control))
-        self.p.driven[SID] = SimpleNamespace(busy=False, bg=set(), q=asyncio.Queue(), client=client, want_model=None,
+        self.p.driven[SID] = SimpleNamespace(busy=False, queued=None, bg=set(), q=asyncio.Queue(), client=client, want_model=None,
                                              want_effort=None, task=SimpleNamespace(cancel=lambda: None))
         res = await self.p.api_model(SID, "sonnet")
         client.set_model.assert_awaited_once_with("sonnet")
@@ -1943,7 +1976,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 await self.p.api_session(SID2)
             self.p.live_of(SID2, PKEY).driven = True
-            self.p.driven[SID2] = SimpleNamespace(busy=True, bg=set(), q=asyncio.Queue(), client=None,
+            self.p.driven[SID2] = SimpleNamespace(busy=True, queued=None, bg=set(), q=asyncio.Queue(), client=None,
                                                   task=SimpleNamespace(cancel=lambda: None))
             info = await self.p.api_session(SID2)
             self.assertEqual((info["sid"], info["page"]["items"], info["page"]["end"]), (SID2, [], None))
@@ -1973,7 +2006,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         SID2 = "22222222-3333-4444-5555-666666666666"
         self.store.touch_session(SID2, PKEY, path="/Users/x/proj", driven=True)
         self.p._agents = (time.monotonic() + 1e6, [{"sessionId": SID, "cwd": "/Users/x/proj", "status": "idle"}])
-        self.p.driven[SID2] = SimpleNamespace(busy=True, bg=set(), q=asyncio.Queue(), path="/Users/x/proj", client=None,
+        self.p.driven[SID2] = SimpleNamespace(busy=True, queued=None, bg=set(), q=asyncio.Queue(), path="/Users/x/proj", client=None,
                                               task=SimpleNamespace(cancel=lambda: None))
         lv = self.p.live_of(SID, PKEY)
         lv.pending["r1"] = SimpleNamespace(fut=asyncio.get_running_loop().create_future())
@@ -2009,8 +2042,22 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(R.prompt_text(body), "🎤 сделай деплой")
         blob, kind, language, prompt = stt.calls[0]
         self.assertEqual((blob[:4], kind, language), (b"OggS", "audio/ogg", "ru"))
-        self.assertIn("proj", prompt)                           # the project names help Whisper spell them
-        self.assertIn("Пульт", prompt)
+        self.assertIn("Claude Code", prompt)                    # a sentence in the language spoken, with the terms
+        self.assertNotIn("proj", prompt)                        # folder names stay out
+        self.store.put("stt_words", "Орион, Кубер")            # the owner's own words go last, all within Groq's limit
+        self.assertTrue(self.p.stt_prompt().endswith("Ещё слова: Орион, Кубер."), self.p.stt_prompt())
+        self.store.put("stt_words", "Орион " * 200)
+        self.assertLessEqual(len(self.p.stt_prompt().encode()), STT.PROMPT_MAX)
+        stt.text = "сделай деплой. Продолжение следует..."   # Whisper's phantom after a pause is cut off
+        with mock.patch.object(self.p, "drive", mock.AsyncMock()) as drive:
+            await self.p.on_message(dict(base, message_id=26, text="/new"))
+            await self.p.on_message(dict(base, message_id=27, **voice))
+            self.assertTrue(drive.call_args.args[2].startswith("сделай деплой.\n\n[Spoken message"), drive.call_args.args[2])
+        stt.text = "Продолжение следует..."                    # nothing but a phantom — "nothing heard", no turn
+        with mock.patch.object(self.p, "drive", mock.AsyncMock()) as drive:
+            await self.p.on_message(dict(base, message_id=28, **voice))
+            drive.assert_not_called()
+        self.assertEqual(self.texts()[-1], I.T("stt.empty", "ru"))
         self.assertEqual(self.fake.of("getFile")[0]["file_id"], "AwAC")
         stt.text = ""
         with mock.patch.object(self.p, "drive", mock.AsyncMock()) as drive:
@@ -2024,7 +2071,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.p.stt = stt
         await self.p.on_message(dict(base, message_id=25, voice=dict(voice["voice"], file_size=30 * 1024 * 1024)))
         self.assertIn("слишком большая", self.texts()[-1])
-        self.assertEqual(len(self.fake.of("getFile")), 2)       # no key, too big — nothing was downloaded
+        self.assertEqual(len(self.fake.of("getFile")), 4)       # no key, too big — nothing was downloaded
 
     async def test_api_stt(self):
         # a recording from the app → words; nothing heard, junk, no key — an error in words
@@ -2036,6 +2083,13 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.p.stt = FakeStt()
         webm = base64.b64encode(b"\x1aE\xdf\xa3" + b"\0" * 30).decode()
         self.assertEqual(await self.p.api_stt(webm, "audio/webm;codecs=opus"), {"text": "привет мир"})
+        notes = {"secs": 7.4, "ready": 640, "voice": 0, "first": -31.6, "peak": -12.2}
+        with mock.patch.object(pultd, "log") as lg:
+            self.assertEqual(await self.p.api_stt(webm, "audio/webm", notes=notes), {"text": "привет мир"})
+        self.assertIn("0 KB, 7 s, sound 0.64 s after the tap, voice from +0.0 s, first second -32 dB, loudest -12 dB "
+                      "→ 10 characters", lg.call_args.args[0])
+        self.assertEqual(self.p.stt_notes({"secs": "x", "ready": -5, "voice": None, "peak": 99}), ", no voice heard")
+        self.assertEqual((self.p.stt_notes(None), self.p.stt_notes("junk")), ("", ""))
         with self.assertRaises(ValueError) as cm:
             await self.p.api_stt(base64.b64encode(b"\0" * 30).decode(), "audio/webm")
         self.assertEqual(str(cm.exception), I.T("stt.empty", "ru"))
@@ -2045,12 +2099,21 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError) as cm:
             await self.p.api_stt(webm, "audio/webm")
         self.assertIn("pult stt", str(cm.exception))
-        self.assertEqual(self.p.stt_state(), {"on": False, "lang": "ru"})
+        self.assertEqual(self.p.stt_state(), {"on": False, "lang": "ru", "words": ""})
         # the app shows the microphone only when there is a key: the flag rides with the projects (and the session)
         with mock.patch.object(self.p, "list_projects", lambda known: []):
             self.assertEqual(await self.p.api_projects(), {"projects": [], "stt": False, "create": True})
             self.p.stt = FakeStt()
             self.assertTrue((await self.p.api_projects())["stt"])
+
+    async def test_api_stt_words(self):
+        # the owner's own words: squeezed, trimmed, capped; "" clears; Settings show them
+        self.assertEqual(await self.p.api_stt_words("  Орион,\n  Кубер ,, Claude  Code;"), {"words": "Орион, Кубер, Claude Code"})
+        self.assertEqual(self.p.stt_state()["words"], "Орион, Кубер, Claude Code")
+        long = (await self.p.api_stt_words("слово " * 100))["words"]
+        self.assertTrue(len(long) <= pultd.STT_WORDS_MAX and long.endswith(" слово"), long[-12:])
+        self.assertEqual(await self.p.api_stt_words(""), {"words": ""})
+        self.assertEqual((await self.p.api_settings())["stt"]["words"], "")
 
     async def test_api_stt_key(self):
         # the key from the app's settings: checked with Groq, written to the settings file (600), in force at once;
@@ -2078,8 +2141,12 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.p.stt)
         env.write_text("PULT_BOT_TOKEN=T\nPULT_STT_KEY=gsk_%s\nPULT_STT_LANG=auto\n" % ("c" * 40))
         os.utime(env, (time.time() + 5, time.time() + 5))               # the time surely differs
-        self.assertEqual(self.p.stt_state(), {"on": True, "lang": "auto"})
-        self.assertEqual(self.p.stt.key, "gsk_" + "c" * 40)
+        self.assertEqual(self.p.stt_state(), {"on": True, "lang": "auto", "words": ""})
+        self.assertEqual((self.p.stt.key, self.p.stt.model), ("gsk_" + "c" * 40, STT.MODEL))
+        env.write_text("PULT_BOT_TOKEN=T\nPULT_STT_KEY=gsk_%s\nPULT_STT_MODEL=whisper-large-v3-turbo\n" % ("c" * 40))
+        os.utime(env, (time.time() + 10, time.time() + 10))
+        self.p.stt_state()                                              # the model back to turbo — by the same file
+        self.assertEqual(self.p.stt.model, "whisper-large-v3-turbo")
         env.unlink()
         self.p.stt_state()                                              # gone again — off, no error
         self.assertIsNone(self.p.stt)
@@ -2105,13 +2172,13 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.store.touch_session(SID, PKEY, path="/Users/x/proj", driven=True)
         self.p.live_of(SID, PKEY).transcript = TP
         q = asyncio.Queue()
-        dr = self.p.driven[SID] = SimpleNamespace(q=q, busy=False, asking=False, bg=set(), client=None,
+        dr = self.p.driven[SID] = SimpleNamespace(q=q, busy=False, queued=None, asking=False, bg=set(), client=None,
                                                   task=SimpleNamespace(cancel=lambda: None))
         dr.say = types.MethodType(pultd.Driven.say, dr)
         png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\0" * 20).decode()
         bad = base64.b64encode(b"#!/bin/sh\nrm -rf /\n").decode()
         res = await self.p.api_send(SID, "Look", files=[{"name": "a.png", "data": png}, {"name": "x.sh", "data": bad}, {"data": "%%%"}])
-        self.assertEqual(res, {"ok": True, "how": "session"})
+        self.assertEqual((res["ok"], res["how"], self.p.outbox[SID][-1]["id"]), (True, "session", res["out"]))
         text, _ = q.get_nowait()
         self.assertTrue(text.startswith("Look\n\n[Attachment from the Pult app: "), text)
         path = text.split(": ", 1)[1].rstrip("]")
@@ -2149,7 +2216,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         stopped = []
         self.store.touch_session(SID, PKEY, path="/Users/x/proj", driven=True)
         dr = self.p.driven[SID] = SimpleNamespace(
-            busy=True, asking=False, sid=SID, d=self.p, bg=set(), q=asyncio.Queue(), task=SimpleNamespace(cancel=lambda: None),
+            busy=True, asking=False, queued=None, sid=SID, d=self.p, bg=set(), q=asyncio.Queue(), task=SimpleNamespace(cancel=lambda: None),
             client=SimpleNamespace(interrupt=mock.AsyncMock(side_effect=lambda: stopped.append(1))))
         dr.say, dr.stop = types.MethodType(pultd.Driven.say, dr), types.MethodType(pultd.Driven.stop, dr)
         self.p.set_focus(PKEY, SID)
@@ -2188,13 +2255,13 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         # a session from Telegram was opened in VS Code — Pult closes its own idle process
         from types import SimpleNamespace
         cancelled = []
-        self.p.driven[SID] = SimpleNamespace(busy=False, bg=set(), task=SimpleNamespace(cancel=lambda: cancelled.append(1)))
+        self.p.driven[SID] = SimpleNamespace(running=False, bg=set(), task=SimpleNamespace(cancel=lambda: cancelled.append(1)))
         await run_hook(ev("SessionStart", source="resume"))
         self.assertEqual(cancelled, [1])
         self.assertFalse(self.p.live[SID].driven)
         # a background task lived in Pult's process and was closed with it; the owner is told which one
         self.p.live[SID].bg = [{"id": "b1", "description": "Сборка"}]
-        self.p.driven[SID] = SimpleNamespace(busy=False, bg={"b1"}, task=SimpleNamespace(cancel=lambda: cancelled.append(2)))
+        self.p.driven[SID] = SimpleNamespace(running=False, bg={"b1"}, task=SimpleNamespace(cancel=lambda: cancelled.append(2)))
         await run_hook(ev("UserPromptSubmit", prompt="на Маке"))
         self.assertEqual(cancelled, [1, 2])
         await until(lambda: any("фоновые задачи остановлены" in t and "«Сборка»" in t for t in self.texts()))
@@ -2253,6 +2320,92 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<i>⚙️ Закончилась фоновая задача «Ревью правки»</i>", self.texts()[n])
         self.assertNotIn("agent-message", "".join(self.sent()))
         self.assertEqual((self.p.live[SID].bg, self.p.live[SID].run), ([], run1))
+
+    async def test_absorbed_prompt(self):
+        # a message absorbed into the running turn (another session's SendMessage, the owner's mid-turn message) comes
+        # with a UserPromptSubmit of its own, but with the turn's prompt_id (probe_midturn.py, 2.1.300 and 2.1.301):
+        # the turn goes on and "working N" keeps counting — 2026-10-24 it showed "working 28 s" 19 min into a turn
+        await run_hook(ev("UserPromptSubmit", prompt="Сделай большую работу", prompt_id="p1"))
+        await until(lambda: SID in self.p.live and self.p.live[SID].turn)
+        t0 = self.p.live[SID].turn
+        run0 = self.p.live[SID].run
+        await run_hook(ev("PostToolUse", tool_name="Bash", tool_input={"command": "make"}, prompt_id="p1"))
+        await until(lambda: t0.n == 1)
+        self.p.expect[SID] = 7                                      # a mid-turn message from Telegram (Driven.say)
+        seen = []
+        changed, self.p.changed = self.p.changed, lambda sid=None: (seen.append(sid), changed(sid))
+        await run_hook(ev("UserPromptSubmit", prompt='<cross-session-message from="uds:/tmp/cc-socks/1.sock" '
+                                                     'from-name="сосед">\nкоммить первым\n</cross-session-message>',
+                          prompt_id="p1"))
+        await until(lambda: t0.reply_to == 7)                       # its result answers the latest message
+        self.assertIn(SID, seen)                                    # the app re-reads the session at once, not a step later
+        self.p.changed = changed
+        self.p.expect.pop(SID)
+        await run_hook(ev("UserPromptSubmit", prompt="и ещё одно", prompt_id="p1"))
+        await run_hook(ev("PostToolUse", tool_name="Bash", tool_input={"command": "make test"}, prompt_id="p1"))
+        await until(lambda: t0.n == 2)
+        self.assertIs(self.p.live[SID].turn, t0)
+        self.assertIsNone(t0.done)
+        self.assertEqual((self.p.live[SID].run, t0.prompt), (run0, "Сделай большую работу"))
+        ov = await self.p.api_overview()
+        self.assertEqual([(r["state"], r["since"]) for r in ov["board"][0]["rows"]], [("work", run0)])
+        await run_hook(ev("Stop", last_assistant_message="Готово", prompt_id="p1", background_tasks=[]))
+        await until(lambda: t0.done)
+        self.assertEqual(t0.done[0], "✔️")                         # one turn, one result — none closed as "⏹"
+        # the next prompt is a turn of its own: a new prompt_id, a new run
+        await run_hook(ev("UserPromptSubmit", prompt="Теперь другое", prompt_id="p2"))
+        await until(lambda: self.p.live[SID].turn and self.p.live[SID].turn.prompt == "Теперь другое")
+        self.assertGreater(self.p.live[SID].run, run0)
+        # Claude Code without prompt_id: as before, every prompt starts a turn
+        t2 = self.p.live[SID].turn
+        await run_hook(ev("UserPromptSubmit", prompt="без id"))
+        await until(lambda: self.p.live[SID].turn is not t2)
+        self.assertEqual(t2.done[0], "⏹")
+
+    async def test_outbox(self):
+        # ticks (Q56): a message on its way is "sent" until its own UserPromptSubmit — absorbed mid-turn (one per message,
+        # in the order sent: probe_midturn.py two) or a turn of its own — makes it "read"; the app gets each as the
+        # transcript will show it; a Telegram message marked ✍ (the session was busy) gets 👀 once Claude reads it
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        Path(TP).write_text(tline("user", "Большая работа") + "\n")
+        await run_hook(ev("UserPromptSubmit", prompt="Большая работа", prompt_id="p1"))
+        await until(lambda: SID in self.p.live and self.p.live[SID].turn)
+        pic = "/x/proj/inbox/2026-10-24/plan.png"
+        one = "и ещё вот это\n\n[Attachment from the Pult app: %s]" % pic
+        a = self.p.out_add(SID, one, tg=55, react="✍")
+        b = self.p.out_add(SID, "и второе")
+        out = (await self.p.api_session(SID))["out"]
+        self.assertEqual([(o["id"], o["st"], o["text"]) for o in out], [(a, "sent", "и ещё вот это"), (b, "sent", "и второе")])
+        self.assertEqual(out[0]["att"], pultd.PW.user_item(one, None)["att"])      # as the transcript will show it
+        self.assertIsInstance(out[0]["ts"], float)
+        await run_hook(ev("UserPromptSubmit", prompt=one, prompt_id="p1"))
+        await until(lambda: self.p.outbox[SID][0]["st"] == "read")
+        await until(lambda: self.fake.of("setMessageReaction"))
+        r = self.fake.of("setMessageReaction")[-1]
+        self.assertEqual((str(r["message_id"]), '"👀"' in str(r["reaction"])), ("55", True))
+        self.assertEqual(self.p.outbox[SID][1]["st"], "sent")
+        await run_hook(ev("UserPromptSubmit", prompt="и второе", prompt_id="p1"))
+        await until(lambda: self.p.outbox[SID][1]["st"] == "read")
+        self.assertEqual(len(self.fake.of("setMessageReaction")), 1)          # no ✍ on it: nothing to change
+        # a message that starts a turn of its own is read at once; words nobody sent from here touch nothing
+        await run_hook(ev("Stop", last_assistant_message="Готово", prompt_id="p1", background_tasks=[]))
+        c = self.p.out_add(SID, "Теперь другое")
+        await run_hook(ev("UserPromptSubmit", prompt="Набрано на Маке", prompt_id="p2"))
+        await until(lambda: self.p.live[SID].turn and self.p.live[SID].turn.prompt == "Набрано на Маке")
+        self.assertEqual(self.p.outbox[SID][-1]["st"], "sent")
+        await run_hook(ev("Stop", last_assistant_message="Ок", prompt_id="p2", background_tasks=[]))
+        await run_hook(ev("UserPromptSubmit", prompt="Теперь другое", prompt_id="p3"))
+        await until(lambda: self.p.outbox[SID][-1]["st"] == "read")
+        # the session ends before a message is read: it is gone; a read one stays read
+        d = self.p.out_add(SID, "не успел")
+        await run_hook(ev("SessionEnd", reason="other"))
+        await until(lambda: self.p.outbox[SID][-1]["st"] == "gone")
+        self.assertEqual([o["st"] for o in self.p.outbox[SID]], ["read", "read", "read", "gone"])
+        self.assertEqual([o["id"] for o in self.p.out_view(SID)], [a, b, c, d])
+        # read ones leave the view after OUT_READ, gone ones after OUT_GONE
+        for o in self.p.outbox[SID]:
+            o["at"] -= pultd.OUT_READ + 1
+        self.assertEqual([o["id"] for o in self.p.out_view(SID)], [d])
 
     async def test_whose_move(self):
         # stage V: a turn typed here ends while the owner is away → "Your move" with the result's first sentence;
@@ -2576,12 +2729,14 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await self.p.ask_target(self.store.topic(PKEY), "Ещё вопрос", 56, 77)    # "where to": this session is 💻
         kb = json.loads(self.fake.of("sendMessage")[-1]["reply_markup"])["inline_keyboard"]
         self.assertTrue(kb[0][0]["text"].startswith("💻 "), kb)
-        self.assertEqual(await self.p.api_send(SID, "Ещё"), {"ok": True, "how": "tab"})
+        res = await self.p.api_send(SID, "Ещё")
+        self.assertEqual((res["ok"], res["how"], self.p.outbox[SID][-1]["id"]), (True, "tab", res["out"]))
         self.assertEqual(json.loads(await asyncio.wait_for(r.readline(), 3))["text"], "Ещё")
-        # a message into a busy tab: Claude Code absorbs it into the running turn without a UserPromptSubmit and the
-        # tab doesn't show it (2.1.301) — the turn's result replies to that message in Telegram
+        # a message into a busy tab: Claude Code absorbs it into the running turn and the tab doesn't show it (2.1.301);
+        # should no UserPromptSubmit claim it, the turn's result still replies to that message in Telegram
         await self.p.continue_session(SID, "А меня обновил?", 57, 77)
         self.assertEqual(json.loads(await asyncio.wait_for(r.readline(), 3))["text"], "А меня обновил?")
+        self.assertEqual((self.p.outbox[SID][-1]["tg"], self.p.outbox[SID][-1]["react"]), (57, "✍"))   # 👀 once read
         await run_hook(ev("Stop", last_assistant_message="Да, обновил"))
         await until(lambda: any("Да, обновил" in d.get("text", "") for d in self.fake.of("sendMessage")))
         res = next(d for d in self.fake.of("sendMessage") if "Да, обновил" in d["text"])
@@ -2926,6 +3081,8 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.p.expect[SID], 2)
             r = await self.p.api_send(SID, "остановись")   # from the app: the same way
             self.assertEqual((r["how"], c.sent[-1]), ("session", "остановись"))
+            self.assertEqual([(o["id"], o["st"]) for o in self.p.outbox[SID]], [(r["out"], "sent")])   # ✓ in the app
+            self.p.out_add(SID, "ещё одно")
             d.q.put_nowait(("ещё одно", None))         # waiting in Pult (the loop is busy with the turn)
             r = await self.p.api_stop(SID)
             self.assertEqual((r["ok"], c.stops), (True, 1))
@@ -2933,8 +3090,92 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.05)
             self.assertNotIn("ещё одно", c.sent)        # dropped: Stop does not start the next turn
             self.assertTrue(d.q.empty())
+            # the one Claude Code already had stays on its way (it runs as the next turn); the dropped one is gone
+            self.assertEqual([o["st"] for o in self.p.outbox[SID]], ["sent", "gone"])
             await d.say("теперь дальше", None)         # between turns: through the loop, as before
             await until(lambda: c.sent[-1] == "теперь дальше")
+        finally:
+            claude_agent_sdk.ClaudeSDKClient = old
+            d.task.cancel()
+        # the process ends: what hadn't been read won't be
+        await until(lambda: [o["st"] for o in self.p.outbox[SID]] == ["gone", "gone"])
+
+    async def test_driven_queue(self):
+        # a turn past MAX_RUNNING waits for a place, and it shows: in the app the state "queue" with its words, in the
+        # topic "⏳ … in the queue" with "Start now" (2026-10-23: unseen, a question waited 4 minutes, was sent again and
+        # ran twice). A place frees — it starts, its message goes, the place is given back; "Start now" — over the
+        # limit, nothing to give back; Stop — the message goes, nothing is interrupted
+        from claude_agent_sdk import ResultMessage
+        import claude_agent_sdk
+        res = lambda: ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1, is_error=False, num_turns=1,
+                                    session_id=SID, result="ok")
+
+        class FakeClient:
+            def __init__(self, options):
+                self.out, self.sent, self.stops = asyncio.Queue(), [], 0
+                made.append(self)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def query(self, text):
+                self.sent.append(text)
+                self.out.put_nowait(res())
+
+            async def interrupt(self):
+                self.stops += 1
+
+            async def receive_messages(self):
+                while True:
+                    yield await self.out.get()
+
+        made = []
+        queue_msgs = lambda: [d for d in self.fake.of("sendMessage") if "в очереди" in d["text"]]
+        old = claude_agent_sdk.ClaudeSDKClient
+        claude_agent_sdk.ClaudeSDKClient = FakeClient
+        self.store.touch_session(SID, PKEY, path="/Users/x/proj", driven=True)
+        self.p.live_of(SID, PKEY).driven = True
+        sem = self.p.run_sem
+        for _ in range(pultd.MAX_RUNNING):
+            await sem.acquire()                        # three turns run elsewhere
+        try:
+            d = self.p.driven[SID] = pultd.Driven(self.p, SID, "/Users/x/proj")
+            d.q.put_nowait(("какими винтами?", 7))     # from the topic
+            await until(lambda: d.queued and queue_msgs())
+            c = made[0]
+            self.assertEqual(c.sent, [])
+            item = self.p.live_item(self.p.live[SID])
+            self.assertEqual((item["state"], item["waiting"], item["slots"]), ("queue", "какими винтами?", 3))
+            self.assertEqual([r["state"] for r in self.p.session_rows([]) if r["sid"] == SID], ["queue"])
+            self.assertTrue(d.busy)                    # not closed as idle; a restart asks first
+            kb = json.loads(queue_msgs()[0]["reply_markup"])["inline_keyboard"]
+            self.assertEqual(kb[0][0]["callback_data"], "j:" + SID)
+            sem.release()                              # a place frees
+            await until(lambda: c.sent == ["какими винтами?"] and not d.asking)
+            self.assertIsNone(d.queued)
+            await until(lambda: self.fake.of("deleteMessage"))
+            await asyncio.sleep(0.05)
+            self.assertFalse(sem.locked())             # given back
+            await sem.acquire()                        # three run again
+            d.q.put_nowait(("ещё", None))              # from the app: no message in the topic
+            await until(lambda: d.queued)
+            self.assertEqual(len(queue_msgs()), 1)
+            self.assertTrue((await self.p.api_jump(SID))["ok"])
+            await until(lambda: c.sent[-1:] == ["ещё"] and not d.asking)
+            await asyncio.sleep(0.05)
+            self.assertTrue(sem.locked())              # over the limit: nothing was taken, nothing given back
+            d.q.put_nowait(("третье", None))
+            await until(lambda: d.queued)
+            self.assertTrue((await self.p.api_stop(SID))["ok"])
+            await until(lambda: d.queued is None)
+            await asyncio.sleep(0.05)
+            self.assertNotIn("третье", c.sent)
+            self.assertEqual(c.stops, 0)               # no turn ran: nothing to interrupt
+            self.assertTrue(sem.locked())
+            self.assertFalse((await self.p.api_jump(SID))["ok"])
         finally:
             claude_agent_sdk.ClaudeSDKClient = old
             d.task.cancel()
@@ -2989,6 +3230,141 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             self.p.driven.clear()
             self.assertEqual(await asyncio.to_thread(pult_setup.busy_sessions, "x"), [])
 
+    def upd_reset(self, check):
+        """Stage U: a clean Pult folder for update.json and the history; pult_update.check answers `check`."""
+        for name in (U.STATUS, U.HISTORY, U.HEALTH):
+            (U.HOME / name).unlink(missing_ok=True)
+        self.p._upd = (0.0, None)
+        self.p.upd_wait = None
+        self.spawned = []
+        self.addCleanup(lambda: [(U.HOME / n).unlink(missing_ok=True) for n in (U.STATUS, U.HISTORY, U.HEALTH)])
+        patches = [mock.patch.object(U, "check", lambda: dict(check)),
+                   mock.patch.object(U, "spawn", lambda commit, how, python=None: self.spawned.append((commit, how)) or True),
+                   mock.patch.object(pultd.pult_os, "KIND", "mac")]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    READY = {"repo": "/Users/x/pult", "head": "c" * 40, "short": "c" * 7, "ready": True, "version": "9.9",
+             "news": ["Pult 9.9: one button"], "failed": False}
+
+    def busy_session(self):
+        self.p.live_of(SID, PKEY)
+        self.p.driven[SID] = types.SimpleNamespace(busy=True, running=True, queued=None, bg=set(), q=asyncio.Queue())
+
+    async def test_update_view(self):
+        # the "Pult" block in Settings and the line on Home: nothing newer, a commit to install, one that would cut a
+        # working session off, waiting for it, installing, a commit that didn't come up, no git source
+        self.upd_reset(dict(self.READY, ready=False))
+        v = await self.p.api_update()
+        self.assertEqual((v["state"], v["have"], v["dir"], v["commit"]), ("ok", pultd.VERSION, "/Users/x/pult", "c" * 7))
+        self.assertIsNone((await self.p.api_overview())["update"])          # nothing to do: no line on Home
+        self.upd_reset(self.READY)
+        v = await self.p.api_update()
+        self.assertEqual((v["state"], v["next"], v["news"], v["busy"]), ("ready", "9.9", ["Pult 9.9: one button"], []))
+        self.assertEqual((await self.p.api_overview())["update"],
+                         {"state": "ready", "have": pultd.VERSION, "next": "9.9", "back": None, "left": 0})
+        self.busy_session()
+        v = await self.p.api_update()
+        self.assertEqual((v["state"], [(b["project"], b["turn"]) for b in v["busy"]]), ("busy", [("proj", True)]))
+        self.p.upd_wait = time.time()
+        self.assertEqual((await self.p.api_update())["state"], "wait")
+        self.assertEqual((await self.p.api_overview())["update"]["left"], 1)
+        U.write(U.STATUS, {"state": "run", "step": "check", "to": "9.9", "ts": time.time(), "pid": os.getpid()})
+        v = await self.p.api_update()
+        self.assertEqual((v["state"], v["next"], v["step"]), ("run", "9.9", "check"))
+        self.p.driven.clear()
+        U.write(U.STATUS, {"state": "fail", "why": "restarts", "detail": "ImportError: x", "back": True, "commit": "c" * 40})
+        self.upd_reset(dict(self.READY, failed=True))
+        U.write(U.STATUS, {"state": "fail", "why": "restarts", "detail": "ImportError: x", "back": True, "commit": "c" * 40})
+        v = await self.p.api_update()
+        self.assertEqual((v["state"], v["why"], v["detail"], v["back"]), ("fail", "restarts", "ImportError: x", True))
+        self.upd_reset({"repo": None})
+        self.assertEqual(((await self.p.api_update())["state"], (await self.p.api_update())["why"]), ("na", "norepo"))
+        U.record(**{"from": "9.8", "to": "9.9", "how": "terminal", "ok": True, "commit": "c" * 40})
+        self.assertEqual([(h["to"], h["how"]) for h in (await self.p.api_update())["hist"]], [("9.9", "terminal")])
+
+    async def test_update_go(self):
+        # "Install": only what is ready, from the folder Pult knows — the phone sends the tap and nothing else
+        self.upd_reset(self.READY)
+        with self.assertRaises(TypeError):
+            await self.p.api_update_go(path="/tmp/evil")                     # no arguments from the phone
+        v = await self.p.api_update_go()
+        self.assertEqual(self.spawned, [("c" * 40, "app")])
+        self.assertEqual((v["state"], v["next"]), ("run", "9.9"))
+        st = U.read(U.STATUS)
+        self.assertEqual((st["state"], st["from"], st["to"], st["how"]), ("run", pultd.VERSION, "9.9", "app"))
+        with self.assertRaises(ValueError):
+            await self.p.api_update_go()                                    # a second tap while it installs
+        self.assertEqual(len(self.spawned), 1)
+        # a working session of Pult's own: not now
+        self.upd_reset(self.READY)
+        self.busy_session()
+        with self.assertRaises(ValueError) as e:
+            await self.p.api_update_go()
+        self.assertIn("оборвёт", str(e.exception))
+        self.assertEqual(self.spawned, [])
+        # the installer couldn't start: said, and the button is back
+        self.p.driven.clear()
+        self.upd_reset(self.READY)
+        with mock.patch.object(U, "spawn", lambda *a, **kw: False), self.assertRaises(ValueError):
+            await self.p.api_update_go()
+        self.assertEqual((U.read(U.STATUS)["state"], U.read(U.STATUS)["why"]), ("fail", "spawn"))
+        self.assertEqual((await self.p.api_update())["state"], "ready")
+
+    async def test_update_when_free(self):
+        # "Install once they're free": the installer starts on the first check with no session of Pult's own working
+        self.upd_reset(self.READY)
+        self.busy_session()
+        v = await self.p.api_update_wait()
+        self.assertEqual(v["state"], "wait")
+        await self.p.update_tick()
+        self.assertEqual(self.spawned, [])
+        self.p.driven.clear()
+        await self.p.update_tick()
+        self.assertEqual(self.spawned, [("c" * 40, "app_wait")])
+        self.assertIsNone(self.p.upd_wait)
+        self.assertEqual(U.read(U.STATUS)["how"], "app_wait")
+        # "Cancel"; and waiting stops by itself when there is nothing to install any more
+        self.upd_reset(self.READY)
+        self.busy_session()
+        await self.p.api_update_wait()
+        self.assertEqual((await self.p.api_update_cancel())["state"], "busy")
+        await self.p.api_update_wait()
+        self.upd_reset(dict(self.READY, ready=False))
+        self.p.upd_wait = time.time()
+        await self.p.update_tick()
+        self.assertIsNone(self.p.upd_wait)
+        self.assertEqual(self.spawned, [])
+        self.p.driven.clear()
+
+    async def test_update_failed_told_once(self):
+        # the old version is back: it says so in General, once (Q51: success says nothing)
+        self.upd_reset(self.READY)
+        U.write(U.STATUS, {"state": "fail", "why": "restarts", "back": True, "reported": False, "to": "9.9", "commit": "c" * 40})
+        await self.p.update_tick()
+        await self.p.update_tick()
+        await asyncio.sleep(0.2)
+        told = [t for t in self.texts() if "9.9" in t]
+        self.assertEqual(len(told), 1)
+        self.assertIn("не поднялся", told[0])
+        self.assertIn("падает при запуске", told[0])
+        self.assertIn(pultd.VERSION, told[0])
+        self.assertTrue(U.read(U.STATUS)["reported"])
+        U.write(U.STATUS, {"state": "done", "to": "9.9"})
+        await self.p.update_tick()
+        await asyncio.sleep(0.1)
+        self.assertEqual(len([t for t in self.texts() if "9.9" in t]), 1)
+
+    async def test_note_health(self):
+        # health.json — what the installer waits for: this daemon, when it started, the app's server reached
+        self.upd_reset(self.READY)
+        self.p.note_health(telegram=False, relay=False)
+        self.p.note_health(relay=True)
+        h = U.read(U.HEALTH)
+        self.assertEqual((h["pid"], h["version"], h["relay"], h["telegram"]), (os.getpid(), pultd.VERSION, True, False))
+        self.assertAlmostEqual(h["started"], self.p.t_start)
+
     async def test_ignores_automation_and_tmp(self):
         await run_hook(ev("UserPromptSubmit", prompt="cron"), entry="sdk-cli")
         tmp_ev = ev("UserPromptSubmit", prompt="tmp")
@@ -3019,6 +3395,22 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await self.p.on_callback({"id": "3", "from": {"id": OWNER}, "data": "p:%s:y" % rid2})
         await proc.stdout.read()
         await until(lambda: any(t.endswith(" → <b>✔️ разрешено</b>") for t in self.texts("editMessageText")), timeout=15)
+
+    async def test_permission_decided_in_flight(self):
+        # decided while its message was still on its way (the computer's dialog, the app or a tap in that very moment):
+        # the message closes as soon as its id is known — before, it kept Allow / Deny on a decided request for ever
+        orig = self.p.send
+
+        async def send(*a, **kw):
+            m = await orig(*a, **kw)
+            if kw.get("kind") == "perm":
+                self.p.act(next(iter(self.p.req_by_rid.values())), "y")
+            return m
+        with mock.patch.object(self.p, "send", send):
+            proc = await run_hook(ev("PermissionRequest", tool_name="Bash", tool_input={"command": "git status"}), wait=False)
+            out = json.loads((await proc.stdout.read()).decode())
+        self.assertEqual(out["hookSpecificOutput"]["decision"]["behavior"], "allow")
+        await until(lambda: any(t.endswith(" → <b>✔️ разрешено</b>") for t in self.texts("editMessageText")))
 
     async def test_permission_deny_by_reply(self):
         # a hook whose console isn't UTF-8 (Windows uses the system code page) still reads and writes UTF-8

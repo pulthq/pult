@@ -7,8 +7,13 @@ LOAD, NEWPROJ), stays up HOLD s.
   ~/.local/share/pult/venv/bin/python tools/shot.py "$(grep ^HOME /tmp/stand.out | cut -d' ' -f2)" home.png 412 4 [dark]
 
 Telegram passes initData in the URL after # (tgWebAppData=…); that is how the stand opens the app without Telegram.
-Usage is stubbed (38 % of the 5-hour window, 71 % of the week, a made-up week of work): the real request launches Claude Code. The data is made up and neutral — the screenshots go
-into the public README: STAND_LANG=en|ru picks the texts, STAND_XSS=1 adds markup that must stay text."""
+STAND_STT=<folder> turns the microphone on: recordings are saved there instead of going to Groq, STAND_STT_OLD=1 makes
+the computer refuse the recording's notes as one before 0.14.2 does. Usage is stubbed (38 % of the 5-hour window, 71 % of the week, a made-up week of work): the real request launches Claude Code. The data is made up and neutral — the screenshots go
+into the public README: STAND_LANG=en|ru picks the texts, STAND_XSS=1 adds markup that must stay text, STAND_ASK2=1
+gives the question a second one, a second session waiting for you and a permission older than it, STAND_QUEUE=1 puts a turn in the queue (all places taken), STAND_UPD=ok|ready|busy|
+wait|run|fail shows Settings → Pult and Home's line in that state (no installer ever runs), STAND_PORT=<port> runs a
+second stand beside one already up. STAND_TICKS=<s> opens the first session in a tab that reads each message <s> s
+later, as Claude Code does at its turn's next step — a message with "#gone" is dropped instead (tools/ticks_check.py)."""
 import asyncio, base64, hashlib, hmac, json, os, random, sys, time, urllib.parse
 from pathlib import Path
 
@@ -20,6 +25,7 @@ import pult_load as L  # noqa: E402
 from aiohttp import web  # noqa: E402
 
 HOLD = float(os.environ.get("HOLD", "90"))
+PORT = int(os.environ.get("STAND_PORT", "18097"))   # another one for a second stand at the same time
 LANG = os.environ.get("STAND_LANG", "en")
 SID2 = "22222222-2222-4222-8222-222222222222"
 SID3 = "33333333-3333-4333-8333-333333333333"
@@ -45,6 +51,7 @@ D = {
         cmd="make deploy-staging && git commit -qm 'Checkout: clearer errors'", cmd_desc="Deploy to staging and commit",
         tickets="Sort the new support tickets", question="Which tickets should I start with?", header="Order",
         opt1="Urgent", opt1d="due tonight", opt2="Oldest first",
+        question2="Reply to the customers as well?", header2="Replies", opt3="Yes, briefly", opt4="No, only sort",
         tickets_done="Sorted **12 tickets**: 3 urgent, 9 can wait. The list is in the report.",
         bg_run="Export the tickets to the CRM", bg_cmd="python scripts/export_tickets.py --to crm",
         job_last="epoch 27/40 · loss 0.31", user="Sam",
@@ -74,6 +81,7 @@ D = {
         cmd="make deploy-staging && git commit -qm 'Checkout: clearer errors'", cmd_desc="Выложить на стенд и закоммитить",
         tickets="Разбери новые заявки в поддержку", question="С каких заявок начать?", header="Порядок",
         opt1="Срочные", opt1d="до вечера", opt2="Сначала старые",
+        question2="Отвечать ли клиентам?", header2="Ответы", opt3="Да, коротко", opt4="Нет, только разобрать",
         tickets_done="Разобрал **12 заявок**: 3 срочные, 9 подождут. Список — в отчёте.",
         bg_run="Выгрузка заявок в CRM", bg_cmd="python scripts/export_tickets.py --to crm",
         job_last="эпоха 27/40 · потери 0,31", user="Саша",
@@ -189,7 +197,7 @@ async def main():
     sock = await asyncio.start_unix_server(p.handle_conn, path=os.environ["PULT_SOCK"])
     runner = web.AppRunner(relay.app())
     await runner.setup()
-    await web.TCPSite(runner, "127.0.0.1", 18097).start()
+    await web.TCPSite(runner, "127.0.0.1", PORT).start()
     async def fake_usage(force=False):
         r = W.usage_reply(session=38, week=71, fable=44, share=22)
         for lim in r["rate_limits"]["limits"]:                 # resets in the future, as in real life
@@ -197,7 +205,55 @@ async def main():
             lim["resets_at"] = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(time.time() + ahead))
         return PW.simplify_usage(r)
     p.usage = fake_usage
-    p.web = PW.Web(p, "ws://127.0.0.1:18097/pult/agent", "s3cret", W.TOKEN, {T.OWNER})
+    upd = os.environ.get("STAND_UPD")      # stage U: Settings → Pult and Home's line in one state (tools/update_check.py)
+    if upd:
+        import pult_update as U
+        nums = [int(x) for x in pultd.VERSION.split(".")]
+        nxt = "%d.%d.%d" % (nums[0], nums[1], nums[2] + 1)
+        head = "5e1f0a2" + "c" * 33
+        U.check = lambda manifest=None: {
+            "repo": str(Path.home() / "pult"), "head": head, "short": head[:7], "ready": upd != "ok", "version": nxt,
+            "news": ["Pult %s: install an update from the app" % nxt, "Settings: what was installed, when and from where"],
+            "failed": upd == "fail"}
+        U.spawn = lambda commit, how, python=None: U.write(U.STATUS, {        # never a real installer here
+            "state": "run", "step": "check", "to": nxt, "ts": time.time(), "pid": os.getpid()}) or True
+        cut = [{"sid": T.SID, "title": D["title"], "project": "acme-shop", "turn": True, "bg": [], "n": 0},
+               {"sid": SID3, "title": D["bg_run"], "project": "support-desk", "turn": False, "bg": [D["bg_run"]], "n": 1}]
+        if upd in ("busy", "wait"):
+            p.busy_report = lambda: cut[:2 if upd == "busy" else 1]
+        if upd == "wait":
+            p.upd_wait = time.time()
+        if upd == "run":
+            U.spawn(head, "app")
+        if upd == "fail":
+            U.write(U.STATUS, {"state": "fail", "why": "restarts", "detail": "ModuleNotFoundError: No module named 'pult_upd'",
+                               "back": True, "back_ok": True, "commit": head, "to": nxt, "reported": True, "ts": time.time()})
+        now, have = time.time(), pultd.VERSION
+        prev = "%d.%d.%d" % (nums[0], nums[1], max(0, nums[2] - 1))
+        U.write(U.HISTORY, [
+            {"ts": now - 1500, "from": prev, "to": have, "how": "terminal", "ok": True},
+            {"ts": now - 26 * 3600, "from": "0.13.1", "to": prev, "how": "app_wait", "ok": True},
+            {"ts": now - 27 * 3600, "from": "0.13.1", "to": prev, "how": "app", "ok": False, "why": "restarts"},
+            {"ts": now - 28 * 3600, "from": "0.13.0", "to": "0.13.1", "how": "app", "ok": True},
+            {"ts": now - 50 * 3600, "from": "0.12.0", "to": "0.13.0", "how": "terminal", "ok": True}])
+    if os.environ.get("STAND_STT"):        # the microphone (tools/voice_check.py): recordings land in that folder, no Groq
+        keep = Path(os.environ["STAND_STT"])
+
+        class StandStt:
+            model = "stand"
+
+            async def transcribe(self, blob, kind, language=None, prompt=None):
+                n = len(list(keep.glob("rec-*"))) + 1
+                (keep / ("rec-%d.%s" % (n, pultd.STT.ext_of(kind) or "bin"))).write_bytes(blob)
+                return "recording %d heard" % n
+        p.stt, p.refresh_stt = StandStt(), lambda: None
+        if os.environ.get("STAND_STT_OLD") == "1":                  # a computer before 0.14.2: no notes with the recording
+            new_stt = p.api_stt
+
+            async def old_stt(data, mime=None):
+                return await new_stt(data, mime)
+            p.api_stt = old_stt
+    p.web = PW.Web(p, "ws://127.0.0.1:%d/pult/agent" % PORT, "s3cret", W.TOKEN, {T.OWNER})
     asyncio.create_task(p.out.run())
     asyncio.create_task(p.web.run())
 
@@ -235,24 +291,50 @@ async def main():
     ]) + "\n")
     store.touch_session(T.SID, T.PKEY, path=SHOP, title=D["title"])
     p.set_ctx(T.SID, 200000, 32000, model="claude-opus-5-5")        # the context gauge, as a turn's result reports it
-    if os.environ.get("STAND_TAB"):        # the session open in a VS Code tab with Pult's wrapper (STAND_TAB=old — 0.9.8's)
-        caps = ["model", "ctx"] if os.environ["STAND_TAB"] == "old" else ["model", "ctx", "control"]
-        _, tab_w = await asyncio.open_unix_connection(os.environ["PULT_SOCK"])
+    if os.environ.get("STAND_TAB") or os.environ.get("STAND_TICKS"):   # the session open in a VS Code tab with Pult's
+        # wrapper (STAND_TAB=old — 0.9.8's)
+        caps = ["model", "ctx"] if os.environ.get("STAND_TAB") == "old" else ["model", "ctx", "control"]
+        tab_r, tab_w = await asyncio.open_unix_connection(os.environ["PULT_SOCK"])
         tab_w.write((json.dumps({"op": "hello", "pid": os.getpid(), "cwd": SHOP, "sid": T.SID, "version": "2.1.301",
                                  "caps": caps}) + "\n").encode())
         await tab_w.drain()
     await T.run_hook(ev("SessionStart", T.SID))
-    await T.run_hook(ev("UserPromptSubmit", T.SID, prompt=D["ask_short"]))
+    await T.run_hook(ev("UserPromptSubmit", T.SID, prompt=D["ask_short"], prompt_id="stand-p1"))
     p.live[T.SID].title, p.live[T.SID].named = D["title"], True
+    if os.environ.get("STAND_TICKS"):     # the tab reads a message at its turn's next step: the transcript, then the hook
+        wait = float(os.environ["STAND_TICKS"])
+
+        async def absorb(text):
+            await asyncio.sleep(wait)
+            if "#gone" in text:           # Stop dropped it before Claude read it
+                p.out_set(T.SID, "gone", text)
+                return
+            with (d / (T.SID + ".jsonl")).open("a") as f:
+                f.write(json.dumps({"type": "attachment", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+                                    "attachment": {"type": "queued_command", "prompt": text, "commandMode": "prompt",
+                                                   "origin": {"kind": "human"}}}, ensure_ascii=False) + "\n")
+            await T.run_hook(ev("UserPromptSubmit", T.SID, prompt=text, prompt_id="stand-p1"))
+
+        async def tab_read():
+            while line_ := await tab_r.readline():
+                m = json.loads(line_)
+                if m.get("op") == "send":
+                    print("TAB", json.dumps(m["text"], ensure_ascii=False), flush=True)
+                    asyncio.create_task(absorb(m["text"]))
+        asyncio.create_task(tab_read())
     with (d / (T.SID + ".jsonl")).open("a") as f:
         f.write(aline(D["now"], "u6", 900) + "\n")
     await T.run_hook(ev("PostToolUse", T.SID, tool_name="Read", tool_input={"file_path": SHOP + "/checkout/errors.py"}))
     p.live[T.SID].turn.started -= 380
+    p.live[T.SID].run = p.live[T.SID].turn.started        # "working N" counts from the owner's prompt
     await T.run_hook(ev("PermissionRequest", T.SID, tool_name="Bash",
                         tool_input={"command": D["cmd"], "description": D["cmd_desc"]},
                         permission_suggestions=[{"type": "addRules"}]), wait=False)
     q = {"questions": [{"question": D["question"], "header": D["header"], "multiSelect": False,
                         "options": [{"label": D["opt1"], "description": D["opt1d"]}, {"label": D["opt2"]}]}]}
+    if os.environ.get("STAND_ASK2") == "1":            # two questions in one: answered one by one (tools/ask_check.py)
+        q["questions"].append({"question": D["question2"], "header": D["header2"], "multiSelect": False,
+                               "options": [{"label": D["opt3"]}, {"label": D["opt4"]}]})
     (d.parent / PKEY2 / (SID2 + ".jsonl")).write_text(line("user", D["tickets"]) + "\n" +
                                                       aline(D["tickets_done"], "t1", 3100) + "\n")
     blog = d.parent / "-Users-x-blog"                  # a third project: only "today by project" sees it
@@ -305,9 +387,19 @@ async def main():
         print("SEND", sid[:8], json.dumps(paths), "zip" if zip or len(paths) > 10 else "", flush=True)
         return {"sent": paths, "zip": "acme-shop-2026-10-23-1240.zip" if zip or len(paths) > 10 else None, "refused": []}
     p.api_turn_files, p.api_send_files = stand_turn_files, stand_send
+
+    async def stand_new(pkey, text, files=None, model=None, effort=None):   # a new task never launches Claude here
+        print("NEWTASK", pkey, json.dumps(text, ensure_ascii=False), flush=True)
+        return {"ok": True, "sid": T.SID}
+    p.api_new = stand_new
     store.touch_session(SID5, PKEY2, path=DESK, title=D["s5_title"])
     r = p.attn.finished(SID5, PKEY2, 300, D["s5_line"], D["s5_line"], waits=True, now=time.time() - 600)
-    p.attn.briefed(SID5, r["ts"], {"line": D["s5_line"], "you": False, "need": ""}, True)
+    # STAND_ASK2=1: it waits for you as well — two in "your move", ten and twenty-five minutes (tools/ask_check.py)
+    p.attn.briefed(SID5, r["ts"], {"line": D["s5_line"], "you": os.environ.get("STAND_ASK2") == "1", "need": ""}, True)
+    if os.environ.get("STAND_ASK2") == "1":            # the permission waits fifteen minutes: between the two sessions
+        for q_ in p.req_by_rid.values():
+            if q_.tool == "Bash":
+                q_.ts -= 900
     store.touch_session(SID6, T.PKEY, path=SHOP, title=D["s6_title"])
     p.attn.finished(SID6, T.PKEY, 200, "…", "…", waits=True, seen=True, now=time.time() - 5 * 3600)
     p.attn.day = {"d": pultd.A.today(), "p": {T.PKEY: [14, 7300], PKEY2: [5, 1900]}}
@@ -319,7 +411,38 @@ async def main():
     await T.run_hook(ev("UserPromptSubmit", SID7, prompt=D["s7_ask"]))
     await T.run_hook(ev("PostToolUse", SID7, tool_name="Edit", tool_input={"file_path": SHOP + "/admin/theme.css"}))
     p.live[SID7].turn.started -= 400
+    p.live[SID7].run = p.live[SID7].turn.started
     p.set_ctx(SID7, 200000, 32000, model="claude-opus-5-5")
+    if os.environ.get("STAND_QUEUE") == "1":          # all places taken: a turn of the third session waits in the queue
+        import claude_agent_sdk
+
+        class Silent:                                  # Claude Code that never answers: only the queue is seen here
+            def __init__(self, options):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def query(self, text):
+                print("QUERY", json.dumps(text, ensure_ascii=False), flush=True)
+
+            async def interrupt(self):
+                pass
+
+            async def receive_messages(self):
+                await asyncio.Event().wait()
+                yield
+        claude_agent_sdk.ClaudeSDKClient = Silent
+        for _ in range(pultd.MAX_RUNNING):
+            await p.run_sem.acquire()
+        p.live_of(SID6, T.PKEY).driven = True
+        dr = p.driven[SID6] = pultd.Driven(p, SID6, SHOP)
+        dr.q.put_nowait((D["s6_title"], None))
+        await asyncio.sleep(0.3)
+        dr.queued -= 130                              # it has waited two minutes
     # the load on the computer: made-up processes for the stand's sessions — the Mac's own are never read here
     await asyncio.sleep(0.5)                  # the hooks above are in: each set its session's process to the stand's
     claude = "/Users/x/.vscode/extensions/anthropic.claude-code-2.1.301-darwin-arm64/resources/native-binary/claude"
@@ -339,26 +462,26 @@ async def main():
                                                  "mem_used": int(10.4 * (1 << 30)), "load": 3.6}))
     p._agents = (time.monotonic() + 1e6, [{"sessionId": SID3, "cwd": "/Users/x/blog", "pid": 3001}])
     p.live[T.SID].pid, p.live[SID2].pid = 1001, 2001
-    print("LOAD http://127.0.0.1:18097/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
-          urllib.parse.quote(init("load")), flush=True)
-    print("SETTINGS http://127.0.0.1:18097/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
-          urllib.parse.quote(init("settings")), flush=True)
-    print("HOME http://127.0.0.1:18097/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
-          urllib.parse.quote(init("home")), flush=True)
-    print("USAGE http://127.0.0.1:18097/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
-          urllib.parse.quote(init("usage")), flush=True)
-    print("SESS http://127.0.0.1:18097/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
-          urllib.parse.quote(init("s_" + T.SID)), flush=True)
-    print("NEW http://127.0.0.1:18097/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
-          urllib.parse.quote(init("new")), flush=True)
-    print("PROJ http://127.0.0.1:18097/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
-          urllib.parse.quote(init("p_" + T.PKEY)), flush=True)       # a project topic's pinned card
-    print("SESS4 http://127.0.0.1:18097/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
-          urllib.parse.quote(init("s_" + SID4)), flush=True)       # a session that waits for you: its outcome card
-    print("PROJECTS http://127.0.0.1:18097/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
-          urllib.parse.quote(init("projects")), flush=True)
-    print("NEWPROJ http://127.0.0.1:18097/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
-          urllib.parse.quote(init("newproject")), flush=True)
+    print("LOAD http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
+          (PORT, urllib.parse.quote(init("load"))), flush=True)
+    print("SETTINGS http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
+          (PORT, urllib.parse.quote(init("settings"))), flush=True)
+    print("HOME http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
+          (PORT, urllib.parse.quote(init("home"))), flush=True)
+    print("USAGE http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
+          (PORT, urllib.parse.quote(init("usage"))), flush=True)
+    print("SESS http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
+          (PORT, urllib.parse.quote(init("s_" + T.SID))), flush=True)
+    print("NEW http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
+          (PORT, urllib.parse.quote(init("new"))), flush=True)
+    print("PROJ http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
+          (PORT, urllib.parse.quote(init("p_" + T.PKEY))), flush=True)       # a project topic's pinned card
+    print("SESS4 http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
+          (PORT, urllib.parse.quote(init("s_" + SID4))), flush=True)       # a session that waits for you: its outcome card
+    print("PROJECTS http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
+          (PORT, urllib.parse.quote(init("projects"))), flush=True)
+    print("NEWPROJ http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
+          (PORT, urllib.parse.quote(init("newproject"))), flush=True)
     if os.environ.get("STAND_DUMP") == "1":            # what went to Telegram — the README's examples come from here
         await asyncio.sleep(2)
         for m, d in fake.calls:

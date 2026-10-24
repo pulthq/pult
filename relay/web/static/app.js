@@ -30,7 +30,7 @@ const keyStore = {
   set(k) { try { k ? sessionStorage.setItem("pult.resume", k) : sessionStorage.removeItem("pult.resume"); } catch (e) {} },
 };
 const conn = { ws: null, state: "connecting", ready: false, mac: null, seq: 0, wait: new Map(), retry: 0,
-  key: keyStore.get(), why: null, fresh: 0 };       // fresh: when the Mac last answered — what's on screen is from then
+  key: keyStore.get(), why: null, fresh: 0, updating: 0 };   // updating: since when Pult installs an update (stage U)       // fresh: when the Mac last answered — what's on screen is from then
 const setState = (s) => { conn.state = s; emit("conn"); };
 const setKey = (k) => { conn.key = k || null; keyStore.set(k); };
 
@@ -157,12 +157,14 @@ function agoShort(ts) {
 const durShort = (sec) => (sec >= 3600 ? t("dur.h", { n: Math.floor(sec / 3600) }) : dur(sec));
 // a chip with a running time — "working 14 s", "background 3 min", "running 2 h": all of them one width, whatever
 // the time; the text sits over invisible samples of the widest ("working 59 min"), digits tabular
-const TIMED = ["st.work", "st.bg.t", "job.running"];
+const TIMED = ["st.work", "st.bg.t", "job.running", "st.queue"];
 function TimeChip({ cls, text, onClick }) {
   const widest = TIMED.flatMap((k) => [t(k, { dur: t("dur.s", { n: 59 }) }), t(k, { dur: t("dur.m", { n: 59 }) })]);
   return html`<span class=${"chip timer " + cls + (onClick ? " tap" : "")} onClick=${onClick}><span>${text}</span>${widest.map((w) => html`<span class="ghost" aria-hidden="true">${w}</span>`)}</span>`;
 }
 const workChip = (since, now) => html`<${TimeChip} cls="ok" text=${since ? t("st.work", { dur: durShort(now - since) }) : t("load.st.work")}/>`;
+// a message waits for a place among the turns that may run at once (Driven.slot): amber, since when it waits
+const queueChip = (since, now) => html`<${TimeChip} cls="warn" text=${t("st.queue", { dur: durShort(now - (since || now)) })}/>`;
 // background tasks run, Claude rests: grey, pulsing too — something still goes on
 const bgChip = (since, now, onClick) => html`<${TimeChip} cls="mute" text=${since ? t("st.bg.t", { dur: durShort(now - since) }) : t("st.bg")} onClick=${onClick}/>`;
 function resetText(ts) {
@@ -208,7 +210,8 @@ const sendKey = (send, setText) => (e) => {
   if (e.metaKey || e.ctrlKey) breakLine(e, setText);
   else if (DESKTOP && !e.shiftKey && !e.altKey) { e.preventDefault(); send(); }
 };
-const go = (h) => { location.hash = h; };
+// replace: the screen being left is done with — a form that has started its session — so Back skips it
+const go = (h, replace) => { if (replace) { stack[stack.length - 1] = h; location.replace(h); } else location.hash = h; };
 
 // links in Claude's answers open outside, through Telegram, not inside the app
 document.addEventListener("click", (e) => {
@@ -271,22 +274,42 @@ function useAttach() {
     }
     setFiles((cur) => cur.concat(out).slice(0, MAX_PICS));
   };
-  const edit = (i) => { const f = files[i]; emit("edit", { f, done: (x) => setFiles((cur) => cur.map((y) => (y === f ? x : y))) }); };
-  return { files, pick, edit, remove: (i) => setFiles(files.filter((_, k) => k !== i)), clear: () => setFiles([]),
+  const edit = (f) => emit("edit", { f, done: (x) => setFiles((cur) => cur.map((y) => (y === f ? x : y))) });
+  const drop = (f) => setFiles((cur) => cur.filter((y) => y !== f));
+  // a thumbnail opens the pictures on the whole screen, Crop and Remove at the bottom
+  const view = (i) => { const pics = files.filter((f) => !f.doc);
+    emit("view", { items: pics.map((f) => ({ src: f.preview, f })), at: Math.max(0, pics.indexOf(files[i])), crop: edit, remove: drop }); };
+  return { files, pick, view, remove: (i) => setFiles(files.filter((_, k) => k !== i)), clear: () => setFiles([]),
     payload: () => files.map((f) => ({ name: f.name, data: f.data })) };
 }
 const CLIP = html`<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>`;
+// a picture and a file are two pickers, not one. Telegram on Android hands the page's file input to the system as it is
+// (onShowFileChooser → createIntent): "pictures" opens the phone's gallery, "any file" its file manager. With one
+// "any file" input (0.13.0) the owner's phone came back at once with nothing (2026-10-23: the app off the screen for a
+// second), while pictures alone had worked for days. A form shows both buttons; the composer's paperclip opens a menu
+// of the two
+const PICKERS = [["pic", "image/*", "image"], ["file", undefined, "file"]];
 function Attach({ a, disabled, wide }) {
-  const full = a.files.length >= MAX_PICS;
-  return html`<label class=${"clip" + (wide ? " wide" : "") + (full || disabled ? " off" : "")} aria-label=${t("attach")}>${CLIP}${wide ? html`<span>${t("attach")}</span>` : ""}
-    <input type="file" multiple disabled=${disabled || full} onChange=${a.pick}/></label>`;
+  const off = disabled || a.files.length >= MAX_PICS;
+  const [open, setOpen] = useState(false);
+  const [show, hide] = useOverlay(open, setOpen);
+  const inputs = useRef({});
+  if (wide) return html`<div class="attach-row">${PICKERS.map(([k, accept, icon]) => html`<label key=${k} class=${"clip wide" + (off ? " off" : "")}>
+    ${k === "pic" ? ic(icon, 20) : CLIP}<span>${t("attach." + k)}</span>
+    <input type="file" accept=${accept} multiple disabled=${off} onChange=${a.pick}/></label>`)}</div>`;
+  // the inputs stay out of the menu: it closes as the picker opens, and the files come back to an input still there
+  const choose = (k) => { const el = inputs.current[k]; hide(); if (el) el.click(); };
+  return html`<span class="attach">
+    ${PICKERS.map(([k, accept]) => html`<input key=${k} ref=${(el) => { inputs.current[k] = el; }} type="file" accept=${accept} multiple disabled=${off} onChange=${a.pick}/>`)}
+    <button type="button" class=${"clip" + (off ? " off" : "")} aria-label=${t("attach")} disabled=${off} onClick=${open ? hide : show}>${CLIP}</button>
+    ${open && html`<div class="backdrop" onClick=${hide}></div><div class="card attach-menu">
+      ${PICKERS.map(([k, , icon]) => html`<button key=${k} class="opt" onClick=${() => choose(k)}>${ic(icon, 18)}<span>${t("attach." + k)}</span></button>`)}</div>`}</span>`;
 }
-const PEN = html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20l1.2-4.6L15.8 4.8a2.3 2.3 0 0 1 3.3 3.3L8.6 18.8z"/></svg>`;
 function Thumbs({ a }) {
   return a.files.length ? html`<div class="thumbs">${a.files.map((f, i) => f.doc ? html`<div class="thumb doc" key=${i}>
     <span class="doc-n">${ic("file", 14)} ${f.name}</span>
     <button class="thumb-x" aria-label=${t("attach.remove")} onClick=${() => a.remove(i)}>${ic("x", 14)}</button></div>` : html`<div class="thumb" key=${i}>
-    <button class="thumb-ed" aria-label=${t("edit.open")} onClick=${() => a.edit(i)}><img src=${f.preview} alt=""/>${PEN}</button>
+    <button class="thumb-view" aria-label=${t("view.open")} onClick=${() => a.view(i)}><img src=${f.preview} alt=""/></button>
     <button class="thumb-x" aria-label=${t("attach.remove")} onClick=${() => a.remove(i)}>${ic("x", 14)}</button></div>`)}</div>` : "";
 }
 
@@ -419,13 +442,174 @@ function EditHost() {
   const [job, setJob] = useState(null);
   const [show, hide] = useOverlay(!!job, (open) => { if (!open) setJob(null); });
   useEffect(() => on("edit", (x) => { setJob(x); show(); }), [show]);
+  useNoFold(!!job);
+  return job ? html`<${Editor} f=${job.f} onDone=${(x) => { job.done(x); haptic("success"); hide(); }} onClose=${hide}/>` : "";
+}
+// while a layer that takes the finger is open, Telegram doesn't fold the window on a swipe down
+function useNoFold(open) {
   useEffect(() => {
-    if (!job || !tg || !tg.disableVerticalSwipes || !(tg.isVersionAtLeast && tg.isVersionAtLeast("7.7"))) return;
+    if (!open || !tg || !tg.disableVerticalSwipes || !(tg.isVersionAtLeast && tg.isVersionAtLeast("7.7"))) return;
     const was = tg.isVerticalSwipesEnabled;
     tg.disableVerticalSwipes();
     return () => { if (was) tg.enableVerticalSwipes(); };
-  }, [!!job]);
-  return job ? html`<${Editor} f=${job.f} onDone=${(x) => { job.done(x); haptic("success"); hide(); }} onClose=${hide}/>` : "";
+  }, [open]);
+}
+
+// ---------- a picture on the whole screen ----------
+
+// as in Telegram: a tap on a picture in the chat, or on a thumbnail before sending, opens it over everything. Two
+// fingers or a double tap zoom, one finger drags the zoomed picture; at its own size a swipe sideways goes to the next
+// picture and a swipe up or down closes, as does Back; a single tap hides the bars. Before sending the bottom bar has
+// Crop (the editor) and Remove
+const ZOOM_MAX = 5, ZOOM_TAP = 2.5, V_GAP = 16;
+const CROP = html`<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg>`;
+const TRASH = html`<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 6h17M9 6V4h6v2M6 6l1 14a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-14"/></svg>`;
+const inboxSrc = (a) => api("inbox", a.pkey ? { name: a.name, pkey: a.pkey } : { name: a.name })
+  .then((d) => "data:image/" + (d.kind === "jpg" ? "jpeg" : d.kind) + ";base64," + d.data);
+const dist = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]);
+const midOf = (p, q) => [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+const UNZOOMED = { s: 1, x: 0, y: 0 };
+
+// job: items [{src} | {a: an inbox picture}, each with f — the attachment, before sending], at, crop(f), remove(f).
+// then(fn) closes the viewer and runs fn once it is out of the history (Crop opens the editor in its place)
+function Viewer({ job, onClose, then }) {
+  const [items, setItems] = useState(() => job.items.map((x) => ({ ...x })));
+  const [at, setAt] = useState(job.at || 0);
+  const [box, setBox] = useState({ l: 0, t: 0, w: innerWidth, h: innerHeight });
+  const [z, setZ] = useState(UNZOOMED);     // the current picture: zoom, and its middle's shift from the screen's, px
+  const [pull, setPull] = useState({ x: 0, y: 0 });   // unzoomed, the finger pulls it sideways (next) or up/down (close)
+  const [anim, setAnim] = useState(false);
+  const [bare, setBare] = useState(false);
+  const root = useRef(null), zr = useRef(UNZOOMED), g = useRef({ pts: new Map() });
+  const put = (v) => { zr.current = v; setZ(v); };
+  useEffect(() => {
+    const fit = () => { const r = root.current && root.current.getBoundingClientRect(); if (r) setBox({ l: r.left, t: r.top, w: r.width, h: r.height }); };
+    fit(); addEventListener("resize", fit);
+    return () => { removeEventListener("resize", fit); clearTimeout(g.current.tap); };
+  }, []);
+  useEffect(() => {                      // a computer's keyboard: Esc closes, the arrows go through the pictures
+    const key = (e) => { if (e.key === "Escape") onClose(); else if (e.key === "ArrowLeft") goTo(at - 1); else if (e.key === "ArrowRight") goTo(at + 1); };
+    addEventListener("keydown", key);
+    return () => removeEventListener("keydown", key);
+  });
+  // the pictures from the chat come from the computer: this one and its neighbours
+  useEffect(() => {
+    let alive = true;
+    items.forEach((x, k) => {
+      if (x.src || !x.a || x.asked || Math.abs(k - at) > 1) return;
+      x.asked = true;
+      inboxSrc(x.a).then((src) => alive && setItems((cur) => cur.map((y) => (y.a === x.a ? { ...y, src } : y)))).catch(() => {});
+    });
+    return () => { alive = false; };
+  }, [at, items.length]);
+  // a picture fills the screen by its longer side, small ones too
+  const size = (x) => { if (!x || !x.nat) return null; const f = Math.min(box.w / x.nat[0], box.h / x.nat[1]); return [x.nat[0] * f, x.nat[1] * f]; };
+  const held = (v) => {                  // a zoomed picture's edges don't leave the screen's
+    const d = size(items[at]);
+    if (!d || v.s <= 1) return UNZOOMED;
+    const mx = Math.max(0, (d[0] * v.s - box.w) / 2), my = Math.max(0, (d[1] * v.s - box.h) / 2);
+    return { s: v.s, x: clamp(v.x, -mx, mx), y: clamp(v.y, -my, my) };
+  };
+  const zoomAt = (p, s) => { const c = zr.current; return held({ s, x: p[0] - (p[0] - c.x) * s / c.s, y: p[1] - (p[1] - c.y) * s / c.s }); };
+  const goTo = (k) => { setAnim(true); setPull({ x: 0, y: 0 }); if (k < 0 || k >= items.length || k === at) return; setAt(k); put(UNZOOMED); };
+  const pos = (ev) => [ev.clientX - box.l - box.w / 2, ev.clientY - box.t - box.h / 2];     // from the screen's middle
+  const down = (ev) => {
+    if (ev.target.closest("button")) return;
+    const G = g.current;
+    try { root.current.setPointerCapture(ev.pointerId); } catch (err) {}
+    G.pts.set(ev.pointerId, pos(ev));
+    setAnim(false);
+    if (G.pts.size === 1) Object.assign(G, { mode: null, p0: pos(ev), t0: Date.now(), z0: zr.current, moved: false });
+    else if (G.pts.size === 2) {
+      const [p, q] = [...G.pts.values()];
+      Object.assign(G, { mode: "pinch", d0: dist(p, q) || 1, m0: midOf(p, q), z0: zr.current, moved: true });
+      setPull({ x: 0, y: 0 });
+    }
+  };
+  const move = (ev) => {
+    const G = g.current;
+    if (!G.pts.has(ev.pointerId)) return;
+    G.pts.set(ev.pointerId, pos(ev));
+    if (G.mode === "pinch") {
+      if (G.pts.size < 2) return;
+      const [p, q] = [...G.pts.values()], m = midOf(p, q), z0 = G.z0;
+      const s = clamp(z0.s * dist(p, q) / G.d0, 0.6, ZOOM_MAX);
+      put({ s, x: m[0] - (G.m0[0] - z0.x) * s / z0.s, y: m[1] - (G.m0[1] - z0.y) * s / z0.s });
+      return;
+    }
+    if (G.pts.size !== 1) return;
+    const p = pos(ev), dx = p[0] - G.p0[0], dy = p[1] - G.p0[1];
+    if (!G.mode) {
+      if (Math.hypot(dx, dy) < 8) return;
+      G.moved = true;
+      G.mode = zr.current.s > 1.01 ? "pan" : Math.abs(dx) > Math.abs(dy) ? "page" : "close";
+    }
+    if (G.mode === "pan") put(held({ ...G.z0, x: G.z0.x + dx, y: G.z0.y + dy }));
+    else if (G.mode === "page") setPull({ x: (at === 0 && dx > 0) || (at === items.length - 1 && dx < 0) ? dx / 3 : dx, y: 0 });
+    else setPull({ x: 0, y: dy });
+  };
+  const up = (ev) => {
+    const G = g.current;
+    if (!G.pts.has(ev.pointerId)) return;
+    G.pts.delete(ev.pointerId);
+    if (G.mode === "pinch") {
+      if (G.pts.size === 1) { Object.assign(G, { mode: "pan", p0: [...G.pts.values()][0], z0: zr.current }); return; }
+      if (G.pts.size) return;
+      setAnim(true); put(held(zr.current)); G.mode = null;
+      return;
+    }
+    if (G.pts.size) return;
+    const p = pos(ev), dx = p[0] - G.p0[0], dy = p[1] - G.p0[1], quick = Date.now() - G.t0 < 250;
+    if (G.mode === "pan") { setAnim(true); put(held(zr.current)); }      // the last finger of a pinch: shrunk springs back
+    else if (G.mode === "page") goTo(dx < -box.w / 5 || (quick && dx < -40) ? at + 1 : dx > box.w / 5 || (quick && dx > 40) ? at - 1 : at);
+    else if (G.mode === "close") { if (Math.abs(dy) > 90 || (quick && Math.abs(dy) > 40)) onClose(); else { setAnim(true); setPull({ x: 0, y: 0 }); } }
+    else if (!G.moved) {
+      const last = G.last;
+      if (last && Date.now() - last.t < 300 && dist(p, last.p) < 30) {      // a double tap: zoom in there, or back out
+        clearTimeout(G.tap); G.last = null; setAnim(true);
+        put(zr.current.s > 1.01 ? UNZOOMED : zoomAt(p, ZOOM_TAP));
+      } else {
+        G.last = { t: Date.now(), p };
+        G.tap = setTimeout(() => { G.last = null; setBare((b) => !b); }, 300);
+      }
+    }
+    G.mode = null;
+  };
+  const wheel = (ev) => { ev.preventDefault(); setAnim(false); put(zoomAt(pos(ev), clamp(zr.current.s * Math.exp(-ev.deltaY / 300), 1, ZOOM_MAX))); };
+  const drop = () => {
+    const x = items[at];
+    job.remove(x.f);
+    if (items.length === 1) return onClose();
+    setItems(items.filter((y) => y !== x)); setAt(Math.min(at, items.length - 2)); put(UNZOOMED);
+  };
+  const step = box.w + V_GAP;
+  return html`<div ref=${root} class=${"viewer" + (anim ? " anim" : "") + (bare ? " bare" : "")} role="dialog" aria-label=${t("view.title")}
+    onPointerDown=${down} onPointerMove=${move} onPointerUp=${up} onPointerCancel=${up} onWheel=${wheel}>
+    <div class="v-bg" style=${{ opacity: 1 - Math.min(0.8, Math.abs(pull.y) / 300) }}></div>
+    ${items.map((x, k) => {
+      if (Math.abs(k - at) > 1) return "";
+      const d = size(x), cur = k === at;
+      return html`<div key=${x.src || x.a.name} class="v-pic" style=${{ transform: "translate3d(" + ((k - at) * step + pull.x) + "px," + (cur ? pull.y : 0) + "px,0)" }}>
+        ${x.src ? html`<img src=${x.src} alt="" draggable="false" onLoad=${(e) => { const n = [e.target.naturalWidth, e.target.naturalHeight]; setItems((all) => all.map((y) => (y === x ? { ...y, nat: n } : y))); }}
+          style=${d ? { width: d[0] + "px", height: d[1] + "px", transform: cur ? "translate(" + z.x + "px," + z.y + "px) scale(" + z.s + ")" : "" } : { visibility: "hidden" }}/>`
+          : html`<span class="v-wait">${ic("image", 40)}</span>`}</div>`;
+    })}
+    <div class="v-top"><button class="v-b" aria-label=${t("close")} onClick=${onClose}>${ic("x", 24)}</button>
+      ${items.length > 1 ? html`<span class="v-n">${at + 1} / ${items.length}</span>` : ""}</div>
+    ${job.crop && html`<div class="v-bar">
+      <button class="v-b" onClick=${() => { const f = items[at].f; then(() => job.crop(f)); }}>${CROP}<span>${t("view.crop")}</span></button>
+      <button class="v-b" onClick=${drop}>${TRASH}<span>${t("attach.remove")}</span></button></div>`}
+  </div>`;
+}
+// one viewer for the whole app, over everything, like the editor; opened through the history — Back closes it
+function ViewHost() {
+  const [job, setJob] = useState(null);
+  const after = useRef(null);
+  const [show, hide] = useOverlay(!!job, (open) => { if (!open) setJob(null); });
+  useEffect(() => on("view", (x) => { setJob(x); show(); }), [show]);
+  useEffect(() => { if (!job && after.current) { const fn = after.current; after.current = null; fn(); } }, [job]);
+  useNoFold(!!job);
+  return job ? html`<${Viewer} job=${job} onClose=${hide} then=${(fn) => { after.current = fn; hide(); }}/>` : "";
 }
 
 // ---------- voice from the phone ----------
@@ -434,78 +618,172 @@ function EditHost() {
 // back from the computer (Groq) and land in the message field — to be checked and sent with one more tap
 const REC_MIME = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus", "audio/ogg"];
 const REC_MAX = 5 * 60;      // s; the recording stops by itself
+// Whisper drops the first syllable when a recording starts quietly (tests/probe_stt.py, 2026-10-23), while a pause
+// before the words does no harm. So the phone's own sound processing is off — its gain control starts low and ramps
+// up, its noise suppression eats soft starts of words, Whisper copes with noise itself — and "speak" (a buzz, the red
+// dot) comes only once sound really flows, not when the button is tapped
+const REC_WAIT = 1500;       // ms; no sound by then — "speak" anyway (the level meter may not work here)
+const REC_TAIL = 300;        // ms still recorded after "Stop": the last word isn't cut
+// a window of ~43 ms louder than VOICE_DB (dBFS) counts as voice; fewer than VOICE_MIN of them — nothing was said,
+// and the recording isn't sent: over silence Whisper makes up film subtitle credits
+const VOICE_DB = -50, VOICE_MIN = 3;
+const MIC_AUDIO = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
 // Telegram on Android asks "allow the microphone?" at every new getUserMedia, even one already allowed in this very
 // session (the owner saw it at each tap, 2026-10-18). So the microphone is asked for once and kept while the app is on
 // the screen: recordings reuse the stream, muted in between; it is let go when the app goes to the background or after
 // MIC_HOLD without a recording — the next tap asks again, once
 const MIC_HOLD = 10 * 60 * 1000;
 let mic = null, micTimer = 0;
-const dropMic = () => { clearTimeout(micTimer); if (mic) { mic.getTracks().forEach((tr) => tr.stop()); mic = null; } };
+const dropMic = () => { clearTimeout(micTimer); meterOff(); if (actx && actx.state === "running") actx.suspend().catch(() => {}); if (mic) { mic.getTracks().forEach((tr) => tr.stop()); mic = null; } };
 async function getMic() {
   clearTimeout(micTimer);
   if (mic && mic.getTracks().some((tr) => tr.readyState === "live")) { mic.getTracks().forEach((tr) => { tr.enabled = true; }); return mic; }
-  mic = await navigator.mediaDevices.getUserMedia({ audio: true });
+  mic = await navigator.mediaDevices.getUserMedia({ audio: MIC_AUDIO });
   return mic;
 }
 const restMic = () => { if (mic) mic.getTracks().forEach((tr) => { tr.enabled = false; }); clearTimeout(micTimer); micTimer = setTimeout(dropMic, MIC_HOLD); };
 document.addEventListener("visibilitychange", () => { if (document.hidden) dropMic(); });
+// the level meter: one AudioContext for the page, an analyser on the current microphone. Nothing is played — the
+// meter only tells when sound starts to flow, whether there was a voice, and how loud (for the computer's log)
+let actx = null, meter = null;
+function audioCtx() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!actx && AC) { try { actx = new AC(); } catch (e) { actx = null; } }
+  if (actx && actx.state === "suspended") actx.resume().catch(() => {});
+  return actx;
+}
+function meterOn(stream) {
+  if (meter && meter.stream === stream) return meter;
+  meterOff();
+  const ac = audioCtx();
+  if (!ac) return null;
+  try {
+    const src = ac.createMediaStreamSource(stream), an = ac.createAnalyser();
+    an.fftSize = 2048;
+    src.connect(an);
+    meter = { stream, src, an, buf: new Float32Array(an.fftSize) };
+  } catch (e) { meter = null; }
+  return meter;
+}
+function meterOff() { if (meter) { try { meter.src.disconnect(); } catch (e) { /* already gone */ } meter = null; } }
+// the last ~43 ms: the loudest sample (0 while the microphone is still waking up) and the level, dBFS
+function loudness(m) {
+  m.an.getFloatTimeDomainData(m.buf);
+  let peak = 0, sum = 0;
+  for (const x of m.buf) { const a = Math.abs(x); if (a > peak) peak = a; sum += x * x; }
+  return { peak, db: 20 * Math.log10(Math.sqrt(sum / m.buf.length) || 1e-10) };
+}
+// the recording's figures ride along for the computer's log; a computer before 0.14.2 refuses a field it doesn't
+// know — then once more without them, and not again until the app is reopened
+let sttNotes = true;
+async function sttSend(data, mime, notes) {
+  if (sttNotes) {
+    try { return await api("stt", { data, mime, notes }); }
+    catch (e) { if (!/unexpected keyword/.test(e.message)) throw e; sttNotes = false; }
+  }
+  return api("stt", { data, mime });
+}
 function useRecorder(onText) {
-  const [st, setSt] = useState("idle");           // idle | rec | busy
+  const [st, setSt] = useState("idle");           // idle | wait (the microphone wakes up) | rec | busy
   const [secs, setSecs] = useState(0);
   const cur = useRef(null);
-  const stop = () => { const x = cur.current; if (x && x.rec.state !== "inactive") x.rec.stop(); };
+  const dot = useRef(null);                       // the red dot: it breathes with the voice
+  const stop = () => {
+    const x = cur.current;
+    if (!x || x.stopping || x.rec.state === "inactive") return;
+    x.stopping = true;
+    if (!x.live) return x.rec.stop();
+    setSt("busy");
+    setTimeout(() => { if (x.rec.state !== "inactive") x.rec.stop(); }, REC_TAIL);
+  };
   const toggle = async () => {
     if (st !== "idle") return stop();
     if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder)) return alertBox(t("rec.unsupported"));
+    const t0 = Date.now();
+    audioCtx();                                   // within the tap itself: a browser lets audio start only from one
+    setSt("wait");
     let stream;
-    try { stream = await getMic(); } catch (e) { dropMic(); return alertBox(t("rec.denied")); }
+    try { stream = await getMic(); } catch (e) { dropMic(); setSt("idle"); return alertBox(t("rec.denied")); }
     const mime = REC_MIME.find((m) => MediaRecorder.isTypeSupported(m)) || "";
     let rec;
     try { rec = new MediaRecorder(stream, Object.assign({ audioBitsPerSecond: 32000 }, mime ? { mimeType: mime } : {})); }
-    catch (e) { dropMic(); return alertBox(t("rec.unsupported")); }
-    const chunks = [], t0 = Date.now();
-    const x = (cur.current = { rec, timer: 0 });
+    catch (e) { dropMic(); setSt("idle"); return alertBox(t("rec.unsupported")); }
+    const m = meterOn(stream), chunks = [];
+    const x = (cur.current = { rec, timer: 0, started: false, stopping: false, live: 0, heard: false, secs: 0,
+                               loud: 0, voice: null, first: -200, peak: -200 });
+    const goLive = (heard) => {
+      x.live = Date.now(); x.heard = heard;
+      setSt("rec"); setSecs(0);
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred("medium");
+    };
+    rec.onstart = () => { x.started = true; };
     rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
     rec.onstop = async () => {
       clearInterval(x.timer); restMic(); cur.current = null;
+      if (dot.current) { dot.current.style.transform = ""; dot.current.style.animation = ""; }
       const blob = new Blob(chunks, { type: rec.mimeType || mime || "audio/webm" });
-      if (blob.size < 1000) { setSt("idle"); setSecs(0); return alertBox(t("rec.empty")); }
+      if (blob.size < 1000 || !x.live) { setSt("idle"); setSecs(0); return alertBox(t("rec.empty")); }
+      if (x.heard && x.loud < VOICE_MIN) { setSt("idle"); setSecs(0); return alertBox(t("rec.silent")); }
       setSt("busy");
+      const r1 = (v) => Math.round(v * 10) / 10;
+      const notes = { secs: r1((Date.now() - x.live) / 1000) };
+      if (x.heard) Object.assign(notes, { ready: x.live - t0, voice: x.voice, first: r1(x.first), peak: r1(x.peak) });
       try {
         const url = await new Promise((ok, no) => { const f = new FileReader(); f.onload = () => ok(f.result); f.onerror = no; f.readAsDataURL(blob); });
-        const res = await api("stt", { data: url.split(",")[1], mime: blob.type });
+        const res = await sttSend(url.split(",")[1], blob.type, notes);
         if (res.text) { onText(res.text); haptic("success"); }
       } catch (e) { alertBox(e.message); }
       setSt("idle"); setSecs(0);
     };
-    x.timer = setInterval(() => { const s = Math.round((Date.now() - t0) / 1000); setSecs(s); if (s >= REC_MAX) stop(); }, 500);
+    x.timer = setInterval(() => {
+      const now = Date.now();
+      if (m) {
+        const { peak, db } = loudness(m);
+        if (!x.live && x.started && peak > 1e-5) goLive(true);
+        if (x.heard) {
+          if (db > x.peak) x.peak = db;
+          if (now - x.live <= 1000 && db > x.first) x.first = db;
+          if (db > VOICE_DB) { x.loud++; if (x.voice === null) x.voice = now - x.live; }
+          if (dot.current) {                      // breathes with the voice instead of blinking
+            dot.current.style.animation = "none";
+            dot.current.style.transform = "scale(" + (1 + Math.min(0.8, Math.max(0, db - VOICE_DB) / 40)).toFixed(2) + ")";
+          }
+        }
+      }
+      if (!x.live && now - t0 > REC_WAIT) goLive(false);
+      if (!x.live) return;
+      const s = Math.floor((now - x.live) / 1000);
+      if (s !== x.secs) { x.secs = s; setSecs(s); }
+      if (s >= REC_MAX) stop();
+    }, 50);
     rec.start(1000);
-    setSt("rec"); setSecs(0);
   };
   useEffect(() => () => { const x = cur.current; if (x) { clearInterval(x.timer); try { x.rec.stop(); } catch (e) { /* already gone */ } } }, []);
-  return { st, secs, toggle };
+  return { st, secs, toggle, dot };
 }
 const MIC = html`<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg>`;
 function Mic({ v, disabled, wide }) {
-  const label = v.st === "rec" ? t("rec.stop") : v.st === "busy" ? t("rec.busy") : t("rec");
-  const cls = "clip mic" + (wide ? " wide" : "") + (v.st === "rec" ? " rec" : "") + (disabled || v.st === "busy" ? " off" : "");
+  const on = v.st === "rec" || v.st === "wait";
+  const label = v.st === "wait" ? t("rec.wait") : v.st === "rec" ? t("rec.stop") : v.st === "busy" ? t("rec.busy") : t("rec");
+  const cls = "clip mic" + (wide ? " wide" : "") + (on ? " rec" : "") + (v.st === "wait" ? " wait" : "") + (disabled || v.st === "busy" ? " off" : "");
   return html`<button type="button" class=${cls} aria-label=${label} disabled=${disabled || v.st === "busy"} onClick=${v.toggle}>
-    ${v.st === "rec" ? html`<span class="dot"></span><span class="secs">${Math.floor(v.secs / 60)}:${String(v.secs % 60).padStart(2, "0")}</span>` : MIC}
+    ${on ? html`<span class="dot" ref=${v.dot}></span><span class="secs">${v.st === "wait" ? "…" : Math.floor(v.secs / 60) + ":" + String(v.secs % 60).padStart(2, "0")}</span>` : MIC}
     ${wide ? html`<span>${label}</span>` : ""}</button>`;
 }
 
 // a picture the owner sent (from Telegram or the app): the chat shows it, not the path Claude got
-function Pic({ a }) {
+// all — the pictures of the same message: the viewer goes through them
+function Pic({ a, all }) {
   const [src, setSrc] = useState(null);
-  const [big, setBig] = useState(false);
-  const [open, close] = useOverlay(big, setBig);
   useEffect(() => {
     if (!a.image || !a.inbox) return;
     let alive = true;
-    api("inbox", a.pkey ? { name: a.name, pkey: a.pkey } : { name: a.name }).then((d) => alive && setSrc("data:image/" + (d.kind === "jpg" ? "jpeg" : d.kind) + ";base64," + d.data)).catch(() => {});
+    inboxSrc(a).then((s) => alive && setSrc(s)).catch(() => {});
     return () => { alive = false; };
   }, [a.name]);
-  if (src) return html`<img class="att" src=${src} alt="" onClick=${open}/>${big && html`<div class="lightbox" onClick=${close}><img src=${src} alt=""/></div>`}`;
+  const open = () => { const pics = (all || [a]).filter((x) => x.image && x.inbox);
+    emit("view", { items: pics.map((x) => (x === a ? { a: x, src } : { a: x })), at: Math.max(0, pics.indexOf(a)) }); };
+  if (src) return html`<img class="att" src=${src} alt="" onClick=${open}/>`;
   return html`<span class="att-chip">${ic(a.image ? "image" : "file", 14)} ${a.name.split("/").pop() || t("att.file")}</span>`;
 }
 
@@ -577,6 +855,7 @@ function parse() {
 // our own navigation stack: Telegram's "Back" after opening a session link leads home, not nowhere
 const stack = [location.hash];
 addEventListener("hashchange", () => {
+  if (stack[stack.length - 1] === location.hash) return;      // replaced in place (go with replace, back to home)
   if (stack.length > 1 && stack[stack.length - 2] === location.hash) stack.pop(); else stack.push(location.hash);
 });
 let overlays = 0;      // a picture full screen, the model menu: steps in the history, so Back closes them, not the screen
@@ -610,33 +889,65 @@ if ((!location.hash || tgHash(location.hash)) && start) {
 
 // ---------- cards: question, permission request, plan ----------
 
+// a card answered here keeps "✓ Answer sent" RCPT_MS, a bar running out under it, though the computer drops the
+// request at once (the owner didn't see the line at all, 2026-10-24)
+const RCPT_MS = 3000;
+const answeredAt = new Map();        // rid → when it was answered here
+// what to show: the computer's list, and the requests answered here less than RCPT_MS ago in their old places;
+// key — a row's request id (other rows never linger)
+function useRcpt(list, key = (r) => r.rid) {
+  const prev = useRef([]);
+  const [, bump] = useState(0);
+  const now = Date.now(), ids = new Set(list.map(key)), out = list.slice();
+  prev.current.forEach((r, i) => { if (!ids.has(key(r)) && now - (answeredAt.get(key(r)) || 0) < RCPT_MS) out.splice(Math.min(i, out.length), 0, r); });
+  prev.current = out;
+  const left = out.filter((r) => !ids.has(key(r))).map((r) => answeredAt.get(key(r)) + RCPT_MS - now);
+  useEffect(() => {
+    if (!left.length) return;
+    const tm = setTimeout(() => bump((x) => x + 1), Math.max(0, Math.min(...left)) + 20);
+    return () => clearTimeout(tm);
+  });
+  return out;
+}
+
 function Req({ r, onDone, showWhere = true, showProject = true }) {
   const [busy, setBusy] = useState(false);
   const [why, setWhy] = useState(null);
   const [picks, setPicks] = useState({});
   const [own, setOwn] = useState({});
   const [done, setDone] = useState(null);      // the answer went: "✓ Allowed" in place of the card, until the list drops it
+  const [mine, setMine] = useState({});        // questions answered here, shown as answered before the list brings them back
+  const chosen = Object.assign({}, r.chosen, mine);
   const send = async (args) => {
     setBusy(true);
     try {
       const res = await api("answer", Object.assign({ rid: r.rid }, args));
       if (res && res.ok === false) alertBox(res.note || t("failed"));
-      else {
+      else if (r.kind === "ask" && Object.keys(Object.assign({}, chosen, args.answers)).length < r.questions.length) {
+        haptic("success");           // one of several questions: Claude waits for the rest, the card stays
+        setMine(Object.assign({}, mine, args.answers));
+      } else {
         haptic("success");
         const k = r.kind === "ask" ? "rcpt.ask" : r.kind === "plan" ? (args.act === "y" ? "rcpt.plan.y" : "rcpt.plan.n")
           : args.act === "a" ? "rcpt.always" : args.act === "y" ? "rcpt.allow" : "rcpt.deny";
+        answeredAt.set(r.rid, Date.now());
         setDone(k);
-        emit("toast", t(k));         // the list may drop the card at once: the note at the bottom outlives it
       }
       onDone && onDone();
     } catch (e) { alertBox(e.message); }
     setBusy(false);
   };
-  const where = showWhere && html`<div class="card-h">${showProject && r.project ? html`<div class="c-proj">${avatar(r.project, 18)}<span>${r.project}</span></div>` : ""}${r.project !== r.title || !showProject ? html`<b class="c-title">${r.title}</b>` : ""}</div>`;
-  if (done) return html`<div class="card rcpt" role="status">${where}<div class=${"rcpt-l" + (done === "rcpt.deny" || done === "rcpt.plan.n" ? " no" : "")}>${t(done)}</div></div>`;
+  // how long it waits, as a session's card says: "your move" puts them all in one line by time
+  const waits = r.since && !done ? html`<span class="c-wait">${t("mine.waits", { dur: nb(dur(Date.now() / 1000 - r.since)) })}</span>` : "";
+  const where = showWhere && html`<div class="card-h">${showProject && r.project || waits ? html`<div class="c-proj">${showProject && r.project ? html`${avatar(r.project, 18)}<span>${r.project}</span>` : ""}${waits}</div>` : ""}${r.project !== r.title || !showProject ? html`<b class="c-title">${r.title}</b>` : ""}</div>`;
+  if (done) {
+    const no = done === "rcpt.deny" || done === "rcpt.plan.n" ? " no" : "";
+    return html`<div class="card rcpt" role="status">${where}<div class=${"rcpt-l" + no}>${t(done)}</div>
+      <div class=${"rcpt-bar" + no} style=${{ animationDuration: RCPT_MS + "ms" }}></div></div>`;
+  }
   if (r.kind === "ask") {
     return html`<div class="card ask">${where}
-      ${r.questions.map((qn, i) => r.chosen && r.chosen[i] ? html`<div class="q done"><div class="q-t">${qn.question}</div>→ <b>${r.chosen[i].join(", ")}</b></div>` : html`
+      ${r.questions.map((qn, i) => chosen[i] ? html`<div class="q done"><div class="q-t">${qn.question}</div>→ <b>${chosen[i].join(", ")}</b></div>` : html`
         <div class="q"><div class="kind">${ic("help", 16)} ${t("kind.q")}</div><div class="q-t">${qn.question}</div>
           ${(qn.options || []).map((o) => {
             const on_ = (picks[i] || []).includes(o.label);
@@ -764,6 +1075,7 @@ function ModePick({ mode, onSet, pager }) {
 // one line-icon set for the whole app (stroke, 24 grid): the same meaning — the same picture on every screen
 const IC = {
   check: '<path d="M20 6 9 17l-5-5"/>',
+  checks: '<path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/>',
   shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/>',
   help: '<circle cx="12" cy="12" r="9.5"/><path d="M9.2 9.2a3 3 0 0 1 5.7 1.1c0 2-2.9 2.7-2.9 2.7"/><path d="M12 17h.01"/>',
   plan: '<rect x="8" y="2.5" width="8" height="4" rx="1"/><path d="M16 4.5h2a2 2 0 0 1 2 2V20a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6.5a2 2 0 0 1 2-2h2"/><path d="M9 12h6M9 16h4"/>',
@@ -791,6 +1103,7 @@ const IC = {
   copy: '<rect x="8.5" y="8.5" width="12" height="12" rx="2.2"/><path d="M15.5 8.5V5.7a2.2 2.2 0 0 0-2.2-2.2H5.7a2.2 2.2 0 0 0-2.2 2.2v7.6a2.2 2.2 0 0 0 2.2 2.2h2.8"/>',
   clip: '<path d="m20.5 11.5-8.6 8.6a5.3 5.3 0 0 1-7.5-7.5l8.6-8.6a3.5 3.5 0 0 1 5 5l-8.6 8.6a1.8 1.8 0 0 1-2.5-2.5l7.9-7.9"/>',
   info: '<circle cx="12" cy="12" r="9.5"/><path d="M12 16.5v-5M12 7.8h.01"/>',
+  clock: '<circle cx="12" cy="12" r="9.5"/><path d="M12 7v5l3.2 2"/>',
 };
 const ic = (n, s = 18) => html`<svg class=${"ic ic-" + n} viewBox="0 0 24 24" width=${s} height=${s} fill="none" stroke="currentColor"
   stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" dangerouslySetInnerHTML=${{ __html: IC[n] }}></svg>`;
@@ -800,6 +1113,8 @@ const dotted = (xs) => xs.filter(Boolean).map((m, i) => html`${i ? html`<span cl
 // colours, picked by the name's UTF-8 bytes — pult_render.topic_color does the same sum, keep them in step
 const HUES = ["#6fb9f0", "#ffd67e", "#cb86db", "#8eee98", "#ff93b2", "#fb6f5f"];
 const hue = (s) => { let h = 0; for (const b of new TextEncoder().encode(String(s))) h = (h * 31 + b) >>> 0; return HUES[h % HUES.length]; };
+// a session has no tab bar (the composer is there): its way straight home, the tab's own icon
+const home = (size) => html`<a class="home-l" href="#/" aria-label=${t("tab.home")}>${ic("home", size)}</a>`;
 const avatar = (name, size = 28) => html`<span class="av" aria-hidden="true" style=${"background:" + hue(name) + ";width:" + size + "px;height:" + size + "px;font-size:" + Math.round(size * .5) + "px"}>${String(name).replace(/[^\p{L}\p{N}]/gu, "").charAt(0).toUpperCase()}</span>`;
 
 // the Home strip: two small tiles and the way to the settings — where you are (tap — the mode picker) and the limit
@@ -893,6 +1208,12 @@ function ResumeAt({ sid, resume, reset, onSet }) {
   return html`<div class="qr"><button onClick=${(e) => { e.stopPropagation(); set(reset || 0); }}>${reset ? t("resume.at", { hm: hhmm(toDate(reset)) }) : t("resume.after")}</button></div>`;
 }
 
+// "your move" in one line by time: questions and permissions with the sessions that wait, the freshest on top, the
+// longest waiting at the bottom (the owner, 2026-10-24); a computer before 0.15.1 gives a request no time — on top
+const moves = (pending, mine) => [...pending.map((r) => ({ key: r.rid, req: r, at: r.since || 1e12 })),
+  ...mine.map((r) => ({ key: "m" + r.sid, mine: r, at: r.since || 0 }))].sort((a, b) => b.at - a.at);
+const moveKey = (e) => e.key;
+
 // "Your move": a session that ended and waits for you — how long, what came out, what is needed; ready replies,
 // your own words, "Got it" to put it to rest; the title opens the session
 function Mine({ r, now, onGot, stt, showProject = true }) {
@@ -930,11 +1251,13 @@ function Catchup({ c, onClose }) {
 function BoardRow({ r, now, onBg, project }) {
   const bgTap = (e) => { e.stopPropagation(); onBg(r); };
   const right = r.state === "work" ? workChip(r.since, now)
+    : r.state === "queue" ? queueChip(r.since, now)
     : r.state === "bg" ? bgChip(r.since, now, bgTap)
     : html`<span class="dim nowrap">${agoShort(r.ts)}</span>`;
   const what = project != null && [project !== r.title ? project : "",
     r.state === "bg" && r.bg && r.bg.length ? r.bg.map(q).join(", ") : r.line ? r.line : ""].filter(Boolean).join(" · ");
   const icon = r.state === "work" ? html`<span class="st st-work"></span>` : r.state === "bg" ? html`<span class="st-ic">${ic("bg", 15)}</span>`
+    : r.state === "queue" ? html`<span class="st-ic">${ic("clock", 15)}</span>`
     : r.state === "done" ? html`<span class="st-ic ok">${ic("check", 15)}</span>` : r.driven ? html`<span class="st-ic">${ic("phone", 15)}</span>` : "";
   return html`<button class=${"item brow" + (r.state === "idle" ? " rest" : "") + (r.state === "done" ? " fresh" : "")} onClick=${() => go("#/s/" + r.sid)}>
     <div class="item-h"><b class="one">${icon}${r.title}</b><span class="meta">${r.ctx != null && r.ctx >= 90 ? html`<span class="pct bad">${ic("alert", 13)} ${r.ctx} %</span>` : ""}${right}</span></div>
@@ -967,6 +1290,7 @@ function Home() {
   const [bgFor, setBgFor] = useState(null);
   const [openBg, closeBg] = useOverlay(!!bgFor, (v) => { if (!v) setBgFor(null); });
   const seenN = useRef(-1);
+  const yours = useRcpt(d ? moves(d.pending, d.mine || []) : [], moveKey);
   if (!d) return html`<${Loading} err=${err}/>`;
   if (seenN.current < 0) seenN.current = (d.pending || []).length + (d.mine || []).length;     // no buzz on opening
   useLang(d.lang);
@@ -976,25 +1300,27 @@ function Home() {
   if (n > seenN.current) haptic("warning");             // a new "your move" while you look at Home — a buzz
   seenN.current = n;
   const gone = (sid) => set(Object.assign({}, d, { mine: mine.filter((r) => r.sid !== sid) }));
-  // what runs, first: working, then in the background, then tasks without Claude; the earliest started on top in each,
-  // so new ones come in below and rows don't jump; they leave the project blocks and the finished tasks below
-  const runs = (r) => r.state === "work" || r.state === "bg";
+  // what runs, first: working, then in the background, then waiting in the queue, then tasks without Claude; the
+  // earliest started on top in each, so new ones come in below and rows don't jump; they leave the project blocks
+  const runs = (r) => r.state === "work" || r.state === "bg" || r.state === "queue";
   const live = board.flatMap((p) => p.rows.filter(runs).map((r) => Object.assign({ project: p.name }, r)));
   const early = (a, b) => (a.since || 0) - (b.since || 0);
-  const running = [...live.filter((r) => r.state === "work").sort(early), ...live.filter((r) => r.state === "bg").sort(early)];
+  const running = ["work", "bg", "queue"].flatMap((st) => live.filter((r) => r.state === st).sort(early));
+  const nQueue = live.filter((r) => r.state === "queue").length;
   const jobs = d.jobs || [];
   const jobsOn = jobs.filter((j) => j.ended == null).sort((a, b) => a.started - b.started), jobsDone = jobs.filter((j) => j.ended != null);
   const nRun = running.length + jobsOn.length;
   const rest = board.map((p) => Object.assign({}, p, { rows: p.rows.filter((r) => !runs(r)) }));
   return html`<div>
     <${Top} mac=${d.mac} load=${d.load} usagePct=${d.usage_pct} usageTop=${d.usage_top} pager=${d.pager} onSet=${(m) => set(Object.assign({}, d, { mac: Object.assign({}, d.mac, { mode: m }) }))}/>
-    ${nRun > 0 && html`<h3>${t("home.running", { n: nRun })}</h3><div class="list">
+    <${UpdRow} u=${d.update}/>
+    ${nRun > 0 && html`<h3>${t("home.running", { n: nRun - nQueue })}${nQueue ? " · " + t("home.queued", { n: nQueue }) : ""}</h3><div class="list">
       ${running.map((r) => html`<${BoardRow} key=${r.sid} r=${r} now=${now} onBg=${onBg} project=${r.project}/>`)}
       ${jobsOn.map((j) => html`<${Job} key=${j.id} j=${j} now=${now} row=${true}/>`)}</div>`}
     ${d.catchup && html`<${Catchup} c=${d.catchup} onClose=${() => { api("catchup_off").catch(() => {}); set(Object.assign({}, d, { catchup: null })); }}/>`}
-    ${n > 0 && html`<h3>${t("home.mine", { n })}</h3>
-      ${d.pending.map((r) => html`<${Req} key=${r.rid} r=${r}/>`)}
-      ${mine.map((r) => html`<${Mine} key=${r.sid} r=${Object.assign({ reset: d.reset }, r)} now=${now} onGot=${gone} stt=${d.stt}/>`)}`}
+    ${(n > 0 || yours.length > 0) && html`<h3>${t("home.mine", { n })}</h3>
+      ${yours.map((e) => e.req ? html`<${Req} key=${e.key} r=${e.req}/>`
+        : html`<${Mine} key=${e.key} r=${Object.assign({ reset: d.reset }, e.mine)} now=${now} onGot=${gone} stt=${d.stt}/>`)}`}
     ${rest.length > 0 && html`<h3>${t("home.projects")}</h3>${rest.map((p) => html`<${ProjectBlock} key=${p.pkey} p=${p} now=${now} onBg=${onBg}/>`)}`}
     ${!n && !board.length && !nRun && html`<div class="empty">${t("home.quiet")}</div>`}
     ${jobsDone.length > 0 && html`<h3>${t("home.jobs")}</h3><div class="list">${jobsDone.map((j) => html`<${Job} key=${j.id} j=${j} now=${now}/>`)}</div>`}
@@ -1017,10 +1343,97 @@ function Job({ j, now, row }) {
   </button>`;
 }
 
+// stage U: an update from the app. Pult knows the folder it was installed from; a commit there that changed its
+// files is offered here. "run" — the computer restarts Pult: the banner says so instead of "offline" for a while
+const updSpin = html`<span class="upd-spin" aria-hidden="true"></span>`;
+const UPD_RUN_MAX = 180000;
+function noteUpd(state) {
+  const was = conn.updating;
+  conn.updating = state === "run" ? was || Date.now() : 0;
+  if (!was !== !conn.updating) emit("conn");
+}
+const tOr = (k, other) => { const v = t(k); return v === k ? other : v; };     // a code the app has no words for: as is
+const updWhy = (w) => tOr("upd.why." + w, w || "?");
+const updWho = (b, i) => html`<div class="upd-who" key=${i}>${b.turn ? html`<span class="st st-work"></span>` : html`<span class="st-ic">${ic("bg", 15)}</span>`}<span>${b.project ? html`<b>${b.project}</b>${b.title && b.title !== b.project ? " · " + b.title : ""}` : b.title} <span class="dim">— ${[b.turn ? t("upd.busy.turn") : "", b.n ? t("upd.busy.bg", { n: b.n }) : ""].filter(Boolean).join(", ")}</span></span></div>`;
+
+// Home: a line under the strip only while there is something to do or to know; a tap — Settings
+function UpdRow({ u }) {
+  useEffect(() => noteUpd(u && u.state), [u && u.state]);
+  if (!u) return "";
+  const [icon, title, sub, cls] = {
+    ready: [ic("up", 17), t("upd.ready", { v: u.next }), t("upd.row.ready", { v: u.have }), ""],
+    busy: [ic("up", 17), t("upd.ready", { v: u.next }), t("upd.row.busy", { n: u.left }), "attn"],
+    wait: [ic("auto", 17), t("upd.wait", { v: u.next }), t("upd.row.wait", { n: u.left }), "attn"],
+    run: [updSpin, t("upd.run", { v: u.next }), t("upd.row.run"), ""],
+    fail: [ic("alert", 17), u.back ? t("upd.row.fail", { next: u.next, v: u.have }) : t("upd.fail.kept", { v: u.next }), t("upd.row.fail.sub"), "bad"],
+  }[u.state] || [];
+  if (!title) return "";
+  return html`<button class=${"card upd-row " + cls} onClick=${() => go("#/settings")}>
+    <span class="upd-ic">${icon}</span><span class="upd-t"><b>${title}</b><span class="dim">${sub}</span></span>${ic("chev", 16)}</button>`;
+}
+
+// Settings: the "Pult" block on top — the version, the state, the one button, the history. A Pult without stage U
+// doesn't know the request: no block then
+function UpdCard() {
+  const [v, , set] = useLive(() => api("update"), [], null, 10000);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => noteUpd(v && v.state), [v && v.state]);
+  if (!v) return "";
+  const act = async (op) => {
+    setBusy(true);
+    try { const r = await api(op); set(r); haptic("success"); }
+    catch (e) { alertBox(e.message); api("update").then(set).catch(() => {}); }
+    setBusy(false);
+  };
+  const head = (icon, title, chip, cls) => html`<div class=${"upd-h " + (cls || "")}><b>${icon}${title}</b>${chip}</div>`;
+  const news = v.news && v.news.length ? html`<div class="upd-k">${t("upd.news")}</div><ul class="upd-news">${v.news.map((x, i) => html`<li key=${i}>${x}</li>`)}</ul>` : "";
+  const busyList = v.busy || [];
+  const order = { prepare: 0, start: 0, stop: 1, copy: 1, check: 2, back: 3 };
+  const at = order[v.step] || 0;
+  const mark = (n) => (at > n ? ic("check", 15) : at === n ? updSpin : html`<span class="upd-dot"></span>`);
+  const body = {
+    ok: html`${head(html`<span class="upd-ok">${ic("check", 17)}</span>`, t("upd.ok", { v: v.have }), html`<span class="chip ok">${t("upd.ok.chip")}</span>`)}
+      ${v.dir ? html`<div class="dim">${t("upd.ok.from", { dir: v.dir, commit: v.commit })}</div>` : ""}`,
+    ready: html`${head("", t("upd.ready", { v: v.next }), html`<span class="chip ok">${t("upd.ready.chip")}</span>`)}
+      <div class="dim">${t("upd.have", { v: v.have })}</div>${news}
+      <button class="btn wide" disabled=${busy} onClick=${() => act("update_go")}>${t("upd.go", { v: v.next })}</button>
+      <div class="dim upd-note">${t("upd.go.about")}</div>`,
+    busy: html`${head("", t("upd.ready", { v: v.next }), html`<span class="chip warn">${t("upd.busy.chip")}</span>`)}
+      <div class="dim">${t("upd.have", { v: v.have })}</div>${news}
+      <div class="upd-k attn">${t("upd.busy.cut", { n: busyList.length })}</div>${busyList.map(updWho)}
+      <div class="dim upd-note">${t("upd.busy.safe")}</div>
+      <button class="btn wide" disabled=${busy} onClick=${() => act("update_wait")}>${t("upd.wait.go")}</button>
+      <div class="dim upd-note">${t("upd.wait.idle")}</div>`,
+    wait: html`${head(html`<span class="upd-attn">${ic("auto", 17)}</span>`, t("upd.wait", { v: v.next }), html`<span class="chip warn">${t("upd.wait.chip")}</span>`)}
+      ${busyList.length ? html`<div class="upd-k">${t("upd.wait.left", { n: busyList.length })}</div>${busyList.map(updWho)}` : html`<div class="dim upd-note">${t("upd.wait.none")}</div>`}
+      <div class="dim upd-note">${t("upd.wait.about")}</div>
+      <button class="btn ghost wide" disabled=${busy} onClick=${() => act("update_cancel")}>${t("upd.cancel")}</button>`,
+    run: html`${head(updSpin, t("upd.run", { v: v.next }), "")}
+      <div class="upd-steps">${at === 3 ? html`<div class="cur">${updSpin} ${t("upd.run.back", { v: v.have })}</div>` : html`
+        <div class=${at === 0 ? "cur" : ""}>${mark(0)} ${t("upd.run.keep", { v: v.have })}</div>
+        <div class=${at === 1 ? "cur" : ""}>${mark(1)} ${t("upd.run.files", { v: v.next })}</div>
+        <div class=${at === 2 ? "cur" : ""}>${mark(2)} ${t("upd.run.check")}</div>`}</div>
+      <div class="dim upd-note">${t("upd.run.about")}</div>`,
+    fail: html`${head(html`<span class="upd-bad">${ic("alert", 17)}</span>`, t(v.back ? "upd.fail" : "upd.fail.kept", { v: v.next }),
+        html`<span class="chip bad">${t(v.back ? "upd.fail.chip" : "upd.fail.chip.kept")}</span>`, "bad")}
+      <div>${t(v.back ? "upd.fail.back" : "upd.fail.stays", { v: v.have })}</div>
+      <div class="dim upd-note">${t("upd.fail.why", { why: updWhy(v.why) })}</div>
+      ${v.detail ? html`<div class="upd-detail mono">${v.detail}</div>` : ""}
+      <div class="dim upd-note">${t("upd.fail.again", { v: v.next })}</div>`,
+    na: html`${head("", t("upd.ok", { v: v.have }), "")}<div class="dim">${t("upd.na." + (v.why === "windows" ? "windows" : "norepo"))}</div>`,
+  }[v.state] || "";
+  const hist = v.hist || [];
+  return html`<h3>${t("upd.h")}</h3><div class=${"card upg upd-s-" + v.state}>${body}
+    ${hist.length ? html`<details class="upd-hist"><summary>${t("upd.hist", { n: hist.length })}</summary>
+      ${hist.map((x, i) => html`<div class="login" key=${i}><span class=${x.ok ? "ok" : "bad"}>${ic(x.ok ? "check" : "x", 14)} ${ago(x.ts)}</span>
+        <span class="dim">${x.ok ? [x.from, x.to].filter(Boolean).join(" → ") : t(x.from && x.from !== x.to ? "upd.hist.failed" : "upd.hist.kept", { to: x.to, from: x.from })} · ${tOr("upd.how." + x.how, x.how)}</span></div>`)}</details>` : ""}</div>`;
+}
+
 function Settings() {
   const [d, err, set] = useLive(() => api("settings"), [], () => false);
   const [key, setKey] = useState("");
   const [kbusy, setKbusy] = useState(false);
+  const [words, setWords] = useState(null);        // null — as saved on the computer
   if (!d) return html`<${Loading} err=${err}/>`;
   useLang(d.prefs.lang);
   const toggle = async (k) => {
@@ -1045,7 +1458,14 @@ function Settings() {
     catch (e) { alertBox(e.message); }
     setKbusy(false);
   };
+  const saveWords = async () => {
+    setKbusy(true);
+    try { const r = await api("stt_words", { words }); set(Object.assign({}, d, { stt: Object.assign({}, d.stt, { words: r.words }) })); setWords(null); haptic("success"); }
+    catch (e) { alertBox(e.message); }
+    setKbusy(false);
+  };
   return html`<div><h2>${t("settings")}</h2>
+    <${UpdCard}/>
     <h3>${t("notifications")}</h3><div class="list">${sw("pager", t("pager"), t("pager.short"), t("pager.about"))}${d.prefs.pager ? "" : sw("vehi", t("vehi"), t("vehi.about"))}${sw("brief", t("brief"), t("brief.short"), t("brief.about"))}</div>
     <h3>${t("where")}</h3>
     <${ModePick} mode=${d.prefs.mode} pager=${d.prefs.pager} onSet=${(m) => set(Object.assign({}, d, { prefs: Object.assign({}, d.prefs, { mode: m }) }))}/>
@@ -1061,7 +1481,12 @@ function Settings() {
       <div class="keyrow"><input type="password" ref=${plainField} placeholder=${t("voice.key")} value=${key} onInput=${(e) => setKey(e.target.value)}/>
         <button class="btn" disabled=${!key.trim() || kbusy} onClick=${() => saveKey(key)}>${t("voice.save")}</button></div>
       ${d.stt && d.stt.on ? html`<button class="link" disabled=${kbusy} onClick=${() => saveKey("")}>${t("voice.remove")}</button>` : ""}
-    </div></div>
+    </div>
+    ${d.stt && d.stt.on && typeof d.stt.words === "string" ? html`<div class="item static">
+      <div>${t("voice.words")}</div><div class="dim">${t("voice.words.about")}</div>
+      <div class="keyrow"><input ref=${plainField} maxlength="280" placeholder=${t("voice.words.ph")} value=${words === null ? d.stt.words : words} onInput=${(e) => setWords(e.target.value)}/>
+        <button class="btn" disabled=${words === null || words.trim() === d.stt.words || kbusy} onClick=${saveWords}>${t("voice.save")}</button></div>
+    </div>` : ""}</div>
     <${Logins}/>
     <h3>${t("status")}</h3><div class="list"><div class="item static">
       <div>${t("status.pult", { v: d.version, mac: d.mac.away ? t("mac.away", { dur: dur(d.mac.idle) }) : t("mac.here") })}</div>
@@ -1120,6 +1545,7 @@ function Project({ pkey }) {
   const [more, setMore] = useState(false);
   const [bgFor, setBgFor] = useState(null);
   const [openBg, closeBg] = useOverlay(!!bgFor, (v) => { if (!v) setBgFor(null); });
+  const yours = useRcpt(d ? moves(d.pending, d.mine) : [], moveKey);           // as on Home: one line by time
   if (!d) return html`<${Loading} err=${err}/>`;
   const onBg = (s) => { setBgFor(s.sid); openBg(); };
   const gone = (sid) => set(Object.assign({}, d, { mine: d.mine.filter((r) => r.sid !== sid) }));
@@ -1127,12 +1553,12 @@ function Project({ pkey }) {
   const sum = d.turns ? t("sum.today", { n: d.turns, turns: plural(d.turns, "turn"), dur: dur(d.secs) }) : t("proj.quiet");
   return html`<div class="project">
     <div class="ph">${avatar(d.name, 44)}<div><h2>${d.name}</h2><div class="sum dim">${sum}</div></div></div>
-    ${waits > 0 && html`<h3>${t("proj.waits", { n: waits })}</h3>
-      ${d.pending.map((r) => html`<${Req} key=${r.rid} r=${r} showProject=${false}/>`)}
-      ${d.mine.map((r) => html`<${Mine} key=${r.sid} r=${Object.assign({ reset: d.reset }, r)} now=${now} onGot=${gone} stt=${d.stt} showProject=${false}/>`)}`}
+    ${(waits > 0 || yours.length > 0) && html`<h3>${t("proj.waits", { n: waits })}</h3>
+      ${yours.map((e) => e.req ? html`<${Req} key=${e.key} r=${e.req} showProject=${false}/>`
+        : html`<${Mine} key=${e.key} r=${Object.assign({ reset: d.reset }, e.mine)} now=${now} onGot=${gone} stt=${d.stt} showProject=${false}/>`)}`}
     ${d.live.length > 0 && html`<h3>${t("proj.live", { n: d.live.length })}</h3><div class="list">${d.live.map((r) => html`<${BoardRow} key=${r.sid} r=${r} now=${now} onBg=${onBg}/>`)}</div>`}
     ${d.today.length > 0 && html`<h3>${t("proj.today")}</h3><div class="list">${d.today.map((r) => html`<${BoardRow} key=${r.sid} r=${r} now=${now} onBg=${onBg}/>`)}</div>`}
-    ${!waits && !d.live.length && !d.today.length && html`<div class="empty small">${t("proj.nothing")}</div>`}
+    ${!waits && !yours.length && !d.live.length && !d.today.length && html`<div class="empty small">${t("proj.nothing")}</div>`}
     ${d.earlier.length > 0 && html`<h3 class="toggle" onClick=${() => setMore(!more)}>${t("proj.earlier", { n: d.earlier.length })} <span class=${"chev" + (more ? " open" : "")}>${ic("chev", 14)}</span></h3>
       ${more && html`<div class="list">${d.earlier.map((x) => html`<button class="item brow rest" key=${x.sid} onClick=${() => go("#/s/" + x.sid)}>
         <div class="item-h"><b>${x.driven ? html`<span class="st-ic">${ic("phone", 14)}</span>` : ""}${x.title}</b><span class="meta"><span class="dim nowrap">${agoShort(x.last)}</span></span></div>
@@ -1188,7 +1614,27 @@ function group(items) {
   }
   return out;
 }
-const At = ({ ts, mid }) => (ts ? html`<span class="t">${mid ? t("mid.turn") : ""}${hhmm(toDate(ts))}</span>` : "");
+// your message's ticks (Q56), as in a messenger: the clock — on its way to the computer; ✓ — the computer has it, Claude
+// reads it after the step it is on; ✓✓ — Claude read it (every message of yours in the chat); ✕ — it didn't reach Claude
+const TICKS = { sending: "clock", sent: "check", read: "checks", gone: "x" };
+const tickMark = (st) => html`<span class=${"tick " + st} role="img" aria-label=${t("out." + st)}>${ic(TICKS[st], 14)}</span>`;
+const At = ({ ts, mid, st }) => (ts ? html`<span class="t">${mid ? t("mid.turn") : ""}${hhmm(toDate(ts))}${st ? tickMark(st) : ""}</span>` : "");
+
+// your messages on their way (Q56), oldest first: the computer's outbox (info.out) wins over what this screen has just
+// sent (by id); one the chat already has — the same words, written no earlier than it was sent — is not shown twice
+function onTheWay(items, server, local) {
+  const ids = new Set(server.map((o) => o.id));
+  // before the answer brings its id, the outbox may already have it: the same words, sent about then
+  const all = [...server, ...local.filter((x) => (x.id ? !ids.has(x.id) : !server.some((o) => o.text === x.text && o.ts >= x.ts - 120)))];
+  const own = items.slice(-80).filter((i) => i.k === "user"), used = new Set();
+  return all.filter((o) => {
+    const k = own.findIndex((i, n) => !used.has(n) && i.text === o.text
+      && (!i.ts || toDate(i.ts).getTime() / 1000 >= o.ts - (o.key ? 120 : 5)));     // the phone's clock may be off
+    if (k < 0) return true;
+    used.add(k);
+    return false;
+  });
+}
 
 // one of Claude's messages; a long one that is not the last is folded to a few lines — "Show all" opens it
 const LONG = 900;
@@ -1197,7 +1643,7 @@ function TextMsg({ i, fold }) {
   const folded = fold && !open;
   return html`<div class="msg"><div class=${"md" + (folded ? " fold" : "")} dangerouslySetInnerHTML=${{ __html: md(i.text) }}/>
     ${fold ? html`<button class="link more2" onClick=${() => setOpen(!open)}>${t(open ? "msg.less" : "msg.more")}</button>` : ""}
-    ${i.att && i.att.length ? html`<div class="atts shown">${i.att.map((a, k) => html`<${Pic} key=${k} a=${a}/>`)}</div>` : ""}<${At} ts=${i.ts}/></div>`;
+    ${i.att && i.att.length ? html`<div class="atts shown">${i.att.map((a, k) => html`<${Pic} key=${k} a=${a} all=${i.att}/>`)}</div>` : ""}<${At} ts=${i.ts}/></div>`;
 }
 
 // how the session's last turn ended, at the end of the chat right above the field: what came out, what is needed,
@@ -1303,6 +1749,9 @@ function Session({ sid }) {
   const toBottom = () => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" });
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  // what this screen has just sent, until the computer's outbox has it (Q56): the clock at once, ✓ on the answer
+  const [sending, setSending] = useState([]);
+  const [putBack, setPutBack] = useState([]);       // messages that didn't reach Claude, their words back in the field
   const [pick, setPick] = useState(false);
   const [openPick, closePick] = useOverlay(pick, setPick);
   const [note, setNote] = useState(null);
@@ -1314,8 +1763,12 @@ function Session({ sid }) {
   // your own message that went up past the top of the screen: pinned there, like a pinned message in Telegram;
   // a tap shows it in full. "Your message" is the nearest one above what is on screen — the one being answered
   const [pin, setPin] = useState(null);
+  // the header went up past the top — and a session opens at its last message, so mostly it has: a bar at the top
+  // keeps the project, the session and its state in sight (the owner couldn't tell which ones were open, 2026-10-23)
+  const [away, setAway] = useState(false);
   const [full, setFull] = useState(null);
   const [openFull, closeFull] = useOverlay(!!full, (v) => { if (!v) setFull(null); });
+  const pending = useRcpt(s.info ? s.info.pending : []);       // in the chat's order: the latest at the bottom
   const shown = useRef([]);
   const firstOut = useRef(null);       // the outcome as you found it: opening the session marks it seen, the card stays red
   // earlier history loads by itself as the top comes near — no button to hunt for; the place being read stays put
@@ -1354,6 +1807,8 @@ function Session({ sid }) {
       }
       const n = last ? +last.dataset.n : -1, it = shown.current[n];
       setPin((p) => (!it ? null : p && p.n === n && p.text === it.text ? p : { n, text: it.text, ts: it.ts, att: it.att }));
+      const head = document.querySelector(".sess-h");
+      setAway(!!head && head.getBoundingClientRect().bottom < 0);
     };
     const f = () => {
       const gap = document.body.scrollHeight - (window.innerHeight + window.scrollY);
@@ -1400,26 +1855,47 @@ function Session({ sid }) {
     return () => { offs.forEach((f) => f()); clearTimeout(timer); };
   }, [sid]);
 
+  // the field fits its words: one line when empty, up to 160 px with a long message
+  const fit = () => setTimeout(() => { const el = ta.current; if (el) { el.style.height = "auto"; el.style.height = Math.min(el.scrollHeight, 160) + "px"; } }, 0);
+  // the message goes into the chat at once, as in a messenger (Q56); if it can't go, the words come back to the field
   const sendText = async (fork) => {
-    if (!text.trim() && !a.files.length) return;
+    const words = text;
+    if (!words.trim() && !a.files.length) return;
     setBusy(true);
+    const key = "l" + Date.now();
+    setSending((m) => [...m, { key, text: words.trim(), n: a.files.length, ts: Date.now() / 1000, st: "sending" }]);
+    setText("");
+    fit();
+    const back = () => { setSending((m) => m.filter((x) => x.key !== key)); setText(words); fit(); };
     try {
-      const r = await api("send", { sid, text, fork: !!fork, files: a.payload() });
+      const r = await api("send", { sid, text: words, fork: !!fork, files: a.payload() });
       if (r.need === "fork") {
+        back();
         setBusy(false);
         if (await confirmBox(t("fork.ask"))) return sendText(true);
         return;
       }
       haptic("success");
-      setText("");
       a.clear();
-      if (ta.current) ta.current.style.height = "auto";       // back to one line: the field grew with the message
+      // a copy is a new session: its message is not this chat's; a computer before 0.15.2 keeps no outbox — the
+      // message then leaves the chat until Claude reads it, as it did before the ticks
+      setSending((m) => (r.out ? m.map((x) => (x.key === key ? Object.assign({}, x, { id: r.out, st: "sent" }) : x)) : m.filter((x) => x.key !== key)));
       if (r.how === "fork") alertBox(t("fork.started"));
-    } catch (e) { alertBox(e.message); }
+    } catch (e) { back(); alertBox(e.message); }
     setBusy(false);
   };
+  // once the computer's outbox has a message, it speaks for it
+  useEffect(() => {
+    const ids = new Set(((s.info && s.info.out) || []).map((o) => o.id));
+    setSending((m) => (m.some((x) => x.id && ids.has(x.id)) ? m.filter((x) => !(x.id && ids.has(x.id))) : m));
+  }, [s.info, sending]);
   const stop = async () => {
     const r = await api("stop", { sid }).catch((e) => ({ note: e.message }));
+    r.ok ? haptic("success") : alertBox(r.note || t("failed"));
+  };
+  // "Start now": the turn waiting in the queue goes over the limit, once
+  const jump = async () => {
+    const r = await api("jump", { sid }).catch((e) => ({ note: e.message }));
     r.ok ? haptic("success") : alertBox(r.note || t("failed"));
   };
 
@@ -1431,6 +1907,7 @@ function Session({ sid }) {
   const outState = out ? (["you", "fail"].includes(firstOut.current.state) ? firstOut.current.state : out.state) : null;
   const st = lv.state === "ask" ? html`<span class="chip warn">${t("st.ask")}</span>`
     : lv.state === "work" ? workChip(lv.run || lv.started, now)
+    : lv.state === "queue" ? queueChip(lv.queued, now)
     : lv.bg && lv.bg.length > 0 ? bgChip(lv.bg_since || (out && out.ts), now, openBgs) : "";
   const ts = info.stats && info.stats.turn;
   // the context gauge, the same number VS Code shows: used ÷ (window − the reserve for the answer)
@@ -1457,22 +1934,35 @@ function Session({ sid }) {
     <span>${modelText || t("model")}</span>${effortNow && html`<${Dots} e=${effortNow}/>`}${canPick ? html`<span class="caret">${ic("down", 13)}</span>` : ""}</button>`;
   const line2 = (dest || ctxText) && html`<button class="where" onClick=${explain}>${dest}${dest && ctxText ? " · " : ""}<span class=${pct >= 90 ? "bad" : pct >= 70 ? "warn" : ""}>${ctxText}</span></button>`;
   return html`<div class="session">
-    <div class="sess-h"><h2>${info.title}</h2><div class="dim">${info.project !== info.title ? html`<a class="crumb" href=${"#/p/" + encodeURIComponent(info.pkey)}>${info.project}</a>` : ""} ${st}</div>
+    <div class="sess-h"><h2>${info.title}</h2><div class="dim">${home(20)}${info.project !== info.title ? html`<span class="sep">›</span><a class="crumb" href=${"#/p/" + encodeURIComponent(info.pkey)}>${info.project}</a>` : ""} ${st}</div>
       ${lv.bg && lv.bg.length > 0 && html`<button class="bg tap plain" onClick=${openBgs}>${bgLine(lv.bg)} ${ic("chev", 14)}</button>`}</div>
     ${s.before != null && html`<button class="link center earlier" disabled=${early} onClick=${earlier}>${t(early ? "earlier.loading" : "earlier")}</button>`}
-    ${pin && html`<button class="pinned" onClick=${() => { setFull(pin); openFull(); }}><span class="pin-in"><span class="pin-bar"></span>
+    ${(away || pin) && html`<div class="sess-top">
+      ${away && html`<div class="where-bar">${home(22)}${avatar(info.project, 30)}<span class="wb-body">
+        <a class="wb-p" href=${"#/p/" + encodeURIComponent(info.pkey)}>${info.project}</a>
+        ${info.title !== info.project && html`<span class="wb-t">${info.title}</span>`}</span>${st}</div>`}
+      ${pin && html`<button class="pinned" onClick=${() => { setFull(pin); openFull(); }}><span class="pin-in"><span class="pin-bar"></span>
       <span class="pin-body"><span class="pin-h">${t("pin.you")}${pin.ts ? " · " + hhmm(toDate(pin.ts)) : ""}${pin.att && pin.att.length ? html` · ${ic("clip", 12)} ${pin.att.length}` : ""}</span>
-      <span class="pin-tx">${pin.text}</span></span></span></button>`}
+      <span class="pin-tx">${pin.text}</span></span></span></button>`}</div>`}
     ${(shown.current = group(s.items)).map((i, n, all) => i.k === "day" ? html`<div class="day" key=${i.key}>${i.label}</div>`
       : i.k === "steps" ? html`<${Steps} key=${i.key} steps=${i.steps}/>`
-      : i.k === "user" ? html`<div class="msg me" key=${n} data-n=${n}>${i.voice ? html`<span class="mic-i">${ic("mic", 14)}</span>` : ""}${i.text}${i.att && i.att.length ? html`<div class="atts">${i.att.map((a, k) => html`<${Pic} key=${k} a=${a}/>`)}</div>` : ""}<${At} ts=${i.ts} mid=${i.mid}/></div>`
+      : i.k === "user" ? html`<div class="msg me" key=${n} data-n=${n}>${i.voice ? html`<span class="mic-i">${ic("mic", 14)}</span>` : ""}${i.text}${i.att && i.att.length ? html`<div class="atts">${i.att.map((a, k) => html`<${Pic} key=${k} a=${a} all=${i.att}/>`)}</div>` : ""}<${At} ts=${i.ts} mid=${i.mid} st="read"/></div>`
       : i.k === "note" ? html`<div class="note" key=${n}>${i.text}${i.ts ? " · " + hhmm(toDate(i.ts)) : ""}</div>`
       : i.k === "update" ? html`<div class="upd solo" key=${n}>${i.text}</div>`
       : html`<${TextMsg} key=${n} i=${i} fold=${i.text.length > LONG && all.slice(n + 1).some((x) => x.k === "text")}/>`)}
     ${lv.state === "work" && html`<div class="working">${t("working")}</div>`}
-    ${out && lv.state !== "work" && !info.pending.length && (outState === "you" || outState === "fail" || out.need || (out.replies && out.replies.length) || out.resume || out.turn_files)
+    ${lv.state === "queue" && html`<div class="card queue"><div class="q-t">${ic("clock", 16)} ${t("queue.title")}</div>
+      <div class="dim small">${t("queue.why", { n: lv.slots })}</div>
+      <div class="foot"><span></span><button class="btn" onClick=${jump}>${t("queue.jump")}</button></div></div>`}
+    ${onTheWay(s.items, info.out || [], sending).filter((o) => !putBack.includes(o.id)).map((o) => html`<div key=${"o" + (o.id || o.key)} class=${"msg me out " + o.st}
+        onClick=${o.st === "gone" ? () => { setText(o.text); fit(); setPutBack((x) => [...x, o.id]); } : null}>${o.voice ? html`<span class="mic-i">${ic("mic", 14)}</span>` : ""}${o.text}${o.att && o.att.length
+        ? html`<div class="atts">${o.att.map((x, k) => html`<${Pic} key=${k} a=${x} all=${o.att}/>`)}</div>`
+        : o.n ? html`<div class="out-n">${ic("clip", 13)} ${o.n}</div>` : ""}<${At} ts=${o.ts} st=${o.st}/></div>
+      ${o.st === "sent" && (lv.state === "work" || lv.state === "ask") ? html`<div class="out-hint">${t("out.after_step")}</div>`
+        : o.st === "gone" ? html`<div class="out-hint bad">${t("out.gone.why")}</div>` : ""}`)}
+    ${out && lv.state !== "work" && lv.state !== "queue" && !info.pending.length && (outState === "you" || outState === "fail" || out.need || (out.replies && out.replies.length) || out.resume || out.turn_files)
       && html`<${Outcome} key=${out.ts} sid=${sid} out=${out} state=${outState} now=${now}/>`}
-    ${info.pending.map((r) => html`<${Req} key=${r.rid} r=${r} showWhere=${false}/>`)}
+    ${pending.map((r) => html`<${Req} key=${r.rid} r=${r} showWhere=${false}/>`)}
     <div ref=${bottom}></div>
     ${(unread || far) && html`<button class=${"tobottom" + (unread ? " fresh" : "")} aria-label=${t("to.bottom")} onClick=${() => { toBottom(); setUnread(false); }}>${unread ? t("new.msgs") : "↓"}</button>`}
     <div class="composer" ref=${comp}>
@@ -1481,14 +1971,14 @@ function Session({ sid }) {
       ${bgs && html`<${BgSheet} sid=${sid} onClose=${closeBgs}/>`}
       ${full && html`<div class="backdrop" onClick=${closeFull}></div><div class="card pick"><div class="q-t pick-h">${t("pin.you")}${full.ts ? " · " + hhmm(toDate(full.ts)) : ""}<button class="x" aria-label=${t("close")} onClick=${closeFull}>×</button></div>
         <div class="full-tx">${full.text}</div>
-        ${full.att && full.att.length ? html`<div class="atts">${full.att.map((x, k) => html`<${Pic} key=${k} a=${x}/>`)}</div>` : ""}
+        ${full.att && full.att.length ? html`<div class="atts">${full.att.map((x, k) => html`<${Pic} key=${k} a=${x} all=${full.att}/>`)}</div>` : ""}
         <button class="link" onClick=${() => { const el = document.querySelector('.msg.me[data-n="' + full.n + '"]'); closeFull();
           if (el) setTimeout(() => el.scrollIntoView({ block: "start" }), 60); }}>${t("pin.goto")}</button></div>`}
       <${Thumbs} a=${a}/>
       <textarea ref=${taRef} rows="1" placeholder=${t("write")} value=${text} onKeyDown=${sendKey(() => { if (!busy) sendText(false); }, setText)} onInput=${(e) => { setText(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}/>
       <div class="ctl"><${Attach} a=${a} disabled=${busy}/>${info.stt ? html`<${Mic} v=${v} disabled=${busy}/>` : ""}
         <div class="status">${line1}${line2}</div>
-        ${lv.driven && lv.state === "work" ? html`<button class="btn danger" onClick=${stop}>${t("stop")}</button>` : ""}
+        ${lv.driven && (lv.state === "work" || lv.state === "queue") ? html`<button class="btn danger" onClick=${stop}>${t("stop")}</button>` : ""}
         <button class="btn send" aria-label=${t("send")} disabled=${busy || (!text.trim() && !a.files.length)} onClick=${() => sendText(false)}><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button></div>
     </div>
   </div>`;
@@ -1540,7 +2030,7 @@ function NewTask({ pkey }) {
     setBusy(true);
     try {
       const r = await api("new", { pkey: p, text, files: a.payload(), model, effort });
-      LAST_NEW.set(p); haptic("success"); go("#/s/" + r.sid);
+      LAST_NEW.set(p); haptic("success"); go("#/s/" + r.sid, true);
     }
     catch (e) { alertBox(e.message); }
     setBusy(false);
@@ -1623,7 +2113,7 @@ function NewProject() {
   const finish = (r) => {
     haptic("success");
     if (r.git === false) alertBox(t("np.nogit"));
-    go(r.sid ? "#/s/" + r.sid : "#/p/" + encodeURIComponent(r.pkey));
+    go(r.sid ? "#/s/" + r.sid : "#/p/" + encodeURIComponent(r.pkey), true);
   };
   const watch = (job) => new Promise((ok, no) => {
     const tick = () => api("job", { job }).then((j) => {
@@ -1964,7 +2454,9 @@ function Toast() {
 
 function Banner() {
   const c = useConn();
+  const upd = c.updating && Date.now() - c.updating < UPD_RUN_MAX && ["connecting", "offline", "auth", "nomac"].includes(c.state);
   const text = c.state === "denied" ? t(["expired", "out", "locked"].includes(c.why) ? "banner.denied." + c.why : "banner.denied")
+    : upd ? t("banner.updating")
     : ["connecting", "offline", "auth", "nomac"].includes(c.state) ? t("banner." + c.state) : "";
   const stale = c.fresh && ["offline", "nomac"].includes(c.state) ? " " + t("banner.stale", { hm: hhmm(new Date(c.fresh)) }) : "";
   return text ? html`<div class=${"banner " + c.state} role="status">${text}${stale}</div>` : "";
@@ -1993,7 +2485,7 @@ function App() {
   const tab = (name, h, label, icon) => html`<a class=${(r.name === name ? "on" : "") + (name === "new" ? " new" : "")} href=${h}><span class="ti">${ic(icon, name === "new" ? 22 : 22)}</span><span class="tl">${label}</span></a>`;
   return html`<${Banner}/><main class=${r.name === "s" ? "with-composer" : ""}>${screen}</main>
     ${r.name !== "s" && html`<nav class="tabs">${tab("home", "#/", t("tab.home"), "home")}${tab("projects", "#/projects", t("tab.projects"), "folder")}${tab("usage", "#/usage", t("tab.res"), "gauge")}${tab("new", "#/new", t("tab.new"), "plus")}</nav>`}
-    <${EditHost}/><${Toast}/>`;
+    <${EditHost}/><${ViewHost}/><${Toast}/>`;
 }
 
 render(html`<${App}/>`, document.getElementById("app"));

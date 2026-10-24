@@ -222,6 +222,25 @@ def _text_of(content):
     return "\n".join(b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text")
 
 
+def user_text(content):
+    """The words of a prompt, without what Claude Code adds around them (reminders, the IDE's selection)."""
+    return _NOISE.sub("", _text_of(content)).strip()
+
+
+def user_item(text, ts, mid=False):
+    """The owner's message as the app shows it — from the transcript, and for a message still on its way (pultd's
+    outbox, the ticks): built the same way, so the app tells the one from the other by the words."""
+    clean, paths = R.attachments(text)          # the path is for Claude; the person sees the picture
+    item = {"k": "user", "text": _short(clean, TEXT_MAX), "ts": ts}
+    if mid:
+        item["mid"] = True
+    if R.is_spoken(text):
+        item["voice"] = True
+    if paths:
+        item["att"] = [inbox_name(p) for p in paths]
+    return item
+
+
 def _short(s, n):
     s = str(s or "")
     return s if len(s) <= n else s[:n - 1] + "…"
@@ -284,15 +303,9 @@ def transcript_page(path, before=None, after=None, cwd=None, page=PAGE):
             origin = att.get("origin")
             if att.get("type") == "queued_command" and att.get("commandMode", "prompt") == "prompt" \
                     and (origin is None or isinstance(origin, dict) and origin.get("kind") == "human"):
-                text = _NOISE.sub("", _text_of(att.get("prompt"))).strip()
+                text = user_text(att.get("prompt"))
                 if text and not R.task_notes(text):
-                    clean, paths = R.attachments(text)
-                    item = {"k": "user", "text": _short(clean, TEXT_MAX), "ts": e.get("timestamp"), "mid": True}
-                    if R.is_spoken(text):
-                        item["voice"] = True
-                    if paths:
-                        item["att"] = [inbox_name(p) for p in paths]
-                    items.append(item)
+                    items.append(user_item(text, e.get("timestamp"), mid=True))
             continue
         if kind not in ("user", "assistant") or e.get("isSidechain") or e.get("isMeta"):
             continue
@@ -310,18 +323,12 @@ def transcript_page(path, before=None, after=None, cwd=None, page=PAGE):
                         t.update(res)
                     else:
                         items.append(dict(res, k="result", id=b.get("tool_use_id"), ts=ts))
-            text = _NOISE.sub("", _text_of(content)).strip()
+            text = user_text(content)
             notes = R.task_notes(text)
             if notes:                    # not from the owner: Claude Code began a turn because a background task ended
                 items.append({"k": "note", "text": R.task_notes_text(notes), "ts": ts})
             elif text and not text.startswith("<local-command-") and not text.startswith("<command-"):
-                clean, paths = R.attachments(text)          # the path is for Claude; the person sees the picture
-                item = {"k": "user", "text": _short(clean, TEXT_MAX), "ts": ts}
-                if R.is_spoken(text):
-                    item["voice"] = True
-                if paths:
-                    item["att"] = [inbox_name(p) for p in paths]
-                items.append(item)
+                items.append(user_item(text, ts))
             continue
         # Claude's own words about its progress between steps: the transcript marks the entry thinkingDisplay
         # "updates", the VS Code tab shows it as "summary" (2.1.296–2.1.301, from the tab and from the SDK alike).
@@ -497,6 +504,7 @@ class Web:
                                                    timeout=aiohttp.ClientWSTimeout(ws_close=10)) as ws:
                             self.ws, attempt = ws, 0
                             log("connected to the relay%s" % (" via proxy" if proxy else " directly"))
+                            self.health(True)
                             fails = 0
                             async for m in ws:
                                 if m.type == aiohttp.WSMsgType.TEXT:
@@ -508,10 +516,18 @@ class Web:
                         if fails in (1, 10) or fails % 100 == 0:
                             log("can't connect to the relay (%d): %s" % (fails, why(e)))
                     finally:
+                        if self.ws is not None:
+                            self.health(False)
                         self.ws = None
                         self.clients.clear()
                 await asyncio.sleep(RECONNECT[min(attempt, len(RECONNECT) - 1)])
                 attempt += 1
+
+    def health(self, on):
+        """The daemon's health.json: whether it has the app's server (an update counts only once it has)."""
+        note = getattr(self.p, "note_health", None)
+        if note:
+            note(relay=on)
 
     async def send(self, msg):
         if self.ws is not None and not self.ws.closed:

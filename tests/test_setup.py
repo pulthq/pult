@@ -34,6 +34,7 @@ import pult_i18n as I  # noqa: E402
 import pult_os  # noqa: E402
 import pult_setup as S  # noqa: E402
 import pultctl  # noqa: E402
+import pult_update as U  # noqa: E402
 
 GOOD = "123456789:" + "A" * 35
 OWNER, CHAT, BOT_ID = 42, -1001234567890, 777
@@ -621,6 +622,231 @@ class ReportTest(Base):
         self.assertIn("Pult 9.9.9", out)
         self.assertIn("Telegram: direct ok", out)
         self.assertIn("settings: token set · owner set · group —", out)
+
+
+class UpdateTest(Base):
+    """Stage U: what the source folder has that isn't installed, the record install.sh leaves, the installer the app's
+    button starts — with the way back when the new version doesn't come up."""
+
+    def setUp(self):
+        super().setUp()
+        self.patches2 = [mock.patch.object(U, "HOME", S.HOME), mock.patch.object(U, "LOG", self.tmp / "update.log"),
+                         mock.patch.object(U, "say", lambda *a: None)]
+        for p in self.patches2:
+            p.start()
+        self.repo = self.tmp / "repo"
+        (self.repo / "src").mkdir(parents=True)
+        (self.repo / "docs").mkdir()
+        self.git("init", "-q")
+        self.files({"src/pultd.py": 'VERSION = "1.0"\n', "src/pult_update.py": "# updater 1\n",
+                    "src/pult_x.py": "x = 1\n", "src/pult-tab.sh": "#!/bin/sh\n", "requirements.txt": "aiohttp\n",
+                    "docs/journal.md": "j\n"})
+        self.c1 = self.commit("Pult 1.0")
+        for name in ("pultd.py", "pult_update.py", "pult_x.py", "pult-tab.sh"):        # install.sh did this
+            shutil.copyfile(self.repo / "src" / name, S.HOME / name)
+        shutil.copyfile(self.repo / "requirements.txt", S.HOME / "requirements.txt")
+        U.installed_by("terminal", self.repo, True)
+
+    def tearDown(self):
+        for p in reversed(self.patches2):
+            p.stop()
+        super().tearDown()
+
+    def git(self, *a):
+        return subprocess.run(["git", "-C", str(self.repo), "-c", "user.email=t@example.com", "-c", "user.name=T", *a],
+                              check=True, capture_output=True, text=True).stdout.strip()
+
+    def files(self, d):
+        for k, v in d.items():
+            (self.repo / k).write_text(v)
+
+    def commit(self, msg):
+        self.git("add", "-A")
+        self.git("commit", "-qm", msg)
+        return self.git("rev-parse", "HEAD")
+
+    def test_check(self):
+        m = U.read(U.MANIFEST)
+        self.assertEqual((m["src"], m["commit"], m["dirty"], m["version"]), (str(self.repo), self.c1, False, "1.0"))
+        self.assertEqual([(h["how"], h["to"], h["ok"]) for h in U.history()], [("terminal", "1.0", True)])
+        self.assertFalse(U.check()["ready"])
+        self.files({"docs/journal.md": "j2\n"})                  # the journal and the docs don't count
+        self.commit("Pult: journal")
+        self.assertFalse(U.check()["ready"])
+        self.files({"src/pult_x.py": "x = 2\n"})                  # not committed yet: a session halfway through
+        self.assertFalse(U.check()["ready"])
+        self.files({"src/pultd.py": 'VERSION = "1.1"\n'})
+        c3 = self.commit("Pult 1.1: x is two")
+        c = U.check()
+        self.assertTrue(c["ready"])
+        self.assertEqual((c["head"], c["version"], c["news"], c["failed"]), (c3, "1.1", ["Pult 1.1: x is two"], False))
+        U.write(U.STATUS, {"state": "fail", "commit": c3})       # this commit didn't come up
+        self.assertTrue(U.check()["failed"])
+        self.assertEqual(U.check({})["repo"], None)              # no record of the source: no way to tell
+
+    def test_check_crlf(self):
+        # a checkout with core.autocrlf (Git for Windows): the files are CRLF in the folder and installed so, LF in the
+        # commit — a commit that didn't touch them is nothing to install (Actions on Windows, 2026-10-24)
+        for name in ("pultd.py", "pult_update.py", "pult_x.py"):
+            p = S.HOME / name
+            p.write_bytes(p.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))   # CRLF here and on Windows
+        self.files({"docs/journal.md": "j2\n"})
+        self.commit("Pult: journal")
+        self.assertFalse(U.check()["ready"])
+        self.files({"src/pult_x.py": "x = 2\n"})
+        self.commit("Pult: x is two")
+        self.assertTrue(U.check()["ready"])                      # a real change still counts
+
+    def test_installed_from_uncommitted_files(self):
+        # install.sh from a folder with uncommitted changes: they are newer than HEAD, not older
+        self.files({"src/pult_x.py": "x = 9\n"})
+        shutil.copyfile(self.repo / "src" / "pult_x.py", S.HOME / "pult_x.py")
+        U.installed_by("terminal", self.repo, True, "1.0")
+        self.assertTrue(U.read(U.MANIFEST)["dirty"])
+        self.assertFalse(U.check()["ready"])
+        self.commit("Pult: x is nine")                            # committed as installed: nothing to install
+        self.assertFalse(U.check()["ready"])
+
+    def test_install_sh_records(self):
+        S.write_env(PULT_BOT_TOKEN=GOOD, PULT_ALLOWED_USER_IDS=str(OWNER))
+        S.sput(chat=CHAT)
+        self.files({"src/pultd.py": 'VERSION = "1.1"\n'})
+        c2 = self.commit("Pult 1.1")
+        shutil.copyfile(self.repo / "src" / "pultd.py", S.HOME / "pultd.py")
+        with mock.patch.object(sys.stdin, "isatty", lambda: False), mock.patch.dict(os.environ, {"PULT_SRC": str(self.repo)}):
+            res, _ = self.run_cli(S.cmd_install)
+        self.assertEqual(res, 0)
+        self.assertEqual(U.read(U.MANIFEST)["commit"], c2)
+        h = U.history()[0]
+        self.assertEqual((h["from"], h["to"], h["how"], h["ok"]), ("1.0", "1.1", "terminal", True))
+        # run by the installer: it keeps its own record
+        with mock.patch.object(sys.stdin, "isatty", lambda: False), \
+                mock.patch.dict(os.environ, {"PULT_SRC": str(self.repo), "PULT_UPDATER": "app"}):
+            self.run_cli(S.cmd_install)
+        self.assertEqual(len(U.history()), 2)
+
+    def installer(self, health, busy=()):
+        """An installer for HEAD whose service is a fake: health() → (ok, why) per check, in turn."""
+        inst = U.Installer(self.git("rev-parse", "HEAD"), "app")
+        calls = []
+        inst.busy = lambda: list(busy)
+        inst.stop = lambda: calls.append("stop")
+        inst.install = lambda: calls.append("install") or True
+        inst.pip = lambda: calls.append("pip")
+        answers = list(health)
+        inst.healthy = lambda t0, wait=U.HEALTH_WAIT: answers.pop(0)
+        inst.error_line = lambda t0: "ImportError: cannot import name 'y'"
+        inst.alarm = lambda: calls.append("alarm")
+        return inst, calls
+
+    def test_installer_puts_the_commit_in(self):
+        self.files({"src/pultd.py": 'VERSION = "1.1"\n', "src/pult_new.py": "new = 1\n", "src/pult_update.py": "# updater 2\n"})
+        c2 = self.commit("Pult 1.1")
+        self.files({"src/pult_x.py": "x = 'half-made'\n"})       # uncommitted: must not go in
+        inst, calls = self.installer([(True, None)])
+        self.assertEqual(inst.run(), 0)
+        self.assertEqual(calls, ["stop", "install"])             # requirements.txt unchanged: no pip
+        self.assertEqual((S.HOME / "pultd.py").read_text(), 'VERSION = "1.1"\n')
+        self.assertEqual((S.HOME / "pult_new.py").read_text(), "new = 1\n")   # a module the old updater never heard of
+        self.assertEqual((S.HOME / "pult_x.py").read_text(), "x = 1\n")
+        self.assertEqual((S.HOME / "prev" / "pultd.py").read_text(), 'VERSION = "1.0"\n')
+        self.assertTrue(os.access(S.HOME / "pult-tab.sh", os.X_OK) or WIN)
+        self.assertEqual(U.read(U.MANIFEST)["commit"], c2)
+        self.assertEqual(U.read(U.STATUS)["state"], "done")
+        h = U.history()[0]
+        self.assertEqual((h["from"], h["to"], h["how"], h["ok"]), ("1.0", "1.1", "app", True))
+        self.assertFalse(U.check()["ready"])
+
+    def test_installer_goes_back(self):
+        self.files({"src/pultd.py": 'VERSION = "1.1"\nimport broken\n', "src/pult_new.py": "new = 1\n",
+                    "requirements.txt": "aiohttp\nmore\n"})
+        c2 = self.commit("Pult 1.1: broken")
+        inst, calls = self.installer([(False, "restarts"), (True, None)])
+        self.assertEqual(inst.run(), 1)
+        self.assertEqual(calls, ["stop", "pip", "install", "stop", "pip", "install"])
+        self.assertEqual((S.HOME / "pultd.py").read_text(), 'VERSION = "1.0"\n')
+        self.assertEqual((S.HOME / "requirements.txt").read_text(), "aiohttp\n")
+        self.assertFalse((S.HOME / "pult_new.py").exists())      # what the new version added goes too
+        st = U.read(U.STATUS)
+        self.assertEqual((st["state"], st["why"], st["back"], st["back_ok"], st["reported"], st["commit"], st["to"]),
+                         ("fail", "restarts", True, True, False, c2, "1.1"))
+        self.assertIn("ImportError", st["detail"])
+        self.assertEqual(U.read(U.MANIFEST)["commit"], self.c1)
+        h = U.history()[0]
+        self.assertEqual((h["ok"], h["why"], h["to"]), (False, "restarts", "1.1"))
+        self.assertTrue(U.check()["failed"])                      # not offered again until a new commit
+        self.files({"src/pultd.py": 'VERSION = "1.1"\n'})
+        self.commit("Pult 1.1: fixed")
+        self.assertFalse(U.check()["failed"])
+
+    def test_installer_neither_comes_up(self):
+        self.files({"src/pultd.py": 'VERSION = "1.1"\nimport broken\n'})
+        self.commit("Pult 1.1: broken")
+        inst, calls = self.installer([(False, "no_start"), (False, "no_start")])
+        self.assertEqual(inst.run(), 1)
+        self.assertEqual(calls[-1], "alarm")                     # no daemon left to tell the owner
+        self.assertFalse(U.read(U.STATUS)["back_ok"])
+
+    def test_installer_something_started(self):
+        self.files({"src/pultd.py": 'VERSION = "1.1"\n'})
+        self.commit("Pult 1.1")
+        inst, calls = self.installer([], busy=[{"title": "t", "turn": True}])
+        self.assertEqual(inst.run(), 3)
+        self.assertEqual(calls, [])
+        self.assertEqual((S.HOME / "pultd.py").read_text(), 'VERSION = "1.0"\n')
+        self.assertEqual(U.read(U.STATUS)["state"], "idle")
+
+    def test_installer_unknown_commit(self):
+        inst, calls = self.installer([])
+        inst.commit = "0" * 40
+        self.assertEqual(inst.run(), 1)
+        self.assertEqual(calls, [])                               # nothing was touched
+        st = U.read(U.STATUS)
+        self.assertEqual((st["state"], st["why"], st["back"]), ("fail", "no_commit", False))
+
+    def test_healthy(self):
+        inst = U.Installer("c" * 40, "app")
+        pids = []
+        inst.S = SimpleNamespace(service=lambda lbl: ("running", pids.pop(0) if len(pids) > 1 else pids[0]))
+        t0 = U.time.time()
+        with mock.patch.object(U, "STABLE", 0), mock.patch.object(U.time, "sleep", lambda s: None):
+            pids[:] = ["7"]
+            U.write(U.HEALTH, {"pid": 7, "started": t0, "relay": True})
+            self.assertEqual(inst.healthy(t0, wait=1), (True, None))
+            U.write(U.HEALTH, {"pid": 7, "started": t0, "relay": None})        # no app server: the daemon alone
+            self.assertEqual(inst.healthy(t0, wait=1), (True, None))
+            U.write(U.HEALTH, {"pid": 7, "started": t0, "relay": False})
+            self.assertEqual(inst.healthy(t0, wait=0.05), (False, "no_relay"))
+            U.write(U.HEALTH, {"pid": 7, "started": t0 - 100, "relay": True})  # the old daemon's note
+            self.assertEqual(inst.healthy(t0, wait=0.05), (False, "no_start"))
+            pids[:] = ["8", "9", "10", "11"]                                       # launchd restarting a crashing one
+            self.assertEqual(inst.healthy(t0, wait=1), (False, "restarts"))
+
+    def test_spawn(self):
+        seen = {}
+
+        def popen(argv, **kw):
+            seen.update(argv=argv, **kw)
+            return SimpleNamespace(wait=lambda timeout=None: 0)
+        with mock.patch.object(U.subprocess, "Popen", popen), mock.patch.object(U.pult_os, "KIND", "mac"):
+            self.assertTrue(U.spawn("c" * 40, "app", python="/py"))
+        self.assertEqual(seen["argv"], ["/py", "-u", str(S.HOME / "pult_update.py"), "run", "c" * 40, "app"])
+        self.assertTrue(seen["start_new_session"])                # its own session: launchd's SIGTERM misses it
+        with mock.patch.object(U.subprocess, "Popen", popen), mock.patch.object(U.pult_os, "KIND", "linux"), \
+                mock.patch.dict(os.environ, {"PULT_HOME": str(S.HOME)}):
+            self.assertTrue(U.spawn("c" * 40, "app_wait", python="/py"))
+        self.assertEqual(seen["argv"][:4], ["systemd-run", "--user", "--collect", "--quiet"])
+        self.assertIn("--setenv=PULT_HOME=%s" % S.HOME, seen["argv"])
+        self.assertEqual(seen["argv"][-6:], ["/py", "-u", str(S.HOME / "pult_update.py"), "run", "c" * 40, "app_wait"])
+        with mock.patch.object(U.pult_os, "KIND", "windows"):
+            self.assertFalse(U.spawn("c" * 40, "app"))            # not yet (Q53)
+
+    def test_running(self):
+        self.assertIsNone(U.running())
+        U.write(U.STATUS, {"state": "run", "ts": U.time.time(), "pid": os.getpid()})
+        self.assertEqual(U.running()["state"], "run")
+        U.write(U.STATUS, {"state": "run", "ts": 1, "pid": 99999999})           # long gone: cut short
+        self.assertIsNone(U.running())
 
 
 class UninstallTest(Base):

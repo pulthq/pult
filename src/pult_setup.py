@@ -33,6 +33,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import pult_hook  # noqa: E402
 import pult_i18n as I  # noqa: E402
+import pult_update as U  # noqa: E402
 import pult_os  # noqa: E402
 from pult_i18n import T  # noqa: E402
 
@@ -549,8 +550,12 @@ def make_tab_exe(stub=False):
 
 
 def cmd_install():
-    """The second half of install.sh, after the files and the environment are in place."""
+    """The second half of install.sh, after the files and the environment are in place. install.sh says where the
+    files came from (PULT_SRC): written down for the app's "Install" button, with the install in the history. The
+    installer the button starts (PULT_UPDATER) keeps its own record."""
     lbl = label()
+    src = None if os.environ.get("PULT_UPDATER") else os.environ.get("PULT_SRC")
+    before = (U.read(U.MANIFEST, {}) or {}).get("version")
     write_service(lbl)
     launcher = write_launcher()
     if WIN and (HOME / "pult_tab.py").exists():
@@ -559,11 +564,15 @@ def cmd_install():
     if launcher and not WIN and str(BIN) not in os.environ.get("PATH", "").split(":"):
         say(T("cli.install.path", path=tilde(launcher), rc=pult_os.shell_rc()))     # install.ps1 adds it on Windows
     if not configured():
+        if src:
+            U.installed_by("terminal", src, None, before)
         if sys.stdin.isatty():
             return cmd_setup()
         say(T("cli.install.next"))
         return 0
     ok = restart(lbl, interactive=sys.stdin.isatty())
+    if src:
+        U.installed_by("terminal", src, ok, before)
     if ok:
         linger_hint()
     if ok and sys.stdin.isatty() and not hooks_installed():
@@ -1156,7 +1165,9 @@ def cmd_report():
 
 
 # Pult's own files: removal touches only these, never a whole folder it doesn't know
-HOME_FILES = ("pultd.py", "pult_hook.py", "pult_render.py", "pult_web.py", "pult_i18n.py", "pult_stt.py", "pult_load.py", "pult_new.py", "pult_files.py", "pult_spend.py", "pult_attn.py", "pult_brief.py", "pult_os.py", "pult_setup.py",
+HOME_FILES = ("pultd.py", "pult_hook.py", "pult_render.py", "pult_web.py", "pult_i18n.py", "pult_stt.py", "pult_load.py", "pult_new.py", "pult_files.py", "pult_spend.py", "pult_attn.py", "pult_brief.py", "pult_os.py", "pult_setup.py", "pult_update.py",
+              "installed.json", "installs.json", "update.json", "health.json", "installed.json.tmp", "installs.json.tmp",
+              "update.json.tmp", "health.json.tmp", "prev",
               "pultctl.py", "pult_tab.py", "pult-tab.sh", "pult-tab.exe", "pult-tab.exe.new", "requirements.txt", "state.db",
               "state.db-journal", "state.db-wal", "state.db-shm", "pult.sock", "pult.sock.tmp", "venv", "__pycache__")
 CONF_FILES = ("env", "env.tmp", "tab.json", "tab-off")
