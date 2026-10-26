@@ -735,6 +735,7 @@ class UpdateTest(Base):
             (gh / k).write_text(v)
         g("add", "-A")
         g("commit", "-qm", "Pult 1.0.0")
+        g("branch", "-M", "main")           # GitHub's branch; `git init` names it by config (Actions: master)
         g("tag", "-a", "v1.0.0", "-m", "v1.0.0")
         clone = self.tmp / "clone"
         subprocess.run(["git", "clone", "-q", str(gh), str(clone)], check=True, capture_output=True)
