@@ -814,9 +814,12 @@ function Pic({ a, all }) {
 // the model of a session from Telegram: aliases Claude Code accepts, plus whatever the settings say
 const MODELS = [["", "model.default"], ["fable", "Fable"], ["opus", "Opus"], ["sonnet", "Sonnet"], ["haiku", "Haiku"]];
 const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
-// the model and the effort for a new session, in words: nothing picked — as Claude Code's own settings say
-const choiceText = (model, effort) => (!model && !effort ? t("pick.as.cc")
-  : [model ? MODELS.find(([m]) => m === model)[1] : t("pick.model.def"), effort ? effortName(effort) : t("pick.effort.def")].join(" · "));
+// the model and the effort for a new session, in words: what is picked, the rest from Pult's default (Settings);
+// nothing in either — as Claude Code's own settings say
+const choiceText = (model, effort, def) => {
+  const m = model || (def && def.model), e = effort || (def && def.effort);
+  return !m && !e ? t("pick.as.cc") : [m ? modelName(m) : t("pick.model.def"), e ? effortName(e) : t("pick.effort.def")].join(" · ");
+};
 const effortName = (e) => (!e ? t("pick.default") : EFFORT_N[e] ? t("effort." + e) : e);
 // effort as VS Code draws it by its model name: five dots, as many lit as the level
 const EFFORT_N = { low: 1, medium: 2, high: 3, xhigh: 4, max: 5 };
@@ -832,7 +835,7 @@ function Sheet({ title, lines, onClose }) {
 }
 
 // the model and the effort of a session, side by side; each tap switches one of them and the menu stays open
-function ModelPick({ sid, choice, now, driven, tab, canModel, canEffort, onDone, onClose }) {
+function ModelPick({ sid, choice, now, driven, tab, dflt, canModel, canEffort, onDone, onClose }) {
   const [busy, setBusy] = useState(false);
   const [cur, setCur] = useState(choice || {});
   const [nudge, setNudge] = useState(0);          // a tap on a column that can't switch here: its reason lights up
@@ -847,7 +850,8 @@ function ModelPick({ sid, choice, now, driven, tab, canModel, canEffort, onDone,
   const col = (title, items, on, key, can, cur) => html`<div class="pick-col"><div class="pick-t">${title}</div>
     ${items.map(([v, label]) => html`<button key=${v} class=${"opt" + (v === on ? " on" : "") + (can ? "" : " off")} disabled=${busy}
       onClick=${() => (can ? pick({ [key]: v }) : (haptic("warning"), setNudge(nudge + 1)))}>${label}${!v && !on && cur ? html`<span class="dim">${cur}</span>` : ""}</button>`)}</div>`;
-  const notes = [driven ? t("model.next") : tab ? t("model.next") + " " + t("model.tab") : t("model.later"), t("pick.default.note"),
+  const notes = [driven ? t("model.next") : tab ? t("model.next") + " " + t("model.tab") : t("model.later"),
+    t(dflt && (dflt.model || dflt.effort) ? "pick.default.pult" : "pick.default.note"),
     tab && canEffort ? t("effort.tab") : ""];
   const why = tab && !canModel ? t("model.reload") : tab && !canEffort ? t("effort.reload") : "";
   return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick"><div class="q-t pick-h">${t("model.pick")}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
@@ -1614,6 +1618,8 @@ function Settings() {
   const [key, setKey] = useState("");
   const [kbusy, setKbusy] = useState(false);
   const [words, setWords] = useState(null);        // null — as saved on the computer
+  const [pick, setPick] = useState(false);          // the default model and effort, in the same menu as a new task's
+  const [openPick, closePick] = useOverlay(pick, setPick);
   if (!d) return html`<${Loading} err=${err}/>`;
   useLang(d.prefs.lang);
   const toggle = async (k) => {
@@ -1632,6 +1638,10 @@ function Settings() {
     try { const p = await api("prefs", { pace: n }); set(Object.assign({}, d, { prefs: Object.assign({}, d.prefs, p) })); haptic("success"); }
     catch (e) { alertBox(e.message); }
   };
+  const setChoice = async (c) => {
+    try { const p = await api("prefs", c); set(Object.assign({}, d, { prefs: Object.assign({}, d.prefs, p) })); haptic("success"); }
+    catch (e) { alertBox(e.message); }
+  };
   const saveKey = async (k) => {
     setKbusy(true);
     try { const r = await api("stt_key", { key: k.trim() }); set(Object.assign({}, d, { stt: Object.assign({}, d.stt || {}, { on: r.on }) })); setKey(""); haptic("success"); alertBox(t(r.on ? "voice.saved" : "voice.removed")); }
@@ -1646,6 +1656,11 @@ function Settings() {
   };
   return html`<div><h2>${t("settings")}</h2>
     <${Parts}/>
+    ${"model" in d.prefs ? html`<h3>${t("model.pick")}</h3>
+    <button class="field" onClick=${openPick}><span>${choiceText(d.prefs.model, d.prefs.effort)}</span><span class="dim">${ic("down", 18)}</span></button>
+    <div class="dim small">${t("def.about")}</div>
+    ${pick && html`<${ChoicePick} model=${d.prefs.model} effort=${d.prefs.effort} def=${d.cc} top=${t("pick.as.cc.short")}
+      note=${t("def.cc.note")} onClose=${closePick} onPick=${setChoice}/>`}` : ""}
     <h3>${t("notifications")}</h3><div class="list">${sw("pager", t("pager"), t("pager.short"), t("pager.about"))}${d.prefs.pager ? "" : sw("vehi", t("vehi"), t("vehi.about"))}${sw("brief", t("brief"), t("brief.short"), t("brief.about"))}</div>
     <h3>${t("where")}</h3>
     <${ModePick} mode=${d.prefs.mode} pager=${d.prefs.pager} onSet=${(m) => set(Object.assign({}, d, { prefs: Object.assign({}, d.prefs, { mode: m }) }))}/>
@@ -2252,7 +2267,7 @@ function Session({ sid }) {
     <div ref=${bottom}></div>
     ${(unread || far) && html`<button class=${"tobottom" + (unread ? " fresh" : "")} aria-label=${t("to.bottom")} onClick=${() => { toBottom(); setUnread(false); }}>${unread ? t("new.msgs") : "↓"}</button>`}
     <div class="composer" ref=${comp}>
-      ${pick && html`<${ModelPick} sid=${sid} choice=${info.choice} now=${info.stats || {}} driven=${lv.driven} tab=${lv.tab} canModel=${info.switch} canEffort=${info.switch_effort} onClose=${closePick} onDone=${() => load("after")}/>`}
+      ${pick && html`<${ModelPick} sid=${sid} choice=${info.choice} now=${info.stats || {}} driven=${lv.driven} tab=${lv.tab} dflt=${info.default} canModel=${info.switch} canEffort=${info.switch_effort} onClose=${closePick} onDone=${() => load("after")}/>`}
       ${note && html`<${Sheet} title=${info.title} lines=${note} onClose=${closeNote}/>`}
       ${bgs && html`<${BgSheet} sid=${sid} onClose=${closeBgs}/>`}
       ${full && html`<div class="backdrop" onClick=${closeFull}></div><div class="card pick"><div class="q-t pick-h">${t("pin.you")}${full.ts ? " · " + hhmm(toDate(full.ts)) : ""}<button class="x" aria-label=${t("close")} onClick=${closeFull}>×</button></div>
@@ -2286,15 +2301,17 @@ function ProjectPick({ projects, cur, onPick, onClose, create }) {
     ${projects.map((x) => html`<button key=${x.pkey} class=${"opt" + (x.pkey === cur ? " on" : "")} onClick=${() => onPick(x.pkey)}>${x.name}</button>`)}</div>`;
 }
 
-function ChoicePick({ model, effort, onPick, onClose }) {
-  const col = (title, items, on, key) => html`<div class="pick-col"><div class="pick-t">${title}</div>
-    ${items.map(([v, label]) => html`<button key=${v} class=${"opt" + (v === on ? " on" : "")} onClick=${() => onPick({ [key]: v })}>${label}</button>`)}</div>`;
+// the "Default" line says in grey what it stands for now (def); Settings names it "As in Claude Code" (top)
+function ChoicePick({ model, effort, def, top, note, onPick, onClose }) {
+  const col = (title, items, on, key, cur) => html`<div class="pick-col"><div class="pick-t">${title}</div>
+    ${items.map(([v, label]) => html`<button key=${v} class=${"opt" + (v === on ? " on" : "")} onClick=${() => onPick({ [key]: v })}>${label}${!v && cur ? html`<span class="dim">${cur}</span>` : ""}</button>`)}</div>`;
+  const d = def || {};
   return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick tall fixed">
     <div class="q-t pick-h">${t("model.pick")}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
     <div class="pick-cols">
-      ${col(t("model"), MODELS.map(([m, label]) => [m, m ? label : t("pick.default")]), model, "model")}
-      ${col(t("effort"), EFFORTS.map((e) => [e, effortName(e)]), effort, "effort")}
-    </div></div>`;
+      ${col(t("model"), MODELS.map(([m, label]) => [m, m ? label : top || t("pick.default")]), model || "", "model", d.model && modelName(d.model))}
+      ${col(t("effort"), EFFORTS.map((e) => [e, e ? effortName(e) : top || t("pick.default")]), effort || "", "effort", d.effort && effortName(d.effort))}
+    </div>${note ? html`<div class="dim small">${note}</div>` : ""}</div>`;
 }
 
 function NewTask({ pkey }) {
@@ -2334,11 +2351,11 @@ function NewTask({ pkey }) {
     ${d.stt ? html`<${Mic} v=${v} disabled=${busy} wide=${true}/>` : ""}
     <label class="lbl">${t("model.pick")}</label>
     <button class="field" onClick=${() => setSheet({ k: "model" })}>
-      <span>${choiceText(model, effort)}</span><span class="dim">${ic("down", 18)}</span></button>
+      <span>${choiceText(model, effort, d.choice)}</span><span class="dim">${ic("down", 18)}</span></button>
     <button class="btn wide" disabled=${busy || !p || (!text.trim() && !a.files.length)} onClick=${send}>${t("new.start")}</button>
     <div class="dim small">${t("new.about")}</div>
     ${sheet && sheet.k === "project" && html`<${ProjectPick} projects=${sheet.list} cur=${p} create=${d.create} onClose=${close} onPick=${(k) => { setP(k); haptic("success"); close(); }}/>`}
-    ${sheet && sheet.k === "model" && html`<${ChoicePick} model=${model} effort=${effort} onClose=${close}
+    ${sheet && sheet.k === "model" && html`<${ChoicePick} model=${model} effort=${effort} def=${d.choice} onClose=${close}
       onPick=${(c) => { if ("model" in c) setModel(c.model); if ("effort" in c) setEffort(c.effort); haptic("success"); }}/>`}
   </div>`;
 }
@@ -2448,11 +2465,11 @@ function NewProject() {
     ${d && d.stt && html`<${Mic} v=${v} disabled=${busy} wide=${true}/>`}
     ${(how === "describe" || text.trim() || a.files.length > 0) && html`<label class="lbl">${t("model.pick")}</label>
       <button class="field" onClick=${() => setSheet("model")}>
-        <span>${choiceText(model, effort)}</span><span class="dim">${ic("down", 18)}</span></button>`}
+        <span>${choiceText(model, effort, d && d.choice)}</span><span class="dim">${ic("down", 18)}</span></button>`}
     <button class="btn wide" disabled=${!ready} onClick=${() => create()}>${busy ? (job ? t("np.cloning") + (step ? " · " + step : "") + " · " + dur(job.sec) : "…") : t("np.go")}</button>
     <div class="dim small">${t("np.help")}</div>
     ${sheet === "dir" && html`<${FolderPick} start=${place && place.path} onClose=${close} onPick=${(x) => { setPlace(x); haptic("success"); close(); }}/>`}
-    ${sheet === "model" && html`<${ChoicePick} model=${model} effort=${effort} onClose=${close}
+    ${sheet === "model" && html`<${ChoicePick} model=${model} effort=${effort} def=${d && d.choice} onClose=${close}
       onPick=${(c) => { if ("model" in c) setModel(c.model); if ("effort" in c) setEffort(c.effort); haptic("success"); }}/>`}
   </div>`;
 }
