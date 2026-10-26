@@ -427,7 +427,8 @@ class HelpersTest(unittest.TestCase):
         # the hook Pult injects into its own sessions runs through a shell: paths with spaces stay whole
         with mock.patch.object(pultd, "HOOK_PY", "/x y/venv/bin/python"), \
                 mock.patch.object(pultd, "HOOK", "/x y/pult_hook.py"):
-            me = types.SimpleNamespace(path="/x", sid=SID, resume=None, fork=False, _wait_hook=None)
+            me = types.SimpleNamespace(path="/x", sid=SID, resume=None, fork=False, _wait_hook=None,
+                                       d=types.SimpleNamespace(wanted=lambda m, e: (m, e)))
             opts = pultd.Driven.options(me)
         h = json.loads(opts.settings)["hooks"]["Stop"][0]["hooks"][0]
         if os.name == "nt":                          # exec form: no shell to read an environment prefix
@@ -1399,12 +1400,14 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             pultd.TICK = old
 
     async def test_prefs(self):
-        self.assertEqual(self.p.prefs(), {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": None, "pace": 90})
+        self.assertEqual(self.p.prefs(), {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": None, "pace": 90,
+                                          "model": None, "effort": None})
         self.p.env["PULT_FORCE_AWAY"] = "0"                                           # you are at the Mac
         self.assertFalse(await self.p.loud())
         self.assertTrue(await self.p.loud(driven=True))                     # auto: a session from Telegram — with sound
         res = await self.p.api_prefs(mode="phone", vehi="да", lang="xx", brief="да", evil=True, pace="90")  # garbage is rejected
-        self.assertEqual(res, {"vehi": True, "mode": "phone", "lang": None, "brief": False, "pager": None, "pace": 90})
+        self.assertEqual(res, {"vehi": True, "mode": "phone", "lang": None, "brief": False, "pager": None, "pace": 90,
+                               "model": None, "effort": None})
         self.assertTrue((await self.p.api_prefs(brief=True))["brief"])
         self.assertTrue(await self.p.loud())                                      # "with the phone" — always with sound
         await self.p.api_prefs(mode="mac")
@@ -2000,6 +2003,57 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         finally:
             claude_agent_sdk.ClaudeSDKClient = old
 
+    async def test_default_choice(self):
+        # Settings → Model and effort: Pult's own default for the sessions it starts; a session's own choice wins, each
+        # half on its own; "" — back to Claude Code's settings, which Pult only reads; VS Code tabs keep theirs
+        from types import SimpleNamespace
+        self.assertEqual(self.p.wanted(None, None), (None, None))              # nothing anywhere — Claude Code decides
+        res = await self.p.api_prefs(model="opus", effort="high")
+        self.assertEqual((res["model"], res["effort"]), ("opus", "high"))
+        self.assertEqual(self.p.prefs()["model"], "opus")                       # kept
+        with self.assertRaises(ValueError):
+            await self.p.api_prefs(model="opus; rm -rf")
+        with self.assertRaises(ValueError):
+            await self.p.api_prefs(effort="turbo")
+        self.assertEqual((self.p.prefs()["model"], self.p.prefs()["effort"]), ("opus", "high"))   # a refusal changes nothing
+        self.assertEqual(self.p.wanted("sonnet", None), ("sonnet", "high"))
+        # the SDK options alone, on a stand-in: a real Driven would start a claude process
+        d = SimpleNamespace(d=self.p, sid=SID, path="/Users/x/proj", resume=None, fork=False, want_model=None, want_effort=None,
+                            _wait_hook=None)
+        o = pultd.Driven.options(d)
+        self.assertEqual((o.model, o.effort), ("opus", "high"))                 # a new session with nothing picked
+        d.want_effort = "low"
+        o = pultd.Driven.options(d)
+        self.assertEqual((o.model, o.effort), ("opus", "low"))                  # the session's own effort, the default model
+        # the forms and the session's menu say what "Default" is; a session open on the computer has Claude Code's
+        self.assertEqual((await self.p.api_projects())["choice"], {"model": "opus", "effort": "high"})
+        self.store.touch_session(SID, PKEY, path="/Users/x/proj", driven=True)
+        self.p.live_of(SID, PKEY).transcript = TP
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        Path(TP).write_text("")
+        self.assertEqual((await self.p.api_session(SID))["default"], {"model": "opus", "effort": "high"})
+        # "Default" on a running session goes to Pult's default, not to Claude Code's settings
+        control = mock.AsyncMock(return_value={})
+        client = SimpleNamespace(set_model=mock.AsyncMock(), _query=SimpleNamespace(_send_control_request=control))
+        self.p.driven[SID] = SimpleNamespace(busy=False, queued=None, bg=set(), q=asyncio.Queue(), client=client, want_model="haiku",
+                                             want_effort="max", task=SimpleNamespace(cancel=lambda: None))
+        await self.p.api_model(SID, "", "")
+        client.set_model.assert_awaited_once_with("opus")
+        control.assert_awaited_once_with({"subtype": "apply_flag_settings", "settings": {"effortLevel": "high"}})
+        self.assertEqual((self.p.driven[SID].want_model, self.p.driven[SID].want_effort), (None, None))   # follows the default
+        del self.p.driven[SID]
+        # back to Claude Code's settings: they are read for Settings, never written
+        res = await self.p.api_prefs(model="", effort=None)
+        self.assertEqual((res["model"], res["effort"]), (None, None))
+        cc = TMP / "cc-settings.json"
+        cc.write_text(json.dumps({"effortLevel": "xhigh", "model": "x y", "hooks": {}}))
+        with mock.patch.object(pultd, "SETTINGS", cc):
+            self.assertEqual((await self.p.api_settings())["cc"], {"model": None, "effort": "xhigh"})   # a bad name isn't shown
+            cc.write_text("{broken")
+            self.assertEqual(pultd.Pult.cc_choice(), {"model": None, "effort": None})
+        with mock.patch.object(pultd, "SETTINGS", TMP / "none.json"):
+            self.assertEqual(pultd.Pult.cc_choice(), {"model": None, "effort": None})
+
     async def test_driven_big_line(self):
         # a picture Claude reads comes in the stream's line twice: one ~470 KB screenshot made a line over the SDK's
         # own 1 MB limit, and a session from the app crashed in its first turn (2026-10-21). Through the real SDK,
@@ -2174,7 +2228,8 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.p.stt_state(), {"on": False, "lang": "ru", "words": ""})
         # the app shows the microphone only when there is a key: the flag rides with the projects (and the session)
         with mock.patch.object(self.p, "list_projects", lambda known: []):
-            self.assertEqual(await self.p.api_projects(), {"projects": [], "stt": False, "create": True})
+            self.assertEqual(await self.p.api_projects(), {"projects": [], "stt": False, "create": True,
+                                                       "choice": {"model": None, "effort": None}})
             self.p.stt = FakeStt()
             self.assertTrue((await self.p.api_projects())["stt"])
 
@@ -3670,7 +3725,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
 
     def test_system_prompt(self):
         from types import SimpleNamespace
-        d = SimpleNamespace(path="/x", resume=None, fork=False, sid="s", _wait_hook=None)
+        d = SimpleNamespace(path="/x", resume=None, fork=False, sid="s", _wait_hook=None, d=self.p)
         o = pultd.Driven.options(d)
         self.assertEqual(o.system_prompt, {"type": "preset", "preset": "claude_code"})
         self.assertEqual(o.env["CLAUDE_CODE_ENTRYPOINT"], "claude-vscode")        # otherwise VS Code hides the session

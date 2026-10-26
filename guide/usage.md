@@ -35,7 +35,8 @@ you're neither in the app nor at the computer. Reminders on long turns; warnings
   every project with its colour.
 - **A session** shows the whole conversation, live, with the model, the effort and the context gauge by the message
   field. Pick the model (Fable, Opus, Sonnet, Haiku) and how hard Claude thinks for that session; a running one
-  switches at once.
+  switches at once. Settings → Model and effort sets what sessions from the app and Telegram start with; VS Code tabs
+  keep their own settings.
 - **Resources**: Limits — the curve of each limit against the even pace, the forecast (on pace, under: how many hours
   of a session's work would go unused, over: when it runs out), who spent it; Computer — the processor, the memory
   and each Claude session's commands.

@@ -2,6 +2,16 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.16.2 — 2026-10-26
+
+- **A default model and effort.** Settings → **Model and effort**: what the sessions Pult starts begin with — new ones
+  from the app and Telegram, and sessions continued from the phone — when a session has no choice of its own, each half
+  on its own (a task with Sonnet picked keeps the default effort). "As in Claude Code" leaves it to Claude Code's
+  settings, and the menu shows in grey what they say now; Pult only reads them. A new task's field shows the default
+  before anything is picked, a session's menu says whose default "Default" is, and "Default" on a running session
+  switches it to Pult's default at once. VS Code tabs keep their own settings. `tools/choice_check.py` drives it with
+  taps on the stand.
+
 ## 0.16.1 — 2026-10-26
 
 - **The parts table reads right for everyone.** The release row shows only in a folder releases are made from (it

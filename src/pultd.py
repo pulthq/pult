@@ -99,7 +99,7 @@ ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends i
 STT_WORDS_MAX = 280             # characters of the owner's own words for Whisper: with the sentence, within Groq's 896 bytes
 STT_MAX = 4 * 1024 * 1024       # bytes of one recording from the app (5 min at 32 kbit/s ≈ 1.2 MB; base64 must fit the 8 MB frame)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.16.1"
+VERSION = "0.16.2"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -112,9 +112,11 @@ TG_REACH = (2, 30)       # s; at start, the first and the longest pause between 
 MENU_CHECK_EVERY = 1800  # s; the app button in the owner's chat is still ours (only the token's holder can change it)
 CONFLICT_WARN_EVERY = 6 * 3600   # s; "someone else reads this bot" at most this often
 WEB_MANIFEST = HOME / "web-manifest.json"   # what the last deploy put on the relay (written by the deploy script)
-PREFS = {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": None, "pace": S.PACE_LOW}   # owner prefs:
+PREFS = {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": None, "pace": S.PACE_LOW,
+         "model": None, "effort": None}   # owner prefs:
 # milestones, location (auto/mac/phone), language, a model's line for each result, Telegram as a pager (None — on where the
-# app is set up), the % at a limit's reset that is still "on pace" (stage R)
+# app is set up), the % at a limit's reset that is still "on pace" (stage R), the model and the effort for sessions Pult
+# starts when the session has no choice of its own (None — Claude Code's settings; VS Code tabs keep theirs)
 MODES = ("auto", "mac", "phone")
 REPO_URL = os.environ.get("PULT_REPO_URL") or "https://github.com/pulthq/pult"   # where /feedback sends bugs and ideas
 MODEL_RE = re.compile(r"[A-Za-z0-9][\w.\-\[\]]{0,63}")        # a model alias or id for a session from Telegram
@@ -685,7 +687,7 @@ class Driven:
         self.path = path
         self.resume = resume
         self.fork = fork
-        self.want_model = model       # the owner's choice for this session (None — Claude Code's settings)
+        self.want_model = model       # the owner's choice for this session (None — Pult's default, else Claude Code's settings)
         self.want_effort = effort
         self.q = asyncio.Queue()
         self.client = None
@@ -801,10 +803,11 @@ class Driven:
                   # claude-vscode is kept: the session shows up in the Claude tab and can be continued on the Mac
                   env={"PULT_DRIVEN": "1", "PULT_SOCK": SOCK, "CLAUDE_CODE_ENTRYPOINT": "claude-vscode"},
                   max_buffer_size=SDK_LINE_MAX, stderr=lambda s: None)
-        if getattr(self, "want_model", None):
-            kw["model"] = self.want_model
-        if getattr(self, "want_effort", None):
-            kw["effort"] = self.want_effort
+        model, effort = self.d.wanted(getattr(self, "want_model", None), getattr(self, "want_effort", None))
+        if model:
+            kw["model"] = model
+        if effort:
+            kw["effort"] = effort
         if self.resume:
             kw["resume"] = self.resume
         if self.fork:
@@ -2868,6 +2871,12 @@ class Pult:
             return
         await self.drive(sid, path, text, origin, resume=sid, pkey=pkey, quote=quote, here=here)
 
+    def wanted(self, model, effort):
+        """The model and the effort a session Pult runs starts with: its own choice, else the default from Settings
+        (each half on its own); None — what Claude Code's settings say."""
+        p = self.prefs()
+        return model or p["model"], effort or p["effort"]
+
     def set_choice(self, sid, model=None, effort=None):
         """The owner's model and effort for a session from Telegram; kept, so a resume starts the same way."""
         cur = dict(self.choice.get(sid) or {})
@@ -3548,8 +3557,11 @@ class Pult:
                         "turns": self.attn.day_of(pkey)[0]})
         # what needs you first, then what works, then what is open, then by recency
         out.sort(key=lambda r: (-(r["mine"] > 0), -(r["work"] + r["ask"] > 0), -(r["open"] > 0), -r["last"]))
-        # stt: the app shows the microphone only with a key; create: this daemon makes new projects (stage S)
-        return {"projects": out, "stt": self.stt_state()["on"], "create": True}
+        # stt: the app shows the microphone only with a key; create: this daemon makes new projects (stage S);
+        # choice: the default model and effort from Settings, what a new task starts with when nothing is picked
+        p = self.prefs()
+        return {"projects": out, "stt": self.stt_state()["on"], "create": True,
+                "choice": {"model": p["model"], "effort": p["effort"]}}
 
     async def api_sessions(self, pkey):
         path = self.project_path(pkey)
@@ -3595,11 +3607,14 @@ class Pult:
         ours = sid in self.driven or not (live["open"] or live["tab"])
         switch = ours or (tab is not None and "model" in tab.caps)
         switch_effort = ours or (tab is not None and "control" in tab.caps)       # a wrapper from 0.9.9 on
+        # what "Default" means here: Pult's own from Settings for a session Pult runs or would resume, Claude Code's for a tab
+        pref = self.prefs()
+        dflt = {"model": pref["model"], "effort": pref["effort"]} if ours else None
         # the session's own title, as on the board (its first prompt until it has a name), the project beside it
         return {"sid": sid, "title": lv.title or self.title(lv), "project": self.project_label(lv.pkey), "pkey": lv.pkey,
                 "outcome": outcome,
                 "live": live, "page": page, "stats": stats, "choice": self.choice.get(sid) or {}, "switch": switch,
-                "switch_effort": switch_effort, "stt": self.stt_state()["on"],
+                "switch_effort": switch_effort, "default": dflt, "stt": self.stt_state()["on"],
                 "ctx": {"window": ctx[0], "max_out": ctx[1], "usable": ctx_usable(ctx[0], ctx[1])} if ctx else None,
                 "pending": [self.req_item(r) for r in lv.pending.values() if not r.fut.done()],
                 "out": self.out_view(sid)}
@@ -3902,9 +3917,10 @@ class Pult:
         return out
 
     async def api_model(self, sid, model=KEEP, effort=KEEP):
-        """The model and/or the effort of a session — whichever the app sent ("" — back to the settings). A session
-        Pult runs switches at once (SDK set_model, apply_flag_settings), a resting or closed one starts with the
-        choice next time; a VS Code tab with Pult's wrapper switches through the wrapper."""
+        """The model and/or the effort of a session — whichever the app sent ("" — back to the default: Pult's from
+        Settings for a session Pult runs, Claude Code's settings for a tab). A session Pult runs switches at once (SDK
+        set_model, apply_flag_settings), a resting or closed one starts with the choice next time; a VS Code tab with
+        Pult's wrapper switches through the wrapper."""
         if not SID_RE.fullmatch(sid or ""):
             raise ValueError(self.t("err.bad_sid"))
         if model is KEEP and effort is KEEP:
@@ -3921,13 +3937,14 @@ class Pult:
         live = False
         if dr and dr.client:
             live = True
+            dm, de = self.wanted(m, e)              # "" — Pult's default, if Settings has one
             if model is not KEEP:
-                await dr.client.set_model(m)
+                await dr.client.set_model(dm)
                 dr.want_model = m
             if effort is not KEEP:
                 dr.want_effort = e                  # a restart takes it anyway (--effort)
                 try:
-                    await sdk_effort(dr.client, e)
+                    await sdk_effort(dr.client, de)
                 except Exception as x:
                     log("effort for %s: not switched live: %s" % (sid[:8], type(x).__name__))
                     live = False
@@ -4358,8 +4375,20 @@ class Pult:
                 "hooks_missing": [e for e in pult_hook.EVENTS if e not in hooks] if hooks else [],
                 "mac": {"idle": idle, "away": await self.away(), "mode": self.mode()},
                 "telegram": "proxy" if len(self.tg.clients) > 1 and self.tg.cur == 0 else "direct",
-                "stt": self.stt_state(),
+                "stt": self.stt_state(), "cc": self.cc_choice(),
                 "log": [x for x in lines if "Bearer" not in x][-40:]}
+
+    @staticmethod
+    def cc_choice():
+        """The model and the effort Claude Code's user settings name — what "As in Claude Code's settings" means.
+        Only read: these settings are the owner's; a project's own settings may still override them."""
+        try:
+            s = json.loads(SETTINGS.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {"model": None, "effort": None}
+        model, effort = s.get("model"), s.get("effortLevel")
+        return {"model": model if isinstance(model, str) and MODEL_RE.fullmatch(model) else None,
+                "effort": effort if effort in EFFORTS else None}
 
     async def api_prefs(self, **kw):
         cur = self.prefs()
@@ -4367,6 +4396,9 @@ class Pult:
             if k in ("vehi", "brief", "pager") and isinstance(v, bool) or k == "mode" and v in MODES or k == "lang" and v in I.LANGS \
                     or k == "pace" and v in S.PACES:
                 cur[k] = v
+            elif k in ("model", "effort") and (v is None or isinstance(v, str)):
+                m, e = self.check_choice(v if k == "model" else None, v if k == "effort" else None)
+                cur[k] = m if k == "model" else e         # "" — back to Claude Code's settings
         self.store.put("prefs", cur)
         if "mode" in kw:
             await self.set_mode(cur["mode"])

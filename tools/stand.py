@@ -234,6 +234,11 @@ async def main():
     pultd.NEW_ROOT, pultd.SKIP_PREFIXES = home, ("-nothing-",)
     pultd.TAB_CONF = T.TMP / "stand-tab.json"
     pultd.TAB_CONF.write_text(json.dumps({"folders": [str(home / "Documents")]}))
+    # Claude Code's settings, made up — never this computer's: Pult's hook on every event and the effort "high", which
+    # Settings → Model and effort shows under "As in Claude Code"
+    pultd.SETTINGS = T.TMP / "stand-settings.json"
+    pultd.SETTINGS.write_text(json.dumps({"effortLevel": "high", "hooks": {
+        e: [{"hooks": [{"type": "command", "command": "pult_hook.py"}]}] for e in pultd.pult_hook.EVENTS}}))
 
     async def no_drive(sid, path, text, *a, **kw):
         print("DRIVE", path, json.dumps(text[:80], ensure_ascii=False), flush=True)
