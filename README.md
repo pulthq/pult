@@ -85,7 +85,7 @@ An empty folder with git, a `CLAUDE.md` Claude writes from your words, or a clon
 
 And: voice messages as text, the model and effort per session, a pager that knows whether you're at the computer,
 ticks on your message — sent, read by Claude — `pult run` for your own long commands, an update installed from the
-app after a `git pull` (macOS, Linux). **[All of it](guide/usage.md)**.
+app after a `git pull` (macOS, Linux), every part of Pult in one table — what runs where and how far it is behind `main`. **[All of it](guide/usage.md)**.
 
 ## Next to the official options
 

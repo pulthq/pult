@@ -12,6 +12,7 @@ import asyncio
 import base64
 import binascii
 import collections
+import functools
 import hmac
 import importlib.util
 import json
@@ -98,7 +99,7 @@ ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends i
 STT_WORDS_MAX = 280             # characters of the owner's own words for Whisper: with the sentence, within Groq's 896 bytes
 STT_MAX = 4 * 1024 * 1024       # bytes of one recording from the app (5 min at 32 kbit/s ≈ 1.2 MB; base64 must fit the 8 MB frame)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.15.3"
+VERSION = "0.16.1"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -129,6 +130,14 @@ async def sdk_effort(client, effort):
     if send is None:
         raise RuntimeError("the SDK has no control requests")
     await send({"subtype": "apply_flag_settings", "settings": {"effortLevel": effort}})
+
+
+def vnum(v):
+    """"2.1.310" → (2, 1, 310), for sorting versions; anything else sorts first."""
+    try:
+        return tuple(int(x) for x in str(v).split("."))
+    except ValueError:
+        return ()
 
 
 def log(*a):
@@ -936,6 +945,8 @@ class Pult:
         self.health = {}               # reached Telegram / the app's server — health.json, for the installer (stage U)
         self._upd = (0.0, None)        # what the source folder has (pult_update.check), kept a minute
         self.upd_wait = None           # the owner asked to install once Pult's sessions are free: since when
+        self._parts = (0.0, None, None)  # the source folder against what's installed and served (stage U2): time, key, facts
+        self._cc = (0.0, None)         # Claude Code on this computer (cc_facts), kept half a minute
 
     # ----- this computer's environment -----
 
@@ -2913,7 +2924,8 @@ class Pult:
         and accepts messages for it. If the connection drops, the tab works as usual but can't be written into."""
         t = SimpleNamespace(pid=hello.get("pid"), cwd=hello.get("cwd"), sid=hello.get("sid"),
                             version=hello.get("version"), writer=writer,
-                            caps=set(hello.get("caps") or []))      # an older wrapper (before 0.9.8) sends none
+                            caps=set(hello.get("caps") or []),      # an older wrapper (before 0.9.8) sends none
+                            own=hello["self"] if "self" in hello else False)   # its file's blob; False — before 0.16
         self.tabs[t.pid] = t
         log("tab with the wrapper: pid %s, %s, Claude Code %s" % (t.pid, t.cwd, t.version))
         try:
@@ -4333,13 +4345,7 @@ class Pult:
         self.store.put("usage_warned", warned[-50:])
 
     async def api_settings(self):
-        hooks = []
-        try:
-            for ev, groups in (json.loads(SETTINGS.read_text(encoding="utf-8")).get("hooks") or {}).items():
-                if any("pult_hook.py" in str(h.get("command", "")) for g in groups for h in g.get("hooks", [])):
-                    hooks.append(ev)
-        except (OSError, ValueError):
-            pass
+        hooks = self.hooks_on()
         try:
             with LOG_FILE.open("rb") as f:
                 f.seek(0, 2)
@@ -4511,10 +4517,14 @@ class Pult:
         except Exception as e:
             log("update:", repr(e))
             return None
-        if v["state"] in ("ok", "na"):
+        broken = await self.broken()
+        if v["state"] in ("ok", "na") and not broken:
             return None
-        return {"state": v["state"], "have": v["have"], "next": v.get("next"), "back": v.get("back"),
-                "left": len(v.get("busy") or [])}
+        row = {"state": v["state"], "have": v["have"], "next": v.get("next"), "back": v.get("back"),
+               "left": len(v.get("busy") or [])}
+        if broken:
+            row["broken"] = broken              # stage U2: Home says what doesn't work, not only what to install
+        return row
 
     def emit_update(self):
         if self.web:
@@ -4595,6 +4605,167 @@ class Pult:
             elif v["state"] not in ("wait", "run"):
                 self.upd_wait = None             # nothing to install any more (installed from the terminal, say)
                 self.emit_update()
+
+    # ----- every part of Pult against main (stage U2) -----
+
+    def hooks_on(self):
+        """The events Pult's hook is set for in Claude Code's settings."""
+        hooks = []
+        try:
+            for ev, groups in (json.loads(SETTINGS.read_text(encoding="utf-8")).get("hooks") or {}).items():
+                if any("pult_hook.py" in str(h.get("command", "")) for g in groups for h in g.get("hooks", [])):
+                    hooks.append(ev)
+        except (OSError, ValueError, AttributeError, TypeError):
+            pass
+        return sorted(hooks)
+
+    @staticmethod
+    @functools.cache
+    def sdk_versions():
+        """The Agent SDK the sessions from the app run on, and the Claude Code it carries — the same till a restart
+        (reading the package's metadata takes ~0.4 s the first time: called in a thread)."""
+        try:
+            import importlib.metadata
+            sdk = importlib.metadata.version("claude-agent-sdk")
+        except Exception:
+            sdk = None
+        try:
+            from claude_agent_sdk._cli_version import __cli_version__ as cli
+        except Exception:
+            cli = None
+        return sdk, cli
+
+    async def cc_facts(self, age=30):
+        """Claude Code on this computer: the extension versions VS Code runs now (by their processes, and the tabs with
+        the wrapper), the newest one it has downloaded, the ones the wrapper is verified on (tab.json), whether the
+        wrapper is set up at all. A tab on an unverified version runs without the wrapper — writing into it is off."""
+        t, v = self._cc
+        if v is not None and time.monotonic() - t < age:
+            return v
+        snap = await self.snapshot()
+        running = {t.version for t in self.tabs.values() if t.version}
+        for pr in ((snap or [{}])[0] or {}).values():
+            m = re.search(r"anthropic\.claude-code-(\d+(?:\.\d+)+)", pr.get("cmd") or "")
+            if m and pr.get("mine", True):
+                running.add(m.group(1))
+        try:
+            verified = json.loads(TAB_CONF.read_text(encoding="utf-8")).get("versions") or []
+        except (OSError, ValueError, AttributeError):
+            verified = []
+        wrapped = bool(await asyncio.to_thread(pult_os.files_with, EDITOR_DIRS, TAB_FILE))
+        sdk, cli = await asyncio.to_thread(self.sdk_versions)
+        v = {"running": sorted(running, key=vnum), "verified": sorted(verified, key=vnum), "wrapped": wrapped,
+             "newest": await asyncio.to_thread(pult_os.newest_extension, EXT_DIRS), "sdk": sdk, "cli": cli}
+        self._cc = (time.monotonic(), v)
+        return v
+
+    async def broken(self):
+        """What doesn't work for want of an update, for Home's line: some hook events missing (all off is the owner's
+        choice — `pult hooks off`), tabs on a Claude Code the wrapper isn't verified on."""
+        out = []
+        on = self.hooks_on()
+        missing = [e for e in pult_hook.EVENTS if e not in on]
+        if on and missing:
+            out.append({"k": "hooks", "missing": missing})
+        cc = await self.cc_facts()
+        off = [v for v in cc["running"] if v not in cc["verified"]] if cc["wrapped"] else []
+        if off:
+            out.append({"k": "cc", "v": off[-1]})
+        return out
+
+    def tab_facts(self):
+        """The tabs with Pult's wrapper: the project, and whether its wrapper is the installed one — True, False (an
+        older one, or one before 0.16 that doesn't say), None (it couldn't tell)."""
+        now = {U.blob(HOME / "pult_tab.py"), U.blob(HOME / "pult_tab.py", lf=True)} - {None}
+        out = []
+        for t in list(self.tabs.values()):
+            lv = self.live.get(t.sid) if t.sid else None
+            name = self.name_of(lv.pkey) if lv and lv.pkey else os.path.basename((t.cwd or "").rstrip(SEPS)) or "?"
+            own = getattr(t, "own", False)
+            out.append({"project": name, "same": None if own is None else bool(own) and own in now})
+        return out
+
+    async def git_facts(self, age=60):
+        """The source folder against what is installed and served: the computer's lag, the commit the relay server's
+        copy was made from, the CHANGELOG — a few short git commands, kept `age` s per HEAD and relay build."""
+        c = await self.update_check(age)
+        repo, head = c.get("repo"), c.get("head")
+        if not repo or not head:
+            return {"repo": None}
+        build = self.web.build if self.web else None
+        key = (head, json.dumps(build, sort_keys=True) if build else None)
+        t, k, v = self._parts
+        if v is not None and k == key and time.monotonic() - t < age:
+            return v
+        v = await asyncio.to_thread(self.git_parts, repo, head, build)
+        self._parts = (time.monotonic(), key, v)
+        return v
+
+    @staticmethod
+    def git_parts(repo, head, build):
+        m = U.read(U.MANIFEST, {}) or {}
+        out = {"repo": repo, "head": head, "branch": U.git(repo, "rev-parse", "--abbrev-ref", "HEAD"),
+               "mac": U.behind(repo, m.get("commit"), head, U.TREE),
+               "gh": U.changelog(repo, head) if U.makes_releases(repo, head) else None}   # only where releases are made
+        for part, paths in U.PARTS.items():
+            files = {p: b for p, b in (build or {}).items() if any(p == x or p.startswith(x + "/") for x in paths)}
+            out[part] = U.built_from(repo, head, files, paths) if files else None
+            out[part + "_told"] = bool(files)
+        return out
+
+    async def parts_facts(self):
+        """Everything the table is made of, in one go (the stand puts made-up facts here)."""
+        return {"upd": await self.update_view(), "git": await self.git_facts(), "relay": bool(self.web),
+                "tabs": self.tab_facts(), "hooks": self.hooks_on(), "cc": await self.cc_facts()}
+
+    @staticmethod
+    def parts_rows(f):
+        """The table "Pult and its parts" (Settings): one row per part — k, st (ok · warn — can be brought up to date ·
+        bad — something doesn't work · attn — worth a look · info — to know, or not known), have (what is there) and
+        what the app says about it. The phone's own copy is the app's row: only it knows which one it runs."""
+        g, upd = f["git"], f["upd"]
+        rows = []
+        lag_mac = g.get("mac") or {}
+        n = lag_mac.get("n") if upd["state"] not in ("ok", "na") else 0
+        rows.append({"k": "mac", "st": {"ok": "ok", "na": "info", "fail": "bad"}.get(upd["state"], "warn"),
+                     "have": upd["have"], "n": n, "since": lag_mac.get("since"), "upd": upd})
+        if f["relay"]:
+            for part in ("web", "relay"):
+                b = g.get(part)
+                if b:
+                    rows.append({"k": part, "st": "warn" if b["n"] else "ok", "have": b["ts"], "commit": b["commit"][:7],
+                                 "n": b["n"], "since": b["since"], "news": b["news"]})
+                else:
+                    why = "norepo" if not g.get("repo") else "other" if g.get(part + "_told") else "old"
+                    rows.append({"k": part, "st": "info", "why": why})
+        tabs, cc = f["tabs"], f["cc"]
+        if tabs or cc["wrapped"]:
+            old = sorted({t["project"] for t in tabs if t["same"] is False})
+            rows.append({"k": "tabs", "st": "warn" if old else "ok", "have": len(tabs), "old": old,
+                         "n_old": sum(t["same"] is False for t in tabs),
+                         "unknown": sum(t["same"] is None for t in tabs)})
+        on = f["hooks"]
+        missing = [e for e in pult_hook.EVENTS if e not in on]
+        rows.append({"k": "hooks", "st": "bad" if missing else "ok", "have": len(on), "all": len(pult_hook.EVENTS),
+                     "missing": missing})
+        off = [v for v in cc["running"] if v not in cc["verified"]] if cc["wrapped"] else []
+        fresh = cc["newest"] if cc["wrapped"] and cc["newest"] and cc["newest"] not in cc["verified"] \
+            and cc["newest"] not in cc["running"] else None
+        rows.append({"k": "cc", "st": "bad" if off else "attn" if fresh else "ok" if cc["wrapped"] else "info",
+                     "have": (cc["running"] or [cc["newest"]])[-1], "off": off, "fresh": fresh,
+                     "verified": cc["verified"][-1] if cc["verified"] else None, "wrapped": cc["wrapped"],
+                     "sdk": cc["sdk"], "cli": cc["cli"]})
+        gh = g.get("gh")
+        if gh and gh.get("last"):
+            rows.append({"k": "gh", "st": "info" if gh["waiting"] else "ok", "have": gh["last"], "date": gh["date"],
+                         "waiting": gh["waiting"]})
+        return rows
+
+    async def api_parts(self):
+        """Settings → "Pult and its parts": the table, the source folder's HEAD it was checked against, and when."""
+        f = await self.parts_facts()
+        head = (f["git"].get("head") or "")[:7] or None
+        return {"head": head, "branch": f["git"].get("branch"), "at": time.time(), "rows": self.parts_rows(f)}
 
     def busy_report(self):
         """What stopping the daemon would cut off (`pult busy`, a restart asks first): Pult's own sessions — their

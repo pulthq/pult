@@ -676,3 +676,33 @@ input[type=checkbox] { accent-color: var(--accent); }
 .upd-hist .login { margin-top: 8px; }
 .upd-dot { flex: none; display: inline-block; width: 15px; height: 15px; border-radius: 50%; border: 2px solid var(--code); }
 .upd-detail { margin-top: 6px; font-size: var(--fs-cap); color: var(--muted); background: var(--code); border-radius: 8px; padding: 6px 8px; overflow-wrap: anywhere; }
+
+/* stage U2: every part of Pult in one table — part, what is there, how far behind the branch; a row opens */
+.parts .upd-h { margin-bottom: 10px; }
+.parts-t { margin: 0 -16px; border-top: 1px solid var(--line); }
+.parts-hd { display: grid; grid-template-columns: 1fr 62px 108px; gap: 8px; padding: 8px 16px 6px 46px; font-size: var(--fs-cap);
+  font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.parts-hd span:nth-child(n+2) { text-align: right; }
+.part { border-top: 1px solid var(--line); }
+.part-r { display: grid; grid-template-columns: 22px 1fr 62px 108px; gap: 8px; align-items: center; width: 100%; text-align: left;
+  background: none; border: 0; padding: 10px 16px; color: var(--ink); cursor: pointer; font: inherit; }
+.part-r:active { opacity: .7; }
+.part-ic { color: var(--muted); display: flex; }
+.part.st-warn .part-ic, .part.st-attn .part-ic { color: var(--attn-ink); } .part.st-bad .part-ic { color: var(--danger); }
+.part-n { display: flex; flex-direction: column; min-width: 0; } .part-n b { font-weight: 600; font-size: var(--fs-sec); line-height: 1.25; }
+.part-n .dim { font-size: var(--fs-cap); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.part-v { text-align: right; font-size: var(--fs-cap); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pchip { justify-self: end; display: inline-flex; align-items: center; gap: 3px; font-size: var(--fs-cap); font-weight: 600; padding: 2px 8px;
+  border-radius: 99px; line-height: 1.3; max-width: 108px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pchip .ic { flex: none; }
+.pchip.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.pchip.warn, .pchip.attn { color: var(--attn-ink); background: var(--attn-soft); }
+.pchip.bad { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.pchip.info { color: var(--muted); background: var(--code); }
+.part.open { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.part-x { padding: 0 16px 14px 46px; font-size: var(--fs-sec); overflow-wrap: anywhere; }
+.part-x .upd-news { margin-top: 4px; } .part-x .btn.wide { margin-top: 10px; }
+.part-x .upd-h { margin-top: 2px; }
+.part-x .who { margin-top: 8px; display: flex; gap: 6px; align-items: baseline; font-weight: 500; }
+.part-x .who .ic { flex: none; color: var(--muted); position: relative; top: 2px; }
+.parts-f { margin-top: 10px; font-size: var(--fs-cap); }

@@ -99,6 +99,9 @@ async def main():
             verdict("your messages in the chat have ✓✓",
                     await js("[...document.querySelectorAll('.msg.me')].length > 0 && [...document.querySelectorAll('.msg.me')]"
                              ".every((e) => e.querySelector('.tick.read'))"))
+            # Claude at work: Allow the request the stand's session waits on, so its turn goes on — "working…"
+            await tap(".card.perm .row .btn")
+            verdict("the session works", await until("!!document.querySelector('.working')", 100))
 
             # sent while Claude works: in the chat at once, then ✓ and why it waits
             w1 = "Проверь ещё и пустую корзину"
@@ -109,6 +112,10 @@ async def main():
             verdict("✓ — the computer has it", await until("%s.length === 1 && !!%s[0].querySelector('.tick.sent')" % (way(w1, ".sent"), way(w1, ".sent")), 30))
             hint = await js("(document.querySelector('.out-hint') || {}).textContent || ''")
             verdict("it says Claude reads it after the current step", "после текущего шага" in hint or "after the current step" in hint, repr(hint))
+            # the session's state comes after it: "working…" never stands above the message just sent (2026-10-25)
+            order = await js("(() => { const w = document.querySelector('.working, .card.queue'), m = %s[0];"
+                             " return w && m ? !!(m.compareDocumentPosition(w) & Node.DOCUMENT_POSITION_FOLLOWING) : null; })()" % way(w1))
+            verdict("“working…” is under the message just sent", order is True, order)
             await js("window.scrollTo(0, document.documentElement.scrollHeight)")
             await shot("1-sent.png")
             # read at the tab's next step: the chat's own message, during the turn, ✓✓ — and only once

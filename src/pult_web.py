@@ -487,6 +487,7 @@ class Web:
         self.logins = Logins(pult.store)
         self.locked = None             # what differs on the server, while the app is closed because of it
         self.checked = False           # the files have matched at least once (said in the log once)
+        self.build = None              # what the relay server holds, {repo path: blob id} — it says so on each app open
 
     @property
     def on(self):
@@ -554,6 +555,9 @@ class Web:
         """A window asks to log in: a fresh initData (a new open of the app) or an older one plus the resume key this
         Mac gave that window. Either way the window gets the next key; the attempt goes to the logins list."""
         init, ip = msg.get("init"), str(msg.get("ip") or "")
+        b = msg.get("build")          # stage U2; a relay before it says nothing
+        if isinstance(b, dict):
+            self.build = {str(k)[:300]: v for k, v in list(b.items())[:2000] if isinstance(v, str) and len(v) == 40}
         client = msg.get("client") if isinstance(msg.get("client"), dict) else {}
         ok, uid, how = check_init(init, self.token, self.owners)
         key, via = None, "open"

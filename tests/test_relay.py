@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -119,6 +120,13 @@ class RelayTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("signature=", opened["init"])                  # the Mac checks the login with its own bot token
         self.assertEqual((opened["client"], opened["resume"]), ({"platform": "test", "version": "9"}, None))
         cid = opened["cid"]
+        # stage U2: what the server holds, as git blob ids by path in Pult's repository — the Mac finds the commit
+        # --no-filters: the bytes as they lie, as the relay reads them (Git for Windows would turn CRLF into LF first)
+        b, git = opened["build"], lambda f: subprocess.run(["git", "hash-object", "--no-filters", str(ROOT / f)],
+                                                          capture_output=True, text=True).stdout.strip()
+        self.assertEqual((b["relay/relay.py"], b["relay/web/static/app.js"], b["relay/web/index.html"]),
+                         (git("relay/relay.py"), git("relay/web/static/app.js"), git("relay/web/index.html")))
+        self.assertFalse([k for k in b if "__pycache__" in k or k.endswith(".DS_Store")])
         await ws.send_str(json.dumps({"t": "req", "id": 1, "op": "overview"}))     # not forwarded before confirmation
         await mac.send_str(json.dumps({"t": "auth", "cid": cid, "ok": True}))
         self.assertEqual(json.loads((await ws.receive(timeout=5)).data), {"t": "ready"})

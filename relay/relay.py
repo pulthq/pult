@@ -47,6 +47,39 @@ def log(*a):
     print(time.strftime("%Y-%m-%d %H:%M:%S"), *a, flush=True)
 
 
+def blob(data):
+    """The git blob id of these bytes — what `git ls-tree` gives for the same file."""
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def own_files():
+    """relay.py and requirements.txt as this relay started with them — the code that runs, not what lies on disk."""
+    files = {}
+    for name in ("relay.py", "requirements.txt"):
+        try:
+            files["relay/" + name] = blob((Path(__file__).resolve().parent / name).read_bytes())
+        except OSError:
+            pass
+    return files
+
+
+RUNNING = own_files()
+
+
+def build():
+    """What this server holds, as {path in Pult's repository: git blob id}: the relay as it started, the app's files
+    as they are now (a deploy changes them without a restart). The Mac finds the commit they were made from and
+    shows how far behind main they are (stage U2); the relay only reports."""
+    files = dict(RUNNING)
+    for p in sorted(WEB.rglob("*")):
+        if p.is_file() and "__pycache__" not in p.parts and p.name != ".DS_Store":
+            try:
+                files["relay/web/" + p.relative_to(WEB).as_posix()] = blob(p.read_bytes())
+            except OSError:
+                pass
+    return files
+
+
 def client_ip(request):
     """The phone's address as the web server saw it: X-Real-IP (nginx), else the last X-Forwarded-For hop (Caddy
     appends the real one; anything before it came from the client). The relay listens only for the web server."""
@@ -165,7 +198,7 @@ class Relay:
             self.pending[cid] = ws
             self.inits[cid] = {"init": hello.get("init"), "ip": ip, "client": client,
                                "resume": key if isinstance(key, str) and len(key) <= 100 else None}
-            mac = await self.to_mac(dict(self.inits[cid], t="open", cid=cid))
+            mac = await self.to_mac(dict(self.inits[cid], t="open", cid=cid, build=build()))
             await ws.send_str(json.dumps({"t": "hello", "cid": cid, "mac": mac}))
             async for m in ws:
                 if m.type != WSMsgType.TEXT:
@@ -209,9 +242,10 @@ class Relay:
         await self.to_clients({"t": "mac", "on": True}, waiting=True)
         for cid, cws in list(self.clients.items()):
             self.pending[cid] = self.clients.pop(cid)     # the new Mac knows no windows: let it check the login
+        files = build()
         for cid in list(self.pending):
             if cid in self.inits:
-                await self.to_mac(dict(self.inits[cid], t="open", cid=cid))
+                await self.to_mac(dict(self.inits[cid], t="open", cid=cid, build=files))
         try:
             async for m in ws:
                 if m.type != WSMsgType.TEXT:

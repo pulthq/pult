@@ -684,6 +684,43 @@ class UpdateTest(Base):
         self.assertTrue(U.check()["failed"])
         self.assertEqual(U.check({})["repo"], None)              # no record of the source: no way to tell
 
+    def test_parts_git(self):
+        # stage U2: how far a part is behind HEAD — the computer's install by its commit, the relay server's copy by
+        # its files (whichever commit has exactly them) — and what CHANGELOG.md says waits for a release
+        (self.repo / "relay" / "web").mkdir(parents=True)
+        self.files({"relay/relay.py": "r1\n", "relay/web/app.js": "a1\n", "CHANGELOG.md": "# Changelog\n\n## Unreleased\n\n"
+                    "- **One.** x\n  more of one\n- **Two.** y\n\n## 1.0.0 — 2026-10-20\n\n- old\n"})
+        c2 = self.commit("Pult: relay and app")
+        # what a server holds: git's own (LF) text — Git for Windows checks these files out with CRLF
+        served = {"relay/web/app.js": U.blob(self.repo / "relay/web/app.js", lf=True)}
+        self.files({"relay/web/app.js": "a2\n"})
+        c3 = self.commit("Pult: app two")
+        self.files({"docs/journal.md": "j3\n"})
+        self.commit("Pult: journal")
+        self.files({"relay/web/app.js": "a3\n", "src/pult_x.py": "x = 3\n"})
+        head = self.commit("Pult: app three, x three")
+        b = U.built_from(self.repo, head, served, U.PARTS["web"])
+        self.assertEqual((b["commit"], b["n"], b["news"]), (c2, 2, ["Pult: app three, x three", "Pult: app two"]))
+        self.assertEqual(b["since"], int(self.git("log", "-1", "--format=%ct", c3)))
+        now = {"relay/web/app.js": U.blob(self.repo / "relay/web/app.js", lf=True)}
+        self.assertEqual(U.built_from(self.repo, head, now, U.PARTS["web"])["n"], 0)
+        self.assertIsNone(U.built_from(self.repo, head, {"relay/web/app.js": "0" * 40}, U.PARTS["web"]))   # uncommitted
+        self.assertIsNone(U.built_from(self.repo, head, dict(now, **{"relay/web/extra.js": "0" * 40}), U.PARTS["web"]))
+        relay = {"relay/relay.py": U.blob(self.repo / "relay/relay.py", lf=True)}
+        self.assertEqual(U.built_from(self.repo, head, relay, U.PARTS["relay"])["commit"], c2)
+        lag = U.behind(self.repo, self.c1, head, U.TREE)                 # the journal and the relay don't count
+        self.assertEqual((lag["n"], lag["news"]), (1, ["Pult: app three, x three"]))
+        self.assertEqual(U.behind(self.repo, head, head, U.TREE)["n"], 0)
+        self.assertIsNone(U.behind(self.repo, "f" * 40, head, U.TREE))  # not in this history
+        self.assertIsNone(U.behind(self.repo, None, head, U.TREE))
+        self.assertEqual(U.changelog(self.repo, head), {"last": "1.0.0", "date": "2026-10-20", "waiting": 2})
+        self.assertIsNone(U.changelog(self.repo, self.c1))
+        # only the folder releases are made from has the release row: a clone of the public repository has no build script
+        self.assertFalse(U.makes_releases(self.repo, head))
+        (self.repo / "publish").mkdir()
+        self.files({"publish/build.py": "# build\n"})
+        self.assertTrue(U.makes_releases(self.repo, self.commit("Pult: the build script")))
+
     def test_check_crlf(self):
         # a checkout with core.autocrlf (Git for Windows): the files are CRLF in the folder and installed so, LF in the
         # commit — a commit that didn't touch them is nothing to install (Actions on Windows, 2026-10-24)
