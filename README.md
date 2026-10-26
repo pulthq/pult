@@ -11,7 +11,7 @@ Claude asks — your phone rings. You answer — the open VS Code tab goes on.</
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-555" alt="MIT"></a>
 </p>
 
-<p align="center"><a href="#install">Install</a> · <a href="#how-it-works">How it works</a> · <a href="#what-you-get">What you get</a> · <a href="guide/usage.md">Guide</a> · <a href="README.ru.md">Русский</a></p>
+<p align="center"><a href="#from-the-phone">From the phone</a> · <a href="#install">Install</a> · <a href="#how-it-works">How it works</a> · <a href="#what-you-get">What you get</a> · <a href="guide/usage.md">Guide</a> · <a href="README.ru.md">Русский</a></p>
 
 <p align="center">
   <picture>
@@ -23,6 +23,18 @@ Claude asks — your phone rings. You answer — the open VS Code tab goes on.</
 You give Claude Code a task and walk away. When Claude stops to ask, **Pult** rings your phone in the project's
 Telegram topic, and your answer reaches the session — even the tab open in VS Code. It runs on your computer and
 opens no port to the network. *Pult* is Russian for a remote control.
+
+## From the phone
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="media/glance.en.dark.png">
+    <img src="media/glance.en.png" width="560" alt="Allow or deny a permission from the phone; answer Claude's question; say what's next and it lands in the open VS Code tab; see whose move it is; the whole session live, with ready replies; voice that arrives as text; files both ways; a new project; your plan's pace; tags on every task; the model and the effort; Pult keeps itself current">
+  </picture>
+</p>
+
+Each one with its screen: [what you get](#what-you-get). The rest, from ticks on your message to `pult run`:
+**[the guide](guide/usage.md)**.
 
 ## Install
 
@@ -64,6 +76,13 @@ by the field.
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="media/f-session.en.dark.png"><img src="media/f-session.en.png" width="330" alt="A session in the app: Claude's report, its question, the outcome card waiting for you with three ready replies and the turn's files"></picture></p>
 
+### Tasks sorted by Claude
+
+Every task gets a section of the project and a topic in it, from the same small model that writes the result line —
+nothing to set up. Tap a section to see only its tasks; tap the tags to correct them.
+
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="media/f-tags.en.dark.png"><img src="media/f-tags.en.png" width="330" alt="A project in the app: its sections on top with how many tasks in each, a task that waits for you with its tags and ready replies, the tasks running"></picture></p>
+
 ### Your plan's pace
 
 Each limit against the even pace, with a forecast: on pace, under or over — and when it would run out.
@@ -83,11 +102,23 @@ An empty folder with git, a `CLAUDE.md` Claude writes from your words, or a clon
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="media/f-newproject.en.dark.png"><img src="media/f-newproject.en.png" width="330" alt="New project in the app: a name, its folder, where to put it and how to start: empty, with a description or from GitHub"></picture></p>
 
-And: tags on every task — the section of the project and the topic in it, kept by Claude (switch them on in Settings), corrected with a tap — voice
-messages as text, the model and effort per session and a default for both, a pager that knows whether you're at the computer,
-ticks on your message — sent, read by Claude — `pult run` for your own long commands, a new release installed from the
-app with one tap (macOS, Linux) — Pult finds it on GitHub by itself, and your app server takes the same one from GitHub
-after the computer ([once: `install.sh --auto`](deploy/relay/README.md#updates)) — every part of Pult in one table — what runs where and how far it is behind `main`. **[All of it](guide/usage.md)**.
+### Pult looks after itself
+
+Every part in one table: the computer, the app and its server, this phone's copy, the VS Code tabs, the hooks,
+Claude Code. A new release goes in with one tap (macOS, Linux) and your app server follows
+([once: `install.sh --auto`](deploy/relay/README.md#updates)); a Claude Code version VS Code has downloaded is
+checked here before your tabs move to it.
+
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="media/f-parts.en.dark.png"><img src="media/f-parts.en.png" width="330" alt="Settings in the app: the table of Pult's parts — the computer, the app and the relay on the server, this phone, the VS Code tabs, the hooks, Claude Code, the release — each with what it runs and whether it is as in main; the switch that checks new Claude Code versions"></picture></p>
+
+And:
+
+- **Voice** — a voice message in the topic, or the microphone in the app, arrives as text (Groq Whisper, with a key of yours).
+- **Model and effort** — per session, switched while it runs; a default for the sessions Pult starts.
+- **Ticks** on your message — sent, read by Claude — and a pager that knows whether you're at the computer.
+- **`pult run`** for your own long commands, reported like a turn.
+
+**[All of it](guide/usage.md)**.
 
 ## Next to the official options
 
