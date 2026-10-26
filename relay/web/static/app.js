@@ -1150,6 +1150,14 @@ const dotted = (xs) => xs.filter(Boolean).map((m, i) => html`${i ? html`<span cl
 // colours, picked by the name's UTF-8 bytes — pult_render.topic_color does the same sum, keep them in step
 const HUES = ["#6fb9f0", "#ffd67e", "#cb86db", "#8eee98", "#ff93b2", "#fb6f5f"];
 const hue = (s) => { let h = 0; for (const b of new TextEncoder().encode(String(s))) h = (h * 31 + b) >>> 0; return HUES[h % HUES.length]; };
+// a task's two tags (stage T): the section of its project and the topic in it, in plain words — Claude keeps them, the
+// owner only corrects. The colour is the section's place in its project's list, the same on every screen; the topic
+// wears its section's colour, outlined. A tag Claude has just made is dashed only in the sheet that corrects a task's
+// tags: in the lists, in its first day almost every tag is new, and the dashes were noise (2026-10-26)
+const TAG_H = [212, 28, 150, 280, 340, 190, 45, 95];
+const tagSt = (c) => "--th:" + TAG_H[(c || 0) % TAG_H.length];
+const tagChip = (g) => html`<span key=${g.k + g.n} class=${"tagc" + (g.k === "topic" ? " topic" : "")} style=${tagSt(g.c)}>${g.n}</span>`;
+const tagChips = (tags) => (tags && tags.length ? tags.slice(0, 2).map(tagChip) : "");
 // a session has no tab bar (the composer is there): its way straight home, the tab's own icon
 const home = (size) => html`<a class="home-l" href="#/" aria-label=${t("tab.home")}>${ic("home", size)}</a>`;
 const avatar = (name, size = 28) => html`<span class="av" aria-hidden="true" style=${"background:" + hue(name) + ";width:" + size + "px;height:" + size + "px;font-size:" + Math.round(size * .5) + "px"}>${String(name).replace(/[^\p{L}\p{N}]/gu, "").charAt(0).toUpperCase()}</span>`;
@@ -1265,9 +1273,9 @@ function Mine({ r, now, onGot, stt, showProject = true }) {
   const open = () => go("#/s/" + r.sid);
   const sent = () => onGot && onGot(r.sid);
   return html`<div class=${"card mine" + (r.state === "fail" ? " fail" : "")}>
-    <div class="card-h tap" onClick=${open}><div class="c-proj">${showProject && r.project ? html`${avatar(r.project, 18)}<span>${r.project}</span>` : ""}<span class="c-wait">${t("mine.waits", { dur: nb(dur(now - r.since)) })}</span></div>
+    <div class="card-h tap" onClick=${open}><div class="c-proj">${showProject && r.project ? html`${avatar(r.project, 18)}<span class="c-name">${r.project}</span>` : ""}<span class="c-wait">${t("mine.waits", { dur: nb(dur(now - r.since)) })}</span></div>
       <b class="c-title">${r.state === "fail" ? ic("alert", 16) : ""}${r.title}</b></div>
-    ${r.need ? html`<div class="ln dim tap" onClick=${open}>${r.line}</div><div class="now tap" onClick=${open}>${r.need}</div>` : html`<div class="now tap" onClick=${open}>${r.line}</div>`}
+    ${r.need ? html`<div class="ln dim tap" onClick=${open}>${tagChips(r.tags)}${r.line}</div><div class="now tap" onClick=${open}>${r.need}</div>` : html`<div class="now tap" onClick=${open}>${tagChips(r.tags)}${r.line}</div>`}
     ${r.fail === "rate_limit" ? html`<${ResumeAt} sid=${r.sid} resume=${resume} reset=${r.reset} onSet=${setResume}/>` : html`<${Replies} sid=${r.sid} replies=${r.replies} onSent=${sent}/>`}
     <${QuickReply} sid=${r.sid} stt=${stt} onSent=${sent}/>
     <div class="foot quiet"><span></span><button class="link" disabled=${busy} onClick=${got}>${ic("check", 15)} ${t("mine.got")}</button></div>
@@ -1298,8 +1306,8 @@ function BoardRow({ r, now, onBg, project }) {
     : r.state === "done" ? html`<span class="st-ic ok">${ic("check", 15)}</span>` : r.driven ? html`<span class="st-ic">${ic("phone", 15)}</span>` : "";
   return html`<button class=${"item brow" + (r.state === "idle" ? " rest" : "") + (r.state === "done" ? " fresh" : "")} onClick=${() => go("#/s/" + r.sid)}>
     <div class="item-h"><b class="one">${icon}${r.title}</b><span class="meta">${r.ctx != null && r.ctx >= 90 ? html`<span class="pct bad">${ic("alert", 13)} ${r.ctx} %</span>` : ""}${right}</span></div>
-    ${project != null ? what && html`<div class="ln dim">${what}</div>` : html`
-    ${r.line && html`<div class="ln">${r.line}</div>`}
+    ${project != null ? (what || (r.tags && r.tags.length > 0)) && html`<div class="ln dim">${tagChips(r.tags)}${what}</div>` : html`
+    ${(r.line || (r.tags && r.tags.length > 0)) && html`<div class="ln">${tagChips(r.tags)}${r.line}</div>`}
     ${r.bg && r.bg.length > 0 && html`<div class="bg tap" onClick=${bgTap}>${bgLine(r.bg)} ${ic("chev", 14)}</div>`}`}
   </button>`;
 }
@@ -1733,33 +1741,97 @@ function Projects() {
 
 // a project's screen — its board, large: what waits for you (answer right here), what runs, today's outcomes, then
 // the earlier sessions folded; a new task at the bottom, under the thumb. A red mark anywhere leads here or deeper
-function Project({ pkey }) {
+// the project's sections with how many of the screen's tasks each has (stage T); a tap narrows every list on the
+// screen to that section and shows its topics in a second row; a second tap or "All" brings everything back
+function TagBar({ set, sel, top, all, onSel, onTop }) {
+  const sec = sel && set.find((g) => g.n === sel);
+  return html`<div class="tagbar" role="toolbar">
+    <button class=${"tagf" + (sel ? "" : " on")} onClick=${() => onSel(null)}>${t("tags.all")}<span>${all}</span></button>
+    ${set.map((g) => html`<button key=${g.n} class=${"tagf" + (sel === g.n ? " on" : "")} style=${tagSt(g.c)}
+      onClick=${() => onSel(sel === g.n ? null : g.n)}><i></i>${g.n}<span>${g.cnt}</span></button>`)}
+  </div>
+  ${sec && sec.topics.length > 1 && html`<div class="tagbar sub" style=${tagSt(sec.c)}>
+    <button class=${"tagf" + (top ? "" : " on")} onClick=${() => onTop(null)}>${t("tags.topics.all")}<span>${sec.cnt}</span></button>
+    ${sec.topics.map((x) => html`<button key=${x.n} class=${"tagf" + (top === x.n ? " on" : "")} onClick=${() => onTop(top === x.n ? null : x.n)}>${x.n}<span>${x.cnt}</span></button>`)}
+  </div>`}`;
+}
+
+function Project({ pkey, tag, topic }) {
   const now = useNow(1000);
   const [d, err, set] = useLive(() => api("project", { pkey }), [pkey]);
   const [more, setMore] = useState(false);
+  const [sel, setSel0] = useState(tag || null);           // stage T: the section the lists are narrowed to, and its topic
+  const [top, setTop] = useState(topic || null);
+  const setSel = (v) => { setSel0(v); setTop(null); };
   const [bgFor, setBgFor] = useState(null);
   const [openBg, closeBg] = useOverlay(!!bgFor, (v) => { if (!v) setBgFor(null); });
   const yours = useRcpt(d ? moves(d.pending, d.mine) : [], moveKey);           // as on Home: one line by time
   if (!d) return html`<${Loading} err=${err}/>`;
   const onBg = (s) => { setBgFor(s.sid); openBg(); };
   const gone = (sid) => set(Object.assign({}, d, { mine: d.mine.filter((r) => r.sid !== sid) }));
-  const waits = d.pending.length + d.mine.length;
+  const tagsOf = new Map([...d.mine, ...d.live, ...d.today, ...d.earlier].map((r) => [r.sid, r.tags || []]));
+  const has = (sid) => { const g = tagsOf.get(sid) || []; return !sel || (g[0] && g[0].n === sel && (!top || (g[1] && g[1].n === top))); };
+  const mineF = yours.filter((e) => has(e.req ? e.req.sid : e.mine.sid));
+  const liveF = d.live.filter((r) => has(r.sid)), todayF = d.today.filter((r) => has(r.sid)), earlierF = d.earlier.filter((r) => has(r.sid));
+  const waits = sel ? mineF.length : d.pending.length + d.mine.length;
   const sum = d.turns ? t("sum.today", { n: d.turns, turns: plural(d.turns, "turn"), dur: dur(d.secs) }) : t("proj.quiet");
   return html`<div class="project">
     <div class="ph">${avatar(d.name, 44)}<div><h2>${d.name}</h2><div class="sum dim">${sum}</div></div></div>
-    ${(waits > 0 || yours.length > 0) && html`<h3>${t("proj.waits", { n: waits })}</h3>
-      ${yours.map((e) => e.req ? html`<${Req} key=${e.key} r=${e.req} showProject=${false}/>`
+    ${d.tagset && d.tagset.length > 0 && html`<${TagBar} set=${d.tagset} sel=${sel} top=${top} all=${tagsOf.size} onSel=${setSel} onTop=${setTop}/>`}
+    ${(waits > 0 || mineF.length > 0) && html`<h3>${t("proj.waits", { n: waits })}</h3>
+      ${mineF.map((e) => e.req ? html`<${Req} key=${e.key} r=${e.req} showProject=${false}/>`
         : html`<${Mine} key=${e.key} r=${Object.assign({ reset: d.reset }, e.mine)} now=${now} onGot=${gone} stt=${d.stt} showProject=${false}/>`)}`}
-    ${d.live.length > 0 && html`<h3>${t("proj.live", { n: d.live.length })}</h3><div class="list">${d.live.map((r) => html`<${BoardRow} key=${r.sid} r=${r} now=${now} onBg=${onBg}/>`)}</div>`}
-    ${d.today.length > 0 && html`<h3>${t("proj.today")}</h3><div class="list">${d.today.map((r) => html`<${BoardRow} key=${r.sid} r=${r} now=${now} onBg=${onBg}/>`)}</div>`}
-    ${!waits && !yours.length && !d.live.length && !d.today.length && html`<div class="empty small">${t("proj.nothing")}</div>`}
-    ${d.earlier.length > 0 && html`<h3 class="toggle" onClick=${() => setMore(!more)}>${t("proj.earlier", { n: d.earlier.length })} <span class=${"chev" + (more ? " open" : "")}>${ic("chev", 14)}</span></h3>
-      ${more && html`<div class="list">${d.earlier.map((x) => html`<button class="item brow rest" key=${x.sid} onClick=${() => go("#/s/" + x.sid)}>
+    ${liveF.length > 0 && html`<h3>${t("proj.live", { n: liveF.length })}</h3><div class="list">${liveF.map((r) => html`<${BoardRow} key=${r.sid} r=${r} now=${now} onBg=${onBg}/>`)}</div>`}
+    ${todayF.length > 0 && html`<h3>${t("proj.today")}</h3><div class="list">${todayF.map((r) => html`<${BoardRow} key=${r.sid} r=${r} now=${now} onBg=${onBg}/>`)}</div>`}
+    ${!waits && !mineF.length && !liveF.length && !todayF.length && !(sel && earlierF.length) && html`<div class="empty small">${t("proj.nothing")}</div>`}
+    ${earlierF.length > 0 && html`<h3 class="toggle" onClick=${() => setMore(!more)}>${t("proj.earlier", { n: earlierF.length })} <span class=${"chev" + (more || sel ? " open" : "")}>${ic("chev", 14)}</span></h3>
+      ${(more || sel) && html`<div class="list">${earlierF.map((x) => html`<button class="item brow rest" key=${x.sid} onClick=${() => go("#/s/" + x.sid)}>
         <div class="item-h"><b>${x.driven ? html`<span class="st-ic">${ic("phone", 14)}</span>` : ""}${x.title}</b><span class="meta"><span class="dim nowrap">${agoShort(x.last)}</span></span></div>
-        ${x.line ? html`<div class="ln">${x.line}</div>` : x.open ? html`<div class="ln">${t("open.mac")}</div>` : ""}</button>`)}</div>`}`}
+        ${x.line || x.open || (x.tags && x.tags.length > 0) ? html`<div class="ln">${tagChips(x.tags)}${x.line || (x.open ? t("open.mac") : "")}</div>` : ""}</button>`)}</div>`}`}
     <div class="stick"><button class="btn wide" onClick=${() => go("#/new?pkey=" + encodeURIComponent(pkey))}>${t("project.new")}</button></div>
     ${bgFor && html`<${BgSheet} sid=${bgFor} fixed=${true} onClose=${closeBg}/>`}
   </div>`;
+}
+
+// a task's tags (stage T): its section, then a topic in it. "Claude picks them" leaves both to Claude; a tap on another
+// section or on a topic makes the choice the owner's, and Claude never changes it again. Each tap is saved at once,
+// as in the model menu; a new section or topic by name, right here
+function TagPick({ sid, info, onDone, onClose }) {
+  const [tags, setTags] = useState(info.tags || []);
+  const [set, setSet] = useState(info.tagset || []);
+  const [auto, setAuto] = useState(info.tag_auto !== false);
+  const [busy, setBusy] = useState(false);
+  const [adding, setAdding] = useState(null);          // "sec" | "topic": the field for a new name is open
+  const [name, setName] = useState("");
+  const sec = tags[0] ? tags[0].n : null, top = tags[1] ? tags[1].n : null;
+  const cur = set.find((g) => g.n === sec);
+  const pick = async (args) => {
+    setBusy(true);
+    try { const r = await api("tag", Object.assign({ sid }, args)); haptic("success"); setTags(r.tags || []); setSet(r.tagset || []); setAuto(!!r.auto); onDone(); }
+    catch (e) { alertBox(e.message); }
+    setBusy(false);
+  };
+  const add = (e) => {
+    e.preventDefault();
+    const v = name.trim();
+    if (!v) return;
+    const kind = adding;
+    setAdding(null); setName("");
+    pick(kind === "sec" ? { sec: v } : { sec, topic: v });
+  };
+  const field = (kind) => (adding === kind ? html`<form class="tagnew" onSubmit=${add}><input value=${name} placeholder=${t("tags.name")} maxlength="32"
+      autocomplete="off" onInput=${(e) => setName(e.target.value)} ref=${(el) => el && !el.dataset.on && ((el.dataset.on = "1"), el.focus())}/>
+      <button class="btn" disabled=${busy || !name.trim()}>${t("tags.add")}</button></form>`
+    : html`<button class="tagf add" disabled=${busy} onClick=${() => { setAdding(kind); setName(""); }}>${ic("plus", 14)} ${t(kind === "sec" ? "tags.sec.new" : "tags.topic.new")}</button>`);
+  return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick tall tagpick"><div class="q-t pick-h">${t("tags.task")}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
+    <button class=${"opt auto" + (auto ? " on" : "")} disabled=${busy} onClick=${() => { if (!auto) pick({ auto: true }); }}>${ic("auto", 16)}<span class="tn">${t("tags.auto")}</span>${auto ? ic("check", 16) : ""}<span class="dim">${t("tags.auto.about")}</span></button>
+    <div class="pick-t">${t("tags.sec")}</div>
+    <div class="pills">${set.map((g) => html`<button key=${g.n} class=${"tagf" + (sec === g.n ? " on" : "") + (g.fresh ? " fresh" : "")} style=${tagSt(g.c)} disabled=${busy}
+      onClick=${() => { if (sec !== g.n) pick({ sec: g.n }); }}><i></i>${g.n}</button>`)}${field("sec")}</div>
+    ${sec && html`<div class="pick-t">${t("tags.topic")}</div>
+    <div class="pills" style=${cur ? tagSt(cur.c) : ""}>${(cur ? cur.topics : []).map((x) => html`<button key=${x.n} class=${"tagf topic" + (top === x.n ? " on" : "") + (x.fresh ? " fresh" : "")} disabled=${busy}
+      onClick=${() => pick({ sec, topic: top === x.n ? "" : x.n })}>${x.n}</button>`)}${field("topic")}</div>`}
+    <div class="dim small">${t("tags.mine")}</div></div>`;
 }
 
 // consecutive steps — one "N steps" block that expands; Claude's own lines about its progress (what the VS Code
@@ -2059,6 +2131,8 @@ function Session({ sid }) {
   const [openNote, closeNote] = useOverlay(!!note, (v) => { if (!v) setNote(null); });
   const [bgs, setBgs] = useState(false);
   const [openBgs, closeBgs] = useOverlay(bgs, setBgs);
+  const [tagPick, setTagPick] = useState(false);
+  const [openTagPick, closeTagPick] = useOverlay(tagPick, setTagPick);
   const [unread, setUnread] = useState(false);
   const [far, setFar] = useState(false);          // scrolled up more than a screen: a way straight to the bottom
   // your own message that went up past the top of the screen: pinned there, like a pinned message in Telegram;
@@ -2235,13 +2309,15 @@ function Session({ sid }) {
     <span>${modelText || t("model")}</span>${effortNow && html`<${Dots} e=${effortNow}/>`}${canPick ? html`<span class="caret">${ic("down", 13)}</span>` : ""}</button>`;
   const line2 = (dest || ctxText) && html`<button class="where" onClick=${explain}>${dest}${dest && ctxText ? " · " : ""}<span class=${pct >= 90 ? "bad" : pct >= 70 ? "warn" : ""}>${ctxText}</span></button>`;
   return html`<div class="session">
-    <div class="sess-h"><h2>${info.title}</h2><div class="dim">${home(20)}${info.project !== info.title ? html`<span class="sep">›</span><a class="crumb" href=${"#/p/" + encodeURIComponent(info.pkey)}>${info.project}</a>` : ""} ${st}</div>
+    <div class="sess-h"><h2>${info.title}</h2>
+      ${info.tagset && html`<button class="sess-tags" onClick=${() => (tagPick ? closeTagPick() : openTagPick())}>${(info.tags || []).length ? tagChips(info.tags) : html`<span class="dim">${t("tags.none")}</span>`}<span class="caret">${ic("down", 14)}</span></button>`}
+      <div class="dim">${home(20)}${info.project !== info.title ? html`<span class="sep">›</span><a class="crumb" href=${"#/p/" + encodeURIComponent(info.pkey)}>${info.project}</a>` : ""} ${st}</div>
       ${lv.bg && lv.bg.length > 0 && html`<button class="bg tap plain" onClick=${openBgs}>${bgLine(lv.bg)} ${ic("chev", 14)}</button>`}</div>
     ${s.before != null && html`<button class="link center earlier" disabled=${early} onClick=${earlier}>${t(early ? "earlier.loading" : "earlier")}</button>`}
     ${(away || pin) && html`<div class="sess-top">
       ${away && html`<div class="where-bar">${home(22)}${avatar(info.project, 30)}<span class="wb-body">
         <a class="wb-p" href=${"#/p/" + encodeURIComponent(info.pkey)}>${info.project}</a>
-        ${info.title !== info.project && html`<span class="wb-t">${info.title}</span>`}</span>${st}</div>`}
+        ${info.title !== info.project && html`<span class="wb-t">${tagChips(info.tags)}${info.title}</span>`}</span>${st}</div>`}
       ${pin && html`<button class="pinned" onClick=${() => { setFull(pin); openFull(); }}><span class="pin-in"><span class="pin-bar"></span>
       <span class="pin-body"><span class="pin-h">${t("pin.you")}${pin.ts ? " · " + hhmm(toDate(pin.ts)) : ""}${pin.att && pin.att.length ? html` · ${ic("clip", 12)} ${pin.att.length}` : ""}</span>
       <span class="pin-tx">${pin.text}</span></span></span></button>`}</div>`}
@@ -2270,6 +2346,7 @@ function Session({ sid }) {
       ${pick && html`<${ModelPick} sid=${sid} choice=${info.choice} now=${info.stats || {}} driven=${lv.driven} tab=${lv.tab} dflt=${info.default} canModel=${info.switch} canEffort=${info.switch_effort} onClose=${closePick} onDone=${() => load("after")}/>`}
       ${note && html`<${Sheet} title=${info.title} lines=${note} onClose=${closeNote}/>`}
       ${bgs && html`<${BgSheet} sid=${sid} onClose=${closeBgs}/>`}
+      ${tagPick && html`<${TagPick} sid=${sid} info=${info} onDone=${() => load("after")} onClose=${closeTagPick}/>`}
       ${full && html`<div class="backdrop" onClick=${closeFull}></div><div class="card pick"><div class="q-t pick-h">${t("pin.you")}${full.ts ? " · " + hhmm(toDate(full.ts)) : ""}<button class="x" aria-label=${t("close")} onClick=${closeFull}>×</button></div>
         <div class="full-tx">${full.text}</div>
         ${full.att && full.att.length ? html`<div class="atts">${full.att.map((x, k) => html`<${Pic} key=${k} a=${x} all=${full.att}/>`)}</div>` : ""}
@@ -2777,7 +2854,7 @@ function App() {
   }, [r.name, r.id]);
   const screen = r.name === "s" ? html`<${Session} sid=${r.id}/>`
     : r.name === "f" ? html`<${TurnFilesScreen} sid=${r.id} turn=${r.q.get("t")}/>`
-    : r.name === "p" ? html`<${Project} pkey=${r.id}/>`
+    : r.name === "p" ? html`<${Project} key=${r.id + "?" + (r.q.get("tag") || "") + "/" + (r.q.get("topic") || "")} pkey=${r.id} tag=${r.q.get("tag")} topic=${r.q.get("topic")}/>`
     : r.name === "projects" ? html`<${Projects}/>`
     : r.name === "new" ? html`<${NewTask} pkey=${r.q.get("pkey")}/>`
     : r.name === "newproject" ? html`<${NewProject}/>`

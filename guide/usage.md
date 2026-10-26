@@ -37,6 +37,12 @@ you're neither in the app nor at the computer. Reminders on long turns; warnings
   field. Pick the model (Fable, Opus, Sonnet, Haiku) and how hard Claude thinks for that session; a running one
   switches at once. Settings → Model and effort sets what sessions from the app and Telegram start with; VS Code tabs
   keep their own settings.
+- **Tags**: every task gets two — the section of the project it belongs to and the topic in it — from the same small
+  model that writes the result line, as soon as its request is in and again when its turn ends; turn it on in
+  Settings → A plain line for each result (it is off at first). The folders and files are only the model's hint: there
+  is nothing else to set up. Tap a section on top of a project's screen to see only its tasks (and its topics); tap the
+  tags under a task's title to correct them — your choice stays. `#topic` in a request sets it at once, even with the
+  switch off.
 - **Resources**: Limits — the curve of each limit against the even pace, the forecast (on pace, under: how many hours
   of a session's work would go unused, over: when it runs out), who spent it; Computer — the processor, the memory
   and each Claude session's commands.

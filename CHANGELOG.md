@@ -2,6 +2,28 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.17.2 — 2026-10-26
+
+- **Task tags: a section and a topic.** Every task gets two tags — the section of its project it belongs to and the
+  topic in that section, in plain words ("Firmware · Bed levelling") — so tasks running side by side and piling up in
+  the history can be told apart at a glance. The small model that writes the result line keeps them: it tags a task
+  as soon as its request is in, and again with the result line, in the same request. It picks from the project's own
+  list and adds a section or a topic only when nothing fits; the folders and files a task worked with are only its
+  hint — there is nothing to set up, no folders or paths to map. The tags show on every task's row (Home, the
+  project, its earlier sessions) and under the task's title; on top of a project's screen its sections with how many
+  tasks each, a tap narrows every list to one and shows its topics. Correct a task's tags with a tap under its title
+  (or `#topic` in a request): your choice stays, the model never changes it again; "Claude picks them" gives it back.
+  The model reads the task's title too, so a long task's "go on" or "done" still gets the tags of what it is about,
+  and replaces a first guess made from one short request once the task shows what it is.
+  It runs on the same switch as the result line — Settings → **A plain line for each result**, off at first; the
+  switch now says it tags tasks too, and with it off a task has only the tags you give it. New module
+  `src/pult_tags.py`; `tests/probe_tags.py` checks the model on made-up tasks, `tools/tags_check.py` drives the
+  screens with taps on the stand (`STAND_TAGS=1`).
+- **The result line reads your request** for messages sent from Telegram and the app too, not only those typed at the
+  computer.
+- **Lines on Home are one line again**, and project names in "While you were away" no longer break mid-word: the file
+  viewer's own style (0.15.3) had overridden them.
+
 ## 0.16.2 — 2026-10-26
 
 - **A default model and effort.** Settings → **Model and effort**: what the sessions Pult starts begin with — new ones

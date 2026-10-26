@@ -40,6 +40,7 @@ import pult_files as F  # noqa: E402
 import pult_os  # noqa: E402
 import pult_render as R  # noqa: E402
 import pult_stt as STT  # noqa: E402
+import pult_tags as G  # noqa: E402
 import pult_update as U  # noqa: E402
 import pultd  # noqa: E402
 
@@ -1062,6 +1063,106 @@ class AttnTest(unittest.TestCase):
         self.assertIn("no-session-persistence", o.extra_args)
 
 
+class TagsTest(unittest.TestCase):
+    """Task tags (stage T, pult_tags): names, the owner's hashtags, the project's list and its limits, the hints."""
+
+    VOCAB = [{"n": "Прошивка", "c": 0, "topics": [{"n": "Калибровка"}, {"n": "Wi-Fi"}]},
+             {"n": "Корпус", "c": 1, "topics": [{"n": "Прочность"}]}]
+
+    def test_names(self):
+        self.assertEqual(G.norm("  калибровка   стола "), "Калибровка стола")
+        self.assertEqual(G.norm("#тёмная_тема"), "Тёмная тема")
+        self.assertEqual(G.norm("«Выпуск»."), "Выпуск")
+        self.assertEqual(G.norm("Node.js"), "Node.js")                     # a name with a dot is a name
+        for bad in ("", "  ", "src/app.js", "runout.c", "C:\\work", "#", "—"):
+            self.assertIsNone(G.norm(bad), bad)                            # files and paths are never tags
+        long = G.norm("очень длинное название раздела проекта", G.SEC_LEN)
+        self.assertLessEqual(len(long), G.SEC_LEN)
+        self.assertTrue("очень длинное название раздела проекта".lower().startswith(long.lower()))
+        self.assertEqual(G.key("Тёмная  Тема"), G.key("темная_тема"))
+
+    def test_hashtags(self):
+        self.assertEqual(G.hashtags("Почини #калибровка и #тёмная_тема, issue #123, # Заголовок, a#b, &#39; #калибровка"),
+                         ["калибровка", "тёмная тема"])
+        self.assertEqual(G.hashtags("#один #два #три"), ["один", "два"])       # two at most: a section and a topic
+        self.assertEqual(G.hashtags("без тегов"), [])
+
+    def test_place(self):
+        v = self.VOCAB
+        self.assertEqual(G.find(v, "калибровка")[0], "topic")
+        self.assertEqual(G.find(v, "КОРПУС")[1]["n"], "Корпус")
+        self.assertIsNone(G.find(v, "Маркетинг"))
+        # the list's own spelling; a new section or topic is marked as new
+        self.assertEqual(G.place(v, {"sec": "прошивка", "topic": "wi-fi"}), ("Прошивка", "Wi-Fi", False, False))
+        self.assertEqual(G.place(v, {"sec": "Корпус", "topic": "Крепления"}), ("Корпус", "Крепления", False, True))
+        self.assertEqual(G.place(v, {"sec": "Маркетинг", "topic": "Выставка"}), ("Маркетинг", "Выставка", True, True))
+        # the limits: past SEC_MAX the task keeps its tags (or gets none); past TOPIC_MAX — its topic in that section
+        full = [{"n": "Р%d" % i, "c": i, "topics": []} for i in range(G.SEC_MAX)]
+        self.assertIsNone(G.place(full, {"sec": "Новый", "topic": "x"}))
+        self.assertEqual(G.place(full, {"sec": "Новый", "topic": "x"}, {"sec": "Р1", "topic": None}), ("Р1", None, False, False))
+        crowded = [{"n": "Прошивка", "c": 0, "topics": [{"n": "Т%d" % i} for i in range(G.TOPIC_MAX)]}]
+        self.assertEqual(G.place(crowded, {"sec": "Прошивка", "topic": "Ещё"}, {"sec": "Прошивка", "topic": "Т3"}),
+                         ("Прошивка", "Т3", False, False))
+        self.assertEqual(G.place(crowded, {"sec": "Прошивка", "topic": "Ещё"}), ("Прошивка", None, False, False))
+
+    def test_fresh_and_parse(self):
+        now = time.time()
+        self.assertTrue(G.is_fresh({"own": False, "ts": now - 60}, 1, now))
+        self.assertFalse(G.is_fresh({"own": True, "ts": now - 60}, 1, now))           # the owner's: never new
+        self.assertFalse(G.is_fresh({"own": False, "ts": now - 60}, 2, now))          # a second task has it
+        self.assertFalse(G.is_fresh({"own": False, "ts": now - G.FRESH - 1}, 1, now))   # a day old
+        self.assertEqual(G.parse({"sec": "прошивка", "topic": "Прошивка"}), {"sec": "Прошивка", "topic": None})
+        self.assertEqual(G.parse({"sec": "Голос", "topic": ""}), {"sec": "Голос", "topic": None})
+        for bad in (None, "x", {}, {"sec": "src/stt.py", "topic": "x"}, {"sec": "", "topic": "Тема"}):
+            self.assertIsNone(G.parse(bad), bad)
+
+    def test_hints_and_paths(self):
+        root = TMP / "tagproj"
+        for d in ("firmware", "marketing", ".git", "node_modules", "inbox"):
+            (root / d).mkdir(parents=True, exist_ok=True)
+        (root / "README.md").write_text("# x")
+        self.assertEqual(G.hints(root), ["firmware", "marketing"])           # no hidden folders, dependencies, inbox
+        self.assertEqual(G.hints(TMP / "nowhere"), [])
+        tr = TMP / "tagproj.jsonl"
+        stamp = lambda ago: time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - ago))
+        use = lambda ago, *inputs: json.dumps({"type": "assistant", "timestamp": stamp(ago), "message": {"content": [
+            {"type": "tool_use", "name": "x", "input": i} for i in inputs]}})
+        tr.write_text("\n".join([
+            use(500, {"file_path": str(root / "docs" / "old.md")}),                       # before the turn
+            use(50, {"file_path": str(root / "firmware" / "runout.c")}, {"command": "make"}),
+            use(40, {"path": "marketing/show"}, {"file_path": "/etc/hosts"}),             # outside the project: no
+            use(30, {"notebook_path": str(root / "firmware" / "plot.ipynb")}),
+            use(20, {"file_path": str(root / "firmware" / "runout.c")}),                  # again: the latest place
+            "not json"]) + "\n")
+        self.assertEqual(G.turn_paths(tr, time.time() - 100, root),
+                         ["marketing/show", "firmware/plot.ipynb", "firmware/runout.c"])
+        self.assertEqual(G.turn_paths(TMP / "no.jsonl", 0, root), [])
+        req = G.request("Принтер", self.VOCAB, prompt="Добавь датчик", reply="Готово", paths=["firmware/runout.c"],
+                        cur={"sec": "Корпус", "topic": "Прочность"}, own="датчики", dirs=["firmware"], title="Датчики двери")
+        for part in ("- Прошивка: Калибровка, Wi-Fi", "<current_tags>Корпус / Прочность</current_tags>", "<task_title>Датчики двери</task_title>",
+                     "<owner_tag>датчики</owner_tag>", "firmware/runout.c", "<top_folders>firmware</top_folders>", "Добавь датчик"):
+            self.assertIn(part, req)
+        self.assertIn("(empty", G.request("x", [], prompt="y"))
+        o = G.options("ru", TMP)
+        self.assertEqual((o.model, o.tools, o.setting_sources), ("haiku", [], []))
+        self.assertIn("Russian", o.system_prompt)
+        self.assertIn("never after a folder", o.system_prompt)
+
+    def test_brief_asks_for_tags(self):
+        # one request per turn: the result line's call asks for the tags too, when they are wanted
+        ctx = {"project": "Принтер", "vocab": self.VOCAB, "paths": ["firmware/a.c"], "cur": None, "dirs": []}
+        req = B.request("сделай", "готово", [], ctx)
+        self.assertIn("<project_tags>", req)
+        self.assertNotIn("<project_tags>", B.request("сделай", "готово", []))
+        o = B.options("ru", TMP, tags=True)
+        self.assertIn("sec", o.output_format["schema"]["required"])
+        self.assertNotIn("sec", B.options("ru", TMP).output_format["schema"]["properties"])
+        res = types.SimpleNamespace(is_error=False, structured_output={"line": "Готово", "you": False, "need": "",
+                                                                      "sec": "прошивка", "topic": "датчики"})
+        self.assertEqual(B.parse(res, True)["tags"], {"sec": "Прошивка", "topic": "Датчики"})
+        self.assertNotIn("tags", B.parse(res))
+
+
 class SttTest(unittest.IsolatedAsyncioTestCase):
     """pult_stt: the Groq client on a fake transport — the request, the words, the errors, the proxy fallback."""
 
@@ -1172,8 +1273,16 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         pultd.EDIT_EVERY = 0.05
         self.server = await pultd.start_link(self.p.handle_conn, os.environ["PULT_SOCK"])
         self.tasks = [asyncio.create_task(self.p.out.run())]
+        self.tagged = []                         # what the tags' model was asked (stage T): it never really runs here
+
+        async def no_model(text, lang, cwd):
+            self.tagged.append(text)
+            return None
+        self.no_tag = mock.patch.object(pultd.G, "tag", no_model)
+        self.no_tag.start()
 
     async def asyncTearDown(self):
+        self.no_tag.stop()
         I.set_lang("ru")
         for t in self.tasks:
             t.cancel()
@@ -2583,7 +2692,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await self.p.api_prefs(brief=True)
         asked = []
 
-        async def fake_brief(prompt, reply, bg, lang, cwd):
+        async def fake_brief(prompt, reply, bg, lang, cwd, tags=None):
             asked.append((prompt, lang))
             return {"line": "Отчёт собран, всё зелёное", "you": False, "need": ""}
         with mock.patch.object(pultd.B, "brief", fake_brief):
@@ -2616,6 +2725,80 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await self.p.presence_check()
         self.assertFalse(self.p.app_vis)
 
+    async def test_tags(self):
+        # stage T: a task gets its tags from the model as soon as its request is in, and again with the result line;
+        # the owner's hashtag or correction is final; the rows, the project and the session carry them
+        self.p._procs = (time.monotonic() + 1e6, None)
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        Path(TP).write_text(tline("user", "Почини калибровку") + "\n")
+        self.store.tag_add(PKEY, "Прошивка", "Калибровка", ts=time.time() - 3 * 86400)
+        self.store.tag_add(PKEY, "Корпус", None, ts=time.time() - 3 * 86400)
+        # without the model: no request for tags; an owner's hashtag still works — from the list, or a section of its own
+        await run_hook(ev("UserPromptSubmit", prompt="Почини стол #калибровка"))
+        await until(lambda: self.store.session_tag(SID) is not None)
+        r = self.store.session_tag(SID)
+        self.assertEqual((r["sec"], r["topic"], r["own"]), ("Прошивка", "Калибровка", 1))
+        self.assertEqual(self.tagged, [])
+        # the model on: a task without tags asks for them at once; the owner's tags are never overwritten
+        await self.p.api_prefs(brief=True)
+        sid2 = "22222222-3333-4444-5555-666666666666"
+        asked = []
+
+        async def model(text, lang, cwd):
+            asked.append(text)
+            return {"sec": "голос", "topic": "Распознавание"}
+        with mock.patch.object(pultd.G, "tag", model):
+            await run_hook(dict(ev("UserPromptSubmit", prompt="Микрофон ест первый слог"), session_id=sid2))
+            await until(lambda: self.store.session_tag(sid2) is not None)
+        r2 = self.store.session_tag(sid2)
+        self.assertEqual((r2["sec"], r2["topic"], r2["own"]), ("Голос", "Распознавание", 0))
+        self.assertIn("Микрофон ест первый слог", asked[0])
+        self.assertIn("<task_title>Микрофон ест первый слог</task_title>", asked[0])   # the task's name, for a "go on" later
+        self.assertIn("- Прошивка: Калибровка", asked[0])                  # the project's list goes to the model
+        self.assertEqual([s["n"] for s in self.store.tag_vocab(PKEY)], ["Прошивка", "Корпус", "Голос"])   # in their order
+        # the result line's call brings the tags too: taken for the model's task, ignored for the owner's
+        seen = {}
+
+        async def fake_brief(prompt, reply, bg, lang, cwd, tags=None):
+            seen[tags is not None] = tags
+            return {"line": "Готово", "you": False, "need": "", "tags": {"sec": "Корпус", "topic": "Крепления"}}
+        with mock.patch.object(pultd.B, "brief", fake_brief):
+            await run_hook(dict(ev("Stop", last_assistant_message="Готово", background_tasks=[]), session_id=sid2))
+            await until(lambda: self.store.session_tag(sid2)["sec"] == "Корпус")
+            await run_hook(ev("UserPromptSubmit", prompt="И ещё"))
+            await run_hook(ev("Stop", last_assistant_message="Готово", background_tasks=[]))
+            await until(lambda: self.p.attn.rec.get(SID, {}).get("model"))
+        self.assertEqual(self.store.session_tag(sid2)["topic"], "Крепления")
+        self.assertEqual(self.store.session_tag(SID)["sec"], "Прошивка")             # the owner's — kept
+        self.assertEqual(set(seen), {True, False})                                   # asked for one, not for the other
+        # the owner corrects in the app: their section and a new topic; then back to Claude
+        res = await self.p.api_tag(sid2, sec="голос", topic="тишина")
+        self.assertEqual([(g["n"], g["k"]) for g in res["tags"]], [("Голос", "sec"), ("Тишина", "topic")])
+        self.assertEqual(self.store.session_tag(sid2)["own"], 1)
+        self.assertFalse(res["auto"])
+        with self.assertRaises(ValueError):
+            await self.p.api_tag(sid2, sec="  ")
+        with self.assertRaises(ValueError):
+            await self.p.api_tag("nope", sec="Голос")
+        with mock.patch.object(pultd.G, "tag", model):
+            res = await self.p.api_tag(sid2, auto=True)
+            await until(lambda: self.store.session_tag(sid2)["topic"] == "Распознавание")
+        self.assertTrue(res["auto"])
+        self.assertEqual(self.store.session_tag(sid2)["own"], 0)
+        # the answers: rows, the project's tag bar (what its screen shows), the session with the whole list
+        row = next(r for r in self.p.session_rows([]) if r["sid"] == SID)
+        self.assertEqual([(g["n"], g["k"], g["c"]) for g in row["tags"]], [("Прошивка", "sec", 0), ("Калибровка", "topic", 0)])
+        d = await self.p.api_project(PKEY)
+        bar = {g["n"]: (g["cnt"], [t["n"] for t in g["topics"]]) for g in d["tagset"]}
+        self.assertEqual(bar, {"Прошивка": (1, ["Калибровка"]), "Голос": (1, ["Распознавание"])})   # Корпус: no task now
+        info = await self.p.api_session(sid2)
+        self.assertEqual([g["n"] for g in info["tagset"]], ["Прошивка", "Корпус", "Голос"])
+        self.assertTrue(info["tag_auto"])
+        self.assertFalse((await self.p.api_session(SID))["tag_auto"])
+        fresh = {g["n"]: g["fresh"] for g in info["tags"]}
+        # the topic the model made a moment ago, one task has it: new; the section the owner once picked: never again
+        self.assertEqual(fresh, {"Голос": False, "Распознавание": True})
+
     async def test_project_and_outcome(self):
         # the project's screen: what waits for the owner, what runs, today's outcomes; the session shows its outcome
         # as it was found (red), and a second look finds it seen; "Got it" from a card; ready replies kept
@@ -2624,7 +2807,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         Path(TP).write_text(tline("user", "Сделай кэш") + "\n" + tline("assistant", "Два варианта. Какой?") + "\n")
         await self.p.api_prefs(brief=True)
 
-        async def fake_brief(prompt, reply, bg, lang, cwd):
+        async def fake_brief(prompt, reply, bg, lang, cwd, tags=None):
             return {"line": "Два варианта кэша", "you": True, "need": "Выбери А или Б", "replies": ["А", "Б"]}
         with mock.patch.object(pultd.B, "brief", fake_brief):
             await run_hook(ev("UserPromptSubmit", prompt="Сделай кэш"))
@@ -2660,7 +2843,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         Path(TP).write_text(tline("user", "Сделай кэш") + "\n")
         await self.p.api_prefs(brief=True)
 
-        async def fake_brief(prompt, reply, bg, lang, cwd):
+        async def fake_brief(prompt, reply, bg, lang, cwd, tags=None):
             return {"line": "Два варианта кэша", "you": True, "need": "Выбери А или Б", "replies": ["А — память", "Б — SQLite"]}
         with mock.patch.object(pultd.B, "brief", fake_brief):
             await run_hook(ev("UserPromptSubmit", prompt="Сделай кэш"))

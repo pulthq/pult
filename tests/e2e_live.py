@@ -13,6 +13,7 @@ A message from the app mid-turn reaches Claude in that turn, the app shows it as
 Stop from the app closes the interrupted turn, though Claude Code sends no Stop hook for it.
 A new project "with a description" (stage S): git, its topic by the title, a first turn that writes CLAUDE.md.
 A file made in a session goes to the project's topic with `pult send`, and the turn's outcome lists it (stage F).
+With the model on, a new task gets its section and topic as soon as its request is in, and again with the result (stage T).
 """
 import asyncio, json, os, shutil, sys, tempfile, time, urllib.parse
 from pathlib import Path
@@ -274,6 +275,20 @@ async def main():
     log("новый проект: git", r8["git"], "· CLAUDE.md", md.exists() and md.stat().st_size, "· тема", topic8,
         "· сессия", p.live[r8["sid"]].title)
     assert md.exists() and (md.parent / ".git").is_dir() and topic8 == "Дача у моря", "the new project isn't complete"
+    # task tags (stage T): with the model on, a new task gets its section and topic from the model as soon as its
+    # request is in, and the result line's call brings them again when its turn ends
+    await p.api_prefs(brief=True)
+    sid10 = "aaaaaaaa-0000-4000-8000-000000000010"
+    await p.drive(sid10, str(PROJ), "Reply with one short line, no tools: which is warmer for a beach holiday, "
+                  "Sochi or Murmansk?", origin=1)
+    await until(lambda: p.store.session_tag(sid10) is not None, what="теги задачи на старте")
+    r10 = p.store.session_tag(sid10)
+    log("теги на старте:", r10["sec"], "/", r10["topic"], "· свой:", r10["own"])
+    await until(lambda: (p.attn.rec.get(sid10) or {}).get("model"), what="строка итога с тегами")
+    r10 = p.store.session_tag(sid10)
+    log("теги после хода:", r10["sec"], "/", r10["topic"], "· строка:", p.attn.rec[sid10]["line"],
+        "· раздел в списке:", [s["n"] for s in p.store.tag_vocab(r10["pkey"])])
+    assert r10["sec"] and not r10["own"] and not any(c in r10["sec"] for c in "/\\"), "no tags from the model"
     log("тем создано:", len([1 for m, _ in calls if m == "createForumTopic"]), "· вызовов Telegram:", len(calls))
     for d in list(p.driven.values()):
         d.task.cancel()
