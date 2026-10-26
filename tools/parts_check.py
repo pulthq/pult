@@ -2,9 +2,12 @@
 for each set of made-up facts (STAND_PARTS): all as in main with a new Claude Code downloaded — "worth a look", no
 line on Home; several parts behind — the computer's row open with Install, the app's row with what's new and who
 deploys it, the tabs and the hooks, Home's line; things that don't work — Home's line in red, "not from main",
-"unknown"; someone with a clone of the public repository — no release row, no tabs row, no words for the owner alone.
-Then this phone's copy: the server starts handing out a newer app (a file's time moves), the row says so,
-Home's line too, and "Refresh the app" reloads the page into the current copy. English once, for keys left as keys.
+"unknown"; someone with a clone of the public repository — no release row, no tabs row, no words for the owner alone,
+how to have the server update itself; that clone with the server's updater (stage U3) — the server took the release,
+is taking it (Home's line), didn't take it (why, what runs); the switch for GitHub. Then this phone's copy: the server
+starts handing out a newer app (a file's time moves), the row says so, Home's line too, and "Refresh the app" reloads
+the page into the current copy — while something is typed; with nothing typed the copy reloads by itself (stage U3).
+English once, for keys left as keys.
   ~/.local/share/pult/venv/bin/python tools/parts_check.py [out_dir]
 The facts are made up (the stand never shows this computer's Claude Code or hooks); the daemon's real ones are checked
 by tests/test_pult.py and by eye on the Mac. Screenshots go to out_dir (a temporary folder by default). Exit 1 on a
@@ -18,7 +21,7 @@ PY = sys.executable
 OUT = sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp(prefix="pult-parts-")
 os.makedirs(OUT, exist_ok=True)
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-PORT, STAND_PORT = 9341, "18117"
+PORT, STAND_PORT = int(os.environ.get("CDP_PORT") or 9341), os.environ.get("STAND_PORT") or "18117"
 TOUCH = REPO / "relay" / "web" / "static" / "md.js"     # its time moves: the server's page names a newer copy
 failures = []
 
@@ -212,10 +215,53 @@ async def main():
                 verdict("public: Claude Code — no wrapper", await chip("cc") == "без обёртки", await chip("cc"))
                 text = await more("web") if await tap_row("web") else ""
                 verdict("public: how to bring their server up to date", "deploy/relay/install.sh" in text and "агент" not in text, text[:160])
+                verdict("public: how to have it update itself", "install.sh --auto" in text, text[:160])
                 await tap_row("cc")
                 text = await js("document.querySelector('.parts').textContent")
                 verdict("public: nothing written for the owner alone", not any(w in text for w in ("агент", "по твоему")), text[:120])
                 await shot("public")
+            finally:
+                proc.kill()
+                proc.wait()
+
+            # 4a. that clone with the server's updater (stage U3): it took the computer's release; the install block says
+            # the server follows; the switch for GitHub
+            proc, urls = stand("auto", upd="ready")
+            try:
+                verdict("auto: the table", await settings(urls))
+                verdict("auto: the install block — the server takes the same release", "сервер приложения сам возьмёт тот же выпуск"
+                        in await more("mac"), (await more("mac"))[:200])
+                verdict("auto: the app as in main", await chip("web") == "как в main", await chip("web"))
+                text = await more("web") if await tap_row("web") else ""
+                verdict("auto: it updates itself, took the release", "Обновляется сам вслед за компьютером" in text and "Взял v" in text, text[:200])
+                sw = await js("[...document.querySelectorAll('.sw-row')].map(r => r.textContent).find(x => x.includes('GitHub')) || null")
+                verdict("auto: the switch for GitHub, when it last looked", bool(sw) and "Каждые 5 минут" in sw and "последний раз" in sw, sw)
+                await shot("auto")
+            finally:
+                proc.kill()
+                proc.wait()
+            proc, urls = stand("auto_run", upd="ok")
+            try:
+                line, _ = await home(urls)
+                verdict("auto_run: Home — the server takes it", (line or "").startswith("Сервер приложения ставит v"), line)
+                verdict("auto_run: the table", await settings(urls))
+                verdict("auto_run: the app's chip", (await chip("web") or "").startswith("ставит v"), await chip("web"))
+                text = await more("web") if await tap_row("web") else ""
+                verdict("auto_run: the step", "качает с GitHub" in text, text[:200])
+                await shot("auto-run")
+            finally:
+                proc.kill()
+                proc.wait()
+            proc, urls = stand("auto_fail", upd="ok")
+            try:
+                line, _ = await home(urls)
+                verdict("auto_fail: no line on Home (the old one works)", line is None, line)
+                verdict("auto_fail: the table", await settings(urls))
+                verdict("auto_fail: the app's chip", (await chip("web") or "").startswith("не взял v"), await chip("web"))
+                text = await more("web") if await tap_row("web") else ""
+                verdict("auto_fail: why and what runs", "посредник не запустился" in text and "работает v0.16.2" in text
+                        and "ModuleNotFoundError" in text, text[:200])
+                await shot("auto-fail")
             finally:
                 proc.kill()
                 proc.wait()
@@ -225,6 +271,8 @@ async def main():
             try:
                 verdict("phone: the table", await settings(urls))
                 verdict("phone: the copy is current", await chip("phone") == "свежая", await chip("phone"))
+                # something typed: the copy doesn't reload by itself (stage U3), the row and the button do it
+                await js("document.body.insertAdjacentHTML('beforeend', '<input id=__draft value=draft>')")
                 os.utime(TOUCH, (time.time(), time.time() + 120))
                 await js("location.hash = '#/'")
                 await asyncio.sleep(0.5)
@@ -243,6 +291,15 @@ async def main():
                 await tap_at(row("phone") + "?.querySelector('.part-x .btn')")
                 verdict("phone: Refresh reloads the page", await until("window.__before_reload === undefined", 100))
                 verdict("phone: the table again, the copy current", await until("document.querySelectorAll('.part').length >= 5", 150)
+                        and await until(row("phone") + "?.querySelector('.pchip')?.textContent === 'свежая'"), await chip("phone"))
+                # nothing typed: the server hands out a newer copy — this one reloads by itself, a few seconds later
+                await js("window.__before_reload = 1")
+                os.utime(TOUCH, (time.time(), time.time() + 240))
+                await js("location.hash = '#/'")
+                await asyncio.sleep(0.5)
+                await js("location.hash = '#/settings'")
+                verdict("phone: with nothing typed it reloads by itself", await until("window.__before_reload === undefined", 250))
+                verdict("phone: and the copy is current", await until("document.querySelectorAll('.part').length >= 5", 150)
                         and await until(row("phone") + "?.querySelector('.pchip')?.textContent === 'свежая'"), await chip("phone"))
             finally:
                 os.utime(TOUCH, (mtime, mtime))

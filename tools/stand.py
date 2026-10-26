@@ -18,9 +18,13 @@ STAND_FILES=1 gives the shop a real folder with made-up files and ends the chat 
 Settings' table of Pult's parts and Home's line always run on made-up facts — all fresh; STAND_PARTS=now|lag|bad|public:
 all as in main with a new Claude Code downloaded; several parts behind (with STAND_UPD=ready for the computer); hooks
 missing and tabs on an unverified Claude Code; someone with a clone of the public repository after a `git pull` (no
-release row, no tab wrapper; STAND_UPD=ready) (tools/parts_check.py)
+release row, no tab wrapper; STAND_UPD=ready) (tools/parts_check.py); STAND_PARTS=auto|auto_run|auto_fail — that clone
+with the server's updater (stage U3): the server took the computer's release; is taking it; didn't take it and went back
 STAND_TAGS=1 (stage T): a third project, a maker of 3D printers, fifteen tasks in every state, each with its section and
-topic in the store (PROJT — its screen, SESST — its task that waits for you; tools/tags_check.py)."""
+topic in the store (PROJT — its screen, SESST — its task that waits for you; tools/tags_check.py).
+STAND_COPY=1: the session that waits for you is open in a VS Code tab on a Claude Code Pult isn't checked on — its card
+says "goes as a copy" before you type, and sending says why (tools/copy_check.py). VS Code's settings and the tab
+switch are made up on every stand: the app never reads this computer's."""
 import asyncio, base64, hashlib, hmac, json, os, random, sys, time, urllib.parse
 from pathlib import Path
 
@@ -30,6 +34,7 @@ import test_web as W  # noqa: E402  (keys, relay with the test key)
 T, PW, pultd, relay = W.T, W.PW, W.pultd, W.relay
 import pult_load as L  # noqa: E402
 import pult_update as U  # noqa: E402
+import pult_setup  # noqa: E402  (the Claude Code versions the wrapper is checked on)
 
 # Pult's folder must be the tests' temporary one: pultd imported before test_pult set PULT_HOME keeps the real
 # ~/.local/share/pult, and the stand would write its made-up install history there (it did, 2026-10-26)
@@ -197,9 +202,11 @@ TAGS_D = {
                  line="The X driver overheats; there are two ways to fix it", need="Pick: lower the motor current or add a heatsink",
                  replies=["Lower the current", "Add a heatsink", "Explain the difference"]),
             dict(st="work", ago=660, tag=("Extruder", "Sensors"), title="Add a filament runout sensor",
-                 now="The sensor is on a spare input of the board; next, pause the print and show a message.", edit="firmware/runout.c"),
+                 ask="And if the filament runs out mid-layer, does the print stop at once or finish the layer?",
+                 now="At once: the firmware pauses mid-layer and parks the nozzle at the edge so it doesn't melt the part. "
+                     "Now checking that after a reload the print goes on from the same point.", edit="firmware/runout.c"),
             dict(st="work", ago=240, tag=("Marketing", "Trade show"), fresh=True, title="Prepare the trade show page",
-                 now="The draft is ready; picking the photos and the specs.", edit="marketing/show/page.md"),
+                 ask="Add a table: how the new model beats the old one — speed, noise, price", edit="marketing/show/page.md"),
             dict(st="bg", ago=900, tag=("Frame", "Strength"), title="Run a strength check on the frame",
                  line="The frame simulation under 40 kg is running; the outcome when it ends", bg="Frame strength simulation",
                  bg_cmd="python sim/frame_fea.py --load 40"),
@@ -227,9 +234,11 @@ TAGS_D = {
                  need="Выбери: снизить ток мотора или поставить радиатор",
                  replies=["Снизить ток", "Поставить радиатор", "Объясни разницу"]),
             dict(st="work", ago=660, tag=("Экструдер", "Датчики"), title="Добавь датчик конца филамента",
-                 now="Датчик на свободном входе платы; дальше — пауза печати и сообщение на экране.", edit="firmware/runout.c"),
+                 ask="А если филамент кончится посреди слоя — печать встанет сразу или доделает слой?",
+                 now="Встанет сразу: прошивка ставит паузу посреди слоя и уводит сопло к краю, чтобы не оплавить деталь. "
+                     "Сейчас проверяю, что после заправки печать продолжится с той же точки.", edit="firmware/runout.c"),
             dict(st="work", ago=240, tag=("Маркетинг", "Выставка"), fresh=True, title="Подготовь страницу к выставке",
-                 now="Черновик текста готов, подбираю фото и характеристики.", edit="marketing/show/page.md"),
+                 ask="Добавь таблицу: чем новая модель лучше прошлой — скорость, шум, цена", edit="marketing/show/page.md"),
             dict(st="bg", ago=900, tag=("Корпус", "Прочность"), title="Посчитай раму на прочность",
                  line="Запустил расчёт рамы под нагрузкой 40 кг; итог — по готовности", bg="Расчёт прочности рамы",
                  bg_cmd="python sim/frame_fea.py --load 40"),
@@ -283,8 +292,11 @@ async def stand_tags(p, store, projects):
         store.touch_session(sid, pk, path=path, title=x["title"])
         if x["st"] == "work":
             with f.open("a") as fh:
-                fh.write(aline(x["now"], "w%d" % n, 1200) + "\n")
-            await T.run_hook(evp("UserPromptSubmit", sid, prompt=x["title"]))
+                if x.get("ask"):                   # a later turn of the task: the owner's follow-up, not its title
+                    fh.write(line("user", x["ask"], ago=x["ago"]) + "\n")
+                if x.get("now"):                   # without it: the turn has just begun, Claude hasn't said a word yet
+                    fh.write(aline(x["now"], "w%d" % n, 1200) + "\n")
+            await T.run_hook(evp("UserPromptSubmit", sid, prompt=x.get("ask") or x["title"]))
             await T.run_hook(evp("PostToolUse", sid, tool_name="Edit", tool_input={"file_path": path + "/" + x["edit"]}))
             p.live[sid].turn.started -= x["ago"]
             p.live[sid].run = p.live[sid].turn.started
@@ -379,7 +391,14 @@ async def main():
         (home / d).mkdir(parents=True, exist_ok=True)
     pultd.NEW_ROOT, pultd.SKIP_PREFIXES = home, ("-nothing-",)
     pultd.TAB_CONF = T.TMP / "stand-tab.json"
-    pultd.TAB_CONF.write_text(json.dumps({"folders": [str(home / "Documents")]}))
+    pultd.TAB_CONF.write_text(json.dumps({"folders": [str(home / "Documents"), "/Users/x"],
+                                          "versions": list(pult_setup.TAB_VERIFIED)}))
+    # VS Code with Pult's wrapper line and the tab switch — made up: why a message goes as a copy is read from them
+    pultd.TAB_OFF = T.TMP / "stand-tab-off"
+    pultd.EDITOR_DIRS = [T.TMP / "stand-vscode" / "User"]
+    pultd.EDITOR_DIRS[0].mkdir(parents=True, exist_ok=True)
+    (pultd.EDITOR_DIRS[0] / "settings.json").write_text(json.dumps({
+        "claudeCode.claudeProcessWrapper": "/Users/x/.local/share/pult/" + pultd.TAB_FILE}))
     # Claude Code's settings, made up — never this computer's: Pult's hook on every event and the effort "high", which
     # Settings → Model and effort shows under "As in Claude Code"
     pultd.SETTINGS = T.TMP / "stand-settings.json"
@@ -401,6 +420,7 @@ async def main():
         return PW.simplify_usage(r)
     p.usage = fake_usage
     upd = os.environ.get("STAND_UPD")      # stage U: Settings → Pult and Home's line in one state (tools/update_check.py)
+    clone = (os.environ.get("STAND_PARTS") or "") in ("public", "auto", "auto_run", "auto_fail")   # stage U3
     if upd:
         import pult_update as U
         nums = [int(x) for x in pultd.VERSION.split(".")]
@@ -408,6 +428,7 @@ async def main():
         head = "5e1f0a2" + "c" * 33
         U.check = lambda manifest=None: {
             "repo": str(Path.home() / "pult"), "head": head, "short": head[:7], "ready": upd != "ok", "version": nxt,
+            "tag": "v" + nxt if clone else None,
             "news": ["Pult %s: install an update from the app" % nxt, "Settings: what was installed, when and from where"],
             "failed": upd == "fail"}
         U.spawn = lambda commit, how, python=None: U.write(U.STATUS, {        # never a real installer here
@@ -457,11 +478,33 @@ async def main():
             "public": {"git": {"mac": lag(1, 3, ["Pult 0.16.1"]), "web": dict(lag(1, 3, ["Pult 0.16.1"]), commit=sha("e5f2b10"), ts=now - 9 * 86400),
                                "relay": dict(lag(1, 3, ["Pult 0.16.1"]), commit=sha("e5f2b10"), ts=now - 9 * 86400), "gh": None},
                        "tabs": [], "missing": [], "cc": (["2.1.310"], ["2.1.301"], "2.1.310"), "wrapped": False},
+            # stage U3: that clone with the server's updater — it took the computer's release; is taking it; didn't
+            "auto": {"git": {"mac": lag(0, 0, []), "web": dict(lag(0, 0, []), commit=sha("e5f2b10"), ts=now - 300),
+                             "relay": dict(lag(0, 0, []), commit=sha("e5f2b10"), ts=now - 300), "gh": None},
+                     "tabs": [], "missing": [], "cc": (["2.1.310"], ["2.1.301", "2.1.310"], "2.1.310"), "wrapped": False,
+                     "srv": {"state": "done", "tag": "v" + pultd.VERSION, "have": "v" + pultd.VERSION, "from": "v0.16.2", "ts": now - 300}},
+            "auto_run": {"git": {"mac": lag(0, 0, []), "web": dict(lag(1, 1, ["Pult " + pultd.VERSION]), commit=sha("e5f2b10"), ts=now - 9 * 86400),
+                                 "relay": dict(lag(1, 1, ["Pult " + pultd.VERSION]), commit=sha("e5f2b10"), ts=now - 9 * 86400), "gh": None},
+                         "tabs": [], "missing": [], "cc": (["2.1.310"], ["2.1.301", "2.1.310"], "2.1.310"), "wrapped": False,
+                         "srv": {"state": "run", "step": "fetch", "tag": "v" + pultd.VERSION, "have": "v0.16.2", "ts": now - 4}},
+            "auto_fail": {"git": {"mac": lag(0, 0, []), "web": dict(lag(1, 1, ["Pult " + pultd.VERSION]), commit=sha("e5f2b10"), ts=now - 9 * 86400),
+                                  "relay": dict(lag(1, 1, ["Pult " + pultd.VERSION]), commit=sha("e5f2b10"), ts=now - 9 * 86400), "gh": None},
+                          "tabs": [], "missing": [], "cc": (["2.1.310"], ["2.1.301", "2.1.310"], "2.1.310"), "wrapped": False,
+                          "srv": {"state": "fail", "why": "no_start", "detail": "ModuleNotFoundError: No module named 'multidict'",
+                                  "back": True, "back_ok": True, "tag": "v" + pultd.VERSION, "have": "v0.16.2", "ts": now - 600}},
             "bad": {"git": {"mac": lag(0, 0, []), "web": None, "web_told": True, "relay": None,
                             "gh": {"last": pultd.VERSION, "date": time.strftime("%Y-%m-%d"), "waiting": 0}},
                     "tabs": [True] * 3 + [None], "missing": ["StopFailure", "PreCompact"], "cc": (["2.1.301", "2.1.310"], ["2.1.301"], "2.1.310")},
         }[parts]
-        g = dict(facts["git"], repo=str(Path.home() / "pult"), head=sha("a41c9e2"), branch="main")
+        g = dict(facts["git"], repo=str(Path.home() / "pult"), head=sha("a41c9e2"), branch="main", release=clone)
+        if clone:                     # stage U3: the relay's server says whether it has the updater, and its report
+            p.srv = {"can": ["want"] if "srv" in facts else [], "upd": facts.get("srv")}
+            pultd.U.release_mode = lambda repo, head: "origin"      # the module itself: U is local to this function
+            p.gh.update(at=now - 140, ok=True)
+
+            async def stand_said(msg):              # the stand's own relay has no updater: its hello must not count
+                return None
+            p.relay_said = stand_said
         names = ["acme-shop", "support-desk", "blog", "notes"]
         tabs = [{"project": names[i % 3] if same is not False else names[1 + i % 2], "same": same} for i, same in enumerate(facts["tabs"])]
         hooks = [e for e in pultd.pult_hook.EVENTS if e not in facts["missing"]]
@@ -470,7 +513,7 @@ async def main():
         cc = {"running": running, "verified": verified, "newest": newest, "wrapped": wrapped, "sdk": "0.2.167", "cli": "2.1.300"}
 
         async def stand_facts():
-            return {"upd": await p.update_view(), "git": g, "relay": True, "tabs": tabs, "hooks": hooks, "cc": cc}
+            return {"upd": await p.update_view(), "git": g, "relay": True, "tabs": tabs, "hooks": hooks, "cc": cc, "srv": p.srv}
 
         async def stand_broken():
             off = [v for v in running if v not in verified] if wrapped else []
@@ -701,7 +744,11 @@ async def main():
              3001: proc(1, claude, 0.2, 170, 26 * 3600, 60)}
     p._procs = (time.monotonic() + 1e6, (procs, {"cores": 8, "cpu": 41.0, "mem_total": 16 << 30,
                                                  "mem_used": int(10.4 * (1 << 30)), "load": 3.6}))
-    p._agents = (time.monotonic() + 1e6, [{"sessionId": SID3, "cwd": "/Users/x/blog", "pid": 3001}])
+    agents = [{"sessionId": SID3, "cwd": "/Users/x/blog", "pid": 3001}]
+    if os.environ.get("STAND_COPY") == "1":     # the session waiting for you, open in a tab on an unchecked Claude Code
+        procs[4001] = proc(1, claude.replace("2.1.301", "2.1.311"), 0.3, 240, 5400, 40)
+        agents.append({"sessionId": SID4, "cwd": SHOP, "pid": 4001})
+    p._agents = (time.monotonic() + 1e6, agents)
     p.live[T.SID].pid, p.live[SID2].pid = 1001, 2001
     if os.environ.get("STAND_TAGS"):
         tag_pk, tag_sids = await stand_tags(p, store, d.parent)

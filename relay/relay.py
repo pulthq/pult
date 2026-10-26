@@ -6,6 +6,8 @@
 Stores nothing: everything the app shows comes from the Mac at request time. Strangers are cut off before the Mac,
 by Telegram's public signature (Ed25519, no bot token needed); the Mac checks the login again with its bot token and
 decides how fresh it must be (a reconnect carries the Mac's one-time resume key, which passes through here).
+On a server with the updater (stage U3, deploy/relay/update.py) the relay also passes the release the computer runs to
+the updater, as one small file, and the updater's report back to the computer. It installs nothing itself.
 Design and decisions: docs/project.html, the "Web app" section.
 """
 import asyncio
@@ -41,6 +43,16 @@ WAITING_PER_IP = 3         # connections that haven't said who they are yet: per
 WAITING_MAX = 30
 # Telegram's public key for checking initData without the bot token ("Validating data for Third-Party Use")
 TG_PUBLIC = bytes.fromhex("e7bf03a2fa4602af4580703d88dda5bb59f32ed8b02a56c187fe7d34caed242d")
+# stage U3, on a server with the updater (install.sh --auto sets both): the folder where the relay leaves the release
+# the computer runs (want.json), and the updater's report. Unset — no updater: the computer is told so and says nothing
+STATE = os.environ.get("PULT_RELAY_STATE", "")
+UPDATER = os.environ.get("PULT_RELAY_UPDATER", "")
+WANT_EVERY = 10            # s: the computer's word goes to the file at most this often
+WANT_REFRESH = 600         # s: the same word is written again after this long — the updater retries a failed download
+STATUS_EVERY = 5           # s between looks at the updater's report
+TAG_RE = re.compile(r"v\d{1,4}\.\d{1,4}\.\d{1,4}")
+SHA_RE = re.compile(r"[0-9a-f]{40}")
+STATUS_KEYS = ("state", "tag", "commit", "have", "from", "step", "why", "detail", "back", "back_ok", "ts")
 
 
 def log(*a):
@@ -78,6 +90,27 @@ def build():
             except OSError:
                 pass
     return files
+
+
+def updater_status():
+    """What the server's updater last reported (status.json, stage U3): its known fields only, strings cut short;
+    None — no updater on this server, or no report yet."""
+    if not UPDATER:
+        return None
+    try:
+        raw = json.loads(Path(UPDATER).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    out = {}
+    for k in STATUS_KEYS:
+        v = raw.get(k)
+        if isinstance(v, bool) or k == "ts" and isinstance(v, (int, float)):
+            out[k] = v
+        elif isinstance(v, str):
+            out[k] = v[:300]
+    return out
 
 
 def client_ip(request):
@@ -147,6 +180,48 @@ class Relay:
         self.inits = {}                     # cid → what the window said (initData, resume key, address, client):
         self.ids = itertools.count(1)       # when the Mac reconnects, it checks the login again
         self.waiting = collections.Counter()    # address → connections that haven't said who they are yet
+        self.wanted = (None, 0.0)           # the release last written to want.json, and when
+        self.told = None                    # the updater's report as last sent to the Mac
+
+    def hello_mac(self):
+        """What the relay says to a Mac that has just connected: whether this server has the updater, its last report,
+        and the files this server holds (the Mac learns the server's version without waiting for an app window)."""
+        return {"t": "relay", "can": ["want"] if STATE else [], "upd": updater_status(), "build": build()}
+
+    def want(self, msg, now=None):
+        """The Mac runs this release (stage U3): written to want.json for the updater, when it has the right form — a
+        tag vX.Y.Z and a 40-hex commit, nothing else. Which release may go in is the updater's to decide (only an
+        official one from GitHub, never older than what runs); here — not more often than WANT_EVERY, and the same one
+        again only after WANT_REFRESH. → True when written."""
+        tag, commit = msg.get("tag"), msg.get("commit")
+        if not STATE or not isinstance(tag, str) or not isinstance(commit, str) \
+                or not TAG_RE.fullmatch(tag) or not SHA_RE.fullmatch(commit):
+            return False
+        now = time.time() if now is None else now
+        last, at = self.wanted
+        if now - at < WANT_EVERY or last == (tag, commit) and now - at < WANT_REFRESH:
+            return False
+        p = Path(STATE) / "want.json"
+        tmp = p.with_name(".want.json.tmp")
+        try:
+            tmp.write_text(json.dumps({"tag": tag, "commit": commit, "ts": int(now)}), encoding="utf-8")
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, p)
+        except OSError as e:
+            log("want.json:", e)
+            return False
+        self.wanted = ((tag, commit), now)
+        log("the computer runs %s (%s) — told the updater" % (tag, commit[:7]))
+        return True
+
+    async def watch_updater(self, app):
+        """Every STATUS_EVERY s: a new report of the updater goes to the Mac (it shows it and tells the owner)."""
+        while True:
+            await asyncio.sleep(STATUS_EVERY)
+            st = updater_status()
+            if st != self.told and self.mac is not None and not self.mac.closed:
+                self.told = st
+                await self.to_mac({"t": "relay", "upd": st})
 
     async def to_mac(self, msg):
         if self.mac is not None and not self.mac.closed:
@@ -239,6 +314,9 @@ class Relay:
         if old is not None and not old.closed:
             await old.close(code=4000, message=b"replaced")
         log("Mac connected")
+        hello = self.hello_mac()
+        self.told = hello["upd"]
+        await self.to_mac(hello)
         await self.to_clients({"t": "mac", "on": True}, waiting=True)
         for cid, cws in list(self.clients.items()):
             self.pending[cid] = self.clients.pop(cid)     # the new Mac knows no windows: let it check the login
@@ -271,6 +349,9 @@ class Relay:
                     if cws is not None and not cws.closed:
                         await cws.send_str(json.dumps({"t": "denied", "by": "mac", "why": msg.get("why")}))
                         await cws.close()
+                    continue
+                if msg.get("t") == "want":                    # stage U3: for the updater, never to the windows
+                    self.want(msg)
                     continue
                 await self.to_clients(msg, cid)
         finally:
@@ -314,6 +395,17 @@ def app():
         if request.path.startswith("/pult/static/"):
             response.headers["Cache-Control"] = "no-cache"
     a.on_response_prepare.append(revalidate)
+    if UPDATER:
+        tasks = []
+
+        async def start_watch(app_):
+            tasks.append(asyncio.ensure_future(r.watch_updater(app_)))
+
+        async def stop_watch(app_):
+            for task in tasks:
+                task.cancel()
+        a.on_startup.append(start_watch)
+        a.on_cleanup.append(stop_watch)
     return a
 
 

@@ -72,20 +72,26 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 
 ## Update
 
+Pult looks for a new release on GitHub every 5 minutes and fetches it into the folder you installed from (nothing
+there changes; a switch in Settings turns this off). When one is out, Home says so: tap **Install** in the web app
+(Settings → Pult and its parts → Computer). Without the app, or with the switch off:
+
 ```
 cd pult
 git pull
+./install.sh
 ```
 
-Then tap **Install** in the web app (Settings → Pult and its parts → Computer), or run `./install.sh` again. The button installs what is
-committed in this folder, and only once a commit changed Pult's own files. If a restart would cut off sessions started
-from the phone, it lists them and offers **Install once they're free**. A new version that doesn't come up is replaced
-by the old one on its own, and Telegram says why. The Computer row keeps the last installs. On Windows, run
-`install.ps1` again.
+The button installs a release, or, in a folder with commits of your own, what is committed there — and only once a
+commit changed Pult's own files. If a restart would cut off sessions started from the phone, it lists them and offers
+**Install once they're free**. A new version that doesn't come up is replaced by the old one on its own, and
+Telegram says why. The Computer row keeps the last installs. On Windows, run `install.ps1` again.
 
-The same table shows every other part against this folder's branch: the app and the relay on your server (run
-`deploy/relay/install.sh` again there after a `git pull`), this phone's copy of the app (**Refresh the app**), the
-wrapper in open VS Code tabs (Reload Window), the hooks (`pult hooks on`) and the Claude Code version.
+The app and the relay on your server follow the computer by themselves once the server has the updater — once, there:
+`git pull`, then `sudo bash deploy/relay/install.sh --auto` ([how it works](../deploy/relay/README.md#updates)). Without
+it, run `deploy/relay/install.sh` there again after a `git pull`. The same table shows every other part against this
+folder's branch: this phone's copy of the app (it reloads by itself when nothing is typed; else **Refresh the app**),
+the wrapper in open VS Code tabs (Reload Window), the hooks (`pult hooks on`) and the Claude Code version.
 
 ## Turn it off, remove it
 

@@ -985,6 +985,13 @@ class AttnTest(unittest.TestCase):
         self.assertEqual(A.state([], False, [{"id": "b"}], dict(rec, fail="rate_limit")), "fail")
         self.assertEqual(A.state([], False, [], dict(rec, seen=True)), "idle")
         self.assertEqual(A.state([], False, [], None), "idle")
+        # a look puts an outcome to rest unless the owner has to decide: broke off, or the model's "your move"
+        self.assertFalse(A.needs_owner(dict(rec, model=False, need="")))   # the rule alone: nothing runs
+        self.assertTrue(A.needs_owner(dict(rec, model=True, need="")))
+        self.assertTrue(A.needs_owner(dict(rec, model=True, need="Выбери А или Б")))
+        self.assertFalse(A.needs_owner(dict(rec, model=True, you=False)))  # only a report
+        self.assertTrue(A.needs_owner(dict(rec, you=False, fail="rate_limit")))
+        self.assertFalse(A.needs_owner(None))
 
     def test_outcomes(self):
         st = self.Store()
@@ -1510,13 +1517,15 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_prefs(self):
         self.assertEqual(self.p.prefs(), {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": None, "pace": 90,
-                                          "model": None, "effort": None})
+                                          "model": None, "effort": None, "gh": True})
         self.p.env["PULT_FORCE_AWAY"] = "0"                                           # you are at the Mac
         self.assertFalse(await self.p.loud())
         self.assertTrue(await self.p.loud(driven=True))                     # auto: a session from Telegram — with sound
-        res = await self.p.api_prefs(mode="phone", vehi="да", lang="xx", brief="да", evil=True, pace="90")  # garbage is rejected
+        res = await self.p.api_prefs(mode="phone", vehi="да", lang="xx", brief="да", evil=True, pace="90", gh="off")  # garbage is rejected
         self.assertEqual(res, {"vehi": True, "mode": "phone", "lang": None, "brief": False, "pager": None, "pace": 90,
-                               "model": None, "effort": None})
+                               "model": None, "effort": None, "gh": True})
+        self.assertFalse((await self.p.api_prefs(gh=False))["gh"])                  # stage U3: no looks at GitHub
+        await self.p.api_prefs(gh=True)
         self.assertTrue((await self.p.api_prefs(brief=True))["brief"])
         self.assertTrue(await self.p.loud())                                      # "with the phone" — always with sound
         await self.p.api_prefs(mode="mac")
@@ -1527,6 +1536,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         s = await self.p.api_settings()
         self.assertEqual(s["version"], pultd.VERSION)
         self.assertTrue(all("Bearer" not in x for x in s["log"]))
+        self.assertEqual(s["gh"]["release"], False)                 # not a clone of Pult's GitHub repository
 
     async def test_modes_and_help(self):
         # "where am I" mode: the command, panel buttons, the pinned panel; "at the Mac" — everything arrives, silently
@@ -2831,6 +2841,64 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             rows = (await self.p.api_projects())["projects"]
         self.assertEqual([(r["pkey"], r["line"], r["mine"], r["turns"]) for r in rows], [(PKEY, "Два варианта кэша", 0, 1)])
 
+    async def test_running_row(self):
+        # "Running now" (0.17.3): a turn in progress gives the app what was asked — from Telegram or the app too, which
+        # the old line left out — and what Claude says so far, apart; line stays as it was for older apps
+        self.p._procs = (time.monotonic() + 1e6, None)
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        Path(TP).write_text(tline("user", "Сделай отчёт") + "\n")
+        await run_hook(ev("SessionStart", source="startup"))
+        self.p.expect[SID] = 77                                        # the prompt came from Telegram
+        await run_hook(ev("UserPromptSubmit", prompt="А в каком формате его делать?"))
+
+        async def row():
+            ov = await self.p.api_overview()
+            return next(r for r in [r for p in ov["board"] for r in p["rows"]] + ov["mine"] if r["sid"] == SID)
+        r = await row()
+        self.assertEqual((r["state"], r["ask"], r["now"], r["line"]), ("work", "А в каком формате его делать?", "", ""))
+        self.p.live[SID].turn.now = "Смотрю шаблоны отчётов."
+        r = await row()
+        self.assertEqual((r["ask"], r["now"], r["line"]), ("А в каком формате его делать?", "Смотрю шаблоны отчётов.", "Смотрю шаблоны отчётов."))
+        await run_hook(ev("Stop", last_assistant_message="PDF.", background_tasks=[]))
+        await until(lambda: SID in self.p.attn.rec)
+        r = await row()
+        self.assertEqual((r["state"], "ask" in r, "now" in r), ("you", False, False))     # ended: no turn to tell about
+
+    async def test_seen_waits_for_the_model(self):
+        # the session screen re-reads itself the moment a turn ends, before the model has said what is needed: that
+        # look must not put a question away (2026-10-26, 11:49: "turn the cup ~120°" went grey unanswered); once the
+        # model has spoken it decides — its "your move" stays, a report or no answer at all is seen
+        self.p._procs = (time.monotonic() + 1e6, None)
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        Path(TP).write_text(tline("user", "Что дальше?") + "\n" + tline("assistant", "Повернуть стакан?") + "\n")
+        await self.p.api_prefs(brief=True)
+        go, answers = asyncio.Event(), []
+
+        async def fake_brief(prompt, reply, bg, lang, cwd, tags=None):
+            await go.wait()
+            return answers.pop(0)
+        cases = [({"line": "Нужно повернуть стакан", "you": True, "need": "Повернуть стакан на 120°", "replies": []}, False),
+                 ({"line": "Жду тебя", "you": True, "need": "", "replies": []}, False),           # its word, though it named nothing
+                 ({"line": "Отчёт готов", "you": False, "need": "", "replies": []}, True),
+                 (None, True)]
+        with mock.patch.object(pultd.B, "brief", fake_brief):
+            for answer, seen in cases:
+                go.clear()
+                answers.append(answer)
+                n = self.p.attn.day_of(PKEY)[0]
+                await run_hook(ev("UserPromptSubmit", prompt="Что дальше?"))
+                await run_hook(ev("Stop", last_assistant_message="Повернуть стакан на 120°?", background_tasks=[]))
+                await until(lambda: self.p.attn.day_of(PKEY)[0] == n + 1)
+                info = await self.p.api_session(SID)                       # the screen was open: it re-reads at once
+                self.assertEqual((info["outcome"]["state"], self.p.attn.rec[SID]["seen"]), ("you", False), answer)
+                go.set()
+                await until(lambda: SID not in self.p.reading)
+                self.assertEqual(self.p.attn.rec[SID]["seen"], seen, answer)
+        self.assertEqual([r["sid"] for r in (await self.p.api_overview())["mine"]], [])
+        # not opened while the model read: nothing is seen by itself
+        self.p.attn.finished(SID, PKEY, 5, "Выбери А или Б", "Два варианта", waits=True)
+        self.assertEqual([r["sid"] for r in (await self.p.api_overview())["mine"]], [SID])
+
     async def test_pager(self):
         # Telegram as a pager (stage V, Q22 «а», on where the app is set up): no turn or result messages for work
         # the owner drives from the app or the computer; a "your move" they can't see is paged once — line, need,
@@ -3056,6 +3124,42 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await until(lambda: not self.p.tabs)                       # the tab was closed — it can no longer be written to
         self.assertEqual(await self.p.api_send(SID, "снова"), {"ok": False, "need": "fork"})
 
+    async def test_copy_why(self):
+        # open on the computer without Pult's wrapper: the app is told why a message goes as a copy, read off the
+        # session's process by the wrapper's own rules (a friend's tab on 2.1.310 got only "open in a tab", 2026-10-26)
+        self.store.touch_session(SID, PKEY, path="/Users/x/proj")
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        Path(TP).write_text(tline("user", "Подбери камеру", ago=400) + "\n" + tline("assistant", "Подойдёт почти любая", ago=300) + "\n")
+        ext ="/Users/x/.vscode/extensions/anthropic.claude-code-%s-darwin-arm64/resources/native-binary/claude"
+        procs = {900: {"ppid": 1, "cmd": "claude --resume " + SID}}
+        self.p._agents = (time.monotonic() + 1e6, [{"sessionId": SID, "pid": 900, "cwd": "/Users/x/proj"}])
+        self.p._procs = (time.monotonic() + 1e6, (procs, {}))
+        d = Path(tempfile.mkdtemp(dir=TMP))
+        conf, off, editors = d / "tab.json", d / "tab-off", [d / "Code" / "User"]
+        editors[0].mkdir(parents=True)
+        why = lambda: self.p.api_send(SID, "Ещё")                   # noqa: E731
+        with mock.patch.multiple(pultd, TAB_CONF=conf, TAB_OFF=off, EDITOR_DIRS=editors):
+            self.assertEqual(await why(), {"ok": False, "need": "fork", "why": "terminal"})
+            procs[900]["cmd"] = ext % "2.1.310" + " --output-format stream-json --input-format stream-json"
+            self.assertEqual((await why())["why"], "nowrap")              # no wrapper line in VS Code
+            (editors[0] / "settings.json").write_text('{"claudeCode.claudeProcessWrapper": "/x/%s"}' % pultd.TAB_FILE)
+            conf.write_text(json.dumps({"folders": ["/Users/x"], "versions": ["2.1.301"]}))
+            self.assertEqual(await why(), {"ok": False, "need": "fork", "why": "version", "v": "2.1.310"})
+            conf.write_text(json.dumps({"folders": ["/Users/x/other"], "versions": ["2.1.301", "2.1.310"]}))
+            self.assertEqual((await why())["why"], "folder")
+            conf.write_text(json.dumps({"folders": ["/Users/x"], "versions": ["2.1.301", "2.1.310"]}))
+            self.assertEqual((await why())["why"], "reload")              # it started before the wrapper could join it
+            off.touch()
+            self.assertEqual((await why())["why"], "off")
+            off.unlink()
+            info = await self.p.api_session(SID)
+            self.assertEqual((info["live"]["open"], info["live"]["why"]), (True, "reload"))   # said under the field too
+            procs[800] = {"ppid": 1, "cmd": "/x/venv/bin/python /x/pult_tab.py " + ext % "2.1.310"}
+            procs[900]["ppid"] = 800                      # the wrapper is there and hasn't named the session yet
+            self.assertEqual(await why(), {"ok": False, "need": "fork"})
+            self.p._agents = (time.monotonic() + 1e6, [{"sessionId": SID}])   # an older Claude Code: no pid
+            self.assertEqual(await why(), {"ok": False, "need": "fork"})
+
     async def test_topic_focus(self):
         # text in a project topic: the only open tab — no question; then the topic remembers its session; two open
         # tabs after 2 h of quiet — the question, once; a closed tab is forgotten; the pinned card shows 🎯
@@ -3128,14 +3232,15 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             await self.p.tab_version_check()
             await self.p.tab_version_check()
             await until(lambda: self.fake.of("sendMessage"))
-            warn = [t for t in self.texts() if "Вышло обновление Claude Code" in t]
+            warn = [t for t in self.texts() if "Вышел Claude Code" in t]
             self.assertEqual(len(warn), 1)
             self.assertIn("<b>2.1.301</b>", warn[0])
+            self.assertIn("pult tab allow 2.1.301", warn[0])                 # what to do, not "see the README"
             conf.write_text('{"folders": ["~/Documents"], "versions": ["2.1.301"]}')
             self.store.put("tab_warned", None)
             await self.p.tab_version_check()                            # a verified version — silence
             await asyncio.sleep(0.1)
-            self.assertEqual(len([t for t in self.texts() if "Вышло обновление" in t]), 1)
+            self.assertEqual(len([t for t in self.texts() if "Вышел Claude Code" in t]), 1)
         finally:
             pultd.TAB_CONF, pultd.EDITOR_DIRS, pultd.EXT_DIRS = old
 
@@ -3747,6 +3852,136 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.p.broken = mock.AsyncMock(return_value=broken)
         u = (await self.p.api_overview())["update"]
         self.assertEqual((u["state"], [b["k"] for b in u["broken"]]), ("ok", ["hooks", "cc"]))
+
+    async def test_server_follows(self):
+        # stage U3: a relay whose server has the updater hears the release this computer runs — on connecting, and
+        # again while it hasn't taken it; a release it didn't take is told once, a failure of the moment not at all;
+        # once it runs a release, the file check expects that release's files
+        self.upd_reset(dict(self.READY, ready=False))
+        sent, seen = [], []
+
+        class Web:
+            build = None
+
+            async def send(self, msg):
+                sent.append(msg)
+
+            def emit(self, kind, **data):
+                pass
+        self.p.web = Web()
+        rec = {"src": "/x/pult", "commit": "b" * 40}
+        with mock.patch.object(U, "read", lambda name, default=None: dict(rec) if name == U.MANIFEST else default), \
+                mock.patch.object(U, "release_of", lambda src, commit: "v9.1.0"), \
+                mock.patch.object(self.p, "expect_release", seen.append):
+            await self.p.relay_said({"t": "relay", "can": [], "upd": None})          # no updater there: nothing said
+            self.assertEqual(sent, [])
+            await self.p.relay_said({"t": "relay", "can": ["want"], "upd": {"state": "idle", "have": "v9.0.0", "ts": 1}})
+            self.assertEqual(sent, [{"t": "want", "tag": "v9.1.0", "commit": "b" * 40}])
+            self.assertEqual(seen, ["v9.0.0"])
+            await self.p.announce()                                                  # not again so soon
+            self.assertEqual(len(sent), 1)
+            self.p.told = (self.p.told[0], time.monotonic() - pultd.ANNOUNCE_EVERY - 1)
+            await self.p.announce()
+            self.assertEqual(len(sent), 2)
+            # the server takes it: Home says so; then it runs it — nothing in Telegram, nothing more to say to it
+            await self.p.relay_said({"t": "relay", "upd": {"state": "run", "step": "fetch", "tag": "v9.1.0", "have": "v9.0.0", "ts": 2}})
+            self.assertEqual((await self.p.update_row())["state"], "srv_run")
+            await self.p.relay_said({"t": "relay", "upd": {"state": "done", "tag": "v9.1.0", "have": "v9.1.0", "from": "v9.0.0", "ts": 3}})
+            self.assertEqual(seen[-1], "v9.1.0")
+            self.assertIsNone(await self.p.update_row())
+            await self.p.announce(force=True)
+            self.assertEqual(len(sent), 2)
+            # a release it didn't take: told once — the relay repeats its last report on every connection
+            fail = {"state": "fail", "why": "no_start", "back": True, "back_ok": True, "tag": "v9.2.0", "have": "v9.1.0", "ts": 4}
+            await self.p.relay_said({"t": "relay", "upd": fail})
+            await self.p.relay_said({"t": "relay", "can": ["want"], "upd": fail})
+            await asyncio.sleep(0.2)
+            told = [x for x in self.texts() if "v9.2.0" in x]
+            self.assertEqual(len(told), 1)
+            self.assertIn("не взял", told[0])
+            self.assertIn("посредник не запустился", told[0])
+            self.assertIn("v9.1.0", told[0])
+            await self.p.relay_said({"t": "relay", "upd": dict(fail, why="network", tag="v9.3.0", ts=5)})    # of the moment
+            await asyncio.sleep(0.1)
+            self.assertFalse([x for x in self.texts() if "v9.3.0" in x])
+            # a computer on a release the server didn't take for good: it isn't asked again
+            rec["commit"] = "d" * 40
+            with mock.patch.object(U, "release_of", lambda src, commit: "v9.2.0"):
+                await self.p.relay_said({"t": "relay", "upd": dict(fail, have="v9.1.0")})
+                await self.p.announce(force=True)
+            self.assertEqual(len(sent), 2)
+            await asyncio.sleep(0.1)
+            self.assertEqual(len([x for x in self.texts() if "v9.2.0" in x]), 1)      # an older report: not again
+        self.p.web = None
+
+    async def test_expect_release(self):
+        # the file check expects the release the server took — warning only — and never replaces a deploy's record
+        d = TMP / "expect"
+        d.mkdir(exist_ok=True)
+        man = d / "web-manifest.json"
+        with mock.patch.object(pultd, "WEB_MANIFEST", man), \
+                mock.patch.object(U, "read", lambda name, default=None: {"src": "/x/pult"} if name == U.MANIFEST else default), \
+                mock.patch.object(U, "git", lambda repo, *a, **k: "c" * 40), \
+                mock.patch.object(U, "manifest_at", lambda repo, commit: {"index": "<p>", "files": {"app.js": "0" * 64}}):
+            self.p.expect_release("v9.1.0")
+            m = json.loads(man.read_text())
+            self.assertEqual((m["mode"], m["tag"], m["files"]), ("warn", "v9.1.0", {"app.js": "0" * 64}))
+            man.write_text(json.dumps({"index": "<p>", "files": {}}))              # a deploy script's record
+            self.p.expect_release("v9.2.0")
+            self.assertNotIn("mode", json.loads(man.read_text()))
+
+    async def test_guard_warns_only(self):
+        # the file check on a release from GitHub (stage U3): a difference is told once and the app stays open; with a
+        # deploy's record a difference closes the app, as before
+        PW = pultd.PW
+        man = TMP / "guard-manifest.json"
+        man.write_text(json.dumps({"index": "", "files": {}, "mode": "warn", "tag": "v9.1.0"}))
+        w = PW.Web(self.p, "wss://h.example/pult/agent", "s", "T", {OWNER}, manifest=man)
+        w.check_files = mock.AsyncMock(return_value=["app.js"])
+        w.kick_all = mock.AsyncMock()
+        alerts = []
+
+        async def alert(bad, tag=None):
+            alerts.append((bad, tag))
+        with mock.patch.object(PW, "GUARD_RECHECK", 0), mock.patch.object(self.p, "files_alert", alert):
+            await w.guard_once(None)
+            await w.guard_once(None)
+            self.assertEqual(alerts, [(["app.js"], "v9.1.0")])
+            self.assertIsNone(w.locked)
+            w.kick_all.assert_not_called()
+            man.write_text(json.dumps({"index": "", "files": {}}))
+            await w.guard_once(None)
+            self.assertEqual(w.locked, "app.js")
+            w.kick_all.assert_called_once()
+
+    async def test_parts_server(self):
+        # stage U3, a clone of Pult's GitHub repository: the server's rows say whether it takes this computer's releases
+        # itself and how its last one went; the developer's own folder hears nothing of it
+        self.upd_reset(self.READY)
+        f = {"upd": await self.p.update_view(), "git": dict(self.PARTS_GIT, release=True), "relay": True, "tabs": [],
+             "hooks": list(pultd.pult_hook.EVENTS), "cc": dict(self.PARTS_CC), "srv": {"can": [], "upd": None}}
+        rows = {r["k"]: r for r in self.p.parts_rows(f)}
+        self.assertEqual((rows["web"]["auto"], "srv" in rows["web"]), (False, False))       # no updater: how to have it
+        f["srv"] = {"can": ["want"], "upd": {"state": "run", "step": "fetch", "tag": "v9.1.0", "have": "v9.0.0", "ts": 1}}
+        rows = {r["k"]: r for r in self.p.parts_rows(f)}
+        self.assertEqual((rows["relay"]["auto"], rows["relay"]["st"], rows["relay"]["srv"]["step"]), (True, "warn", "fetch"))
+        fail = {"state": "fail", "why": "no_start", "tag": "v9.1.0", "have": "v9.0.0", "back": True, "back_ok": True, "ts": 2}
+        f["srv"]["upd"] = fail
+        rows = {r["k"]: r for r in self.p.parts_rows(f)}
+        # behind main: to update; as in main: worth a look
+        self.assertEqual([(rows[k]["st"], rows[k]["srv"]["final"]) for k in ("web", "relay")], [("warn", True), ("attn", True)])
+        f["srv"]["upd"] = dict(fail, why="network")
+        rows = {r["k"]: r for r in self.p.parts_rows(f)}
+        self.assertEqual([(rows[k]["st"], rows[k]["srv"]["final"]) for k in ("web", "relay")], [("warn", False), ("ok", False)])
+        f["git"] = dict(self.PARTS_GIT)
+        self.assertNotIn("auto", {r["k"]: r for r in self.p.parts_rows(f)}["web"])
+        # the install block: the server takes the same release after this computer
+        self.p.srv = {"can": ["want"], "upd": None}
+        self.upd_reset(dict(self.READY, tag="v9.9.0"))
+        self.assertTrue((await self.p.update_view())["srv"])
+        self.upd_reset(self.READY)
+        self.assertNotIn("srv", await self.p.update_view())
+        self.p.srv = None
 
     async def test_note_health(self):
         # health.json — what the installer waits for: this daemon, when it started, the app's server reached

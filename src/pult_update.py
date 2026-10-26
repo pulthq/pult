@@ -7,6 +7,10 @@ changed a file the installer copies counts: one with the journal or the docs doe
 is everything in src/ plus requirements.txt, taken from the commit itself, so a module added in a later version
 isn't left behind by an older copy of this file.
 
+A clone of Pult's public repository also takes releases from GitHub (stage U3): the daemon looks there every few
+minutes and fetches a newer release into the clone — its tag and commit, nothing checked out (discover); the button
+then installs that release, and the server's updater takes the same one (release_of names it).
+
 The installer is a process of its own (macOS: a new session; Linux: a transient systemd unit), because it stops the
 very service that started it: a plain child dies with it and leaves Pult stopped (tests/probe_update.py). It keeps
 the installed files in prev/, puts the commit's files in, restarts the service through `pultctl install`, and counts
@@ -145,20 +149,25 @@ def check(manifest=None):
     head = git(src, "rev-parse", "HEAD")
     if not head:
         return {"repo": None, "src": src}
-    out = {"repo": src, "head": head, "short": head[:7], "ready": False}
+    # a clone of Pult's GitHub repository: the newest release it fetched, when HEAD is behind it (stage U3)
+    head, tag = target(src, head)
+    out = {"repo": src, "head": head, "short": head[:7], "ready": False, "tag": tag}
     if head == m.get("commit"):
         return out              # nothing committed since (an install from uncommitted files is newer, not older)
     want = tree(src, head)
     if not want or all(b in (blob(HOME / name), blob(HOME / name, lf=True)) for name, b in want.items()):
         return out
     base = m.get("commit")
-    if base and git(src, "merge-base", "--is-ancestor", base, head) is not None:
-        log_ = git(src, "log", "--format=%s", "-n", str(NEWS), base + ".." + head, "--", *TREE)
+    if tag:
+        news = release_news(src, head, installed_version())
     else:
-        log_ = git(src, "log", "--format=%s", "-n", "3", head, "--", *TREE)
+        if base and git(src, "merge-base", "--is-ancestor", base, head) is not None:
+            log_ = git(src, "log", "--format=%s", "-n", str(NEWS), base + ".." + head, "--", *TREE)
+        else:
+            log_ = git(src, "log", "--format=%s", "-n", "3", head, "--", *TREE)
+        news = [s for s in (log_ or "").splitlines() if s][:NEWS]
     st = read(STATUS, {}) or {}
-    out.update(ready=True, version=version_of(git(src, "show", head + ":src/pultd.py")) or head[:7],
-               news=[s for s in (log_ or "").splitlines() if s][:NEWS],
+    out.update(ready=True, version=version_of(git(src, "show", head + ":src/pultd.py")) or head[:7], news=news,
                failed=st.get("state") == "fail" and st.get("commit") == head)
     return out
 
@@ -239,6 +248,160 @@ def changelog(repo, head):
     todo = re.search(r"^## Unreleased[ \t]*$(.*?)(?=^## |\Z)", text, re.M | re.S)
     return {"last": last.group(1) if last else None, "date": last.group(2) if last else None,
             "waiting": len(re.findall(r"^- ", todo.group(1), re.M)) if todo else 0}
+
+
+# ---------- releases from GitHub, for a clone of Pult's public repository (stage U3) ----------
+
+OFFICIAL = "github.com/pulthq/pult"
+CHECK_EVERY = 300                     # s between looks at GitHub (the owner, 2026-10-26: releases come several times an hour)
+RELEASE_RE = re.compile(r"v(\d{1,4})\.(\d{1,4})(?:\.(\d{1,4}))?")
+
+
+def vtag(tag):
+    """"v0.18.1" → (0, 18, 1), "v1.0" → (1, 0, 0); None for anything else."""
+    m = RELEASE_RE.fullmatch(tag or "")
+    return tuple(int(x or 0) for x in m.groups()) if m else None
+
+
+def official_remote(repo):
+    """The name of the folder's remote that is Pult's GitHub repository (https or ssh), or None. The URL as the
+    folder's config has it (`git remote -v` shows it after url.*.insteadOf)."""
+    for ln in (git(repo, "config", "--get-regexp", r"^remote\..*\.url$") or "").splitlines():
+        key, _, url = ln.partition(" ")
+        url = re.sub(r"^(https?|ssh|git)://([^@/]+@)?", "", url.strip().lower())
+        url = re.sub(r"\.git$", "", re.sub(r"^git@github\.com:", "github.com/", url).rstrip("/"))
+        if url == OFFICIAL and key.count(".") >= 2:
+            return key[len("remote."):-len(".url")]
+    return None
+
+
+def release_mode(repo, head):
+    """The remote releases come from, or None: the folder makes releases itself (the developer's own), or isn't a
+    clone of Pult's GitHub repository. Only a clone takes releases from GitHub and has the server follow it."""
+    if not repo or not head or makes_releases(repo, head):
+        return None
+    return official_remote(repo)
+
+
+def git_net(repo, *args, proxy=None, timeout=60):
+    """A git command that goes to GitHub: through Pult's proxy when it has one (as Telegram does), else directly."""
+    for p in ([proxy] if proxy else []) + [None]:
+        out = git(repo, *(("-c", "http.proxy=" + p) if p else ()), *args, timeout=timeout)
+        if out is not None:
+            return out
+    return None
+
+
+def remote_releases(repo, remote, proxy=None):
+    """The releases GitHub has → [(version, tag, commit)], newest first; None — GitHub couldn't be asked."""
+    out = git_net(repo, "ls-remote", "--tags", remote, "refs/tags/v*", proxy=proxy, timeout=30)
+    if out is None:
+        return None
+    tags = {}
+    for ln in out.splitlines():
+        sha, _, ref = ln.partition("\t")
+        name = ref[len("refs/tags/"):]
+        peeled = name.endswith("^{}")
+        name = name[:-3] if peeled else name
+        v = vtag(name)
+        if v and (peeled or name not in tags):          # an annotated tag: its peeled line is the commit
+            tags[name] = (v, name, sha)
+    return sorted(tags.values(), reverse=True)
+
+
+def newest_release(repo, remote):
+    """The newest release the clone has from GitHub's main → (version, tag, commit), or None."""
+    out = git(repo, "tag", "--list", "v*", "--merged", "refs/remotes/%s/main" % remote,
+              "--format=%(refname:short) %(objectname) %(*objectname)")
+    best = None
+    for ln in (out or "").splitlines():
+        parts = ln.split()
+        v = vtag(parts[0]) if parts else None
+        if v and (best is None or v > best[0]):
+            best = (v, parts[0], parts[-1])
+    return best
+
+
+def discover(repo, remote, have, proxy=None):
+    """One look at GitHub: the newest release, when it is newer than `have` (the installed version), is fetched into
+    the clone — its tag and commit, nothing checked out: the folder's files stay as they are. → (whether GitHub
+    answered, the tag of a newer release now in the clone or None)."""
+    rel = remote_releases(repo, remote, proxy)
+    if rel is None:
+        return False, None
+    if not rel:
+        return True, None
+    v, tag, sha = rel[0]
+    mine = vtag("v%s" % have) if have else None
+    if mine and v <= mine:
+        return True, None
+    local = newest_release(repo, remote)
+    if local and local[2] == sha:
+        return True, tag
+    ok = git_net(repo, "fetch", "-q", "--no-tags", remote, "+refs/tags/%s:refs/tags/%s" % (tag, tag),
+                 "+refs/heads/main:refs/remotes/%s/main" % remote, proxy=proxy, timeout=120) is not None
+    return ok, tag if ok else None
+
+
+def target(repo, head):
+    """What the folder offers to install → (commit, its release tag or None): HEAD — unless the folder is a clone of
+    Pult's GitHub repository and the newest release it fetched is ahead of HEAD: then that release (the installer
+    takes it from git, the folder's files stay)."""
+    remote = release_mode(repo, head)
+    rel = newest_release(repo, remote) if remote else None
+    if not rel:
+        return head, None
+    _, tag, sha = rel
+    if sha == head:
+        return head, tag
+    if git(repo, "merge-base", "--is-ancestor", head, sha) is not None:
+        return sha, tag
+    return head, None                 # commits of its own on top: what the folder has
+
+
+def release_of(repo, commit):
+    """The release (vX.Y.Z) this commit is in a clone of Pult's GitHub repository, or None: what the computer tells
+    the server's updater it runs. A tag on a commit of one's own isn't a release — the updater checks GitHub anyway."""
+    remote = release_mode(repo, commit)
+    if not remote:
+        return None
+    tags = [t for t in (git(repo, "tag", "--points-at", commit, "--list", "v*") or "").split() if vtag(t)]
+    if not tags or git(repo, "merge-base", "--is-ancestor", commit, "refs/remotes/%s/main" % remote) is None:
+        return None
+    return max(tags, key=vtag)
+
+
+def release_news(repo, commit, have):
+    """What the releases after `have` brought, from the CHANGELOG at `commit`: each entry's bold title (the first
+    sentence where there is none), newest release first, at most NEWS."""
+    text = git(repo, "show", commit + ":CHANGELOG.md") or ""
+    mine, out = vtag("v%s" % have) or (0, 0, 0), []
+    for m in re.finditer(r"^## (\d+\.\d+\.\d+)[^\n]*\n(.*?)(?=^## |\Z)", text, re.M | re.S):
+        if (vtag("v" + m.group(1)) or (0, 0, 0)) <= mine:
+            break
+        for e in re.findall(r"^- (.+?)(?=^- |\Z)", m.group(2), re.M | re.S):
+            title = re.match(r"\*\*(.+?)\*\*", e.strip())
+            out.append((title.group(1) if title else re.split(r"(?<=\.)\s", e.strip(), 1)[0]).strip()[:160])
+    return out[:NEWS]
+
+
+def manifest_at(repo, commit):
+    """What a server running this commit's relay must hand the phone — pult_web.make_manifest's shape (the page
+    template, sha256 of every app file), taken from git; None when it can't be read."""
+    index = git(repo, "show", commit + ":relay/web/index.html", raw=True)
+    rows = ls_tree(repo, commit, ["relay/web/static"])
+    if index is None or not rows:
+        return None
+    files = {}
+    for path, oid in sorted(rows.items()):
+        rel = path[len("relay/web/static/"):]
+        if "__pycache__" in rel.split("/") or rel.split("/")[-1] == ".DS_Store":
+            continue
+        data = git(repo, "cat-file", "blob", oid, raw=True)
+        if data is None:
+            return None
+        files[rel] = hashlib.sha256(data).hexdigest()
+    return {"index": index.decode("utf-8"), "files": files}
 
 
 def installed_by(how, src, ok, prev_version=None):

@@ -1,0 +1,6 @@
+[Unit]
+Description=Pult relay: restart after the updater switched releases
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart pult-relay.service

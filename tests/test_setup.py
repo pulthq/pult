@@ -7,6 +7,7 @@ or the real settings: every path points into a temporary folder, Telegram and th
 import builtins
 import getpass
 import io
+import hashlib
 import json
 import os
 import plistlib
@@ -721,6 +722,67 @@ class UpdateTest(Base):
         self.files({"publish/build.py": "# build\n"})
         self.assertTrue(U.makes_releases(self.repo, self.commit("Pult: the build script")))
 
+    def test_releases_from_github(self):
+        # stage U3: a clone of Pult's GitHub repository looks there for releases, fetches a newer one without touching
+        # the folder's files, offers it with its CHANGELOG titles, and names the release it runs for the server
+        gh = self.tmp / "gh"                                   # stands for github.com/pulthq/pult
+        shutil.copytree(self.repo, gh)
+        g = lambda *a: subprocess.run(["git", "-C", str(gh), "-c", "user.email=t@example.com", "-c", "user.name=T", *a],
+                                      check=True, capture_output=True, text=True).stdout.strip()
+        (gh / "relay" / "web" / "static").mkdir(parents=True)
+        for k, v in {"relay/relay.py": "r1\n", "relay/web/index.html": "<title>Pult</title>\n{{importmap}}\n",
+                     "relay/web/static/app.js": "// app 1\n", "CHANGELOG.md": "# Changelog\n\n## 1.0.0 — 2026-10-20\n\n- old\n"}.items():
+            (gh / k).write_text(v)
+        g("add", "-A")
+        g("commit", "-qm", "Pult 1.0.0")
+        g("branch", "-M", "main")           # GitHub's branch; `git init` names it by config (Actions: master)
+        g("tag", "-a", "v1.0.0", "-m", "v1.0.0")
+        clone = self.tmp / "clone"
+        subprocess.run(["git", "clone", "-q", str(gh), str(clone)], check=True, capture_output=True)
+        cg = lambda *a: subprocess.run(["git", "-C", str(clone), "-c", "user.email=t@example.com", "-c", "user.name=T", *a],
+                                       check=True, capture_output=True, text=True).stdout.strip()
+        cg("remote", "set-url", "origin", "https://github.com/pulthq/pult.git")      # what `git remote -v` says…
+        cg("config", "url.%s.insteadOf" % gh, "https://github.com/pulthq/pult.git")  # …and where git really goes
+        a = cg("rev-parse", "HEAD")
+        U.installed_by("terminal", clone, True)
+        self.assertEqual((U.official_remote(clone), U.release_mode(clone, a)), ("origin", "origin"))
+        self.assertIsNone(U.release_mode(self.repo, self.c1))              # not a clone of Pult's GitHub repository
+        self.assertEqual(U.release_of(clone, a), "v1.0.0")
+        self.assertEqual(U.discover(clone, "origin", "1.0"), (True, None))  # nothing newer
+        self.assertFalse(U.check()["ready"])
+        # a new release on GitHub: a change in src/ and two CHANGELOG entries
+        (gh / "src" / "pultd.py").write_text('VERSION = "1.1"\n')
+        (gh / "relay" / "web" / "static" / "app.js").write_text("// app 2\n")
+        (gh / "CHANGELOG.md").write_text("# Changelog\n\n## 1.1.0 — 2026-10-26\n\n- **Faster replies.** Text\n  more\n"
+                                         "- **Fewer messages.** Text\n\n## 1.0.0 — 2026-10-20\n\n- old\n")
+        g("add", "-A")
+        g("commit", "-qm", "Pult 1.1.0")
+        g("tag", "-a", "v1.1.0", "-m", "v1.1.0")
+        b = g("rev-parse", "HEAD")
+        self.assertEqual(U.remote_releases(clone, "origin")[0], ((1, 1, 0), "v1.1.0", b))
+        self.assertEqual(U.discover(clone, "origin", "1.0"), (True, "v1.1.0"))
+        self.assertEqual(cg("rev-parse", "HEAD"), a)                       # the folder's files stay as they were
+        self.assertEqual((clone / "src" / "pultd.py").read_text(), 'VERSION = "1.0"\n')
+        c = U.check()
+        self.assertEqual((c["ready"], c["head"], c["tag"], c["version"], c["news"]),
+                         (True, b, "v1.1.0", "1.1", ["Faster replies.", "Fewer messages."]))
+        self.assertEqual(U.release_of(clone, b), "v1.1.0")
+        # what a server on that release must hand the phone: from git, as make_manifest has it from the files
+        man = U.manifest_at(clone, b)
+        self.assertEqual(man["index"], "<title>Pult</title>\n{{importmap}}\n")
+        self.assertEqual(man["files"], {"app.js": hashlib.sha256(b"// app 2\n").hexdigest()})
+        # commits of one's own on top of the old release: the folder's own HEAD, as before stage U3
+        (clone / "src" / "pult_x.py").write_text("x = 5\n")
+        cg("add", "-A")
+        cg("commit", "-qm", "mine")
+        mine = cg("rev-parse", "HEAD")
+        self.assertEqual(U.target(clone, mine), (mine, None))
+        self.assertIsNone(U.release_of(clone, mine))
+        # GitHub doesn't answer
+        cg("config", "url.%s-gone.insteadOf" % gh, "https://github.com/pulthq/pult.git")
+        cg("config", "--unset", "url.%s.insteadOf" % gh)
+        self.assertEqual(U.discover(clone, "origin", "1.0"), (False, None))
+
     def test_check_crlf(self):
         # a checkout with core.autocrlf (Git for Windows): the files are CRLF in the folder and installed so, LF in the
         # commit — a commit that didn't touch them is nothing to install (Actions on Windows, 2026-10-24)
@@ -1104,6 +1166,27 @@ class TabTest(Base):
         with redirect_stdout(out):
             pultctl.cmd_tab(["allow", "2.1.999"])
         self.assertEqual(json.loads(S.TAB_CONF.read_text())["versions"], list(S.TAB_VERIFIED) + ["2.1.999"])
+
+    def test_install_brings_verified_versions(self):
+        # an install (install.sh, the app's "Install") adds the versions its release is checked on to tab.json and
+        # keeps the folders and the versions allowed by hand; before, only `pult tab setup` did (2026-10-26)
+        def install():
+            with mock.patch.object(sys.stdin, "isatty", lambda: False):
+                return self.run_cli(S.cmd_install)[1]
+        install()
+        self.assertFalse(S.TAB_CONF.exists())                    # writing into tabs isn't set up: nothing is written
+        S.TAB_CONF.parent.mkdir(parents=True, exist_ok=True)
+        S.TAB_CONF.write_text(json.dumps({"folders": ["~/work"], "versions": ["2.1.200", S.TAB_VERIFIED[0]]}))
+        out = install()
+        conf = json.loads(S.TAB_CONF.read_text())
+        self.assertEqual(conf["folders"], ["~/work"])
+        self.assertEqual(conf["versions"], sorted({"2.1.200", *S.TAB_VERIFIED}, key=S.vkey))
+        added = S.T("cli.tab.added", v=", ".join(S.TAB_VERIFIED[1:]))
+        self.assertIn(added, out)
+        self.assertNotIn(added, install())                       # nothing new — nothing said
+        S.TAB_CONF.write_text("{broken")
+        install()
+        self.assertEqual(S.TAB_CONF.read_text(), "{broken")      # one Pult can't read stays as it is
 
 
 if __name__ == "__main__":

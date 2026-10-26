@@ -30,9 +30,9 @@ you're neither in the app nor at the computer. Reminders on long turns; warnings
 
 ## In the web app
 
-- **Home** is built around whose move it is: what runs right now, then what waits for you — permission requests to
-  answer right there, sessions that ended and need you, with ready replies taken from Claude's own message — then
-  every project with its colour.
+- **Home** is built around whose move it is: what runs right now (each task with what you asked and what Claude says
+  so far), then what waits for you — permission requests to answer right there, sessions that ended and need you,
+  with ready replies taken from Claude's own message — then every project with its colour.
 - **A session** shows the whole conversation, live, with the model, the effort and the context gauge by the message
   field. Pick the model (Fable, Opus, Sonnet, Haiku) and how hard Claude thinks for that session; a running one
   switches at once. Settings → Model and effort sets what sessions from the app and Telegram start with; VS Code tabs

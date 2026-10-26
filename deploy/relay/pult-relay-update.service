@@ -1,0 +1,26 @@
+[Unit]
+Description=Pult relay: put on this server the release the computer runs, from GitHub (update.py)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# an account of its own: it owns the relay's code (app/, venv/) and nothing else — not the secret, not the services
+User=pult-update
+Group=pult-update
+ExecStart=/usr/bin/env python3 -I /usr/local/lib/pult-relay/update.py run
+# where it asks whether the relay is up: install.sh writes the port or the socket from .env into
+# pult-relay-update.service.d/health.conf
+Environment=PULT_UPDATE_HEALTH=http://127.0.0.1:8097/pult/healthz
+StateDirectory=pult-relay-update
+StateDirectoryMode=0755
+TimeoutStartSec=20min
+# a download of ~0.5 MB and a copy; pip only when the relay's requirements change — it yields to everything else
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=400M
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/pult-relay/app /opt/pult-relay/venv

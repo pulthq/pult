@@ -1,0 +1,9 @@
+[Unit]
+Description=Pult relay: the computer named the release it runs — the updater has a look
+
+[Path]
+PathChanged=/var/lib/pult-relay/want.json
+Unit=pult-relay-update.service
+
+[Install]
+WantedBy=multi-user.target

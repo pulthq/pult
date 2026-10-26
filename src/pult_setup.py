@@ -56,7 +56,8 @@ EXT_DIRS = pult_os.extension_dirs()
 DEFAULT_LABEL = SVC.DEFAULT
 MARK = "pult_hook.py"                          # Pult's hooks are recognised by this in the command
 LAUNCHER_MARK = "# Pult command line"
-TAB_VERIFIED = ("2.1.301",)    # Claude Code versions the tab wrapper was checked on (tests/probe_tab.py, probe_race.py)
+TAB_VERIFIED = ("2.1.301", "2.1.310")    # Claude Code versions the tab wrapper was checked on (tests/probe_tab.py,
+                                          # probe_race.py); an install adds them to tab.json (tab_verified_add)
 SERVICE_PATH = pult_os.service_path(BIN)
 WAIT_LIMIT = 15 * 60           # s; how long the setup waits for /start and /bind
 TOKEN_RE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{30,}$")
@@ -560,9 +561,12 @@ def cmd_install():
     launcher = write_launcher()
     if WIN and (HOME / "pult_tab.py").exists():
         make_tab_exe()
+    added = tab_verified_add()
     say(T("cli.install.done", version=version(), home=tilde(HOME)))
     if launcher and not WIN and str(BIN) not in os.environ.get("PATH", "").split(":"):
         say(T("cli.install.path", path=tilde(launcher), rc=pult_os.shell_rc()))     # install.ps1 adds it on Windows
+    if added:
+        say(T("cli.tab.added", v=", ".join(added)))
     if not configured():
         if src:
             U.installed_by("terminal", src, None, before)
@@ -941,6 +945,25 @@ def vkey(v):
 
 def newest_extension():
     return pult_os.newest_extension(EXT_DIRS)
+
+
+def tab_verified_add():
+    """An install brings the Claude Code versions its release checked the tab wrapper on: they join tab.json's list,
+    which keeps the ones allowed by hand. Before, only `pult tab setup` put them there, so a release checked on a new
+    version changed nothing for those who had Pult already (2026-10-26). No tab.json — writing into tabs isn't set
+    up — or one Pult can't read: nothing is written. Returns the versions added."""
+    try:
+        conf = json.loads(TAB_CONF.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    have = conf.get("versions") if isinstance(conf, dict) else None
+    if not isinstance(have, list):
+        return []
+    new = sorted((v for v in TAB_VERIFIED if v not in have), key=vkey)
+    if new:
+        conf["versions"] = sorted(set(have) | set(new), key=vkey)
+        TAB_CONF.write_text(json.dumps(conf, ensure_ascii=False) + "\n", encoding="utf-8")
+    return new
 
 
 def cmd_tab_setup():

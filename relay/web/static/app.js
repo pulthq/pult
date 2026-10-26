@@ -1189,12 +1189,17 @@ function Top({ mac, load, usagePct, usageTop, pager, onSet }) {
   </div>`;
 }
 
+// why a session open on the computer takes no message from here — a Claude Code Pult isn't checked on, a tab started
+// before the wrapper, a terminal (the computer tells from 0.17.4; a friend got only "open in a tab", 2026-10-26)
+const copyWhy = (x) => { const k = "fork.why." + (x && x.why); const s = t(k, { v: x && x.v }); return s === k ? "" : s; };
+const forkAsk = (r) => (copyWhy(r) ? copyWhy(r) + "\n\n" + t("fork.copy") : t("fork.ask"));
+
 // a message from a card or a ready reply into the session: the same ways as the session's own field — straight in,
 // into the tab, or a copy when it is open on the computer without Pult (asked first)
 async function sendTo(sid, text) {
   let r = await api("send", { sid, text });
   if (r.need === "fork") {
-    if (!(await confirmBox(t("fork.ask")))) return false;
+    if (!(await confirmBox(forkAsk(r)))) return false;
     r = await api("send", { sid, text, fork: true });
     if (r.how === "fork") alertBox(t("fork.started"));
   }
@@ -1259,8 +1264,9 @@ const moves = (pending, mine) => [...pending.map((r) => ({ key: r.rid, req: r, a
   ...mine.map((r) => ({ key: "m" + r.sid, mine: r, at: r.since || 0 }))].sort((a, b) => b.at - a.at);
 const moveKey = (e) => e.key;
 
-// "Your move": a session that ended and waits for you — how long, what came out, what is needed; ready replies,
-// your own words, "Got it" to put it to rest; the title opens the session
+// "Your move": a session that ended and waits for you — its project and tags, how long, what came out, what is
+// needed; ready replies, your own words, "Got it" to put it to rest; the title opens the session. The tags stay on
+// the top line, as in "Running now": in front of the line they ate it (2026-10-26)
 function Mine({ r, now, onGot, stt, showProject = true }) {
   const [busy, setBusy] = useState(false);
   const [resume, setResume] = useState(r.resume);
@@ -1272,13 +1278,17 @@ function Mine({ r, now, onGot, stt, showProject = true }) {
   };
   const open = () => go("#/s/" + r.sid);
   const sent = () => onGot && onGot(r.sid);
+  // open on the computer without Pult's wrapper: an answer from here goes as a copy — said before it is typed, as
+  // under the session's own field (a friend learned it only after writing a whole answer, 2026-10-26)
+  const copy = r.open && !r.tab && !r.driven;
+  const aboutCopy = (e) => { e.stopPropagation(); alertBox(t("ex.copy")); };
   return html`<div class=${"card mine" + (r.state === "fail" ? " fail" : "")}>
-    <div class="card-h tap" onClick=${open}><div class="c-proj">${showProject && r.project ? html`${avatar(r.project, 18)}<span class="c-name">${r.project}</span>` : ""}<span class="c-wait">${t("mine.waits", { dur: nb(dur(now - r.since)) })}</span></div>
+    <div class="card-h tap" onClick=${open}><div class="c-proj"><span class="run-w">${showProject && r.project ? html`<span class="run-who">${avatar(r.project, 18)}<span class="run-p">${r.project}</span></span>` : ""}${tagChips(r.tags)}</span><span class="c-wait">${t("mine.waits", { dur: nb(dur(now - r.since)) })}</span></div>
       <b class="c-title">${r.state === "fail" ? ic("alert", 16) : ""}${r.title}</b></div>
-    ${r.need ? html`<div class="ln dim tap" onClick=${open}>${tagChips(r.tags)}${r.line}</div><div class="now tap" onClick=${open}>${r.need}</div>` : html`<div class="now tap" onClick=${open}>${tagChips(r.tags)}${r.line}</div>`}
+    ${r.need ? html`<div class="ln dim tap" onClick=${open}>${r.line}</div><div class="now tap" onClick=${open}>${r.need}</div>` : html`<div class="now tap" onClick=${open}>${r.line}</div>`}
     ${r.fail === "rate_limit" ? html`<${ResumeAt} sid=${r.sid} resume=${resume} reset=${r.reset} onSet=${setResume}/>` : html`<${Replies} sid=${r.sid} replies=${r.replies} onSent=${sent}/>`}
     <${QuickReply} sid=${r.sid} stt=${stt} onSent=${sent}/>
-    <div class="foot quiet"><span></span><button class="link" disabled=${busy} onClick=${got}>${ic("check", 15)} ${t("mine.got")}</button></div>
+    <div class="foot quiet">${copy ? html`<button class="link copy" onClick=${aboutCopy}>${ic("copy", 15)} ${t("dest.copy")}</button>` : html`<span></span>`}<button class="link" disabled=${busy} onClick=${got}>${ic("check", 15)} ${t("mine.got")}</button></div>
   </div>`;
 }
 
@@ -1291,24 +1301,46 @@ function Catchup({ c, onClose }) {
     ${c.lines.map((x) => html`<div class="ln tap" key=${x.pkey} onClick=${() => go("#/p/" + encodeURIComponent(x.pkey))}>${x.you ? dot("attn") : x.fail ? ic("alert", 14) : ic("check", 14)} <b>${x.name}</b> — ${x.line}</div>`)}</div>`;
 }
 
-// one session on the board: what it does now or how its last turn ended, in a line or two; in "Running now" (with
-// project) — its project and what it does in one grey line: the turn's line, or its background task
-function BoardRow({ r, now, onBg, project }) {
+// a session's mark in front of its title: the beating dot while it works, its background task, the queue, a fresh report
+const rowIcon = (r) => (r.state === "work" ? html`<span class="st st-work"></span>` : r.state === "bg" ? html`<span class="st-ic">${ic("bg", 15)}</span>`
+  : r.state === "queue" ? html`<span class="st-ic">${ic("clock", 15)}</span>`
+  : r.state === "done" ? html`<span class="st-ic ok">${ic("check", 15)}</span>` : r.driven ? html`<span class="st-ic">${ic("phone", 15)}</span>` : "");
+const ctxWarn = (r) => (r.ctx != null && r.ctx >= 90 ? html`<span class="pct bad">${ic("alert", 13)} ${r.ctx} %</span>` : "");
+
+// one session on the board: what it does now or how its last turn ended, in a line or two
+function BoardRow({ r, now, onBg }) {
   const bgTap = (e) => { e.stopPropagation(); onBg(r); };
   const right = r.state === "work" ? workChip(r.since, now)
     : r.state === "queue" ? queueChip(r.since, now)
     : r.state === "bg" ? bgChip(r.since, now, bgTap)
     : html`<span class="dim nowrap">${agoShort(r.ts)}</span>`;
-  const what = project != null && [project !== r.title ? project : "",
-    r.state === "bg" && r.bg && r.bg.length ? r.bg.map(q).join(", ") : r.line ? r.line : ""].filter(Boolean).join(" · ");
-  const icon = r.state === "work" ? html`<span class="st st-work"></span>` : r.state === "bg" ? html`<span class="st-ic">${ic("bg", 15)}</span>`
-    : r.state === "queue" ? html`<span class="st-ic">${ic("clock", 15)}</span>`
-    : r.state === "done" ? html`<span class="st-ic ok">${ic("check", 15)}</span>` : r.driven ? html`<span class="st-ic">${ic("phone", 15)}</span>` : "";
   return html`<button class=${"item brow" + (r.state === "idle" ? " rest" : "") + (r.state === "done" ? " fresh" : "")} onClick=${() => go("#/s/" + r.sid)}>
-    <div class="item-h"><b class="one">${icon}${r.title}</b><span class="meta">${r.ctx != null && r.ctx >= 90 ? html`<span class="pct bad">${ic("alert", 13)} ${r.ctx} %</span>` : ""}${right}</span></div>
-    ${project != null ? (what || (r.tags && r.tags.length > 0)) && html`<div class="ln dim">${tagChips(r.tags)}${what}</div>` : html`
+    <div class="item-h"><b class="one">${rowIcon(r)}${r.title}</b><span class="meta">${ctxWarn(r)}${right}</span></div>
     ${(r.line || (r.tags && r.tags.length > 0)) && html`<div class="ln">${tagChips(r.tags)}${r.line}</div>`}
-    ${r.bg && r.bg.length > 0 && html`<div class="bg tap" onClick=${bgTap}>${bgLine(r.bg)} ${ic("chev", 14)}</div>`}`}
+    ${r.bg && r.bg.length > 0 && html`<div class="bg tap" onClick=${bgTap}>${bgLine(r.bg)} ${ic("chev", 14)}</div>`}
+  </button>`;
+}
+
+// the request and the title say the same in a task's first turn (the title is its first request, cut)
+const sameStart = (a, b) => { const x = String(a || "").replace(/…$/, ""), y = String(b || "").replace(/…$/, ""); return !!x && !!y && (x.startsWith(y) || y.startsWith(x)); };
+
+// one session in "Running now" (Home; a project's screen — without the project): where on top — the project and the
+// task's tags, a tag that doesn't fit left out whole; the title whole, two lines at most, with its time beside it;
+// then what you asked in this turn and what Claude says so far — or, while its background task runs, how the turn
+// ended. The owner, 2026-10-26: a title cut after three words over a line of tags cut the same way said nothing
+function RunRow({ r, now, onBg, showProject = true }) {
+  const bgTap = (e) => { e.stopPropagation(); onBg(r); };
+  const chip = r.state === "work" ? workChip(r.since, now) : r.state === "queue" ? queueChip(r.since, now) : bgChip(r.since, now, bgTap);
+  // a computer before 0.17.3 gives a turn one line: Claude's words, else the request when it was typed there
+  const said = r.state === "queue" ? "" : r.state === "work" && "now" in r ? r.now || (!r.ask && r.note) : r.line;
+  const asked = r.state === "queue" ? r.line : r.state === "work" ? r.ask : "";
+  const ask = asked && !sameStart(asked, r.title) ? asked : "";
+  return html`<button class="item run" onClick=${() => go("#/s/" + r.sid)}>
+    ${(showProject && r.project) || (r.tags && r.tags.length > 0) ? html`<div class="run-w">${showProject && r.project ? html`<span class="run-who">${avatar(r.project, 16)}<span class="run-p">${r.project}</span></span>` : ""}${tagChips(r.tags)}</div>` : ""}
+    <div class="run-h"><div class="run-t">${rowIcon(r)}${r.title}</div><span class="meta">${ctxWarn(r)}${chip}</span></div>
+    ${ask && html`<div class=${"run-ask" + (said ? "" : " solo")}>${t("run.you", { text: ask })}</div>`}
+    ${said && html`<div class="run-now">${said}</div>`}
+    ${r.state === "bg" && r.bg && r.bg.length > 0 && html`<div class="bg tap" onClick=${bgTap}>${bgLine(r.bg)} ${ic("chev", 14)}</div>`}
   </button>`;
 }
 
@@ -1360,7 +1392,7 @@ function Home() {
     <${Top} mac=${d.mac} load=${d.load} usagePct=${d.usage_pct} usageTop=${d.usage_top} pager=${d.pager} onSet=${(m) => set(Object.assign({}, d, { mac: Object.assign({}, d.mac, { mode: m }) }))}/>
     <${UpdRow} u=${d.update}/>
     ${nRun > 0 && html`<h3>${t("home.running", { n: nRun - nQueue })}${nQueue ? " · " + t("home.queued", { n: nQueue }) : ""}</h3><div class="list">
-      ${running.map((r) => html`<${BoardRow} key=${r.sid} r=${r} now=${now} onBg=${onBg} project=${r.project}/>`)}
+      ${running.map((r) => html`<${RunRow} key=${r.sid} r=${r} now=${now} onBg=${onBg}/>`)}
       ${jobsOn.map((j) => html`<${Job} key=${j.id} j=${j} now=${now} row=${true}/>`)}</div>`}
     ${d.catchup && html`<${Catchup} c=${d.catchup} onClose=${() => { api("catchup_off").catch(() => {}); set(Object.assign({}, d, { catchup: null })); }}/>`}
     ${(n > 0 || yours.length > 0) && html`<h3>${t("home.mine", { n })}</h3>
@@ -1394,7 +1426,8 @@ const updSpin = html`<span class="upd-spin" aria-hidden="true"></span>`;
 const UPD_RUN_MAX = 180000;
 function noteUpd(state) {
   const was = conn.updating;
-  conn.updating = state === "run" ? was || Date.now() : 0;
+  conn.updating = state === "run" || state === "srv_run" ? was || Date.now() : 0;
+  conn.updSrv = state === "srv_run";         // stage U3: the app's server restarts — seconds, not the computer's 15
   if (!was !== !conn.updating) emit("conn");
 }
 const tOr = (k, other) => { const v = t(k); return v === k ? other : v; };     // a code the app has no words for: as is
@@ -1416,9 +1449,34 @@ async function checkServed(force) {
   } catch (e) {}
 }
 const phoneOld = () => !!(OWN_V && served.v && served.v !== OWN_V);
-on("ready", () => checkServed());
+on("ready", () => checkServed(true));
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkServed(); });
 const useServed = () => { const [, bump] = useState(0); useEffect(() => on("served", () => bump((x) => x + 1)), []); };
+
+// stage U3: the copy follows the server by itself — a few seconds after the server hands out a newer one (a deploy
+// writes its files one by one), and only when nothing would be lost: no words typed anywhere, no menu or picture
+// open, no recording, no request on its way. Until then: Settings → "Refresh the app"
+function idleHere() {
+  if (overlays > 0 || conn.wait.size) return false;
+  if (mic && mic.getTracks().some((tr) => tr.enabled && tr.readyState === "live")) return false;
+  const a = document.activeElement;
+  if (a && /^(TEXTAREA|INPUT|SELECT)$/.test(a.tagName)) return false;
+  return ![...document.querySelectorAll("textarea, input")].some((el) => !/^(checkbox|radio|file|button|submit)$/.test(el.type) && el.value.trim());
+}
+let follow = 0;
+function followServer() {
+  clearTimeout(follow);
+  if (!phoneOld()) return;
+  follow = setTimeout(async () => {
+    const v = served.v;
+    await checkServed(true);
+    if (!phoneOld()) return;
+    if (served.v !== v) { followServer(); return; }        // still changing: a deploy in progress
+    const now = () => { if (!phoneOld()) return; if (idleHere()) location.reload(); else follow = setTimeout(now, 5000); };
+    now();
+  }, 8000);
+}
+on("served", followServer);
 
 // Home: a line under the strip only while there is something to do or to know; a tap — Settings. The computer's own
 // install states first; then what can be done from here (the computer, this phone's copy) and what doesn't work
@@ -1427,6 +1485,10 @@ function UpdRow({ u }) {
   useServed();
   const st = u ? u.state : "ok", phone = phoneOld(), broken = (u && u.broken) || [];
   const mac = st === "ready" || st === "busy";
+  if (st === "srv_run") {
+    return html`<button class="card upd-row" onClick=${() => go("#/settings")}><span class="upd-ic">${updSpin}</span>
+      <span class="upd-t"><b>${t("upd.srv.run", { v: u.next })}</b><span class="dim">${t("upd.row.srv.run")}</span></span>${ic("chev", 16)}</button>`;
+  }
   const row = (icon, title, sub, cls) => html`<button class=${"card upd-row " + cls} onClick=${() => go("#/settings")}>
     <span class="upd-ic">${icon}</span><span class="upd-t"><b>${title}</b><span class="dim">${sub}</span></span>${ic("chev", 16)}</button>`;
   if (st === "wait" || st === "run" || st === "fail" || mac && !phone && !broken.length) {
@@ -1468,7 +1530,7 @@ function UpdBody({ v, set, row }) {
     ready: html`${head("", t("upd.ready", { v: v.next }), html`<span class="chip ok">${t("upd.ready.chip")}</span>`)}
       <div class="dim">${t("upd.have", { v: v.have })}</div>${news}
       <button class="btn wide" disabled=${busy} onClick=${() => act("update_go")}>${t("upd.go", { v: v.next })}</button>
-      <div class="dim upd-note">${t("upd.go.about")}</div>`,
+      <div class="dim upd-note">${t("upd.go.about")}</div>${v.srv ? html`<div class="dim upd-note">${t("upd.go.srv")}</div>` : ""}`,
     busy: html`${head("", t("upd.ready", { v: v.next }), html`<span class="chip warn">${t("upd.busy.chip")}</span>`)}
       <div class="dim">${t("upd.have", { v: v.have })}</div>${news}
       <div class="upd-k attn">${t("upd.busy.cut", { n: busyList.length })}</div>${busyList.map(updWho)}
@@ -1521,7 +1583,12 @@ function partChip(r, b) {
   if (r.st === "ok") return t("pt." + r.k + ".ok", { b });
   if (r.k === "mac") return r.upd.state === "run" ? t("pt.mac.run") : r.upd.state === "fail" ? t("upd.fail.chip")
     : r.upd.state === "na" ? t(r.upd.why === "windows" ? "pt.mac.win" : "pt.unknown") : r.n ? "\u2212" + commits(r.n) : t("upd.ready.chip");
-  if (r.k === "web" || r.k === "relay") return r.st === "warn" ? "\u2212" + commits(r.n) : t(r.why === "other" ? "pt.other" : "pt.unknown", { b });
+  if (r.k === "web" || r.k === "relay") {
+    const s = r.srv;
+    if (s && s.state === "run") return t("pt.srv.run", { v: s.tag });
+    if (s && s.final) return t("pt.srv.fail", { v: s.tag });
+    return r.st === "warn" ? "\u2212" + commits(r.n) : t(r.why === "other" ? "pt.other" : "pt.unknown", { b });
+  }
   if (r.k === "phone") return t(r.st === "warn" ? "pt.phone.old" : "pt.unknown");
   if (r.k === "tabs") return t("pt.tabs.old", { n: r.n_old });
   if (r.k === "hooks") return r.have ? t("pt.hooks.missing", { n: r.missing.length }) : t("pt.hooks.off");
@@ -1541,14 +1608,30 @@ function partHave(r) {
 const who = (icon, text) => html`<div class="who">${ic(icon, 14)}<span>${text}</span></div>`;
 const newsList = (xs) => (xs && xs.length ? html`<ul class="upd-news">${xs.map((x, i) => html`<li key=${i}>${x}</li>`)}</ul>` : "");
 
+// stage U3, a clone of Pult's GitHub repository: whether the server takes this computer's releases itself, and how
+// its last one went; without the updater — how to have it
+function srvMore(r) {
+  if (!r.auto) return who("server", t("pt.srv.manual"));
+  const s = r.srv || {}, why = (w) => tOr("pt.srv.why." + w, w || "?");
+  const line = s.state === "run" ? t("pt.srv.st.run", { v: s.tag, step: tOr("pt.srv.step." + s.step, s.step || "…") })
+    : s.state === "done" ? t("pt.srv.st.done", { v: s.tag, ago: ago(s.ts) })
+    : s.state === "fail" && s.final ? t(s.back && s.back_ok === false ? "pt.srv.st.dead" : "pt.srv.st.fail", { v: s.tag, have: s.have || "?", why: why(s.why) })
+    : s.state === "fail" ? t("pt.srv.st.retry", { v: s.tag, why: why(s.why) })
+    : s.state === "refused" ? t(s.why === "older" ? "pt.srv.st.older" : "pt.srv.st.unofficial", { v: s.tag })
+    : s.have ? t("pt.srv.st.idle", { v: s.have }) : "";
+  return html`${who("auto", t("pt.srv.auto"))}${line ? html`<div class=${"upd-note" + (s.final ? "" : " dim")}>${line}</div>` : ""}
+    ${s.detail && s.state === "fail" ? html`<div class="upd-detail mono">${s.detail}</div>` : ""}`;
+}
+
 function PartMore({ r, set, b }) {
   if (r.k === "mac") return html`${r.n ? html`<div class="dim">${t("pt.lag.short", { n: commits(r.n), since: ddmm(r.since), b })}</div>` : ""}
     <${UpdBody} v=${r.upd} set=${set} row=${true}/>`;
   if (r.k === "web" || r.k === "relay") {
-    if (r.st === "info") return html`<div class="dim">${t("pt.why." + r.why, { b })}</div>`;
+    const auto = r.auto === undefined ? "" : srvMore(r);
+    if (!r.commit) return html`<div class="dim">${t("pt.why." + r.why, { b })}</div>${auto}`;
     return html`<div class="dim">${t("pt." + r.k + ".from", { commit: r.commit, d: ddmm(r.have) })}</div>
       ${r.n ? html`<div class="dim upd-note">${t("pt.lag", { n: commits(r.n), since: ddmm(r.since), b })}</div>${newsList(r.news)}
-      ${who("server", t("pt.web.who"))}` : ""}`;
+      ${r.auto === undefined ? who("server", t("pt.web.who")) : ""}` : ""}${auto}`;
   }
   if (r.k === "phone") {
     if (r.st === "ok") return html`<div class="dim">${t("pt.phone.same")}</div>`;
@@ -1664,6 +1747,7 @@ function Settings() {
   };
   return html`<div><h2>${t("settings")}</h2>
     <${Parts}/>
+    ${d.gh && d.gh.release ? html`<div class="list">${sw("gh", t("gh"), d.gh.at && d.prefs.gh ? t(d.gh.ok ? "gh.at" : "gh.fail", { hm: hhmm(toDate(d.gh.at)) }) : t("gh.short"), t("gh.about"))}</div>` : ""}
     ${"model" in d.prefs ? html`<h3>${t("model.pick")}</h3>
     <button class="field" onClick=${openPick}><span>${choiceText(d.prefs.model, d.prefs.effort)}</span><span class="dim">${ic("down", 18)}</span></button>
     <div class="dim small">${t("def.about")}</div>
@@ -1781,7 +1865,7 @@ function Project({ pkey, tag, topic }) {
     ${(waits > 0 || mineF.length > 0) && html`<h3>${t("proj.waits", { n: waits })}</h3>
       ${mineF.map((e) => e.req ? html`<${Req} key=${e.key} r=${e.req} showProject=${false}/>`
         : html`<${Mine} key=${e.key} r=${Object.assign({ reset: d.reset }, e.mine)} now=${now} onGot=${gone} stt=${d.stt} showProject=${false}/>`)}`}
-    ${liveF.length > 0 && html`<h3>${t("proj.live", { n: liveF.length })}</h3><div class="list">${liveF.map((r) => html`<${BoardRow} key=${r.sid} r=${r} now=${now} onBg=${onBg}/>`)}</div>`}
+    ${liveF.length > 0 && html`<h3>${t("proj.live", { n: liveF.length })}</h3><div class="list">${liveF.map((r) => html`<${RunRow} key=${r.sid} r=${r} now=${now} onBg=${onBg} showProject=${false}/>`)}</div>`}
     ${todayF.length > 0 && html`<h3>${t("proj.today")}</h3><div class="list">${todayF.map((r) => html`<${BoardRow} key=${r.sid} r=${r} now=${now} onBg=${onBg}/>`)}</div>`}
     ${!waits && !mineF.length && !liveF.length && !todayF.length && !(sel && earlierF.length) && html`<div class="empty small">${t("proj.nothing")}</div>`}
     ${earlierF.length > 0 && html`<h3 class="toggle" onClick=${() => setMore(!more)}>${t("proj.earlier", { n: earlierF.length })} <span class=${"chev" + (more || sel ? " open" : "")}>${ic("chev", 14)}</span></h3>
@@ -2247,7 +2331,7 @@ function Session({ sid }) {
       if (r.need === "fork") {
         back();
         setBusy(false);
-        if (await confirmBox(t("fork.ask"))) return sendText(true);
+        if (await confirmBox(forkAsk(r))) return sendText(true);
         return;
       }
       haptic("success");
@@ -2298,7 +2382,7 @@ function Session({ sid }) {
   const effortNow = (info.choice && info.choice.effort) || (info.stats && info.stats.effort) || "";
   const canPick = info.switch || info.switch_effort;
   // a tap on the status explains it in plain words, in a sheet of our own
-  const explain = () => { setNote([lv.tab ? t("ex.tab") : lv.open ? t("ex.copy") : t("ex.session"),
+  const explain = () => { setNote([lv.tab ? t("ex.tab") : lv.open ? (copyWhy(lv) ? copyWhy(lv) + " " + t("ex.copy.then") : t("ex.copy")) : t("ex.session"),
     info.stats && info.stats.model ? t("ex.model", { m: modelName(info.stats.model) }) + (info.switch ? "" : " " + (lv.tab ? t("model.reload") : t("model.fixed"))) : "",
     effortNow ? t("ex.effort", { e: effortName(effortNow).toLowerCase() }) + (lv.tab && info.switch && !info.switch_effort ? " " + t("effort.reload") : "") : "",
     info.stats && info.stats.model ? t("ex.ctx", { n: kilo(info.stats.context), win: pct !== null ? t("ex.ctx.win", { w: kilo(info.ctx.window), pct }) : "" }) : "",
@@ -2836,7 +2920,7 @@ function Banner() {
   const c = useConn();
   const upd = c.updating && Date.now() - c.updating < UPD_RUN_MAX && ["connecting", "offline", "auth", "nomac"].includes(c.state);
   const text = c.state === "denied" ? t(["expired", "out", "locked"].includes(c.why) ? "banner.denied." + c.why : "banner.denied")
-    : upd ? t("banner.updating")
+    : upd ? t(c.updSrv ? "banner.srv" : "banner.updating")
     : ["connecting", "offline", "auth", "nomac"].includes(c.state) ? t("banner." + c.state) : "";
   const stale = c.fresh && ["offline", "nomac"].includes(c.state) ? " " + t("banner.stale", { hm: hhmm(new Date(c.fresh)) }) : "";
   return text ? html`<div class=${"banner " + c.state} role="status">${text}${stale}</div>` : "";

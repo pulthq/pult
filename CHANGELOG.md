@@ -2,6 +2,59 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.18.0 — 2026-10-26
+
+- **"Running now" says what runs again.** Each running task shows its title whole — two lines at most, its time
+  beside it — then what you asked in this turn (unless that is its title) and what Claude says so far, up to three
+  lines; before Claude has said a word, what you asked. The project and the task's tags have a line of their own on
+  top, and a tag that doesn't fit is left out whole rather than cut. A project's screen shows its running tasks the
+  same way. Since 0.17.0 the tags stood in front of the one line under a running task's title and left nothing of
+  it. On a "your move" card the tags moved up beside the project too, so the result line is whole again.
+- **Watching a turn end no longer puts its question away.** The session screen re-reads itself the moment a turn
+  ends, a few seconds before the small model has read the result; that look counted as "seen", and a turn that
+  needed you went grey — off "Your move", no call in Telegram, folded on Home three hours later. Now a look while the
+  model reads waits for its word: its "your move" stays until you answer or press "Got it"; only a report, or no
+  answer from the model, is seen. The model's "your move" holds even when it can't name what is needed.
+- **Writing into VS Code tabs keeps up with Claude Code, and a copy says why.** Pult writes into a tab only on a
+  Claude Code version it is checked on, and VS Code updates the extension by itself: since 2.1.301, the only checked
+  version, nine more came out, and on any of them a message to an open tab went as a copy. Pult is now checked on
+  2.1.310 too (the tab probes, and the extension's code against 2.1.301; its Linux build has the same code). An
+  install — `install.sh` or the app's "Install" — now adds the versions its release is checked on to `tab.json`;
+  before, only `pult tab setup` did, so a newer check never reached a computer that had Pult already. When the app
+  offers a copy, it says why the session takes no message from here: a Claude Code Pult isn't checked on yet, a tab
+  started before the wrapper (Reload Window), writing into tabs off or not set up, a project outside the wrapper's
+  folders, or a session in a terminal. A "your move" card says "goes as a copy" before you type, as the session's
+  own field does, and the "Claude Code is out" message in Telegram says how to get writing back.
+- **The app's server updates itself after the computer.** "Install" in Settings put a new Pult on the computer only;
+  the relay and the app on your server stayed as they were until someone ran `deploy/relay/install.sh` there by hand,
+  and could lag behind for days unnoticed. Now, once the computer has installed a release, it tells the relay which
+  one — a tag and a commit, nothing else — and an updater on the server takes that same release from
+  github.com/pulthq/pult: only an official one (the tag on GitHub is that very commit, in `main`) and never an older
+  one than it runs, so a computer someone took over can't push code to the server or send it back to a release with
+  holes in it. The updater runs under an account of its own that owns the relay's code and nothing else (not the
+  secret, not the services); it fetches only the release's `relay/` (about half a megabyte), puts it next to the one
+  that runs, switches over, and counts it in once the relay answers and the computer is connected again — otherwise
+  it switches back by itself (at once when the new relay keeps exiting at start) and the computer says so once in
+  Telegram. To turn it on, once, on the server: `git pull`, then `sudo bash deploy/relay/install.sh --auto` (`--no-auto`
+  turns it off). Settings' "Pult and its parts" shows the server following, its step while it updates and why a
+  release didn't go in; the install block says the server takes the same release; Home has a line while it updates.
+  The relay's own code is now read-only to it and its secret is read by systemd only; releases sit in
+  `/opt/pult-relay/app/releases/` with `app/current` pointing at the one that runs (`install.sh` moves an older
+  install there by itself).
+- **A clone of Pult's repository learns of new releases by itself.** Every 5 minutes Pult asks GitHub which releases
+  there are (`git ls-remote`, through `PULT_PROXY` when it is set) and fetches a newer one into the folder you
+  installed from — nothing there is checked out or changed, nothing installs until you tap "Install", which now takes
+  that release and shows what its CHANGELOG says is new. A switch in Settings turns it off; the folder releases are
+  made from, and a clone with commits of its own, install from their own HEAD as before.
+- **The phone's copy of the app follows the server.** When the server hands out a newer app — after an update, or any
+  deploy — the open copy reloads itself a few seconds later, on the same screen, as long as nothing would be lost: no
+  words typed anywhere, no menu or picture open, no recording, no request on its way. Otherwise "Refresh the app" in
+  Settings, as before.
+- **The file check on a server that takes releases from GitHub.** Pult on the computer reads the files of the release
+  the server took from its own copy of it and checks that the server hands the phone exactly those; a difference is
+  told once in Telegram, and the app stays open (a CDN in front of the server may change files). A server that a
+  deploy script fills keeps its own check: a difference closes the app, as before.
+
 ## 0.17.2 — 2026-10-26
 
 - **Task tags: a section and a topic.** Every task gets two tags — the section of its project it belongs to and the

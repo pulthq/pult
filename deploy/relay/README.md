@@ -32,15 +32,17 @@ Enter the app's address — `https://your.domain/pult/` — and keep the suggest
 Copy the Pult folder to the server (`git clone` or `scp`), then as root:
 
 ```
-sudo bash deploy/relay/install.sh
+sudo bash deploy/relay/install.sh --auto
 sudo nano /opt/pult-relay/.env          # paste the three lines from `pult app`
 sudo systemctl restart pult-relay
 curl -s http://127.0.0.1:8097/pult/healthz
 ```
 
 The script creates a system user `pult`, puts the relay into `/opt/pult-relay` with its own Python environment and
-starts the `pult-relay` service on `127.0.0.1:8097` (only locally — the web server faces the internet). Re-run it
-to update; `.env` is kept.
+starts the `pult-relay` service on `127.0.0.1:8097` (only locally — the web server faces the internet). The relay
+can't change its own code, and its secret in `.env` is read by systemd only. `--auto` adds the updater: from then on
+the server takes each release your computer installs ([Updates](#updates)); without it, re-run the script after a
+`git pull` to update. `.env` is kept.
 
 ## 3. The web server
 
@@ -68,7 +70,36 @@ lines starting with `web:`).
 
 In Telegram: `/app`, or **📱 Pult** in a topic's pinned bar.
 
+## Updates
+
+With `install.sh --auto` the server follows your computer: once the computer has installed a new release (the app's
+**Install**), it tells the relay which one — a tag and a commit, nothing else — and the updater on the server takes
+that same release from GitHub. The computer gets no power over the server: no key, no files from it.
+
+```
+computer ──"I run v0.18.2 (commit)"──► relay ──want.json──► updater ──git──► github.com/pulthq/pult
+```
+
+- The relay only writes the release into `/var/lib/pult-relay/want.json`; a systemd path unit starts the updater
+  (`/usr/local/lib/pult-relay/update.py`, the `pult-relay-update` service).
+- The updater runs as `pult-update`: it owns the relay's code (`/opt/pult-relay/app`, the Python environment) and
+  nothing else — it can't read the secret or touch services.
+- Only an official release goes in: the tag on github.com/pulthq/pult must be that very commit, and the commit must be
+  in `main`. Never an older one than the server runs — a computer someone took over can't send the server back to a
+  release with holes in it.
+- It fetches only the release's `relay/` (about half a megabyte), puts it into `/opt/pult-relay/app/releases/` next to
+  the one that runs, installs the relay's dependencies if they changed, points `app/current` at it and has systemd
+  restart the relay (`pult-relay-restart.path`).
+- It counts once the relay answers and the computer is connected again. Otherwise `app/current` goes back to the
+  release before — at once when the new relay keeps exiting at start — and the computer says so in Telegram.
+- What happened: Settings → Pult and its parts on the phone, or `journalctl -u pult-relay-update` here.
+
+Load: a download of about half a megabyte per release and a second copy on disk; `pip` runs only when the relay's
+requirements change. Updating by hand still works: `git pull` and `install.sh` again (it keeps `--auto` on);
+`sudo bash deploy/relay/install.sh --no-auto` turns the updater off.
+
 ## Turning it off
 
-On the computer: `pult app off`. On the server: `systemctl disable --now pult-relay`, remove the nginx include or the
-Caddy block, `rm -rf /opt/pult-relay`, `userdel pult`.
+On the computer: `pult app off`. On the server: `systemctl disable --now pult-relay pult-relay-update.path
+pult-relay-restart.path`, remove the nginx include or the Caddy block, `rm -rf /opt/pult-relay /var/lib/pult-relay
+/var/lib/pult-relay-update /usr/local/lib/pult-relay`, `userdel pult`, `userdel pult-update`.

@@ -83,11 +83,14 @@ async def main():
             # Home: the queued session in "Running now", counted apart, with its amber chip
             h3 = await js("document.querySelector('h3').textContent")
             verdict("Running now counts the queue apart", " · " in h3 and h3.count("·") == 2, h3)
-            row = await js("""(() => { const r = [...document.querySelectorAll('.list')[0].querySelectorAll('.brow')]
+            row = await js("""(() => { const r = [...document.querySelectorAll('.list')[0].querySelectorAll('.run')]
               .find(b => b.querySelector('.chip.warn')); return r && { chip: r.querySelector('.chip.warn').textContent,
-              last: r === [...r.parentNode.querySelectorAll('.brow')].pop(), clock: !!r.querySelector('.st-ic svg') }; })()""")
+              last: r === [...r.parentNode.querySelectorAll('.run')].pop(), clock: !!r.querySelector('.st-ic svg'),
+              ask: (r.querySelector('.run-ask') || {}).textContent || '', title: r.querySelector('.run-t').textContent.trim() }; })()""")
             verdict("its row has the amber chip with the time", row and any(c.isdigit() for c in row["chip"]), row)
             verdict("…below the ones working", row and row["last"])
+            # the stand's queued message starts its session: the title says it already, no "You: …" repeats it
+            verdict("…its message once: the title says it", row and row["title"] and not row["ask"], row)
             await shot("1-home.png")
 
             # the session: the chip at the top, the card with why and Start now, and Stop

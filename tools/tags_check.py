@@ -2,7 +2,8 @@
 task's section and topic and the bar of its sections; a tap on a section narrows every list to it (the earlier ones
 open by themselves) and shows its topics, a tap on a topic narrows further, "All" brings everything back; a task's
 sheet changes its topic (saved by the computer: still there after a reload), takes a new topic by name, and gives the
-choice back to Claude; Home's rows carry the tags too.
+choice back to Claude; Home's cards carry the tags on their top line, beside the project — the running ones show their
+title whole, what was asked and what Claude says (0.17.3).
   STAND_TAGS=1 STAND_LANG=ru STAND_PORT=18151 HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out &
   ~/.local/share/pult/venv/bin/python tools/tags_check.py /tmp/stand.out [out_dir]
 Screenshots go to out_dir (a temporary folder by default). Exit 1 on a failed check."""
@@ -92,8 +93,8 @@ async def main():
                 await cmd("Page.navigate", url=url)
 
             # the rows' titles on the project's screen; each row's tags as [section, topic]
-            titles = "[...document.querySelectorAll('.project .card-h .c-title, .project .item.brow .item-h b')].map((e) => e.textContent.trim())"
-            row_tags = ("[...document.querySelectorAll('.project .card.mine, .project .item.brow')].map((r) =>"
+            titles = "[...document.querySelectorAll('.project .card-h .c-title, .project .item.brow .item-h b, .project .item.run .run-t')].map((e) => e.textContent.trim())"
+            row_tags = ("[...document.querySelectorAll('.project .card.mine, .project .item.brow, .project .item.run')].map((r) =>"
                         " [...r.querySelectorAll('.tagc')].map((t) => t.textContent.trim()))")
             bar = lambda sub: ("[...document.querySelectorAll('.tagbar%s .tagf')].map((b) => [b.firstChild && b.firstChild.nodeType === 3 ?"
                                " b.firstChild.textContent.trim() : b.textContent.replace(/\\d+$/, '').trim(), b.classList.contains('on')])" % (".sub" if sub else ":not(.sub)"))
@@ -155,15 +156,30 @@ async def main():
             await js("document.querySelector('.tagpick .opt.auto').click()")
             verdict("back to Claude", await until("document.querySelector('.tagpick .opt.auto').classList.contains('on')"))
 
-            # Home: the rows of what runs carry the tags as well; a "your move" card keeps its project's name on one line
-            # and its tags under the title (beside the name they squeezed it into a column of letters — 2026-10-26)
+            # Home: what runs and what waits carry the tags on their top line, beside the project — never in front of the
+            # words: there they ate the one line of a running task (2026-10-26); a tag that doesn't fit is left out
+            # whole, and the project's name stays on one line (squeezed into a column of letters once — 0.17.2)
             await goto(URLS["HOME"])
-            verdict("Home's rows have tags", await until("document.querySelectorAll('.item.brow .tagc').length >= 4", 150))
-            card = await js("(() => { const c = [...document.querySelectorAll('.card.mine')].find((x) => x.querySelector('.tagc') && x.querySelector('.c-name'));"
-                            " if (!c) return null; const n = c.querySelector('.c-name').getBoundingClientRect(), t = c.querySelector('.tagc');"
+            verdict("Home's rows have tags", await until("document.querySelectorAll('.item.run .tagc, .item.brow .tagc').length >= 4", 150))
+            run = await js("[...document.querySelectorAll('.item.run')].map((r) => { const t = r.querySelector('.run-t'), cs = getComputedStyle(t);"
+                           " return {title: t.textContent.trim(), lines: Math.round(t.getBoundingClientRect().height / parseFloat(cs.lineHeight)),"
+                           " cut: t.scrollHeight > t.clientHeight + 1, ask: (r.querySelector('.run-ask') || {}).textContent || '',"
+                           " now: (r.querySelector('.run-now') || {}).textContent || '', top: !!r.querySelector('.run-w .tagc'),"
+                           " inWords: !!r.querySelector('.run-ask .tagc, .run-now .tagc, .run-t .tagc')}; })")
+            verdict("Running now: every title whole, two lines at most", run and all(x["lines"] <= 2 and not x["cut"] for x in run), run)
+            follow = [x for x in run if x["ask"] and x["now"]]
+            verdict("…a later turn: what you asked, then what Claude says", len(follow) >= 1 and follow[0]["ask"].startswith(("Ты: ", "You: ")), follow)
+            verdict("…a turn Claude hasn't spoken in yet: what you asked", any(x["ask"] and not x["now"] for x in run), run)
+            verdict("…the tags on the top line, none in front of the words", any(x["top"] for x in run) and not any(x["inWords"] for x in run), run)
+            whole = await js("[...document.querySelectorAll('.run-w')].every((w) => { const b = w.getBoundingClientRect();"
+                             " return [...w.querySelectorAll('.tagc')].every((t) => { const r = t.getBoundingClientRect();"
+                             " return r.top >= b.bottom - 1 || r.right <= b.right + 0.5; }); })")
+            verdict("…a tag that doesn't fit is left out whole", whole)
+            card = await js("(() => { const c = [...document.querySelectorAll('.card.mine')].find((x) => x.querySelector('.tagc') && x.querySelector('.run-p'));"
+                            " if (!c) return null; const n = c.querySelector('.run-p').getBoundingClientRect(), t = c.querySelector('.tagc');"
                             " return [n.height, !!t.closest('.c-proj'), !!t.closest('.ln, .now')]; })()")
-            verdict("a your-move card: the project's name on one line, the tags under the title",
-                    card is not None and card[0] < 24 and not card[1] and card[2], card)
+            verdict("a your-move card: the project's name on one line, the tags beside it, the line whole",
+                    card is not None and card[0] < 24 and card[1] and not card[2], card)
             await shot("5-home.png")
             verdict("no errors in the page", not errors, errors)
     finally:
