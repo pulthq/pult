@@ -422,12 +422,14 @@ S = {
                          "отдельная сессия."},
     "busy.driven": {"en": "{n} {sessions} from Telegram are already running — wait until one finishes.",
                     "ru": "Уже идут {n} {sessions} из Telegram — подожди, пока какая-нибудь закончит."},
-    "tab.update": {"en": "🔄 Claude Code <b>{v}</b> is out. Writing from Telegram straight into VS Code tabs is off "
-                         "on it until it's checked; until then, messages to open tabs go as a copy, as before.\n"
-                         "After checking: <code>pult tab allow {v}</code> (see the README).",
-                   "ru": "🔄 Вышло обновление Claude Code <b>{v}</b>. Писать из Telegram прямо во вкладки на нём пока "
-                         "нельзя — сначала проверка. До неё сообщения в открытые вкладки уходят копией, как раньше.\n"
-                         "После проверки: <code>pult tab allow {v}</code> (см. README)."},
+    "tab.update": {"en": "🔄 Claude Code <b>{v}</b> is out. Pult hasn't been checked on it yet, so messages to its "
+                         "VS Code tabs go as a copy. A Pult release checked on it turns writing into tabs back on once "
+                         "it's installed. To allow it now, at your own risk: <code>pult tab allow {v}</code>, then "
+                         "Reload Window in VS Code.",
+                   "ru": "🔄 Вышел Claude Code <b>{v}</b>. Пульт на нём ещё не проверен, поэтому сообщения в его "
+                         "вкладки VS Code уходят копией. Выпуск Пульта, проверенный на нём, вернёт запись во вкладки, "
+                         "когда его поставят. Разрешить сейчас, на свой риск: <code>pult tab allow {v}</code>, потом "
+                         "Reload Window в VS Code."},
     # security (0.9.23): a login from a new network, the app files on the server, someone else holding the bot token
     "login.new": {"en": "🔐 App login from a new network: {net} · {dev} · {how}.\nNot you? Log everyone out.",
                   "ru": "🔐 Вход в приложение из новой сети: {net} · {dev} · {how}.\nЕсли это не ты — выйди везде."},
@@ -472,6 +474,24 @@ S = {
     "upd.why.pip": {"en": "the dependencies didn't install", "ru": "не поставились зависимости"},
     "upd.why.error": {"en": "the installer failed", "ru": "сбой установщика"},
     "upd.why.spawn": {"en": "the installer didn't start", "ru": "не запустился установщик"},
+    # stage U3: the app's server takes the release the computer runs, from GitHub (deploy/relay/update.py)
+    "srv.failed": {"en": "⚠️ <b>The app's server didn't take {to}</b> — {back} is back there and works as before.\nWhy: {why}.\n"
+                         "Details — in the app: Settings → Pult and its parts.",
+                   "ru": "⚠️ <b>Сервер приложения не взял {to}</b> — там снова {back}, всё работает как прежде.\nПричина: {why}.\n"
+                         "Подробности — в приложении: Настройки → Пульт и его части."},
+    "srv.failed.dead": {"en": "⚠️ <b>The app's server is down</b> after taking {to}, and going back to {back} didn't help. "
+                              "On the server: journalctl -u pult-relay -u pult-relay-update",
+                        "ru": "⚠️ <b>Сервер приложения не отвечает</b> после {to}, и возврат к {back} не помог. "
+                              "На сервере: journalctl -u pult-relay -u pult-relay-update"},
+    "srv.why.no_start": {"en": "the relay didn't start", "ru": "посредник не запустился"},
+    "srv.why.no_mac": {"en": "the computer couldn't connect to it", "ru": "компьютер не смог к нему подключиться"},
+    "srv.why.no_restart": {"en": "systemd didn't restart the relay", "ru": "systemd не перезапустил посредника"},
+    "srv.why.broken": {"en": "the release lacks the relay's files", "ru": "в выпуске нет файлов посредника"},
+    "srv.why.error": {"en": "the updater failed", "ru": "сбой обновлятеля"},
+    "files.differ.warn": {"en": "⚠️ The server hands out the app not as release {tag} has it: {files}. A CDN or a proxy in "
+                                "front of the server may change files — otherwise check the server. The app stays open.",
+                          "ru": "⚠️ Сервер отдаёт приложение не таким, как в выпуске {tag}: {files}. Так бывает, если перед "
+                                "сервером стоит CDN или прокси, который меняет файлы, — иначе проверь сервер. Приложение открыто."},
     "tg.conflict": {"en": "⚠️ Someone else receives this bot's messages (Telegram answers 409). If no second Pult runs "
                           "with this bot, the bot token has leaked: @BotFather → /revoke, then <code>pult setup</code> "
                           "asks for the new one.",
@@ -864,6 +884,12 @@ S = {
               "until `pult tab allow {v}` (after tests/probe_tab.py, or at your own risk).",
         "ru": "У тебя расширение Claude Code {v}: обёртка на нём не проверялась и ни во что не вмешивается до "
               "`pult tab allow {v}` (после tests/probe_tab.py или на свой риск).",
+    },
+    "cli.tab.added": {
+        "en": "Tabs: this release is checked on Claude Code {v} — Pult writes into its tabs too; tabs already open — "
+              "after Reload Window in VS Code.",
+        "ru": "Вкладки: этот выпуск проверен на Claude Code {v} — Пульт пишет и в его вкладки; уже открытые — после "
+              "Reload Window в VS Code.",
     },
     "cli.tab.broken": {
         "en": "⚠️ The wrapper line in {file} isn't valid JSON: VS Code reads \"{value}\" with the backslashes eaten, "

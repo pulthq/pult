@@ -488,6 +488,7 @@ class Web:
         self.locked = None             # what differs on the server, while the app is closed because of it
         self.checked = False           # the files have matched at least once (said in the log once)
         self.build = None              # what the relay server holds, {repo path: blob id} — it says so on each app open
+        self.warned = None             # what differs on the server from the release it runs, as last told (warn only)
 
     @property
     def on(self):
@@ -546,6 +547,11 @@ class Web:
         t, cid = msg.get("t"), msg.get("cid")
         if t == "open":
             await self.login(cid, msg)
+        elif t == "relay":                 # stage U3: on connecting and with each report of the server's updater
+            self.note_build(msg.get("build"))
+            said = getattr(self.p, "relay_said", None)
+            if said:
+                await said(msg)
         elif t == "close":
             self.clients.discard(cid)
         elif t == "req" and cid in self.clients:
@@ -555,9 +561,7 @@ class Web:
         """A window asks to log in: a fresh initData (a new open of the app) or an older one plus the resume key this
         Mac gave that window. Either way the window gets the next key; the attempt goes to the logins list."""
         init, ip = msg.get("init"), str(msg.get("ip") or "")
-        b = msg.get("build")          # stage U2; a relay before it says nothing
-        if isinstance(b, dict):
-            self.build = {str(k)[:300]: v for k, v in list(b.items())[:2000] if isinstance(v, str) and len(v) == 40}
+        self.note_build(msg.get("build"))          # stage U2; a relay before it says nothing
         client = msg.get("client") if isinstance(msg.get("client"), dict) else {}
         ok, uid, how = check_init(init, self.token, self.owners)
         key, via = None, "open"
@@ -590,6 +594,11 @@ class Web:
         await self.send(reply)
         if new_net:
             await self.p.login_alert(net_of(ip), client, via)
+
+    def note_build(self, b):
+        """What the relay server holds, {path in Pult's repository: blob id}, as it says it."""
+        if isinstance(b, dict):
+            self.build = {str(k)[:300]: v for k, v in list(b.items())[:2000] if isinstance(v, str) and len(v) == 40}
 
     async def kick_all(self, why):
         """Close every app window (logged out everywhere; the app closed by the file check)."""
@@ -663,15 +672,32 @@ class Web:
                     log("app files check:", repr(e))
                 await asyncio.sleep(GUARD_EVERY)
 
+    def warns_only(self):
+        """The release whose files the check expects when it only warns (stage U3: a server that takes releases from
+        GitHub; a CDN in front of it may change files), or None — a deploy's record: a difference closes the app."""
+        try:
+            man = json.loads(self.manifest.read_text()) if self.manifest else None
+        except (OSError, ValueError):
+            return None
+        return man.get("tag") or "?" if isinstance(man, dict) and man.get("mode") == "warn" else None
+
     async def guard_once(self, http):
         bad = await self.check_files(http)
         if bad == [] and not self.checked:
             self.checked = True
             log("app files on the server match the deploy")
+        if bad == []:
+            self.warned = None
         if bad and not self.locked:
             await asyncio.sleep(GUARD_RECHECK)
             again = await self.check_files(http)
-            if again:
+            tag = self.warns_only()
+            if again and tag:
+                if ", ".join(again) != self.warned:
+                    self.warned = ", ".join(again)
+                    log("app files on the server differ from release %s: %s — told, the app stays open" % (tag, self.warned))
+                    await self.p.files_alert(again, tag=tag)
+            elif again:
                 self.locked = ", ".join(again)
                 log("app files on the server differ from the deploy: %s — the app is closed" % self.locked)
                 await self.kick_all("locked")

@@ -113,6 +113,13 @@ def state(pending, working, bg, rec, queued=None):
     return "idle"
 
 
+def needs_owner(rec):
+    """The outcome waits for the owner's decision, so a look at it doesn't put it to rest: it broke off, or it is their
+    move by the model's reading (what is needed, or just "you" — its word). Without the model, "nothing runs, your
+    move" is only the rule, and opening the session is enough (the owner, 2026-10-20: reading isn't deciding)."""
+    return bool(rec and (rec.get("fail") or (rec.get("you") and (rec.get("need") or rec.get("model")))))
+
+
 def resting(row, now=None):
     """Folded under "+ N more resting": nothing happens and its last outcome is old (or there is none)."""
     return row["state"] == "idle" and (now or time.time()) - (row.get("ts") or 0) > RECENT

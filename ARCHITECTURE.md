@@ -159,7 +159,8 @@ flowchart LR
 | Settings stay yours | the hooks go into `~/.claude/settings.json` with a backup; `pult hooks off` and `pult uninstall` undo it |
 | A file goes back only from its project | `pult send` and "To Telegram" take files inside the session's project folder only (links followed), nothing like keys or settings, up to 50 MB; only to your group |
 | A new project overwrites nothing | only a new folder inside your home folder; a taken one is refused, and so is a name Claude Code would mix up with another project's; a clone goes to git as an https link only |
-| An update installs only what is committed | the app's Install takes Pult's own files from the commit checked out in its folder, never uncommitted changes, and asks first if a restart would cut off sessions from the phone; a version that doesn't come up is replaced by the old one |
+| An update installs only what is committed | the app's Install takes Pult's own files from the commit checked out in its folder (or, in a clone of Pult's repository, from the newest release it fetched from GitHub), never uncommitted changes, and asks first if a restart would cut off sessions from the phone; a version that doesn't come up is replaced by the old one |
+| The computer has no power over the server | the computer only names the release it runs; the server's updater takes that release from GitHub — an official one, never older than its own — under an account that owns the relay's code and nothing else, and switches back by itself when the relay doesn't come up (`deploy/relay/update.py`) |
 
 ## Code map
 
@@ -176,11 +177,12 @@ flowchart LR
 | `src/pult_load.py` | the load each session puts on the computer, from one process snapshot |
 | `src/pult_new.py` | a new project: the folder's name from any title, the checks, the clone link |
 | `src/pult_files.py` | files to and from the phone: names, the project's inbox, what may be sent, the turn's files, archives |
-| `src/pult_update.py` | an update from the app: what in the folder is newer, the installer with its rollback, the history; how far each part (the relay server's copy by its files) is behind the branch |
+| `src/pult_update.py` | an update from the app: what in the folder is newer (in a clone of Pult's repository, the releases on GitHub), the installer with its rollback, the history; how far each part (the relay server's copy by its files) is behind the branch |
 | `src/pult_os.py` | everything that differs between macOS, Linux and Windows |
 | `src/pult_stt.py` | voice to text (Groq Whisper, your key) |
 | `src/pultctl.py`, `src/pult_setup.py` | the `pult` command; install, the setup wizard, the report, uninstall |
 | `relay/relay.py`, `relay/web/` | the relay and the Mini App (Preact + htm, no build step) |
+| `deploy/relay/` | the relay on your server: `install.sh`, its systemd units, `update.py` — the updater that takes the computer's release from GitHub |
 
 ## Where things live
 

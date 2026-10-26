@@ -1,0 +1,10 @@
+[Unit]
+Description=Pult relay: the updater switched releases — restart the relay
+# the updater runs without rights over services: it writes this file, systemd does the restart
+
+[Path]
+PathChanged=/var/lib/pult-relay-update/restart
+Unit=pult-relay-restart.service
+
+[Install]
+WantedBy=multi-user.target

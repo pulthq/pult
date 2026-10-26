@@ -85,8 +85,9 @@ An empty folder with git, a `CLAUDE.md` Claude writes from your words, or a clon
 
 And: tags on every task — the section of the project and the topic in it, kept by Claude (switch them on in Settings), corrected with a tap — voice
 messages as text, the model and effort per session and a default for both, a pager that knows whether you're at the computer,
-ticks on your message — sent, read by Claude — `pult run` for your own long commands, an update installed from the
-app after a `git pull` (macOS, Linux), every part of Pult in one table — what runs where and how far it is behind `main`. **[All of it](guide/usage.md)**.
+ticks on your message — sent, read by Claude — `pult run` for your own long commands, a new release installed from the
+app with one tap (macOS, Linux) — Pult finds it on GitHub by itself, and your app server takes the same one from GitHub
+after the computer ([once: `install.sh --auto`](deploy/relay/README.md#updates)) — every part of Pult in one table — what runs where and how far it is behind `main`. **[All of it](guide/usage.md)**.
 
 ## Next to the official options
 

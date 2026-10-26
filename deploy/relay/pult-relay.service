@@ -1,12 +1,15 @@
 [Unit]
-Description=Pult relay: the Telegram Mini App <-> Pult on the Mac
+Description=Pult relay: the Telegram Mini App <-> Pult on the computer
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 User=pult
-WorkingDirectory=/opt/pult-relay
+# the release that runs: app/current points into app/releases/ (deploy/relay/install.sh, or the updater)
+WorkingDirectory=/opt/pult-relay/app/current
+# the secret: read by systemd, never by the relay (root, 600)
 EnvironmentFile=/opt/pult-relay/.env
+Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/opt/pult-relay/venv/bin/python relay.py
 Restart=always
 RestartSec=3
@@ -18,7 +21,9 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/pult-relay
+# its own code is read-only to it; the one place it writes: /var/lib/pult-relay, where — on a server with the updater
+# (install.sh --auto, pult-relay.service.d/update.conf) — it leaves the release the computer runs
+StateDirectory=pult-relay
 
 [Install]
 WantedBy=multi-user.target

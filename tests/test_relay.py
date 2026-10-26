@@ -59,6 +59,14 @@ class RelayTest(unittest.IsolatedAsyncioTestCase):
     def url(self, path):
         return str(self.srv.make_url(path))
 
+    async def agent(self):
+        """The Mac connects; the relay's first word is its hello (stage U3): whether it has the updater, its report, the
+        files it holds."""
+        mac = await self.http.ws_connect(self.url("/pult/agent"), headers={"Authorization": "Bearer s3cret"})
+        hello = json.loads((await mac.receive(timeout=5)).data)
+        self.assertEqual(hello["t"], "relay")
+        return mac, hello
+
     async def phone(self, init, resume=None, ip=None):
         ws = await self.http.ws_connect(self.url("/pult/ws"), headers={"X-Real-IP": ip} if ip else None)
         await ws.send_str(json.dumps({"t": "hello", "init": init, "resume": resume,
@@ -113,7 +121,9 @@ class RelayTest(unittest.IsolatedAsyncioTestCase):
         # the phone comes before the Mac and waits; the Mac connects, checks the login; then messages flow both ways
         ws, m = await self.phone(init_data())
         self.assertEqual((m["t"], m["mac"]), ("hello", False))
-        mac = await self.http.ws_connect(self.url("/pult/agent"), headers={"Authorization": "Bearer s3cret"})
+        mac, hello = await self.agent()
+        self.assertEqual((hello["can"], hello["upd"]), ([], None))                # no updater on this server
+        self.assertEqual(hello["build"]["relay/relay.py"], relay.build()["relay/relay.py"])
         self.assertEqual(json.loads((await ws.receive(timeout=5)).data), {"t": "mac", "on": True})
         opened = json.loads((await mac.receive(timeout=5)).data)
         self.assertEqual(opened["t"], "open")
@@ -142,7 +152,7 @@ class RelayTest(unittest.IsolatedAsyncioTestCase):
         await mac.close()
 
     async def test_mac_denies(self):
-        mac = await self.http.ws_connect(self.url("/pult/agent"), headers={"Authorization": "Bearer s3cret"})
+        mac, _ = await self.agent()
         ws, m = await self.phone(init_data())
         self.assertTrue(m["mac"])
         cid = json.loads((await mac.receive(timeout=5)).data)["cid"]
@@ -153,7 +163,7 @@ class RelayTest(unittest.IsolatedAsyncioTestCase):
     async def test_resume_key(self):
         # the window's key and address reach the Mac; the Mac's next key reaches the window and is what the relay
         # hands the Mac when the Mac reconnects (it restarted: the window logs in again without a fresh initData)
-        mac = await self.http.ws_connect(self.url("/pult/agent"), headers={"Authorization": "Bearer s3cret"})
+        mac, _ = await self.agent()
         ws, m = await self.phone(init_data(), resume="k1", ip="203.0.113.7")
         opened = json.loads((await mac.receive(timeout=5)).data)
         self.assertEqual((opened["resume"], opened["ip"]), ("k1", "203.0.113.7"))
@@ -161,7 +171,7 @@ class RelayTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads((await ws.receive(timeout=5)).data), {"t": "ready", "resume": "k2"})
         await mac.close()
         self.assertEqual(json.loads((await ws.receive(timeout=5)).data), {"t": "mac", "on": False})
-        mac = await self.http.ws_connect(self.url("/pult/agent"), headers={"Authorization": "Bearer s3cret"})
+        mac, _ = await self.agent()
         again = json.loads((await mac.receive(timeout=5)).data)
         self.assertEqual((again["t"], again["cid"], again["resume"]), ("open", opened["cid"], "k2"))
         # the owner logged out everywhere: the Mac closes the window
@@ -218,6 +228,283 @@ class RelayTest(unittest.IsolatedAsyncioTestCase):
         finally:
             relay.SOCKET = ""
             path.unlink(missing_ok=True)
+
+
+class RelayUpdaterTest(unittest.IsolatedAsyncioTestCase):
+    """Stage U3, the relay's part: the computer's release goes to want.json (right form only, not too often), never to
+    the windows; the updater's report goes to the computer."""
+
+    async def asyncSetUp(self):
+        self.dir = Path(tempfile.mkdtemp(prefix="pult-relay-state-", dir=TMP))
+        self.status = self.dir / "status.json"
+        self.keep = (relay.STATE, relay.UPDATER, relay.STATUS_EVERY)
+        relay.STATE, relay.UPDATER, relay.STATUS_EVERY = str(self.dir), str(self.status), 0.2
+        self.srv = TestServer(relay.app())
+        await self.srv.start_server()
+        self.http = aiohttp.ClientSession()
+
+    async def asyncTearDown(self):
+        await self.http.close()
+        await self.srv.close()
+        relay.STATE, relay.UPDATER, relay.STATUS_EVERY = self.keep
+
+    def test_want_form_and_pace(self):
+        r, sha = relay.Relay(), "a" * 40
+        self.assertFalse(r.want({"tag": "v0.18.0", "commit": "abc"}, now=1000))            # not a commit
+        self.assertFalse(r.want({"tag": "0.18.0", "commit": sha}, now=1000))               # not a tag
+        self.assertFalse(r.want({"tag": "v0.18.0; rm -rf /", "commit": sha}, now=1000))
+        self.assertFalse(r.want({"tag": ["v0.18.0"], "commit": sha}, now=1000))
+        self.assertFalse((self.dir / "want.json").exists())
+        self.assertTrue(r.want({"tag": "v0.18.0", "commit": sha, "extra": "x"}, now=1000))
+        self.assertEqual(json.loads((self.dir / "want.json").read_text()), {"tag": "v0.18.0", "commit": sha, "ts": 1000})
+        self.assertFalse(r.want({"tag": "v0.18.1", "commit": "b" * 40}, now=1005))         # too soon after the last
+        self.assertTrue(r.want({"tag": "v0.18.1", "commit": "b" * 40}, now=1011))
+        self.assertFalse(r.want({"tag": "v0.18.1", "commit": "b" * 40}, now=1100))         # the same one: later
+        self.assertTrue(r.want({"tag": "v0.18.1", "commit": "b" * 40}, now=1011 + relay.WANT_REFRESH))
+        relay.STATE = ""
+        self.assertFalse(relay.Relay().want({"tag": "v0.18.0", "commit": sha}, now=1))      # no updater here
+
+    def test_status_fields(self):
+        self.assertIsNone(relay.updater_status())
+        self.status.write_text(json.dumps({"state": "done", "tag": "v0.18.1", "have": "v0.18.1", "ts": 5, "back": False,
+                                           "detail": "x" * 1000, "token": "secret", "why": None}))
+        st = relay.updater_status()
+        self.assertEqual((st["state"], st["tag"], st["ts"], st["back"], len(st["detail"])), ("done", "v0.18.1", 5, False, 300))
+        self.assertNotIn("token", st)
+        self.status.write_text("[1, 2]")
+        self.assertIsNone(relay.updater_status())
+
+    async def test_hello_want_report(self):
+        self.status.write_text(json.dumps({"state": "idle", "have": "v0.18.0", "ts": 1}))
+        mac = await self.http.ws_connect(str(self.srv.make_url("/pult/agent")), headers={"Authorization": "Bearer s3cret"})
+        hello = json.loads((await mac.receive(timeout=5)).data)
+        self.assertEqual((hello["t"], hello["can"], hello["upd"]), ("relay", ["want"], {"state": "idle", "have": "v0.18.0", "ts": 1}))
+        ws = await self.http.ws_connect(str(self.srv.make_url("/pult/ws")))
+        await ws.send_str(json.dumps({"t": "hello", "init": init_data()}))
+        self.assertEqual(json.loads((await ws.receive(timeout=5)).data)["t"], "hello")
+        cid = json.loads((await mac.receive(timeout=5)).data)["cid"]
+        await mac.send_str(json.dumps({"t": "auth", "cid": cid, "ok": True}))
+        self.assertEqual(json.loads((await ws.receive(timeout=5)).data), {"t": "ready"})
+        await mac.send_str(json.dumps({"t": "want", "tag": "v0.18.1", "commit": "c" * 40}))
+        for _ in range(50):
+            if (self.dir / "want.json").exists():
+                break
+            await asyncio.sleep(0.05)
+        self.assertEqual(json.loads((self.dir / "want.json").read_text())["tag"], "v0.18.1")
+        # the updater reports: the Mac hears it; the window heard nothing of the want nor of the report
+        self.status.write_text(json.dumps({"state": "run", "step": "fetch", "tag": "v0.18.1", "have": "v0.18.0", "ts": 2}))
+        got = json.loads((await mac.receive(timeout=5)).data)
+        self.assertEqual((got["t"], got["upd"]["state"], got["upd"]["step"]), ("relay", "run", "fetch"))
+        with self.assertRaises(asyncio.TimeoutError):
+            await ws.receive(timeout=0.5)
+        await ws.close()
+        await mac.close()
+
+
+def git(cwd, *args, env=None):
+    p = subprocess.run(["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@t", *args], capture_output=True,
+                       text=True, env=dict(os.environ, GIT_TERMINAL_PROMPT="0", **(env or {})))
+    if p.returncode:
+        raise AssertionError("git %s: %s" % (" ".join(args), p.stderr))
+    return p.stdout.strip()
+
+
+@unittest.skipIf(os.name == "nt", "the updater runs on a Linux server")
+class UpdaterTest(unittest.TestCase):
+    """Stage U3, the server's updater (deploy/relay/update.py) with real git: a repository of our own stands for
+    github.com/pulthq/pult; systemd and the relay's health are made up."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("pult_relay_update", ROOT / "deploy" / "relay" / "update.py")
+        cls.M = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.M)
+        # "GitHub": three releases in main, one tag beside it, a file outside relay/ the updater must not fetch
+        o = cls.origin = Path(tempfile.mkdtemp(prefix="pult-gh-", dir=TMP))
+        git(o, "init", "-q", "-b", "main")
+        git(o, "config", "uploadpack.allowFilter", "true")
+        git(o, "config", "uploadpack.allowAnySHA1InWant", "true")
+        cls.shas = {}
+
+        def release(tag, relay_py, reqs="aiohttp>=3.10\n", app="// app\n"):
+            (o / "relay" / "web" / "static").mkdir(parents=True, exist_ok=True)
+            (o / "relay" / "relay.py").write_text(relay_py)
+            (o / "relay" / "requirements.txt").write_text(reqs)
+            (o / "relay" / "web" / "index.html").write_text("<title>Pult</title>\n")
+            (o / "relay" / "web" / "static" / "app.js").write_text(app)
+            (o / "media").mkdir(exist_ok=True)
+            (o / "media" / "big.bin").write_bytes(os.urandom(64 * 1024))       # outside relay/
+            git(o, "add", "-A")
+            git(o, "commit", "-q", "-m", "Pult " + tag)
+            git(o, "tag", "-a", tag, "-m", tag)
+            cls.shas[tag] = git(o, "rev-parse", "HEAD")
+        release("v0.18.0", "print('v0.18.0')\n")
+        release("v0.18.1", "print('v0.18.1')\n", app="// app 1\n")
+        release("v0.18.2", "print('v0.18.2')\n", reqs="aiohttp>=3.11\n")
+        git(o, "checkout", "-q", "-b", "side")
+        release("v0.18.3", "print('side')\n")                                # a tag, but not in main
+        git(o, "checkout", "-q", "main")
+
+    def setUp(self):
+        M = self.M
+        d = Path(tempfile.mkdtemp(prefix="pult-upd-", dir=TMP))
+        M.HOME, M.APP, M.VENV, M.WANT = d / "home", d / "app", d / "venv", d / "state" / "want.json"
+        M.REPO, M.MAC_WAIT, M.UP_WAIT = str(self.origin), 3, 5
+        for p in (M.HOME, M.APP / "releases", M.VENV / "bin", M.WANT.parent):
+            p.mkdir(parents=True)
+        pip = M.VENV / "bin" / "pip"            # records what it was asked to install
+        pip.write_text("#!/bin/sh\necho \"$@\" >> %s\n" % (d / "pip.log"))
+        pip.chmod(0o755)
+        self.pip_log = d / "pip.log"
+        # what install.sh left: v0.18.0 runs
+        first = M.APP / "releases" / ("v0.18.0-" + self.shas["v0.18.0"][:7])
+        (first / "web").mkdir(parents=True)
+        (first / "relay.py").write_text("print('v0.18.0')\n")
+        (first / "requirements.txt").write_text("aiohttp>=3.10\n")
+        os.symlink(os.path.relpath(first, M.APP), M.APP / "current")
+        (M.HOME / "installed.json").write_text(json.dumps({"tag": "v0.18.0", "commit": self.shas["v0.18.0"]}))
+        self.first = first
+
+    def updater(self, bad=(), mac=True, loops=()):
+        """An updater whose relay comes up unless `current` is one of the `bad` releases."""
+        M = self.M
+        test = self
+
+        class Fake(M.Updater):
+            pid = 100
+            clock = 0.0
+
+            def service(self):
+                # systemd takes a restart a moment after the file changes: the first look still sees the relay before
+                # it; a restart asked for starts the count of restarts anew; a release in `loops` exits at start, and
+                # systemd restarts it again and again
+                if test.pending:
+                    test.pending = False
+                    before = {"pid": Fake.pid, "state": "active", "restarts": test.n}
+                    Fake.pid += 1
+                    test.n, test.running = 0, M.APP.joinpath("current").resolve().name
+                    return before
+                if any(test.running.startswith(b) for b in test.loops):
+                    test.n += 1
+                return {"pid": Fake.pid, "state": "active", "restarts": test.n}
+
+            def restart(self):
+                test.pending = True
+                test.restarts.append(M.APP.joinpath("current").resolve().name)
+
+            def health(self):
+                cur = M.APP.joinpath("current").resolve().name
+                return None if any(cur.startswith(b) for b in bad) else {"ok": True, "mac": mac}
+
+            def sleep(self, s):
+                Fake.clock += s
+
+            def now(self):
+                return Fake.clock
+        self.restarts, self.loops, self.pending, self.n = [], loops, False, 0
+        self.running = M.APP.joinpath("current").resolve().name
+        return Fake()
+
+    def want(self, tag, commit=None):
+        self.M.WANT.write_text(json.dumps({"tag": tag, "commit": commit or self.shas[tag], "ts": 1}))
+
+    def status(self):
+        return json.loads((self.M.HOME / "status.json").read_text())
+
+    def test_takes_the_release_from_github(self):
+        M, u = self.M, self.updater()
+        self.want("v0.18.1")
+        self.assertEqual(u.run(), 0)
+        st = self.status()
+        self.assertEqual((st["state"], st["have"], st["from"]), ("done", "v0.18.1", "v0.18.0"))
+        cur = (M.APP / "current").resolve()
+        self.assertEqual(cur.name, "v0.18.1-" + self.shas["v0.18.1"][:7])
+        self.assertEqual(os.readlink(M.APP / "current"), "releases/" + cur.name)        # relative: the folder may move
+        self.assertEqual((cur / "relay.py").read_text(), "print('v0.18.1')\n")
+        self.assertEqual((cur / "web" / "static" / "app.js").read_text(), "// app 1\n")
+        self.assertEqual(sorted(p.name for p in (M.APP / "releases").iterdir()), sorted([cur.name, self.first.name]))
+        self.assertEqual(json.loads((M.HOME / "installed.json").read_text())["commit"], self.shas["v0.18.1"])
+        self.assertEqual(self.restarts, [cur.name])
+        self.assertFalse(self.pip_log.exists())                    # the same requirements: no pip
+        # only the relay's files came: the one outside relay/ is not in the cache
+        blob = git(self.origin, "rev-parse", "v0.18.1:media/big.bin")
+        p = subprocess.run(["git", "--git-dir", str(M.HOME / "cache.git"), "cat-file", "-e", blob],
+                           capture_output=True, env=dict(os.environ, GIT_NO_LAZY_FETCH="1"))
+        self.assertNotEqual(p.returncode, 0)
+        # the next release asks for other requirements: pip with them; the release before the last goes away
+        self.want("v0.18.2")
+        u.run()
+        self.assertEqual(self.status()["state"], "done")
+        self.assertIn("requirements.txt", self.pip_log.read_text())
+        self.assertEqual(len(list((M.APP / "releases").iterdir())), 2)
+        self.assertNotIn(self.first.name, [p.name for p in (M.APP / "releases").iterdir()])
+
+    def test_only_official_and_never_back(self):
+        M, u = self.M, self.updater()
+        before = (M.APP / "current").resolve()
+        for tag, commit, why in (("v0.18.1", self.shas["v0.18.2"], "not_official"),     # the tag is another commit
+                                 ("v0.18.3", None, "not_official"),                     # not in main
+                                 ("v0.19.0", "d" * 40, "not_official")):                # no such release
+            self.want(tag, commit)
+            u.run()
+            st = self.status()
+            self.assertEqual((st["state"], st["why"]), ("refused", why), tag)
+            self.assertEqual((M.APP / "current").resolve(), before)
+        self.want("v0.18.2")
+        u.run()
+        self.want("v0.18.1")                                          # older than what runs now
+        u.run()
+        self.assertEqual((self.status()["state"], self.status()["why"]), ("refused", "older"))
+        self.assertTrue((M.APP / "current").resolve().name.startswith("v0.18.2"))
+        self.want("v0.18.2")                                          # what runs: nothing to do
+        u.run()
+        self.assertEqual(self.status()["state"], "idle")
+
+    def test_back_when_it_does_not_come_up(self):
+        M, u = self.M, self.updater(bad=("v0.18.1",))
+        self.want("v0.18.1")
+        u.run()
+        st = self.status()
+        self.assertEqual((st["state"], st["why"], st["back"], st["back_ok"]), ("fail", "no_start", True, True))
+        self.assertEqual((M.APP / "current").resolve(), self.first.resolve())
+        self.assertEqual(json.loads((M.HOME / "installed.json").read_text())["tag"], "v0.18.0")
+        self.assertEqual(len(self.restarts), 2)                       # there and back
+        u.run()                                                       # the same release again: not tried
+        self.assertEqual(len(self.restarts), 2)
+        self.assertEqual(self.status()["state"], "fail")
+        self.want("v0.18.2")                                          # a newer one is
+        u.run()
+        self.assertEqual(self.status()["state"], "done")
+
+    def test_back_at_once_when_it_keeps_exiting(self):
+        # systemd restarts a relay that exits at start again and again: no need to wait the full minute and a half
+        M, u = self.M, self.updater(bad=("v0.18.1",), loops=("v0.18.1",))
+        self.want("v0.18.1")
+        u.run()
+        st = self.status()
+        # and going back counts as fine: the count of the release that failed doesn't hold against the old one
+        self.assertEqual((st["state"], st["why"], st["back"], st["back_ok"]), ("fail", "no_start", True, True))
+        self.assertIn("systemd restarted it", st["detail"])
+        self.assertLess(type(u).clock, 5)
+        self.assertEqual((M.APP / "current").resolve(), self.first.resolve())
+
+    def test_no_computer_no_network(self):
+        M = self.M
+        u = self.updater(mac=False)                                   # the computer isn't connected: later
+        self.want("v0.18.1")
+        u.run()
+        st = self.status()
+        self.assertEqual((st["state"], st["why"], st["back"]), ("fail", "no_mac_before", False))
+        self.assertEqual((M.APP / "current").resolve(), self.first.resolve())
+        self.assertFalse((M.HOME / "failed.json").exists())          # tried again on the next word
+        M.REPO = str(self.origin) + "-gone"
+        (M.HOME / "status.json").unlink()
+        import shutil
+        shutil.rmtree(M.HOME / "cache.git")
+        self.updater().run()
+        self.assertEqual((self.status()["state"], self.status()["why"]), ("fail", "network"))
+        self.assertFalse((M.HOME / "failed.json").exists())
 
 
 if __name__ == "__main__":

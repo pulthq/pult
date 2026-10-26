@@ -100,24 +100,29 @@ ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends i
 STT_WORDS_MAX = 280             # characters of the owner's own words for Whisper: with the sentence, within Groq's 896 bytes
 STT_MAX = 4 * 1024 * 1024       # bytes of one recording from the app (5 min at 32 kbit/s ≈ 1.2 MB; base64 must fit the 8 MB frame)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.17.2"
+VERSION = "0.18.0"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
+TAB_OFF = Path("~/.config/pult/tab-off").expanduser()            # `pult tab off`: the wrapper stays out of every tab
 NEW_ROOT = Path.home()   # a new project and the folder picker stay inside this (stage S)
 EDITOR_DIRS = pult_os.editor_dirs()     # VS Code and its forks (and their remote side): where the tab wrapper is set
 TAB_FILE = "pult-tab.exe" if os.name == "nt" else "pult-tab.sh"   # what claudeCode.claudeProcessWrapper points at
 EXT_DIRS = pult_os.extension_dirs()
 TAB_CHECK_EVERY = 3600   # s; check whether a new Claude Code extension version is out
+ANNOUNCE_EVERY = 600     # s; the relay's server is reminded of the release this computer runs while it runs another (U3)
+# the server's updater failed for a reason of the moment: it tries again on the next reminder, nobody is told
+SRV_TRANSIENT = ("network", "pip", "no_mac_before", "git", "no_git")
 TG_REACH = (2, 30)       # s; at start, the first and the longest pause between tries to reach Telegram
 MENU_CHECK_EVERY = 1800  # s; the app button in the owner's chat is still ours (only the token's holder can change it)
 CONFLICT_WARN_EVERY = 6 * 3600   # s; "someone else reads this bot" at most this often
 WEB_MANIFEST = HOME / "web-manifest.json"   # what the last deploy put on the relay (written by the deploy script)
 PREFS = {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": None, "pace": S.PACE_LOW,
-         "model": None, "effort": None}   # owner prefs:
+         "model": None, "effort": None, "gh": True}   # owner prefs:
 # milestones, location (auto/mac/phone), language, a model's line for each result, Telegram as a pager (None — on where the
 # app is set up), the % at a limit's reset that is still "on pace" (stage R), the model and the effort for sessions Pult
-# starts when the session has no choice of its own (None — Claude Code's settings; VS Code tabs keep theirs)
+# starts when the session has no choice of its own (None — Claude Code's settings; VS Code tabs keep theirs), whether a
+# clone of Pult's GitHub repository looks there for new releases (stage U3)
 MODES = ("auto", "mac", "phone")
 REPO_URL = os.environ.get("PULT_REPO_URL") or "https://github.com/pulthq/pult"   # where /feedback sends bugs and ideas
 MODEL_RE = re.compile(r"[A-Za-z0-9][\w.\-\[\]]{0,63}")        # a model alias or id for a session from Telegram
@@ -987,6 +992,7 @@ class Pult:
         for r in self.attn.rec.values():
             r.setdefault("paged", True)    # outcomes from before this start were announced then: no burst of calls now
         self.brief_sem = asyncio.Semaphore(1)        # the result-reading model: one request at a time
+        self.reading = {}              # sid → {"ts", "viewed"}: an outcome the model still reads, opened meanwhile or not
         self.app_on, self.app_vis = 0.0, False       # the app's last "on screen" and whether it is visible now
         self.app_seen = store.get("app_seen") or 0.0     # the app was last on the screen (kept across restarts)
         self.catch_from = store.get("catch_from")    # "While you were away" counts from here during this visit
@@ -1006,6 +1012,9 @@ class Pult:
         self.upd_wait = None           # the owner asked to install once Pult's sessions are free: since when
         self._parts = (0.0, None, None)  # the source folder against what's installed and served (stage U2): time, key, facts
         self._cc = (0.0, None)         # Claude Code on this computer (cc_facts), kept half a minute
+        self.srv = None                # the relay's server (stage U3): {"can": [...], "upd": the updater's report}
+        self.told = (None, 0.0)        # the release the relay's server was last told this computer runs, and when
+        self.gh = {"at": None, "ok": None, "t": 0.0}   # the last look at GitHub for a release: when, whether it answered
 
     # ----- this computer's environment -----
 
@@ -1792,6 +1801,7 @@ class Pult:
         self.changed(lv.sid)
         if not fail and text.strip() and self.prefs()["brief"]:
             bg = [b.get("description") or b.get("command") or "" for b in lv.bg]
+            self.reading[lv.sid] = {"ts": rec["ts"], "viewed": False}
             asyncio.create_task(self.brief_result(lv, rec["ts"], (t.ask or t.prompt) if t else None, text, bg, waits,
                                                   since=t.started if t else 0.0))
 
@@ -2025,21 +2035,30 @@ class Pult:
     async def brief_result(self, lv, ts, prompt, text, bg, waits, since=0.0):
         """The model's line for a finished turn (pult_brief: haiku, the owner's subscription), one request at a
         time; a newer outcome of the same session makes the request moot. The same request reads the task's tags
-        (stage T) — unless they are the owner's: theirs are final. since — the turn's start: its files are a hint."""
-        async with self.brief_sem:
-            r = self.attn.rec.get(lv.sid)
-            if not r or r["ts"] != ts:
-                return
-            BRIEF_DIR.mkdir(parents=True, exist_ok=True)
-            tags = await self.tag_ctx(lv, since)
-            b = await B.brief(R.prompt_text(prompt) if prompt else None, text, bg, self.lang(), BRIEF_DIR, tags=tags)
-            if b is None:
-                log("brief %s: no answer from the model — the first sentence stays" % lv.sid[:8])
-                return
-            if tags is not None and b.get("tags"):
-                self.tags_set(lv, b["tags"])
-            if self.attn.briefed(lv.sid, ts, b, waits):
-                self.changed(lv.sid)
+        (stage T) — unless they are the owner's: theirs are final. since — the turn's start: its files are a hint.
+        Opened while the model read it (api_session): the look counts now, unless the model reads it as the owner's move."""
+        try:
+            async with self.brief_sem:
+                r = self.attn.rec.get(lv.sid)
+                if not r or r["ts"] != ts:
+                    return
+                BRIEF_DIR.mkdir(parents=True, exist_ok=True)
+                tags = await self.tag_ctx(lv, since)
+                b = await B.brief(R.prompt_text(prompt) if prompt else None, text, bg, self.lang(), BRIEF_DIR, tags=tags)
+                if b is None:
+                    log("brief %s: no answer from the model — the first sentence stays" % lv.sid[:8])
+                    return
+                if tags is not None and b.get("tags"):
+                    self.tags_set(lv, b["tags"])
+                if self.attn.briefed(lv.sid, ts, b, waits):
+                    self.changed(lv.sid)
+        finally:
+            reading = self.reading.get(lv.sid)
+            if reading and reading["ts"] == ts:
+                del self.reading[lv.sid]
+                r = self.attn.rec.get(lv.sid)
+                if reading["viewed"] and r and r["ts"] == ts and not A.needs_owner(r):
+                    self.mark_seen(lv.sid)
 
     # ----- task tags (stage T): a section of the project and a topic in it; the model keeps them, the owner corrects -----
 
@@ -3220,6 +3239,40 @@ class Pult:
     def tab_for(self, sid):
         return next((t for t in self.tabs.values() if sid and t.sid == sid), None)
 
+    async def copy_why(self, sid):
+        """Why a session open on the computer can't be written into from here — the app says it when it offers a copy
+        (a friend's tab on Claude Code 2.1.310 got only "open in a tab", 2026-10-26). Read off the session's process,
+        by the wrapper's own rules (pult_tab.why_direct): {"why": "version", "v"} — a Claude Code the wrapper isn't
+        checked on; "nowrap" — no wrapper line in VS Code; "off" — `pult tab off`; "folder" — not among the wrapper's
+        folders; "reload" — the tab started before the wrapper could join it; "terminal" — not a VS Code tab.
+        {} — it can't tell."""
+        a = next((a for a in await self.agents() if a.get("sessionId") == sid), None)
+        if not a or not a.get("pid"):
+            return {}
+        procs = ((await self.snapshot()) or [{}])[0] or {}
+        pr = procs.get(a["pid"])
+        if not pr:
+            return {}
+        if re.search(r"pult[_-]tab", (procs.get(pr.get("ppid")) or {}).get("cmd") or ""):
+            return {}                                   # the wrapper is there, it just hasn't named the session yet
+        m = re.search(r"anthropic\.claude-code-(\d+(?:\.\d+)+)", pr.get("cmd") or "")
+        if not m:
+            return {"why": "terminal"}
+        v = m.group(1)
+        try:
+            conf = json.loads(TAB_CONF.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            conf = None
+        if not isinstance(conf, dict) or not await asyncio.to_thread(pult_os.files_with, EDITOR_DIRS, TAB_FILE):
+            return {"why": "nowrap", "v": v}
+        if v not in (conf.get("versions") or []):
+            return {"why": "version", "v": v}
+        if TAB_OFF.exists():
+            return {"why": "off", "v": v}
+        if a.get("cwd") and not self.tab_folder(a["cwd"]):
+            return {"why": "folder", "v": v}
+        return {"why": "reload", "v": v}
+
     async def to_tab(self, tab, text, origin):
         self.tab_expect[tab.sid] = (origin, text)
         if origin:
@@ -3589,6 +3642,10 @@ class Pult:
             line = (R.plain(t.now, NOW_LEN) if t.now else R.short(R.prompt_text(t.prompt), 160) if t.prompt
                     else t.note or "") if t else R.short(self.driven[sid].waiting or "", 160) if st == "queue" \
                 else rec.get("line") or ""
+            # a turn in progress, apart (Home's "Running now"): what the owner asked — from wherever it came — and what
+            # Claude says so far; line stays for apps older than 0.17.3
+            turn = {"ask": R.short(R.prompt_text(t.ask or t.prompt), 200) if t.ask or t.prompt else "",
+                    "now": R.plain(t.now, NOW_LEN) if t.now else "", "note": t.note or ""} if t else {}
             # on the board a session sits under its project: its own title, or its first prompt, never the project again
             rows.append({"sid": sid, "pkey": lv.pkey, "title": lv.title or self.title(lv), "state": st, "since": since,
                          "ts": rec.get("ts"), "line": line, "need": rec.get("need") or "", "replies": rec.get("replies") or [],
@@ -3596,7 +3653,7 @@ class Pult:
                          "dur": rec.get("dur"), "driven": sid in self.driven, "tab": bool(self.tab_for(sid)),
                          "open": sid in opened, "model": bool(rec.get("model")),
                          "bg": [R.short(b.get("description") or b.get("command") or self.t("task.default"), 80) for b in lv.bg],
-                         "cwd": lv.cwd, "tags": self.tags_of(sid, tagged)})
+                         "cwd": lv.cwd, "tags": self.tags_of(sid, tagged), **turn})
         return rows
 
     def name_of(self, pkey, rows=()):
@@ -3828,10 +3885,15 @@ class Pult:
             outcome = {k: rec.get(k) for k in ("line", "need", "replies", "fail", "ts", "dur", "turn_files")}
             outcome.update(state=A.state(pending, False, lv.bg, rec), resume=self.attn.resume.get(sid),
                            reset=self.limit_reset() if rec.get("fail") == "rate_limit" else None)
-        # the owner opened it: its outcome no longer calls them — unless it waits for their decision (the model named
-        # what is needed) or broke off: reading isn't deciding, so that stays "your move" until they answer, write
-        # to the session or press "Got it" (the owner, 2026-10-20)
-        if not (rec and (rec.get("fail") or (rec.get("you") and rec.get("need")))):
+        # the owner opened it: its outcome no longer calls them — unless it waits for their decision (the model's
+        # "your move") or broke off: reading isn't deciding, so that stays "your move" until they answer, write to
+        # the session or press "Got it" (the owner, 2026-10-20; pult_attn.needs_owner). The model reads a fresh result
+        # for a few seconds, and the screen re-reads itself the moment a turn ends: that look waits for its word
+        # (brief_result) — taken for "seen" at once, it put a question away unanswered (2026-10-26)
+        reading = self.reading.get(sid)
+        if rec and rec.get("you") and not rec.get("model") and reading and reading["ts"] == rec["ts"]:
+            reading["viewed"] = True
+        elif not A.needs_owner(rec):
             self.mark_seen(sid)
         page = await asyncio.to_thread(PW.transcript_page, path, before, after, lv.cwd)
         stats = await asyncio.to_thread(self.stats.get, path)
@@ -3840,6 +3902,8 @@ class Pult:
         seen = sid in self.live and not lv.driven and lv.turn is not None
         live["open"] = (seen or any(a.get("sessionId") == sid for a in await self.agents())) \
             and not live["tab"] and sid not in self.driven
+        if live["open"]:
+            live.update(await self.copy_why(sid))      # why it goes as a copy: the app says it when asked
         ctx = self.ctx_of(sid, (stats or {}).get("model"))
         # the model can be picked from here: a session Pult runs, a tab with Pult's wrapper, or a closed session that
         # Pult would resume; only a session open on the computer without the wrapper keeps its own
@@ -3896,7 +3960,7 @@ class Pult:
             seen = sid in self.live and not self.live[sid].driven and self.live[sid].turn is not None
             how = "fork" if seen or any(a.get("sessionId") == sid for a in await self.agents()) else "resume"
             if how == "fork" and not fork:
-                return {"ok": False, "need": "fork"}
+                return {"ok": False, "need": "fork", **await self.copy_why(sid)}
         body = self.with_uploads(text, files, self.session_project(sid)[1])
         oid = None
         if how == "session":
@@ -4613,7 +4677,12 @@ class Pult:
         except OSError:
             lines = []
         idle = await self.idle()
+        c = await self.update_check()
+        release = bool(c.get("repo") and await asyncio.to_thread(U.release_mode, c["repo"], c.get("head")))
+        if release:
+            asyncio.ensure_future(self.release_look())      # opening Settings is a reason to look (once a minute)
         return {"version": VERSION, "prefs": dict(self.prefs(), lang=self.lang(), pager=self.pager()), "hooks": sorted(hooks),
+                "gh": {"release": release, "at": self.gh["at"], "ok": self.gh["ok"]},
                 "hooks_missing": [e for e in pult_hook.EVENTS if e not in hooks] if hooks else [],
                 "mac": {"idle": idle, "away": await self.away(), "mode": self.mode()},
                 "telegram": "proxy" if len(self.tg.clients) > 1 and self.tg.cur == 0 else "direct",
@@ -4635,7 +4704,7 @@ class Pult:
     async def api_prefs(self, **kw):
         cur = self.prefs()
         for k, v in kw.items():
-            if k in ("vehi", "brief", "pager") and isinstance(v, bool) or k == "mode" and v in MODES or k == "lang" and v in I.LANGS \
+            if k in ("vehi", "brief", "pager", "gh") and isinstance(v, bool) or k == "mode" and v in MODES or k == "lang" and v in I.LANGS \
                     or k == "pace" and v in S.PACES:
                 cur[k] = v
             elif k in ("model", "effort") and (v is None or isinstance(v, str)):
@@ -4665,9 +4734,12 @@ class Pult:
                         notify=True, urgent=True, prio=1,
                         buttons=[[{"text": self.t("btn.logout_all"), "callback_data": "k:out"}]])
 
-    async def files_alert(self, bad):
-        """The app files on the server differ from the deploy (the app is closed) — or match again ([])."""
-        if bad:
+    async def files_alert(self, bad, tag=None):
+        """The app files on the server differ from the deploy (the app is closed) — or match again ([]). tag: from the
+        release the server's updater took (stage U3) — told, the app stays open."""
+        if bad and tag:
+            await self.send(None, self.t("files.differ.warn", files=R.esc(", ".join(bad[:6])), tag=R.esc(tag)), notify=True, prio=1)
+        elif bad:
             await self.send(None, self.t("files.differ", files=R.esc(", ".join(bad[:6]))), notify=True, urgent=True, prio=1)
         else:
             await self.send(None, self.t("files.match"), notify=True, prio=1)
@@ -4777,6 +4849,8 @@ class Pult:
         if not c.get("ready"):
             return v
         v.update(next=c["version"], news=c["news"])
+        if c.get("tag") and self.srv and "want" in self.srv["can"]:
+            v["srv"] = True                     # stage U3: the app's server takes the same release after this computer
         if c.get("failed"):
             st = U.read(U.STATUS, {}) or {}
             return dict(v, state="fail", why=st.get("why"), detail=st.get("detail"), back=bool(st.get("back")),
@@ -4792,6 +4866,9 @@ class Pult:
             log("update:", repr(e))
             return None
         broken = await self.broken()
+        srv = (self.srv or {}).get("upd") or {}
+        if srv.get("state") == "run" and v["state"] in ("ok", "na"):
+            return {"state": "srv_run", "have": v["have"], "next": srv.get("tag")}     # stage U3: the server follows
         if v["state"] in ("ok", "na") and not broken:
             return None
         row = {"state": v["state"], "have": v["have"], "next": v.get("next"), "back": v.get("back"),
@@ -4879,6 +4956,122 @@ class Pult:
             elif v["state"] not in ("wait", "run"):
                 self.upd_wait = None             # nothing to install any more (installed from the terminal, say)
                 self.emit_update()
+
+    # ----- the relay's server follows this computer; releases from GitHub (stage U3) -----
+
+    async def release_watch(self):
+        """Every pult_update.CHECK_EVERY: a clone of Pult's GitHub repository looks there for a new release (one
+        `git ls-remote`; a newer release is fetched into the clone, not installed — that is the owner's button), and
+        the relay's server is reminded of the release this computer runs while it runs another."""
+        await asyncio.sleep(20)
+        while True:
+            try:
+                await self.release_look()
+                await self.announce()
+            except Exception as e:
+                log("releases:", repr(e))
+            await asyncio.sleep(U.CHECK_EVERY)
+
+    async def release_look(self, force=False):
+        """One look at GitHub — at most once a minute (Settings asks for one when it opens)."""
+        if not self.prefs()["gh"] or not force and time.monotonic() - self.gh["t"] < 60:
+            return
+        self.gh["t"] = time.monotonic()
+        src = (U.read(U.MANIFEST, {}) or {}).get("src")
+        head = await asyncio.to_thread(U.git, src, "rev-parse", "HEAD") if src else None
+        remote = await asyncio.to_thread(U.release_mode, src, head) if head else None
+        if not remote:
+            return
+        ok, tag = await asyncio.to_thread(U.discover, src, remote, U.installed_version(), self.env.get("PULT_PROXY") or None)
+        if ok != self.gh["ok"]:
+            log("releases: GitHub %s" % ("answers" if ok else "doesn't answer"))
+        self.gh.update(at=time.time(), ok=ok)
+        if tag and tag != self.gh.get("tag"):
+            self.gh["tag"] = tag
+            log("releases: %s is out — fetched into %s, ready to install" % (tag, src))
+            self._upd = (0.0, None)
+            self.emit_update()
+
+    async def relay_said(self, msg):
+        """The relay's word (stage U3): on connecting — whether its server has the updater and the updater's last
+        report; later — each new report. A server that can follow hears the release this computer runs."""
+        if "can" in msg:
+            self.srv = {"can": [c for c in msg.get("can") or [] if isinstance(c, str)], "upd": None}
+            self.told = (None, 0.0)
+        if self.srv is None:
+            return
+        if "upd" in msg:
+            upd = msg["upd"] if isinstance(msg.get("upd"), dict) else None
+            self.srv["upd"] = upd
+            await self.srv_report(upd)
+        await self.announce(force="can" in msg)
+        self._parts = (0.0, None, None)
+        self.emit_update()
+
+    async def announce(self, force=False):
+        """The relay's server, when it has the updater, hears which release this computer runs — and takes the same
+        one from GitHub. On connecting; then every ANNOUNCE_EVERY while it runs another and may still take it."""
+        srv = self.srv
+        if not self.web or not srv or "want" not in srv["can"]:
+            return
+        m = U.read(U.MANIFEST, {}) or {}
+        src, commit = m.get("src"), m.get("commit")
+        tag = await asyncio.to_thread(U.release_of, src, commit) if src and commit else None
+        upd = srv.get("upd") or {}
+        if not tag or upd.get("have") == tag or upd.get("tag") == tag and (
+                upd.get("state") == "refused" or upd.get("state") == "fail" and upd.get("why") not in SRV_TRANSIENT):
+            return
+        last, at = self.told
+        if not force and last == (tag, commit) and time.monotonic() - at < ANNOUNCE_EVERY:
+            return
+        self.told = ((tag, commit), time.monotonic())
+        await self.web.send({"t": "want", "tag": tag, "commit": commit})
+        log("app server: told it this computer runs %s" % tag)
+
+    async def srv_report(self, upd):
+        """Each report of the server's updater, once (the relay repeats the last one on every connection): a release
+        it didn't take is told in Telegram; once it runs a release, the file check expects that release's files."""
+        if not upd:
+            return
+        if U.vtag(upd.get("have") or ""):
+            await asyncio.to_thread(self.expect_release, upd["have"])
+        ts = upd.get("ts") if isinstance(upd.get("ts"), (int, float)) else 0
+        if upd.get("state") not in ("fail", "done") or ts <= (self.store.get("srv_report_ts") or 0):
+            return
+        self.store.put("srv_report_ts", ts)              # the server's own clock: its reports only go forward
+        if upd["state"] == "done":
+            log("app server: took %s" % upd.get("tag"))
+            return
+        why = upd.get("why")
+        log("app server: didn't take %s — %s %s" % (upd.get("tag"), why, upd.get("detail") or ""))
+        if why in SRV_TRANSIENT:
+            return
+        words = self.t("srv.why.%s" % why)
+        if words.startswith("srv.why."):
+            words = str(why)
+        await self.send(None, self.t("srv.failed" if upd.get("back_ok") else "srv.failed.dead", to=R.esc(str(upd.get("tag"))),
+                                     back=R.esc(str(upd.get("have"))), why=R.esc(words)), notify=True, prio=1)
+
+    def expect_release(self, tag):
+        """The file check expects what release `tag` hands the phone, from this computer's own copy of it
+        (pult_update.manifest_at) — and only warns: a CDN in front of the server may change files. A deploy script's
+        record (a developer's own server) is never replaced."""
+        try:
+            cur = json.loads(WEB_MANIFEST.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            cur = None
+        if cur and (cur.get("mode") != "warn" or cur.get("tag") == tag):
+            return
+        src = (U.read(U.MANIFEST, {}) or {}).get("src")
+        commit = U.git(src, "rev-parse", "-q", "--verify", "refs/tags/%s^{commit}" % tag) if src else None
+        man = U.manifest_at(src, commit) if commit else None
+        if not man:
+            return
+        man.update(mode="warn", tag=tag)
+        tmp = WEB_MANIFEST.with_name(WEB_MANIFEST.name + ".tmp")
+        tmp.write_text(json.dumps(man), encoding="utf-8")
+        os.replace(tmp, WEB_MANIFEST)
+        log("app files check: expects release %s (warns only)" % tag)
 
     # ----- every part of Pult against main (stage U2) -----
 
@@ -4980,7 +5173,8 @@ class Pult:
         m = U.read(U.MANIFEST, {}) or {}
         out = {"repo": repo, "head": head, "branch": U.git(repo, "rev-parse", "--abbrev-ref", "HEAD"),
                "mac": U.behind(repo, m.get("commit"), head, U.TREE),
-               "gh": U.changelog(repo, head) if U.makes_releases(repo, head) else None}   # only where releases are made
+               "gh": U.changelog(repo, head) if U.makes_releases(repo, head) else None,   # only where releases are made
+               "release": U.release_mode(repo, head) is not None}      # a clone of GitHub's: the server may follow (U3)
         for part, paths in U.PARTS.items():
             files = {p: b for p, b in (build or {}).items() if any(p == x or p.startswith(x + "/") for x in paths)}
             out[part] = U.built_from(repo, head, files, paths) if files else None
@@ -4990,7 +5184,7 @@ class Pult:
     async def parts_facts(self):
         """Everything the table is made of, in one go (the stand puts made-up facts here)."""
         return {"upd": await self.update_view(), "git": await self.git_facts(), "relay": bool(self.web),
-                "tabs": self.tab_facts(), "hooks": self.hooks_on(), "cc": await self.cc_facts()}
+                "tabs": self.tab_facts(), "hooks": self.hooks_on(), "cc": await self.cc_facts(), "srv": self.srv}
 
     @staticmethod
     def parts_rows(f):
@@ -5004,14 +5198,29 @@ class Pult:
         rows.append({"k": "mac", "st": {"ok": "ok", "na": "info", "fail": "bad"}.get(upd["state"], "warn"),
                      "have": upd["have"], "n": n, "since": lag_mac.get("since"), "upd": upd})
         if f["relay"]:
+            srv = f.get("srv")
+            auto = bool(srv and "want" in srv["can"])
+            upd_srv = (srv or {}).get("upd") or {}
             for part in ("web", "relay"):
                 b = g.get(part)
                 if b:
-                    rows.append({"k": part, "st": "warn" if b["n"] else "ok", "have": b["ts"], "commit": b["commit"][:7],
-                                 "n": b["n"], "since": b["since"], "news": b["news"]})
+                    row = {"k": part, "st": "warn" if b["n"] else "ok", "have": b["ts"], "commit": b["commit"][:7],
+                           "n": b["n"], "since": b["since"], "news": b["news"]}
                 else:
                     why = "norepo" if not g.get("repo") else "other" if g.get(part + "_told") else "old"
-                    rows.append({"k": part, "st": "info", "why": why})
+                    row = {"k": part, "st": "info", "why": why}
+                if g.get("release"):          # stage U3: whether the server takes this computer's releases itself
+                    row["auto"] = auto
+                    if auto and upd_srv:
+                        row["srv"] = {k: upd_srv.get(k) for k in ("state", "tag", "have", "step", "why", "detail", "back",
+                                                                  "back_ok", "ts")}
+                        # a release it didn't take and won't try again: behind — to update; else worth a look
+                        row["srv"]["final"] = upd_srv.get("state") == "fail" and upd_srv.get("why") not in SRV_TRANSIENT
+                        if upd_srv.get("state") == "run" or row["srv"]["final"] and b and b["n"]:
+                            row["st"] = "warn"
+                        elif row["srv"]["final"]:
+                            row["st"] = "attn"
+                rows.append(row)
         tabs, cc = f["tabs"], f["cc"]
         if tabs or cc["wrapped"]:
             old = sorted({t["project"] for t in tabs if t["same"] is False})
@@ -5273,7 +5482,7 @@ async def amain():
     log("Pult started; group:", p.chat, "; link: 127.0.0.1:%d" % server.sockets[0].getsockname()[1]
         if pult_os.link_tcp() else "; socket: " + SOCK)
     # the panel is sent via the message queue, so it must run alongside it, or startup hangs (seen 2026-10-16, 0.6.0)
-    jobs = [p.out.run(), p.telegram_start(), p.usage_watch(), p.attention_watch(), p.update_watch()]
+    jobs = [p.out.run(), p.telegram_start(), p.usage_watch(), p.attention_watch(), p.update_watch(), p.release_watch()]
     if env.get("PULT_RELAY_URL") and env.get("PULT_RELAY_SECRET"):
         p.web = PW.Web(p, env["PULT_RELAY_URL"], env["PULT_RELAY_SECRET"], token, p.allowed,
                        proxy=env.get("PULT_PROXY") or None, manifest=WEB_MANIFEST)
