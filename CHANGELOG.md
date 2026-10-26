@@ -2,6 +2,18 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.18.2 — 2026-10-26
+
+- **The README opens with what the phone can do.** Twelve tiles under the opening picture — allow or deny, answer a
+  question, say what's next, whose move, the whole session, voice, files both ways, a new project, the plan's pace,
+  tags, model and effort, Pult keeping itself current — so the whole of Pult is one look, in GitHub's phone app too;
+  the navigation starts from them. Two more screens among the features: a project's tasks sorted by Claude's tags,
+  and Settings' table of Pult's parts with the release and the Claude Code check. What was one long paragraph of
+  everything since 0.15 is a short list. The pictures come from `tools/media.py` as before — the tiles and the two
+  screens are new (`glance`, `f-tags`, `f-parts`), from a second stand with tagged tasks and the parts table;
+  `tools/media.py glance` redraws one kind. The guide names Settings → Pult and its parts, the install from there
+  and the Claude Code check. Every picture is redrawn: Home's cards show a task's title whole, as since 0.18.0.
+
 ## 0.18.1 — 2026-10-26
 
 - **Pult checks a new Claude Code version itself, before your tabs move to it.** VS Code updates the Claude Code

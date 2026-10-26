@@ -51,6 +51,13 @@ you're neither in the app nor at the computer. Reminders on long turns; warnings
 - **A new project**: a folder anywhere in your home folder — empty with git, with a `CLAUDE.md` that Claude writes
   from your description, or a clone of a repository. Its topic appears in the group at once.
 
+- **Pult itself**: Settings → Pult and its parts — the computer, the app and the relay on your server, this phone's
+  copy, the VS Code tabs, the hooks, Claude Code and the release, each with what it runs and how far it is behind the
+  branch Pult was installed from. A new release installs from there with one tap (macOS, Linux; a clone finds releases
+  on GitHub by itself), and your app server takes the same one from GitHub
+  ([once: `install.sh --auto`](../deploy/relay/README.md#updates)). A Claude Code version VS Code has downloaded is
+  checked on your computer before the tabs move to it; "Check new Claude Code versions" turns that off.
+
 ## In a terminal
 
 `pult help` lists them all: `status`, `setup`, `start|stop|restart`, `busy`, `hooks on|off`, `tab …`, `app`, `stt`,
