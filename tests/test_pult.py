@@ -3006,7 +3006,9 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             "stream-json", stdin=subprocess.PIPE, stdout=subprocess.PIPE, cwd=str(d),
             env=plain_env(PULT_TAB_CONF=str(d / "tab.json"), PULT_SOCK=sock, PULT_TAB_LOG=str(d / "tab.log")))
         try:
-            self.assertIn("control", (await asyncio.wait_for(hello, 10))["caps"])
+            h = await asyncio.wait_for(hello, 10)
+            self.assertIn("control", h["caps"])
+            self.assertEqual(h["self"], U.blob(HERE / "pult_tab.py"))  # stage U2: its own file, as the tab started
             req = {"subtype": "apply_flag_settings", "settings": {"effortLevel": "low"}}
             conn[0].write((json.dumps({"op": "control", "request": req}) + "\n").encode())
             conn[0].write(b'{"op": "control", "request": "not a request"}\n')
@@ -3312,7 +3314,8 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(lambda: [(U.HOME / n).unlink(missing_ok=True) for n in (U.STATUS, U.HISTORY, U.HEALTH)])
         patches = [mock.patch.object(U, "check", lambda: dict(check)),
                    mock.patch.object(U, "spawn", lambda commit, how, python=None: self.spawned.append((commit, how)) or True),
-                   mock.patch.object(pultd.pult_os, "KIND", "mac")]
+                   mock.patch.object(pultd.pult_os, "KIND", "mac"),
+                   mock.patch.object(self.p, "broken", mock.AsyncMock(return_value=[]))]   # not this computer's hooks
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
@@ -3427,6 +3430,85 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await self.p.update_tick()
         await asyncio.sleep(0.1)
         self.assertEqual(len([t for t in self.texts() if "9.9" in t]), 1)
+
+    PARTS_GIT = {"repo": "/Users/x/pult", "head": "a" * 40, "branch": "main", "mac": {"n": 2, "since": 1000, "news": ["x", "y"]},
+                 "web": {"n": 3, "since": 900, "news": ["a", "b", "c"], "commit": "b" * 40, "ts": 800},
+                 "relay": {"n": 0, "since": None, "news": [], "commit": "c" * 40, "ts": 700}, "relay_told": True,
+                 "gh": {"last": "9.8.0", "date": "2026-10-20", "waiting": 4}}
+    PARTS_CC = {"running": ["2.1.301"], "verified": ["2.1.301"], "newest": "2.1.301", "wrapped": True, "sdk": "0.2.167",
+                "cli": "2.1.300"}
+
+    async def test_parts(self):
+        # stage U2: every part of Pult in one table — what is there, how far behind main, what doesn't work
+        self.upd_reset(self.READY)
+        f = {"upd": await self.p.update_view(), "git": dict(self.PARTS_GIT), "relay": True,
+             "tabs": [{"project": "a", "same": True}, {"project": "b", "same": False}, {"project": "b", "same": False}],
+             "hooks": [e for e in pultd.pult_hook.EVENTS if e != "StopFailure"], "cc": dict(self.PARTS_CC)}
+        rows = {r["k"]: r for r in self.p.parts_rows(f)}
+        self.assertEqual(list(rows), ["mac", "web", "relay", "tabs", "hooks", "cc", "gh"])   # the phone's row is the app's
+        st = {k: r["st"] for k, r in rows.items()}
+        self.assertEqual(st, {"mac": "warn", "web": "warn", "relay": "ok", "tabs": "warn", "hooks": "bad", "cc": "ok", "gh": "info"})
+        self.assertEqual((rows["mac"]["n"], rows["mac"]["have"], rows["mac"]["upd"]["state"]), (2, pultd.VERSION, "ready"))
+        self.assertEqual((rows["web"]["n"], rows["web"]["commit"], rows["web"]["news"]), (3, "b" * 7, ["a", "b", "c"]))
+        self.assertEqual((rows["tabs"]["old"], rows["tabs"]["n_old"], rows["tabs"]["have"]), (["b"], 2, 3))
+        self.assertEqual((rows["hooks"]["missing"], rows["gh"]["waiting"]), (["StopFailure"], 4))
+        # a downloaded Claude Code not verified yet — worth a look; tabs already on one — writing into them is off
+        f["cc"] = dict(self.PARTS_CC, newest="2.1.310")
+        cc = {r["k"]: r for r in self.p.parts_rows(f)}["cc"]
+        self.assertEqual((cc["st"], cc["fresh"], cc["off"]), ("attn", "2.1.310", []))
+        f["cc"] = dict(self.PARTS_CC, running=["2.1.301", "2.1.310"], newest="2.1.310")
+        cc = {r["k"]: r for r in self.p.parts_rows(f)}["cc"]
+        self.assertEqual((cc["st"], cc["off"], cc["fresh"], cc["have"]), ("bad", ["2.1.310"], None, "2.1.310"))
+        f["cc"] = dict(self.PARTS_CC, running=["2.1.310"], newest="2.1.310", wrapped=False)    # no wrapper: no matter
+        self.assertEqual({r["k"]: r for r in self.p.parts_rows(f)}["cc"]["st"], "info")
+        # nothing the relay said / a copy from no commit of main / no git source; nothing to compare a computer with
+        f["git"] = dict(self.PARTS_GIT, web=None, relay=None, relay_told=False, web_told=True)
+        rows = {r["k"]: r for r in self.p.parts_rows(f)}
+        self.assertEqual([(rows[k]["st"], rows[k]["why"]) for k in ("web", "relay")], [("info", "other"), ("info", "old")])
+        rows = {r["k"]: r for r in self.p.parts_rows(dict(f, git={"repo": None}, upd=dict(f["upd"], state="na"), relay=False))}
+        self.assertEqual((rows["mac"]["st"], "web" in rows, "gh" in rows), ("info", False, False))
+        self.p.parts_facts = mock.AsyncMock(return_value=dict(f, git=self.PARTS_GIT))
+        v = await self.p.api_parts()
+        self.assertEqual((v["head"], v["branch"], len(v["rows"])), ("a" * 7, "main", 7))
+
+    async def test_parts_facts(self):
+        # the facts behind the table: the wrappers in the tabs against the installed one, Claude Code by its processes,
+        # what doesn't work for Home's line
+        d = TMP / "parts"
+        d.mkdir(exist_ok=True)
+        (d / "pult_tab.py").write_text("# wrapper 2\n")
+        (d / "tab.json").write_text(json.dumps({"folders": [], "versions": ["2.1.301"]}))
+        now = U.blob(d / "pult_tab.py")
+        self.p.tabs = {1: types.SimpleNamespace(sid=None, cwd="/Users/x/shop", version="2.1.301", own=now),
+                       2: types.SimpleNamespace(sid=None, cwd="/Users/x/blog/", version="2.1.301", own="0" * 40),
+                       3: types.SimpleNamespace(sid=None, cwd="/Users/x/old", version="2.1.301", own=False),
+                       4: types.SimpleNamespace(sid=None, cwd="/Users/x/win", version="2.1.301", own=None)}
+        claude = "/Users/x/.vscode/extensions/anthropic.claude-code-%s-darwin-arm64/resources/native-binary/claude"
+        procs = {10: {"cmd": claude % "2.1.310" + " --output-format stream-json", "mine": True},
+                 11: {"cmd": "/usr/bin/python3 x.py", "mine": True}}
+        with mock.patch.object(pultd, "HOME", d), mock.patch.object(pultd, "TAB_CONF", d / "tab.json"), \
+                mock.patch.object(self.p, "snapshot", mock.AsyncMock(return_value=(procs, {}))), \
+                mock.patch.object(pultd.pult_os, "files_with", lambda dirs, mark: ["settings.json"]), \
+                mock.patch.object(pultd.pult_os, "newest_extension", lambda dirs: "2.1.310"), \
+                mock.patch.object(self.p, "hooks_on", lambda: ["Stop", "UserPromptSubmit"]):
+            self.assertEqual([(t["project"], t["same"]) for t in self.p.tab_facts()],
+                             [("shop", True), ("blog", False), ("old", False), ("win", None)])
+            self.p._cc = (0.0, None)
+            cc = await self.p.cc_facts()
+            self.assertEqual((cc["running"], cc["verified"], cc["newest"], cc["wrapped"]),
+                             (["2.1.301", "2.1.310"], ["2.1.301"], "2.1.310", True))
+            self.assertRegex(cc["sdk"] or "", r"^\d+\.\d+")
+            broken = await self.p.broken()
+            self.assertEqual([b["k"] for b in broken], ["hooks", "cc"])
+            self.assertEqual(broken[1]["v"], "2.1.310")
+            self.assertIn("StopFailure", broken[0]["missing"])
+        self.p.tabs = {}
+        self.p._cc = (0.0, None)
+        # Home's line: nothing to install, yet something doesn't work
+        self.upd_reset(dict(self.READY, ready=False))
+        self.p.broken = mock.AsyncMock(return_value=broken)
+        u = (await self.p.api_overview())["update"]
+        self.assertEqual((u["state"], [b["k"] for b in u["broken"]]), ("ok", ["hooks", "cc"]))
 
     async def test_note_health(self):
         # health.json — what the installer waits for: this daemon, when it started, the app's server reached

@@ -14,7 +14,11 @@ gives the question a second one, a second session waiting for you and a permissi
 wait|run|fail shows Settings → Pult and Home's line in that state (no installer ever runs), STAND_PORT=<port> runs a
 second stand beside one already up. STAND_TICKS=<s> opens the first session in a tab that reads each message <s> s
 later, as Claude Code does at its turn's next step — a message with "#gone" is dropped instead (tools/ticks_check.py).
-STAND_FILES=1 gives the shop a real folder with made-up files and ends the chat with links to them (tools/fileview_check.py)."""
+STAND_FILES=1 gives the shop a real folder with made-up files and ends the chat with links to them (tools/fileview_check.py).
+Settings' table of Pult's parts and Home's line always run on made-up facts — all fresh; STAND_PARTS=now|lag|bad|public:
+all as in main with a new Claude Code downloaded; several parts behind (with STAND_UPD=ready for the computer); hooks
+missing and tabs on an unverified Claude Code; someone with a clone of the public repository after a `git pull` (no
+release row, no tab wrapper; STAND_UPD=ready) (tools/parts_check.py)."""
 import asyncio, base64, hashlib, hmac, json, os, random, sys, time, urllib.parse
 from pathlib import Path
 
@@ -23,6 +27,13 @@ sys.path.insert(0, str(REPO / "tests"))
 import test_web as W  # noqa: E402  (keys, relay with the test key)
 T, PW, pultd, relay = W.T, W.PW, W.pultd, W.relay
 import pult_load as L  # noqa: E402
+import pult_update as U  # noqa: E402
+
+# Pult's folder must be the tests' temporary one: pultd imported before test_pult set PULT_HOME keeps the real
+# ~/.local/share/pult, and the stand would write its made-up install history there (it did, 2026-10-26)
+for _home in (pultd.HOME, U.HOME):
+    if not Path(_home).resolve().is_relative_to(Path(T.TMP).resolve()):
+        sys.exit("stand: Pult's folder is %s, not a temporary one — run tools/stand.py as a script of its own" % _home)
 from aiohttp import web  # noqa: E402
 
 HOLD = float(os.environ.get("HOLD", "90"))
@@ -269,6 +280,52 @@ async def main():
             {"ts": now - 27 * 3600, "from": "0.13.1", "to": prev, "how": "app", "ok": False, "why": "restarts"},
             {"ts": now - 28 * 3600, "from": "0.13.0", "to": "0.13.1", "how": "app", "ok": True},
             {"ts": now - 50 * 3600, "from": "0.12.0", "to": "0.13.0", "how": "terminal", "ok": True}])
+    # stage U2: Settings' parts table, always on made-up facts — never this computer's own Claude Code or hooks
+    parts = os.environ.get("STAND_PARTS") or "fresh"
+    if parts:
+        now = time.time()
+        sha = lambda c: c + "0" * (40 - len(c))
+        lag = lambda n, h, news: {"n": n, "since": now - h * 3600 if n else None, "news": news[:n]}
+        facts = {
+            "fresh": {"git": {"mac": lag(0, 0, []), "web": dict(lag(0, 0, []), commit=sha("57e5646"), ts=now - 6 * 3600),
+                              "relay": dict(lag(0, 0, []), commit=sha("4680b38"), ts=now - 5 * 86400),
+                              "gh": {"last": pultd.VERSION, "date": time.strftime("%Y-%m-%d", time.localtime(now - 86400)), "waiting": 0}},
+                      "tabs": [True] * 3, "missing": [], "cc": (["2.1.301"], ["2.1.301"], "2.1.301")},
+            "now": {"git": {"mac": lag(0, 0, []), "web": dict(lag(0, 0, []), commit=sha("57e5646"), ts=now - 6 * 3600),
+                            "relay": dict(lag(0, 0, []), commit=sha("4680b38"), ts=now - 5 * 86400),
+                            "gh": {"last": pultd.VERSION, "date": time.strftime("%Y-%m-%d", time.localtime(now - 86400)), "waiting": 1}},
+                    "tabs": [True] * 14, "missing": [], "cc": (["2.1.301"], ["2.1.301"], "2.1.310")},
+            "lag": {"git": {"mac": lag(2, 5, ["Every part of Pult in one table", "The tab wrapper names its own version"]),
+                            "web": dict(lag(3, 2, ["Settings: the parts table", "Home: one line for every update",
+                                                   "Phone: Refresh when the server has a newer app"]), commit=sha("57e5646"), ts=now - 9 * 3600),
+                            "relay": dict(lag(0, 0, []), commit=sha("4680b38"), ts=now - 5 * 86400),
+                            "gh": {"last": pultd.VERSION, "date": time.strftime("%Y-%m-%d", time.localtime(now - 86400)), "waiting": 4}},
+                    "tabs": [True] * 12 + [False] * 2, "missing": ["StopFailure"], "cc": (["2.1.310"], ["2.1.301", "2.1.310"], "2.1.310")},
+            # someone with a clone of the public repository, after a `git pull`: no release of their own to make, no
+            # wrapper in the tabs; the computer and their server one release behind
+            "public": {"git": {"mac": lag(1, 3, ["Pult 0.16.1"]), "web": dict(lag(1, 3, ["Pult 0.16.1"]), commit=sha("e5f2b10"), ts=now - 9 * 86400),
+                               "relay": dict(lag(1, 3, ["Pult 0.16.1"]), commit=sha("e5f2b10"), ts=now - 9 * 86400), "gh": None},
+                       "tabs": [], "missing": [], "cc": (["2.1.310"], ["2.1.301"], "2.1.310"), "wrapped": False},
+            "bad": {"git": {"mac": lag(0, 0, []), "web": None, "web_told": True, "relay": None,
+                            "gh": {"last": pultd.VERSION, "date": time.strftime("%Y-%m-%d"), "waiting": 0}},
+                    "tabs": [True] * 3 + [None], "missing": ["StopFailure", "PreCompact"], "cc": (["2.1.301", "2.1.310"], ["2.1.301"], "2.1.310")},
+        }[parts]
+        g = dict(facts["git"], repo=str(Path.home() / "pult"), head=sha("a41c9e2"), branch="main")
+        names = ["acme-shop", "support-desk", "blog", "notes"]
+        tabs = [{"project": names[i % 3] if same is not False else names[1 + i % 2], "same": same} for i, same in enumerate(facts["tabs"])]
+        hooks = [e for e in pultd.pult_hook.EVENTS if e not in facts["missing"]]
+        running, verified, newest = facts["cc"]
+        wrapped = facts.get("wrapped", True)
+        cc = {"running": running, "verified": verified, "newest": newest, "wrapped": wrapped, "sdk": "0.2.167", "cli": "2.1.300"}
+
+        async def stand_facts():
+            return {"upd": await p.update_view(), "git": g, "relay": True, "tabs": tabs, "hooks": hooks, "cc": cc}
+
+        async def stand_broken():
+            off = [v for v in running if v not in verified] if wrapped else []
+            return ([{"k": "hooks", "missing": facts["missing"]}] if facts["missing"] else []) + \
+                ([{"k": "cc", "v": off[-1]}] if off else [])
+        p.parts_facts, p.broken = stand_facts, stand_broken
     if os.environ.get("STAND_STT"):        # the microphone (tools/voice_check.py): recordings land in that folder, no Groq
         keep = Path(os.environ["STAND_STT"])
 

@@ -1130,6 +1130,12 @@ const IC = {
   clock: '<circle cx="12" cy="12" r="9.5"/><path d="M12 7v5l3.2 2"/>',
   back: '<path d="m15 6-6 6 6 6"/>',
   send: '<path d="M21.5 2.5 10.5 13.5"/><path d="m21.5 2.5-7 19-4-8-8-4z"/>',
+  server: '<rect x="3" y="3.5" width="18" height="7" rx="2"/><rect x="3" y="13.5" width="18" height="7" rx="2"/><path d="M7 7h.01M7 17h.01"/>',
+  relay: '<path d="M4 12h5M15 12h5"/><circle cx="12" cy="12" r="3"/><path d="M6.5 8.5 4 12l2.5 3.5M17.5 8.5 20 12l-2.5 3.5"/>',
+  tabs: '<rect x="2.5" y="4" width="19" height="16" rx="2.5"/><path d="M2.5 9h19M9 4v5"/>',
+  hook: '<path d="M8 3v7a4 4 0 0 0 8 0V8"/><path d="m13 11 3-3 3 3"/><path d="M8 21v-4"/>',
+  spark: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8"/>',
+  tag: '<path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><path d="M7.5 7.5h.01"/>',
   lock: '<rect x="4.5" y="10.5" width="15" height="11" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>',
 };
 const ic = (n, s = 18) => html`<svg class=${"ic ic-" + n} viewBox="0 0 24 24" width=${s} height=${s} fill="none" stroke="currentColor"
@@ -1383,29 +1389,55 @@ const tOr = (k, other) => { const v = t(k); return v === k ? other : v; };     /
 const updWhy = (w) => tOr("upd.why." + w, w || "?");
 const updWho = (b, i) => html`<div class="upd-who" key=${i}>${b.turn ? html`<span class="st st-work"></span>` : html`<span class="st-ic">${ic("bg", 15)}</span>`}<span>${b.project ? html`<b>${b.project}</b>${b.title && b.title !== b.project ? " · " + b.title : ""}` : b.title} <span class="dim">— ${[b.turn ? t("upd.busy.turn") : "", b.n ? t("upd.busy.bg", { n: b.n }) : ""].filter(Boolean).join(", ")}</span></span></div>`;
 
-// Home: a line under the strip only while there is something to do or to know; a tap — Settings
+// stage U2: which copy of the app this window runs — the ?v= its own link carries (the server puts the files' latest
+// change there) — against the one the server hands out now, from its page. Asked when the app comes back to the
+// screen and when Settings opens, at most every 5 min otherwise: a window Telegram kept open for days runs the old one
+const OWN_V = (() => { try { return new URL(import.meta.url).searchParams.get("v") || ""; } catch (e) { return ""; } })();
+const served = { v: "", at: 0 };
+async function checkServed(force) {
+  if (!force && Date.now() - served.at < 300000) return;
+  served.at = Date.now();
+  try {
+    const r = await fetch(location.pathname, { cache: "no-store", credentials: "same-origin" });
+    const m = /\/app\.js\?v=(\d+)/.exec(await r.text());
+    if (m && m[1] !== served.v) { served.v = m[1]; emit("served"); }
+  } catch (e) {}
+}
+const phoneOld = () => !!(OWN_V && served.v && served.v !== OWN_V);
+on("ready", () => checkServed());
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkServed(); });
+const useServed = () => { const [, bump] = useState(0); useEffect(() => on("served", () => bump((x) => x + 1)), []); };
+
+// Home: a line under the strip only while there is something to do or to know; a tap — Settings. The computer's own
+// install states first; then what can be done from here (the computer, this phone's copy) and what doesn't work
 function UpdRow({ u }) {
   useEffect(() => noteUpd(u && u.state), [u && u.state]);
-  if (!u) return "";
-  const [icon, title, sub, cls] = {
-    ready: [ic("up", 17), t("upd.ready", { v: u.next }), t("upd.row.ready", { v: u.have }), ""],
-    busy: [ic("up", 17), t("upd.ready", { v: u.next }), t("upd.row.busy", { n: u.left }), "attn"],
-    wait: [ic("auto", 17), t("upd.wait", { v: u.next }), t("upd.row.wait", { n: u.left }), "attn"],
-    run: [updSpin, t("upd.run", { v: u.next }), t("upd.row.run"), ""],
-    fail: [ic("alert", 17), u.back ? t("upd.row.fail", { next: u.next, v: u.have }) : t("upd.fail.kept", { v: u.next }), t("upd.row.fail.sub"), "bad"],
-  }[u.state] || [];
-  if (!title) return "";
-  return html`<button class=${"card upd-row " + cls} onClick=${() => go("#/settings")}>
+  useServed();
+  const st = u ? u.state : "ok", phone = phoneOld(), broken = (u && u.broken) || [];
+  const mac = st === "ready" || st === "busy";
+  const row = (icon, title, sub, cls) => html`<button class=${"card upd-row " + cls} onClick=${() => go("#/settings")}>
     <span class="upd-ic">${icon}</span><span class="upd-t"><b>${title}</b><span class="dim">${sub}</span></span>${ic("chev", 16)}</button>`;
+  if (st === "wait" || st === "run" || st === "fail" || mac && !phone && !broken.length) {
+    const [icon, title, sub, cls] = {
+      ready: [ic("up", 17), t("upd.ready", { v: u.next }), t("upd.row.ready", { v: u.have }), ""],
+      busy: [ic("up", 17), t("upd.ready", { v: u.next }), t("upd.row.busy", { n: u.left }), "attn"],
+      wait: [ic("auto", 17), t("upd.wait", { v: u.next }), t("upd.row.wait", { n: u.left }), "attn"],
+      run: [updSpin, t("upd.run", { v: u.next }), t("upd.row.run"), ""],
+      fail: [ic("alert", 17), u.back ? t("upd.row.fail", { next: u.next, v: u.have }) : t("upd.fail.kept", { v: u.next }), t("upd.row.fail.sub"), "bad"],
+    }[st];
+    return row(icon, title, sub, cls);
+  }
+  const acts = [mac ? t("pt.home.mac") : "", phone ? t("pt.home.phone") : ""].filter(Boolean);
+  const probs = broken.map((b) => (b.k === "hooks" ? t("pt.home.hooks", { ev: b.missing.join(", ") }) : t("pt.home.cc", { v: b.v })));
+  if (!acts.length && !probs.length) return "";
+  if (!acts.length) return row(ic("alert", 17), probs[0], probs.slice(1).join(" · ") || t("pt.home.more"), "bad");
+  return row(ic("up", 17), t("pt.home.upd", { what: acts.join(", ") }), probs.join(" · ") || t(mac ? "upd.row.ready" : "pt.home.phone.sub", { v: u && u.have }), probs.length ? "bad" : "");
 }
 
-// Settings: the "Pult" block on top — the version, the state, the one button, the history. A Pult without stage U
-// doesn't know the request: no block then
-function UpdCard() {
-  const [v, , set] = useLive(() => api("update"), [], null, 10000);
+// the computer's Pult: the state, the one button, the history — the "Pult" block of a computer before stage U2, and
+// the computer's row in the parts table (row: the version and "up to date" are in the row already)
+function UpdBody({ v, set, row }) {
   const [busy, setBusy] = useState(false);
-  useEffect(() => noteUpd(v && v.state), [v && v.state]);
-  if (!v) return "";
   const act = async (op) => {
     setBusy(true);
     try { const r = await api(op); set(r); haptic("success"); }
@@ -1450,10 +1482,131 @@ function UpdCard() {
     na: html`${head("", t("upd.ok", { v: v.have }), "")}<div class="dim">${t("upd.na." + (v.why === "windows" ? "windows" : "norepo"))}</div>`,
   }[v.state] || "";
   const hist = v.hist || [];
-  return html`<h3>${t("upd.h")}</h3><div class=${"card upg upd-s-" + v.state}>${body}
+  return html`${row && v.state === "ok" ? (v.dir ? html`<div class="dim">${t("upd.ok.from", { dir: v.dir, commit: v.commit })}</div>` : "") : body}
     ${hist.length ? html`<details class="upd-hist"><summary>${t("upd.hist", { n: hist.length })}</summary>
       ${hist.map((x, i) => html`<div class="login" key=${i}><span class=${x.ok ? "ok" : "bad"}>${ic(x.ok ? "check" : "x", 14)} ${ago(x.ts)}</span>
-        <span class="dim">${x.ok ? [x.from, x.to].filter(Boolean).join(" → ") : t(x.from && x.from !== x.to ? "upd.hist.failed" : "upd.hist.kept", { to: x.to, from: x.from })} · ${tOr("upd.how." + x.how, x.how)}</span></div>`)}</details>` : ""}</div>`;
+        <span class="dim">${x.ok ? [x.from, x.to].filter(Boolean).join(" → ") : t(x.from && x.from !== x.to ? "upd.hist.failed" : "upd.hist.kept", { to: x.to, from: x.from })} · ${tOr("upd.how." + x.how, x.how)}</span></div>`)}</details>` : ""}`;
+}
+
+// Settings, a computer before stage U2: the "Pult" block alone (before stage U the computer doesn't know the request:
+// no block then)
+function UpdCard() {
+  const [v, , set] = useLive(() => api("update"), [], null, 10000);
+  useEffect(() => noteUpd(v && v.state), [v && v.state]);
+  if (!v) return "";
+  return html`<h3>${t("upd.h")}</h3><div class=${"card upg upd-s-" + v.state}><${UpdBody} v=${v} set=${set}/></div>`;
+}
+
+// stage U2: every part of Pult in one table — what is there, how far behind the source folder's branch (main), who
+// brings it up to date. A tap opens a row: the details and who does it; the computer's row holds the install block.
+// The phone's row is the app's own: only it knows which copy it runs
+const PART_IC = { mac: "monitor", web: "server", relay: "relay", phone: "phone", tabs: "tabs", hooks: "hook", cc: "spark", gh: "tag" };
+const ddmm = (ts) => toDate(ts).toLocaleDateString(locale(), { day: "2-digit", month: "2-digit" });
+const dayOrTime = (ts) => (toDate(ts).toDateString() === new Date().toDateString() ? hhmm(toDate(ts)) : ddmm(ts));
+const commits = (n) => n + "\u00a0" + plural(n, "commit");
+
+function partChip(r, b) {
+  if (r.st === "ok") return t("pt." + r.k + ".ok", { b });
+  if (r.k === "mac") return r.upd.state === "run" ? t("pt.mac.run") : r.upd.state === "fail" ? t("upd.fail.chip")
+    : r.upd.state === "na" ? t(r.upd.why === "windows" ? "pt.mac.win" : "pt.unknown") : r.n ? "\u2212" + commits(r.n) : t("upd.ready.chip");
+  if (r.k === "web" || r.k === "relay") return r.st === "warn" ? "\u2212" + commits(r.n) : t(r.why === "other" ? "pt.other" : "pt.unknown", { b });
+  if (r.k === "phone") return t(r.st === "warn" ? "pt.phone.old" : "pt.unknown");
+  if (r.k === "tabs") return t("pt.tabs.old", { n: r.n_old });
+  if (r.k === "hooks") return r.have ? t("pt.hooks.missing", { n: r.missing.length }) : t("pt.hooks.off");
+  if (r.k === "cc") return t(r.st === "bad" ? "pt.cc.off" : r.st === "attn" ? "pt.cc.fresh" : "pt.cc.nowrap");
+  if (r.k === "gh") return t("pt.gh.waiting", { n: r.waiting });
+  return "";
+}
+
+function partHave(r) {
+  if (r.have == null) return "\u2014";
+  if (r.k === "web" || r.k === "relay") return ddmm(r.have);
+  if (r.k === "phone") return dayOrTime(+r.have);
+  if (r.k === "hooks") return t("pt.hooks.have", { n: r.have, all: r.all });
+  return String(r.have);
+}
+
+const who = (icon, text) => html`<div class="who">${ic(icon, 14)}<span>${text}</span></div>`;
+const newsList = (xs) => (xs && xs.length ? html`<ul class="upd-news">${xs.map((x, i) => html`<li key=${i}>${x}</li>`)}</ul>` : "");
+
+function PartMore({ r, set, b }) {
+  if (r.k === "mac") return html`${r.n ? html`<div class="dim">${t("pt.lag.short", { n: commits(r.n), since: ddmm(r.since), b })}</div>` : ""}
+    <${UpdBody} v=${r.upd} set=${set} row=${true}/>`;
+  if (r.k === "web" || r.k === "relay") {
+    if (r.st === "info") return html`<div class="dim">${t("pt.why." + r.why, { b })}</div>`;
+    return html`<div class="dim">${t("pt." + r.k + ".from", { commit: r.commit, d: ddmm(r.have) })}</div>
+      ${r.n ? html`<div class="dim upd-note">${t("pt.lag", { n: commits(r.n), since: ddmm(r.since), b })}</div>${newsList(r.news)}
+      ${who("server", t("pt.web.who"))}` : ""}`;
+  }
+  if (r.k === "phone") {
+    if (r.st === "ok") return html`<div class="dim">${t("pt.phone.same")}</div>`;
+    if (r.st === "info") return html`<div class="dim">${t("pt.phone.unknown")}</div>`;
+    return html`<div class="dim">${t("pt.phone.diff", { mine: dayOrTime(+r.have), srv: dayOrTime(+r.srv) })}</div>
+      <button class="btn wide" onClick=${() => location.reload()}>${t("pt.phone.reload")}</button>`;
+  }
+  if (r.k === "tabs") {
+    if (!r.have) return html`<div class="dim">${t("pt.tabs.none")}</div>`;
+    return html`<div class="dim">${t(r.old.length || r.unknown ? "pt.tabs.some" : "pt.tabs.all", { n: r.have })}</div>
+      ${r.old.length ? html`<div class="upd-note">${t("pt.tabs.oldin", { list: r.old.join(", ") })}</div>
+      <div class="dim upd-note">${t("pt.tabs.works")}</div>${who("monitor", t("pt.tabs.who"))}` : ""}
+      ${r.unknown ? html`<div class="dim upd-note">${t("pt.tabs.unknown", { n: r.unknown })}</div>` : ""}`;
+  }
+  if (r.k === "hooks") {
+    if (r.st === "ok") return html`<div class="dim">${t("pt.hooks.all", { n: r.all })}</div>`;
+    return html`<div>${r.have ? t("pt.hooks.no", { list: r.missing.join(", ") }) : t("pt.hooks.none")}</div>
+      ${who("monitor", t("pt.hooks.who"))}`;
+  }
+  if (r.k === "cc") {
+    if (!r.wrapped) return html`<div class="dim">${t("pt.cc.nowrap.about")}</div>${r.cli ? html`<div class="dim upd-note">${t("pt.cc.app", { cli: r.cli, sdk: r.sdk })}</div>` : ""}`;
+    return html`${r.off.length ? html`<div>${t("pt.cc.offin", { v: r.off.join(", "), ok: r.verified || "?" })}</div>`
+        : html`<div>${t("pt.cc.runs", { v: r.have, ok: r.verified || "?" })}</div>`}
+      ${r.fresh ? html`<div class="dim upd-note">${t("pt.cc.next", { v: r.fresh })}</div>` : ""}
+      ${r.cli ? html`<div class="dim upd-note">${t("pt.cc.app", { cli: r.cli, sdk: r.sdk })}</div>` : ""}
+      ${r.off.length || r.fresh ? who("term", t("pt.cc.who", { v: r.off[r.off.length - 1] || r.fresh })) : ""}`;
+  }
+  if (r.k === "gh") return html`<div class="dim">${t("pt.gh.last", { v: r.have, d: r.date })}</div>
+    ${r.waiting ? html`<div class="dim upd-note">${t("pt.gh.todo", { n: r.waiting })}</div>${who("term", t("pt.gh.who"))}` : ""}`;
+  return "";
+}
+
+function Parts() {
+  const [d, err, set] = useLive(() => api("parts"), [], (m) => m.kind === "update", 10000);
+  const [open, setOpen] = useState(undefined);       // undefined — nothing tapped yet
+  useServed();
+  useEffect(() => { checkServed(true); }, []);
+  const mac = d && d.rows.find((r) => r.k === "mac");
+  useEffect(() => noteUpd(mac && mac.upd.state), [mac && mac.upd.state]);
+  // the computer's row stands open while there is something to do with it — Home's line about it leads here
+  const shown = open !== undefined ? open : mac && mac.upd.state !== "ok" && mac.upd.state !== "na" ? "mac" : null;
+  if (err && !d) return html`<${UpdCard}/>`;      // a computer before stage U2 ("no such request: parts"), or a failure
+  if (!d) return "";
+  const reload = () => api("parts").then(set).catch(() => {});
+  const rows = d.rows.slice();
+  if (OWN_V) {
+    const ph = { k: "phone", have: OWN_V, srv: served.v, st: !served.v ? "info" : phoneOld() ? "warn" : "ok" };
+    const at = rows.findIndex((r) => r.k === "tabs" || r.k === "hooks");
+    rows.splice(at < 0 ? rows.length : at, 0, ph);
+  }
+  const b = d.branch || "main";
+  const late = rows.filter((r) => r.st === "warn" || r.st === "bad").length, note = rows.filter((r) => r.st === "attn").length;
+  return html`<h3>${t("pt.h")}</h3><div class=${"card upg parts upd-s-" + mac.upd.state}>
+    <div class="upd-h"><b>${late ? html`<span class="upd-attn">${ic("up", 17)}</span>` : html`<span class="upd-ok">${ic("check", 17)}</span>`}
+      ${late ? t("pt.late", { n: late, all: rows.length }) : t("pt.allok", { b })}</b>
+      <span class=${"chip " + (late || note ? "warn" : "ok")}>${late ? t("pt.chip.late") : note ? t("pt.chip.note", { n: note }) : t("upd.ok.chip")}</span></div>
+    <div class="parts-t">
+      <div class="parts-hd"><span>${t("pt.col.part")}</span><span>${t("pt.col.have")}</span><span>${t("pt.col.lag", { b })}</span></div>
+      ${rows.map((r) => html`<div class=${"part st-" + r.st + (shown === r.k ? " open" : "")} key=${r.k} data-k=${r.k}>
+        <button class="part-r" aria-expanded=${shown === r.k} onClick=${() => setOpen(shown === r.k ? null : r.k)}>
+          <span class="part-ic">${ic(PART_IC[r.k], 18)}</span>
+          <span class="part-n"><b>${t("pt." + r.k)}</b><span class="dim">${t("pt." + r.k + ".sub")}</span></span>
+          <span class="part-v mono">${partHave(r)}</span>
+          <span class=${"pchip " + r.st}>${r.st === "ok" ? ic("check", 13) : ""}${partChip(r, b)}</span>
+        </button>
+        ${shown === r.k ? html`<div class="part-x"><${PartMore} r=${r} set=${reload} b=${b}/></div>` : ""}
+      </div>`)}
+    </div>
+    ${d.head ? html`<div class="dim parts-f">${t("pt.foot", { b, head: d.head, hm: hhmm(toDate(d.at)) })}</div>` : ""}
+  </div>`;
 }
 
 function Settings() {
@@ -1492,7 +1645,7 @@ function Settings() {
     setKbusy(false);
   };
   return html`<div><h2>${t("settings")}</h2>
-    <${UpdCard}/>
+    <${Parts}/>
     <h3>${t("notifications")}</h3><div class="list">${sw("pager", t("pager"), t("pager.short"), t("pager.about"))}${d.prefs.pager ? "" : sw("vehi", t("vehi"), t("vehi.about"))}${sw("brief", t("brief"), t("brief.short"), t("brief.about"))}</div>
     <h3>${t("where")}</h3>
     <${ModePick} mode=${d.prefs.mode} pager=${d.prefs.pager} onSet=${(m) => set(Object.assign({}, d, { prefs: Object.assign({}, d.prefs, { mode: m }) }))}/>
@@ -1518,7 +1671,6 @@ function Settings() {
     <h3>${t("status")}</h3><div class="list"><div class="item static">
       <div>${t("status.pult", { v: d.version, mac: d.mac.away ? t("mac.away", { dur: dur(d.mac.idle) }) : t("mac.here") })}</div>
       <div class="dim">${t("status.tg", { how: t("tg." + (d.telegram === "proxy" ? "proxy" : "direct")) })}</div>
-      <div class="dim">${d.hooks.length ? t("status.hooks", { n: d.hooks.length }) : t("status.nohooks")}</div>
     </div></div>
     <details class="logbox"><summary>${t("log", { n: d.log.length })}</summary>
       <pre class="log">${d.log.slice().reverse().join("\n")}</pre></details>
@@ -1648,7 +1800,9 @@ const tickMark = (st) => html`<span class=${"tick " + st} role="img" aria-label=
 const At = ({ ts, mid, st }) => (ts ? html`<span class="t">${mid ? t("mid.turn") : ""}${hhmm(toDate(ts))}${st ? tickMark(st) : ""}</span>` : "");
 
 // your messages on their way (Q56), oldest first: the computer's outbox (info.out) wins over what this screen has just
-// sent (by id); one the chat already has — the same words, written no earlier than it was sent — is not shown twice
+// sent (by id); one the chat already has — the same words, written no earlier than it was sent — is not shown twice. They
+// come before the session's state ("working…", the queue): the state stays under the message you just sent instead of
+// standing above it until the chat has it, then jumping below (2026-10-25)
 function onTheWay(items, server, local) {
   const ids = new Set(server.map((o) => o.id));
   // before the answer brings its id, the outbox may already have it: the same words, sent about then
@@ -2082,16 +2236,16 @@ function Session({ sid }) {
       : i.k === "note" ? html`<div class="note" key=${n}>${i.text}${i.ts ? " · " + hhmm(toDate(i.ts)) : ""}</div>`
       : i.k === "update" ? html`<div class="upd solo" key=${n}>${i.text}</div>`
       : html`<${TextMsg} key=${n} i=${i} fold=${i.text.length > LONG && all.slice(n + 1).some((x) => x.k === "text")}/>`)}
-    ${lv.state === "work" && html`<div class="working">${t("working")}</div>`}
-    ${lv.state === "queue" && html`<div class="card queue"><div class="q-t">${ic("clock", 16)} ${t("queue.title")}</div>
-      <div class="dim small">${t("queue.why", { n: lv.slots })}</div>
-      <div class="foot"><span></span><button class="btn" onClick=${jump}>${t("queue.jump")}</button></div></div>`}
     ${onTheWay(s.items, info.out || [], sending).filter((o) => !putBack.includes(o.id)).map((o) => html`<div key=${"o" + (o.id || o.key)} class=${"msg me out " + o.st}
         onClick=${o.st === "gone" ? () => { setText(o.text); fit(); setPutBack((x) => [...x, o.id]); } : null}>${o.voice ? html`<span class="mic-i">${ic("mic", 14)}</span>` : ""}${o.text}${o.att && o.att.length
         ? html`<div class="atts">${o.att.map((x, k) => html`<${Pic} key=${k} a=${x} all=${o.att}/>`)}</div>`
         : o.n ? html`<div class="out-n">${ic("clip", 13)} ${o.n}</div>` : ""}<${At} ts=${o.ts} st=${o.st}/></div>
       ${o.st === "sent" && (lv.state === "work" || lv.state === "ask") ? html`<div class="out-hint">${t("out.after_step")}</div>`
         : o.st === "gone" ? html`<div class="out-hint bad">${t("out.gone.why")}</div>` : ""}`)}
+    ${lv.state === "work" && html`<div class="working">${t("working")}</div>`}
+    ${lv.state === "queue" && html`<div class="card queue"><div class="q-t">${ic("clock", 16)} ${t("queue.title")}</div>
+      <div class="dim small">${t("queue.why", { n: lv.slots })}</div>
+      <div class="foot"><span></span><button class="btn" onClick=${jump}>${t("queue.jump")}</button></div></div>`}
     ${out && lv.state !== "work" && lv.state !== "queue" && !info.pending.length && (outState === "you" || outState === "fail" || out.need || (out.replies && out.replies.length) || out.resume || out.turn_files)
       && html`<${Outcome} key=${out.ts} sid=${sid} out=${out} state=${outState} now=${now}/>`}
     ${pending.map((r) => html`<${Req} key=${r.rid} r=${r} showWhere=${false}/>`)}

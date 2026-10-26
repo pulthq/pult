@@ -776,6 +776,11 @@ class AppStringsTest(unittest.TestCase):
             self.assertIn("logins.how." + how, entries)
         for why in ("expired", "out", "locked"):                            # and the banner these
             self.assertIn("banner.denied." + why, entries)
+        for k in ("mac", "web", "relay", "phone", "tabs", "hooks", "cc", "gh"):   # the parts table (stage U2) these
+            for key in ("pt." + k, "pt." + k + ".sub", "pt." + k + ".ok"):
+                self.assertIn(key, entries)
+        for why in ("norepo", "old", "other"):
+            self.assertIn("pt.why." + why, entries)
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

@@ -2,6 +2,30 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.16.1 — 2026-10-26
+
+- **The parts table reads right for everyone.** The release row shows only in a folder releases are made from (it
+  has `publish/build.py`): in a clone of the public repository it said "all released" in green, which read as "you
+  have the latest" though Pult never asks GitHub. The hints say what anyone can do — deploy the app again the way the
+  server was set up (`deploy/relay/install.sh` on your own server), allow a new Claude Code with `pult tab allow
+  <version>` or wait for a Pult release that checks it — and Windows says PowerShell instead of "unknown".
+  `tools/parts_check.py` has a stand of someone with a clone (`STAND_PARTS=public`).
+- **Every part of Pult in one table.** Settings → **Pult and its parts**: the computer (daemon, hook, wrapper, `pult`),
+  the app and the relay on your server, this phone's copy of the app, the wrapper in your VS Code tabs, the hooks,
+  Claude Code, and the GitHub release — what each one runs now and how far it is behind the branch of the folder Pult
+  was installed from, counted in the commits that changed that part. Green is as in `main`, orange can be brought up to
+  date, red doesn't work, grey is to know. A tap opens a row: what's new and who does it — the computer's row holds
+  the install block of 0.15.0. The relay names the git blob ids of its own files when the app opens, and the computer
+  finds the commit they were made from; the tab wrapper names its own file; this phone's copy compares itself with
+  the one the server hands out and offers **Refresh the app**. Home's line now also says what can be done from the
+  phone — install on the computer, refresh this copy — and what doesn't work: hook events missing, or tabs on a Claude
+  Code the wrapper isn't verified on (writing into them is off). No new network requests: the GitHub row reads
+  `CHANGELOG.md` in the folder. `tools/parts_check.py` drives it with taps on the stand (`STAND_PARTS=now|lag|bad`).
+- **"Working…" stays under the message you just sent.** In the app, a message sent to a session showed under the
+  "⏳ working…" line until the session's chat had it, then jumped above it when the first output came. Now the
+  session's state — working, or waiting in the queue — always comes after your messages on their way.
+  `tools/ticks_check.py` checks the order in a session that works.
+
 ## 0.15.3 — 2026-10-24
 
 - **A link to a project file in Claude's words opens it in the app.** Claude writes file links like

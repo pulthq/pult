@@ -77,11 +77,15 @@ cd pult
 git pull
 ```
 
-Then tap **Install** in the web app (Settings → Pult), or run `./install.sh` again. The button installs what is
+Then tap **Install** in the web app (Settings → Pult and its parts → Computer), or run `./install.sh` again. The button installs what is
 committed in this folder, and only once a commit changed Pult's own files. If a restart would cut off sessions started
 from the phone, it lists them and offers **Install once they're free**. A new version that doesn't come up is replaced
-by the old one on its own, and Telegram says why. Settings → Pult keeps the last installs. On Windows, run
+by the old one on its own, and Telegram says why. The Computer row keeps the last installs. On Windows, run
 `install.ps1` again.
+
+The same table shows every other part against this folder's branch: the app and the relay on your server (run
+`deploy/relay/install.sh` again there after a `git pull`), this phone's copy of the app (**Refresh the app**), the
+wrapper in open VS Code tabs (Reload Window), the hooks (`pult hooks on`) and the Claude Code version.
 
 ## Turn it off, remove it
 

@@ -19,6 +19,7 @@ to its output (--replay-user-messages), and the tab shows it as a regular messag
 (extension code 2.1.301: the tab inserts a replay with an unknown uuid into the chat; "working" comes from
 system/init, the end from result). If the link to the daemon breaks, the tab works as without the wrapper.
 """
+import hashlib
 import json
 import os
 import re
@@ -54,6 +55,17 @@ def version_of(path):
         if part.startswith("anthropic.claude-code-"):
             return part[len("anthropic.claude-code-"):].split("-")[0]
     return None
+
+
+def own_blob():
+    """The git blob id of this file as the tab started with it: the daemon tells a tab still on an older wrapper from
+    the installed one (stage U2). None when it can't be read (Windows: inside pult-tab.exe) — never an error."""
+    try:
+        with open(__file__, "rb") as f:
+            data = f.read()
+        return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+    except Exception:
+        return None
 
 
 def arg(argv, name):
@@ -173,6 +185,7 @@ class Tab:
         self.argv = argv
         self.cwd = os.getcwd()
         self.sid = arg(argv, "--resume") or arg(argv, "--session-id")
+        self.own = own_blob()                  # read now: an install may replace the file while the tab lives
         self.lock = threading.Lock()           # lines go into Claude Code's stdin whole, never interleaved
         self.sock = None
         self.slock = threading.Lock()
@@ -308,7 +321,8 @@ class Tab:
                 with self.slock:
                     self.sock = s
                 self.tell({"op": "hello", "pid": os.getpid(), "cwd": self.cwd, "sid": self.sid,
-                           "version": version_of(self.argv[0]), "caps": ["model", "ctx", "control"]})   # what it can do
+                           "version": version_of(self.argv[0]), "caps": ["model", "ctx", "control"],   # what it can do
+                           "self": self.own})
                 for line in s.makefile("rb"):
                     m = json.loads(line)
                     if m.get("op") == "send" and m.get("text"):

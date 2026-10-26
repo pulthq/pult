@@ -1,5 +1,6 @@
 """Installing an update from the app (stage U), in headless Chrome over DevTools, on the stand, with real taps: for
-each state (STAND_UPD) a stand of its own comes up, and Settings → Pult and Home's line are checked. Nothing newer: no
+each state (STAND_UPD) a stand of its own comes up, and Settings → Pult (the computer's row of the parts table, stage
+U2) and Home's line are checked. Nothing newer: no
 line on Home, "up to date", the history opens. Ready: "Install" turns the block into "Installing…". Not now: what a
 restart would cut off, "Install once they're free" → waiting, "Cancel" → back. Waiting, installing, didn't come up:
 their own block and line. No script errors anywhere.
@@ -137,6 +138,10 @@ async def main():
                     text = await js(card + ".textContent") if got else ""        # not innerText: headings are upper-cased by CSS
                     await shot("settings-" + state)
                     if state == "ok":
+                        # the computer's row of the parts table (stage U2) opens on a tap when there's nothing to do
+                        await tap("Компьютер")
+                        await until("document.querySelector('.part.open')")
+                        text = await js(card + ".textContent")
                         verdict("ok: up to date, checked against the folder", "новее нет" in text and "~/pult" in text, text[:120])
                         await js("document.querySelector('.upd-hist summary').click()")
                         rows = await js("document.querySelectorAll('.upd-hist .login').length")

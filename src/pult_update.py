@@ -163,6 +163,84 @@ def check(manifest=None):
     return out
 
 
+# ---------- every part of Pult against main (stage U2) ----------
+
+PARTS = {"web": ("relay/web",), "relay": ("relay/relay.py", "relay/requirements.txt")}   # what the relay server holds
+SEARCH = 100                          # commits looked through for the one a server's copy was made from
+
+
+def log_rows(out):
+    """`git log --format=%H %ct %s` → [(commit, time, subject)]."""
+    rows = []
+    for ln in (out or "").splitlines():
+        c, _, rest = ln.partition(" ")
+        ct, _, subj = rest.partition(" ")
+        if c and ct.isdigit():
+            rows.append((c, int(ct), subj))
+    return rows
+
+
+def lag(rows):
+    """Commits newer than a part's copy, newest first → {"n", "since" (time of the oldest of them), "news"}."""
+    return {"n": len(rows), "since": rows[-1][1] if rows else None, "news": [r[2] for r in rows[:NEWS]]}
+
+
+def behind(repo, base, head, paths):
+    """The commits in base..head that changed these paths (lag()); None — base isn't in head's history (or isn't
+    there): the copy came from elsewhere."""
+    if not base or git(repo, "merge-base", "--is-ancestor", base, head) is None:
+        return None
+    out = git(repo, "log", "--format=%H %ct %s", base + ".." + head, "--", *paths)
+    return None if out is None else lag(log_rows(out))
+
+
+def ls_tree(repo, commit, paths):
+    out = git(repo, "ls-tree", "-r", commit, "--", *paths)
+    if out is None:
+        return None
+    files = {}
+    for ln in out.splitlines():
+        meta, _, path = ln.partition("\t")
+        parts = meta.split()
+        if len(parts) == 3 and parts[1] == "blob":
+            files[path] = parts[2]
+    return files
+
+
+def built_from(repo, head, files, paths):
+    """Which commit of head's history a copy of these paths is. files — {path in the repository: blob id} of what the
+    copy holds (the relay says it of its own folder). A copy made at any commit equals the tree of the last commit
+    before it that changed these paths, so only those are looked at, newest first. → lag() plus "commit" and "ts" (its
+    time); None — no commit among the last SEARCH has exactly these files: made from uncommitted files, another
+    branch, or older."""
+    rows = log_rows(git(repo, "log", "--format=%H %ct %s", "-n", str(SEARCH), head, "--", *paths))
+    for i, (c, ct, _) in enumerate(rows):
+        have = ls_tree(repo, c, paths)
+        if have is None:
+            return None
+        if have == files:
+            return dict(lag(rows[:i]), commit=c, ts=ct)
+    return None
+
+
+def makes_releases(repo, head):
+    """Whether this folder is where Pult's releases are made (it has the build script): only there "waiting for a
+    release" means something. A clone of the public repository has neither the script nor an Unreleased section."""
+    return git(repo, "cat-file", "-e", head + ":publish/build.py") is not None
+
+
+def changelog(repo, head):
+    """CHANGELOG.md at head: {"last": the newest numbered version, "date", "waiting": entries under "## Unreleased"};
+    None without one."""
+    text = git(repo, "show", head + ":CHANGELOG.md")
+    if text is None:
+        return None
+    last = re.search(r"^## (\d+\.\d+\.\d+)\s*\S\s*(\d{4}-\d{2}-\d{2})", text, re.M)
+    todo = re.search(r"^## Unreleased[ \t]*$(.*?)(?=^## |\Z)", text, re.M | re.S)
+    return {"last": last.group(1) if last else None, "date": last.group(2) if last else None,
+            "waiting": len(re.findall(r"^- ", todo.group(1), re.M)) if todo else 0}
+
+
 def installed_by(how, src, ok, prev_version=None):
     """install.sh (or the installer) put src's files in: the record of where they came from, and the history."""
     m = dict(source(src), version=installed_version(), ts=time.time())
