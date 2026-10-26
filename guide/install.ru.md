@@ -5,8 +5,9 @@
 ## Что нужно
 
 - macOS, Linux или Windows; проверено на macOS 26 (Apple Silicon), Ubuntu 24.04 (arm64) и Windows 11 (x64).
-- Claude Code со входом: расширение VS Code, CLI или оба. Проверено с расширением 2.1.301 (на Windows — 2.1.306) и
-  Agent SDK 0.2.167.
+- Claude Code со входом: расширение VS Code, CLI или оба. Проверено с расширением 2.1.301 и 2.1.310 (на Windows —
+  2.1.306) и Agent SDK 0.2.167. Новое расширение, которое скачает VS Code, Пульт проверит сам на твоём компьютере,
+  прежде чем вкладки перейдут на него (`pult tab check`).
 - Python 3.10+: `brew install python@3.12`, `sudo apt install python3 python3-venv`, а на Windows —
   [python.org](https://www.python.org/downloads/windows/) или `winget install Python.Python.3.12` (не из Microsoft
   Store).

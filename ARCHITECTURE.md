@@ -169,6 +169,7 @@ flowchart LR
 | `src/pultd.py` | the daemon: events, sessions, Telegram, the app's requests, warnings |
 | `src/pult_hook.py` | the hook: an event to the daemon, a decision back; standard library only |
 | `src/pult_tab.py`, `src/pult-tab.sh` | the tab wrapper and its launcher |
+| `src/pult_tabcheck.py` | checks a Claude Code version VS Code has downloaded, on your computer, before a window reloads onto it: the wrapper, a message from the phone, the model, the effort and the permission race on the new version's own `claude` (`pult tab check`) |
 | `src/pult_web.py` | the connection to the relay, login checks, transcripts for the app |
 | `src/pult_render.py`, `src/pult_i18n.py` | what messages look like; every visible string in English and Russian |
 | `src/pult_attn.py`, `src/pult_brief.py` | "whose move": each session's outcome; an optional one-line summary by a small model |

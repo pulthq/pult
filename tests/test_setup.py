@@ -1167,6 +1167,72 @@ class TabTest(Base):
             pultctl.cmd_tab(["allow", "2.1.999"])
         self.assertEqual(json.loads(S.TAB_CONF.read_text())["versions"], list(S.TAB_VERIFIED) + ["2.1.999"])
 
+    def test_tab_checked(self):
+        # stage A: a check's findings go into tab.json — a version that passed joins "versions"; one that failed, or
+        # couldn't be checked, only leaves its record; a blocked one never joins, and an install takes it out; the
+        # last ten versions' records are kept
+        self.assertFalse(S.tab_checked("2.1.311", {"ok": True}))                  # no tab.json: nothing
+        S.TAB_CONF.parent.mkdir(parents=True, exist_ok=True)
+        S.TAB_CONF.write_text(json.dumps({"folders": ["~/w"], "versions": ["2.1.310"]}))
+        ok = {"ok": True, "race": True, "error": None, "ts": 100, "steps": [{"k": "service", "ok": True}]}
+        self.assertTrue(S.tab_checked("2.1.311", ok))
+        conf = json.loads(S.TAB_CONF.read_text())
+        self.assertEqual((conf["folders"], conf["versions"]), (["~/w"], ["2.1.310", "2.1.311"]))
+        self.assertEqual(conf["checked"]["2.1.311"], {"ts": 100, "ok": True, "race": True, "error": None, "step": None})
+        bad = {"ok": False, "race": False, "error": None, "ts": 200,
+               "steps": [{"k": "own", "ok": True}, {"k": "model", "ok": False}, {"k": "race", "ok": False}]}
+        self.assertFalse(S.tab_checked("2.1.312", bad))
+        self.assertFalse(S.tab_checked("2.1.313", {"ok": None, "error": "login", "ts": 300, "steps": []}))
+        conf = json.loads(S.TAB_CONF.read_text())
+        self.assertEqual(conf["versions"], ["2.1.310", "2.1.311"])
+        self.assertEqual((conf["checked"]["2.1.312"]["step"], conf["checked"]["2.1.313"]["error"]), ("model", "login"))
+        with mock.patch.object(S, "TAB_BLOCKED", ("2.1.311",)):
+            self.assertFalse(S.tab_checked("2.1.311", ok))                       # a release blocked it: never allowed
+            with mock.patch.object(sys.stdin, "isatty", lambda: False):
+                self.run_cli(S.cmd_install)
+            self.assertEqual(json.loads(S.TAB_CONF.read_text())["versions"], list(S.TAB_VERIFIED))   # the install took it out
+        _, out = self.run_cli(S.cmd_report)                    # `pult report` carries them, for an issue
+        self.assertIn("tab checks: 2.1.311 passed · 2.1.312 failed at model, race failed · 2.1.313 couldn't (login)", out)
+        for i in range(12):
+            S.tab_checked("2.2.%d" % i, {"ok": None, "error": "network", "ts": i, "steps": []})
+        checked = json.loads(S.TAB_CONF.read_text())["checked"]
+        self.assertEqual((len(checked), min(checked, key=S.vkey)), (10, "2.2.2"))
+
+    def test_tab_check_command(self):
+        # `pult tab check`: the newest version VS Code has downloaded, its report into tab.json; --json — one line for
+        # the daemon; --dry leaves tab.json alone; a version VS Code doesn't have — said so
+        import pult_tabcheck as C
+        exe = "claude.exe" if os.name == "nt" else "claude"
+        for v in ("2.1.310", "2.1.311"):
+            b = S.EXT_DIRS[0] / ("anthropic.claude-code-%s-darwin-arm64" % v) / "resources" / "native-binary"
+            b.mkdir(parents=True, exist_ok=True)
+            (b / exe).write_text("")
+        S.TAB_CONF.parent.mkdir(parents=True, exist_ok=True)
+        S.TAB_CONF.write_text(json.dumps({"folders": ["~"], "versions": ["2.1.310"]}))
+        asked = []
+
+        def fake(ok, step=None):
+            async def run(cli, wrapper, py, say=None):
+                asked.append((C.version_of(cli), str(wrapper)))
+                say and say("own", True)
+                steps = [{"k": "own", "ok": True, "s": 1, "note": ""}] + ([{"k": step, "ok": False, "s": 1, "note": "x"}] if step else [])
+                return {"version": C.version_of(cli), "ok": ok, "race": True, "error": None, "steps": steps, "ts": 5}
+            return run
+        with mock.patch.object(C, "run", fake(True)):
+            res, out = self.run_cli(pultctl.cmd_tab, ["check", "--json"])
+        self.assertEqual((res, json.loads(out.strip().splitlines()[-1])["ok"]), (0, True))
+        self.assertEqual(asked[-1], ("2.1.311", str(S.HOME / "pult_tab.py")))       # the newest, through the installed wrapper
+        self.assertIn("2.1.311", json.loads(S.TAB_CONF.read_text())["versions"])
+        S.TAB_CONF.write_text(json.dumps({"folders": ["~"], "versions": ["2.1.310"]}))
+        with mock.patch.object(C, "run", fake(False, "model")):
+            res, out = self.run_cli(pultctl.cmd_tab, ["check", "2.1.311", "--dry"])
+        self.assertEqual(res, 1)
+        self.assertIn(S.T("cli.check.fail", v="2.1.311", step=S.T("tab.step.model")), out)
+        self.assertEqual(json.loads(S.TAB_CONF.read_text()), {"folders": ["~"], "versions": ["2.1.310"]})   # --dry
+        res, out = self.run_cli(pultctl.cmd_tab, ["check", "2.1.999"])
+        self.assertEqual(res, 2)
+        self.assertIn(S.T("cli.check.none", v="2.1.999"), out)
+
     def test_install_brings_verified_versions(self):
         # an install (install.sh, the app's "Install") adds the versions its release is checked on to tab.json and
         # keeps the folders and the versions allowed by hand; before, only `pult tab setup` did (2026-10-26)

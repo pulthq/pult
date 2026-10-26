@@ -22,6 +22,8 @@ release row, no tab wrapper; STAND_UPD=ready) (tools/parts_check.py); STAND_PART
 with the server's updater (stage U3): the server took the computer's release; is taking it; didn't take it and went back
 STAND_TAGS=1 (stage T): a third project, a maker of 3D printers, fifteen tasks in every state, each with its section and
 topic in the store (PROJT — its screen, SESST — its task that waits for you; tools/tags_check.py).
+STAND_PARTS=check_run|check_fail|check_here|check_err (stage A): Pult's own check of a Claude Code version VS Code has
+downloaded — running, failed at a step, passed, couldn't run; "Check again" passes in 3 s, no Claude (tools/vcheck_check.py).
 STAND_COPY=1: the session that waits for you is open in a VS Code tab on a Claude Code Pult isn't checked on — its card
 says "goes as a copy" before you type, and sending says why (tools/copy_check.py). VS Code's settings and the tab
 switch are made up on every stand: the app never reads this computer's."""
@@ -395,6 +397,7 @@ async def main():
                                           "versions": list(pult_setup.TAB_VERIFIED)}))
     # VS Code with Pult's wrapper line and the tab switch — made up: why a message goes as a copy is read from them
     pultd.TAB_OFF = T.TMP / "stand-tab-off"
+    pultd.EXT_DIRS = [T.TMP / "stand-extensions"]                 # nor its Claude Code extensions
     pultd.EDITOR_DIRS = [T.TMP / "stand-vscode" / "User"]
     pultd.EDITOR_DIRS[0].mkdir(parents=True, exist_ok=True)
     (pultd.EDITOR_DIRS[0] / "settings.json").write_text(json.dumps({
@@ -458,6 +461,10 @@ async def main():
         now = time.time()
         sha = lambda c: c + "0" * (40 - len(c))
         lag = lambda n, h, news: {"n": n, "since": now - h * 3600 if n else None, "news": news[:n]}
+        calm = {"git": {"mac": lag(0, 0, []), "web": dict(lag(0, 0, []), commit=sha("57e5646"), ts=now - 6 * 3600),
+                        "relay": dict(lag(0, 0, []), commit=sha("4680b38"), ts=now - 5 * 86400),
+                        "gh": {"last": pultd.VERSION, "date": time.strftime("%Y-%m-%d", time.localtime(now - 86400)), "waiting": 0}},
+                "tabs": [True] * 3, "missing": []}
         facts = {
             "fresh": {"git": {"mac": lag(0, 0, []), "web": dict(lag(0, 0, []), commit=sha("57e5646"), ts=now - 6 * 3600),
                               "relay": dict(lag(0, 0, []), commit=sha("4680b38"), ts=now - 5 * 86400),
@@ -492,6 +499,15 @@ async def main():
                           "tabs": [], "missing": [], "cc": (["2.1.310"], ["2.1.301", "2.1.310"], "2.1.310"), "wrapped": False,
                           "srv": {"state": "fail", "why": "no_start", "detail": "ModuleNotFoundError: No module named 'multidict'",
                                   "back": True, "back_ok": True, "tag": "v" + pultd.VERSION, "have": "v0.16.2", "ts": now - 600}},
+            # stage A: Pult's own check of a Claude Code version VS Code has downloaded (tools/vcheck_check.py) — running
+            # now; failed at a step; passed (the tabs run it since); couldn't check
+            "check_run": dict(calm, cc=(["2.1.310"], ["2.1.301", "2.1.310"], "2.1.311"), checking="2.1.311"),
+            "check_fail": dict(calm, cc=(["2.1.310"], ["2.1.301", "2.1.310"], "2.1.311"), checked={
+                "2.1.311": {"ts": now - 1500, "ok": False, "race": True, "error": None, "step": "model"}}),
+            "check_here": dict(calm, cc=(["2.1.311"], ["2.1.301", "2.1.310", "2.1.311"], "2.1.311"), checked={
+                "2.1.311": {"ts": now - 7200, "ok": True, "race": True, "error": None, "step": None}}),
+            "check_err": dict(calm, cc=(["2.1.310"], ["2.1.301", "2.1.310"], "2.1.311"), checked={
+                "2.1.311": {"ts": now - 600, "ok": None, "race": None, "error": "login", "step": None}}),
             "bad": {"git": {"mac": lag(0, 0, []), "web": None, "web_told": True, "relay": None,
                             "gh": {"last": pultd.VERSION, "date": time.strftime("%Y-%m-%d"), "waiting": 0}},
                     "tabs": [True] * 3 + [None], "missing": ["StopFailure", "PreCompact"], "cc": (["2.1.301", "2.1.310"], ["2.1.301"], "2.1.310")},
@@ -510,16 +526,37 @@ async def main():
         hooks = [e for e in pultd.pult_hook.EVENTS if e not in facts["missing"]]
         running, verified, newest = facts["cc"]
         wrapped = facts.get("wrapped", True)
-        cc = {"running": running, "verified": verified, "newest": newest, "wrapped": wrapped, "sdk": "0.2.167", "cli": "2.1.300"}
+        cc = {"running": running, "verified": verified, "newest": newest, "wrapped": wrapped, "sdk": "0.2.167", "cli": "2.1.300",
+              "checked": dict(facts.get("checked") or {}), "checking": facts.get("checking"), "auto": True}
 
         async def stand_facts():
             return {"upd": await p.update_view(), "git": g, "relay": True, "tabs": tabs, "hooks": hooks, "cc": cc, "srv": p.srv}
 
         async def stand_broken():
-            off = [v for v in running if v not in verified] if wrapped else []
+            fail = lambda v: (cc["checked"].get(v) or {}).get("ok") is False and not cc["checked"][v].get("error")  # noqa: E731
+            off = [v for v in running if v not in verified and v != cc["checking"]] if wrapped else []
+            nxt = [v for v in [newest] if wrapped and v not in verified and v not in running and fail(v)]
             return ([{"k": "hooks", "missing": facts["missing"]}] if facts["missing"] else []) + \
-                ([{"k": "cc", "v": off[-1]}] if off else [])
-        p.parts_facts, p.broken = stand_facts, stand_broken
+                ([{"k": "cc", "v": off[-1], "fail": fail(off[-1])}] if off else
+                 [{"k": "cc", "v": nxt[0], "fail": True, "next": True}] if nxt else [])
+
+        async def stand_tab_check():                 # "Check again": a made-up check that passes in 3 s, no Claude
+            v = next((x for x in running if x not in verified), None) or (newest if newest not in verified else None)
+            if not v:
+                return {"ok": False, "note": p.t("tab.check.nothing")}
+            print("CHECK", v, flush=True)
+            cc["checking"] = v
+
+            async def done():
+                await asyncio.sleep(3)
+                cc["checking"] = None
+                cc["checked"][v] = {"ts": time.time(), "ok": True, "race": True, "error": None, "step": None}
+                verified.append(v)
+                if p.web:
+                    p.web.emit("update")
+            asyncio.ensure_future(done())
+            return {"ok": True, "v": v}
+        p.parts_facts, p.broken, p.api_tab_check = stand_facts, stand_broken, stand_tab_check
     if os.environ.get("STAND_STT"):        # the microphone (tools/voice_check.py): recordings land in that folder, no Groq
         keep = Path(os.environ["STAND_STT"])
 

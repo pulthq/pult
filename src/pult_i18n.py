@@ -630,7 +630,7 @@ S = {
               "  pult busy                     what a restart would cut off (sessions from Telegram at work)\n"
               "  pult hooks on | off           whether Pult sees sessions in VS Code and the terminal\n"
               "  pult tab                      writing from Telegram into open VS Code tabs\n"
-              "  pult tab setup | on | off | allow VERSION\n"
+              "  pult tab setup | on | off | allow VERSION | check [VERSION]\n"
               "  pult app [off]                the web app on your own server\n"
               "  pult stt [off]                voice input: a Groq key for speech recognition\n"
               "  pult run -- COMMAND           run a command; its start, progress and end go to Telegram\n"
@@ -646,7 +646,7 @@ S = {
               "  pult busy                     что оборвёт перезапуск (работающие сессии из Telegram)\n"
               "  pult hooks on | off           видит ли Пульт сессии в VS Code и терминале\n"
               "  pult tab                      запись из Telegram в открытые вкладки VS Code\n"
-              "  pult tab setup | on | off | allow ВЕРСИЯ\n"
+              "  pult tab setup | on | off | allow ВЕРСИЯ | check [ВЕРСИЯ]\n"
               "  pult app [off]                веб-приложение на своём сервере\n"
               "  pult stt [off]                голосовой ввод: ключ Groq для распознавания речи\n"
               "  pult run -- КОМАНДА           выполнить команду; старт, ход и конец — в Telegram\n"
@@ -885,6 +885,55 @@ S = {
         "ru": "У тебя расширение Claude Code {v}: обёртка на нём не проверялась и ни во что не вмешивается до "
               "`pult tab allow {v}` (после tests/probe_tab.py или на свой риск).",
     },
+    # stage A: `pult tab check` — Pult checks a Claude Code version on this computer (pult_tabcheck)
+    "cli.check.start": {"en": "Checking Claude Code {v} on this computer — about a minute, a few short requests…",
+                        "ru": "Проверяю Claude Code {v} на этом компьютере — около минуты, несколько коротких запросов…"},
+    "cli.check.ok": {"en": "Claude Code {v} works with Pult's wrapper: writing into its tabs is on. Tabs already open on it — "
+                           "after Reload Window in VS Code.",
+                     "ru": "Claude Code {v} работает с обёрткой Пульта: запись в его вкладки включена. Уже открытые на нём "
+                           "вкладки — после Reload Window в VS Code."},
+    "cli.check.fail": {"en": "Claude Code {v} didn't pass: {step}. Messages to its tabs go as a copy; `pult report` has the "
+                             "details for an issue.",
+                       "ru": "Claude Code {v} не прошёл: {step}. Сообщения в его вкладки уходят копией; подробности для "
+                             "issue — в `pult report`."},
+    "cli.check.err": {"en": "Couldn't check Claude Code {v}: {why}. Pult tries again later.",
+                      "ru": "Не удалось проверить Claude Code {v}: {why}. Пульт попробует позже."},
+    "cli.check.race": {"en": "On Claude Code {v} a permission no longer goes to whoever answers first — the phone or the "
+                             "window on the computer. Send `pult report` to Pult's developer.",
+                       "ru": "На Claude Code {v} разрешение больше не решает тот, кто ответил первым, — телефон или окно на "
+                             "компьютере. Отправь разработчику Пульта `pult report`."},
+    "cli.check.none": {"en": "There is no Claude Code {v} among VS Code's extensions here.",
+                       "ru": "Claude Code {v} нет среди расширений VS Code на этом компьютере."},
+    "cli.check.blocked": {"en": "Claude Code {v} is blocked by a Pult release: the wrapper stays out of its tabs.",
+                          "ru": "Claude Code {v} запрещён выпуском Пульта: обёртка в его вкладки не встаёт."},
+    "cli.check.dry": {"en": "(--dry: tab.json is left as it was)", "ru": "(--dry: tab.json не тронут)"},
+    "check.why.login": {"en": "Claude isn't logged in here", "ru": "здесь нет входа в Claude"},
+    "check.why.limit": {"en": "a usage limit", "ru": "упёрлись в лимит"},
+    "check.why.network": {"en": "no network", "ru": "нет сети"},
+    "check.why.timeout": {"en": "it took too long", "ru": "слишком долго"},
+    "check.why.crash": {"en": "the check itself failed", "ru": "сломалась сама проверка"},
+    "check.why.nobinary": {"en": "the extension has no claude program", "ru": "у расширения нет программы claude"},
+    "tab.step.service": {"en": "a utility command through the wrapper", "ru": "служебная команда через обёртку"},
+    "tab.step.own": {"en": "the tab's own request", "ru": "свой запрос вкладки"},
+    "tab.step.send": {"en": "a message from the phone into the tab", "ru": "сообщение с телефона во вкладку"},
+    "tab.step.model": {"en": "switching the model", "ru": "смена модели"},
+    "tab.step.effort": {"en": "switching the effort", "ru": "смена раздумий"},
+    "tab.step.race": {"en": "a permission: whoever answers first, the phone or the window", "ru": "разрешение: кто ответил первым — телефон или окно"},
+    "tab.step.blocked": {"en": "blocked by a Pult release", "ru": "запрещена выпуском Пульта"},
+    "tab.check.nothing": {"en": "Nothing to check: the tabs and VS Code's newest Claude Code are allowed already.",
+                          "ru": "Проверять нечего: вкладки и новейший Claude Code из VS Code уже разрешены."},
+    "tab.check.busy": {"en": "A check is running already — a minute.", "ru": "Проверка уже идёт — минуту."},
+    "tab.step.again": {"en": "a step failed — once more, in a fresh session", "ru": "шаг не прошёл — ещё раз, в новой сессии"},
+    "tab.check.fail": {"en": "⚠️ Claude Code <b>{v}</b> didn't pass Pult's check on this computer: {step}. Messages to its "
+                             "VS Code tabs go as a copy — Settings → Pult and its parts.",
+                       "ru": "⚠️ Claude Code <b>{v}</b> не прошёл проверку Пульта на этом компьютере: {step}. Сообщения в его "
+                             "вкладки VS Code уходят копией — подробности в «Настройки → Пульт и его части»."},
+    "tab.check.race": {"en": "⚠️ On Claude Code <b>{v}</b> a permission no longer goes to whoever answers first — the "
+                             "button on the phone or the window on the computer. Pult can't fix that by itself: send "
+                             "<code>pult report</code> to its developer.",
+                       "ru": "⚠️ На Claude Code <b>{v}</b> разрешение больше не решает тот, кто ответил первым, — кнопка на "
+                             "телефоне или окно на компьютере. Сам Пульт это не исправит: отправь разработчику "
+                             "<code>pult report</code>."},
     "cli.tab.added": {
         "en": "Tabs: this release is checked on Claude Code {v} — Pult writes into its tabs too; tabs already open — "
               "after Reload Window in VS Code.",

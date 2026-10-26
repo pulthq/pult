@@ -1191,7 +1191,7 @@ function Top({ mac, load, usagePct, usageTop, pager, onSet }) {
 
 // why a session open on the computer takes no message from here — a Claude Code Pult isn't checked on, a tab started
 // before the wrapper, a terminal (the computer tells from 0.17.4; a friend got only "open in a tab", 2026-10-26)
-const copyWhy = (x) => { const k = "fork.why." + (x && x.why); const s = t(k, { v: x && x.v }); return s === k ? "" : s; };
+const copyWhy = (x) => { const k = "fork.why." + (x && x.why); const s = t(k, { v: x && x.v, step: x && x.step }); return s === k ? "" : s; };
 const forkAsk = (r) => (copyWhy(r) ? copyWhy(r) + "\n\n" + t("fork.copy") : t("fork.ask"));
 
 // a message from a card or a ready reply into the session: the same ways as the session's own field — straight in,
@@ -1502,7 +1502,7 @@ function UpdRow({ u }) {
     return row(icon, title, sub, cls);
   }
   const acts = [mac ? t("pt.home.mac") : "", phone ? t("pt.home.phone") : ""].filter(Boolean);
-  const probs = broken.map((b) => (b.k === "hooks" ? t("pt.home.hooks", { ev: b.missing.join(", ") }) : t("pt.home.cc", { v: b.v })));
+  const probs = broken.map((b) => (b.k === "hooks" ? t("pt.home.hooks", { ev: b.missing.join(", ") }) : t(b.next ? "pt.home.cc.next" : b.fail ? "pt.home.cc.fail" : "pt.home.cc", { v: b.v })));
   if (!acts.length && !probs.length) return "";
   if (!acts.length) return row(ic("alert", 17), probs[0], probs.slice(1).join(" · ") || t("pt.home.more"), "bad");
   return row(ic("up", 17), t("pt.home.upd", { what: acts.join(", ") }), probs.join(" · ") || t(mac ? "upd.row.ready" : "pt.home.phone.sub", { v: u && u.have }), probs.length ? "bad" : "");
@@ -1580,7 +1580,7 @@ const dayOrTime = (ts) => (toDate(ts).toDateString() === new Date().toDateString
 const commits = (n) => n + "\u00a0" + plural(n, "commit");
 
 function partChip(r, b) {
-  if (r.st === "ok") return t("pt." + r.k + ".ok", { b });
+  if (r.st === "ok") return r.k === "cc" && (ccRec(r, r.have) || {}).ok ? t("pt.cc.here") : t("pt." + r.k + ".ok", { b });
   if (r.k === "mac") return r.upd.state === "run" ? t("pt.mac.run") : r.upd.state === "fail" ? t("upd.fail.chip")
     : r.upd.state === "na" ? t(r.upd.why === "windows" ? "pt.mac.win" : "pt.unknown") : r.n ? "\u2212" + commits(r.n) : t("upd.ready.chip");
   if (r.k === "web" || r.k === "relay") {
@@ -1592,7 +1592,8 @@ function partChip(r, b) {
   if (r.k === "phone") return t(r.st === "warn" ? "pt.phone.old" : "pt.unknown");
   if (r.k === "tabs") return t("pt.tabs.old", { n: r.n_old });
   if (r.k === "hooks") return r.have ? t("pt.hooks.missing", { n: r.missing.length }) : t("pt.hooks.off");
-  if (r.k === "cc") return t(r.st === "bad" ? "pt.cc.off" : r.st === "attn" ? "pt.cc.fresh" : "pt.cc.nowrap");
+  if (r.k === "cc") return r.checking ? t("pt.cc.run") : ccFailed(r) ? t("pt.cc.failed")
+    : t(r.st === "bad" ? "pt.cc.off" : r.st === "attn" ? "pt.cc.fresh" : "pt.cc.nowrap");
   if (r.k === "gh") return t("pt.gh.waiting", { n: r.waiting });
   return "";
 }
@@ -1623,6 +1624,38 @@ function srvMore(r) {
     ${s.detail && s.state === "fail" ? html`<div class="upd-detail mono">${s.detail}</div>` : ""}`;
 }
 
+// Claude Code in the table: what the tabs run, what the wrapper is allowed on, and what Pult's own check on this
+// computer found (stage A) — passed, failed at a step, couldn't run, running now — with "Check again"
+const ccRec = (r, v) => (r.checked && v && r.checked[v]) || null;
+const ccFailed = (r) => [...(r.off || []), r.fresh].some((v) => { const c = ccRec(r, v); return !!c && c.ok === false && !c.error; });
+function CcMore({ r, set }) {
+  const [busy, setBusy] = useState(false);
+  if (!r.wrapped) return html`<div class="dim">${t("pt.cc.nowrap.about")}</div>${r.cli ? html`<div class="dim upd-note">${t("pt.cc.app", { cli: r.cli, sdk: r.sdk })}</div>` : ""}`;
+  const off = r.off || [];
+  const v = r.checking || off[off.length - 1] || r.fresh;          // the version a check is about
+  const c = ccRec(r, v);
+  const hereV = [r.have, r.newest].find((x) => (ccRec(r, x) || {}).ok), here = ccRec(r, hereV);
+  const again = async () => {
+    setBusy(true);
+    try { const x = await api("tab_check"); if (x.note) alertBox(x.note); else haptic("success"); set(); } catch (e) { alertBox(e.message); }
+    setBusy(false);
+  };
+  const auto = r.auto !== false;                                   // a computer before 0.18.1 says nothing: as before
+  const check = r.checking ? html`<div class="upd-note">${t("pt.cc.checking", { v: r.checking })}</div>`
+    : c && c.error ? html`<div class="upd-note">${t("pt.cc.err", { v, when: dayOrTime(c.ts), why: t("check.why." + c.error) })}</div>`
+    : c && c.ok === false ? html`<div class="upd-note bad">${t("pt.cc.failedin", { v, when: dayOrTime(c.ts), step: t("tab.step." + (c.step || "own")) })}</div>`
+    : v && r.auto === false ? html`<div class="dim upd-note">${t("pt.cc.manual")}</div>` : "";
+  const canAgain = r.auto !== undefined && v && !r.checking && (!c || c.ok === false || c.error || !auto);
+  return html`${off.length ? html`<div>${t("pt.cc.offin", { v: off.join(", "), ok: r.verified || "?" })}</div>`
+      : html`<div>${t("pt.cc.runs", { v: r.have, ok: r.verified || "?" })}</div>`}
+    ${here ? html`<div class="dim upd-note">${t("pt.cc.herein", { v: hereV, when: dayOrTime(here.ts) })}${hereV !== r.have ? " " + t("pt.cc.next.ok") : ""}</div>` : ""}
+    ${r.fresh && !r.checking && !c ? html`<div class="dim upd-note">${t(auto && r.auto !== undefined ? "pt.cc.next.auto" : "pt.cc.next", { v: r.fresh })}</div>` : ""}
+    ${check}
+    ${r.cli ? html`<div class="dim upd-note">${t("pt.cc.app", { cli: r.cli, sdk: r.sdk })}</div>` : ""}
+    ${canAgain ? html`<button class="btn wide" disabled=${busy} onClick=${again}>${t(c ? "pt.cc.again" : "pt.cc.check")}</button>` : ""}
+    ${v && !r.checking && (r.auto === undefined || (c && c.ok === false) || !auto) ? who("term", t("pt.cc.who", { v })) : ""}`;
+}
+
 function PartMore({ r, set, b }) {
   if (r.k === "mac") return html`${r.n ? html`<div class="dim">${t("pt.lag.short", { n: commits(r.n), since: ddmm(r.since), b })}</div>` : ""}
     <${UpdBody} v=${r.upd} set=${set} row=${true}/>`;
@@ -1651,14 +1684,7 @@ function PartMore({ r, set, b }) {
     return html`<div>${r.have ? t("pt.hooks.no", { list: r.missing.join(", ") }) : t("pt.hooks.none")}</div>
       ${who("monitor", t("pt.hooks.who"))}`;
   }
-  if (r.k === "cc") {
-    if (!r.wrapped) return html`<div class="dim">${t("pt.cc.nowrap.about")}</div>${r.cli ? html`<div class="dim upd-note">${t("pt.cc.app", { cli: r.cli, sdk: r.sdk })}</div>` : ""}`;
-    return html`${r.off.length ? html`<div>${t("pt.cc.offin", { v: r.off.join(", "), ok: r.verified || "?" })}</div>`
-        : html`<div>${t("pt.cc.runs", { v: r.have, ok: r.verified || "?" })}</div>`}
-      ${r.fresh ? html`<div class="dim upd-note">${t("pt.cc.next", { v: r.fresh })}</div>` : ""}
-      ${r.cli ? html`<div class="dim upd-note">${t("pt.cc.app", { cli: r.cli, sdk: r.sdk })}</div>` : ""}
-      ${r.off.length || r.fresh ? who("term", t("pt.cc.who", { v: r.off[r.off.length - 1] || r.fresh })) : ""}`;
-  }
+  if (r.k === "cc") return html`<${CcMore} r=${r} set=${set}/>`;
   if (r.k === "gh") return html`<div class="dim">${t("pt.gh.last", { v: r.have, d: r.date })}</div>
     ${r.waiting ? html`<div class="dim upd-note">${t("pt.gh.todo", { n: r.waiting })}</div>${who("term", t("pt.gh.who"))}` : ""}`;
   return "";
@@ -1748,6 +1774,7 @@ function Settings() {
   return html`<div><h2>${t("settings")}</h2>
     <${Parts}/>
     ${d.gh && d.gh.release ? html`<div class="list">${sw("gh", t("gh"), d.gh.at && d.prefs.gh ? t(d.gh.ok ? "gh.at" : "gh.fail", { hm: hhmm(toDate(d.gh.at)) }) : t("gh.short"), t("gh.about"))}</div>` : ""}
+    ${"vcheck" in d.prefs ? html`<div class="list">${sw("vcheck", t("vcheck"), t("vcheck.short"), t("vcheck.about"))}</div>` : ""}
     ${"model" in d.prefs ? html`<h3>${t("model.pick")}</h3>
     <button class="field" onClick=${openPick}><span>${choiceText(d.prefs.model, d.prefs.effort)}</span><span class="dim">${ic("down", 18)}</span></button>
     <div class="dim small">${t("def.about")}</div>

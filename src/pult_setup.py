@@ -58,6 +58,9 @@ MARK = "pult_hook.py"                          # Pult's hooks are recognised by 
 LAUNCHER_MARK = "# Pult command line"
 TAB_VERIFIED = ("2.1.301", "2.1.310")    # Claude Code versions the tab wrapper was checked on (tests/probe_tab.py,
                                           # probe_race.py); an install adds them to tab.json (tab_verified_add)
+TAB_BLOCKED = ()        # versions a release found the wrapper unsafe on (the extension's own code, which a check on the
+                        # computer can't see): never allowed — the check doesn't pass them, an install takes them out
+TAB_STEPS = ("service", "own", "send", "model", "effort")      # pult_tabcheck.TAB_STEPS: writing into tabs needs these
 SERVICE_PATH = pult_os.service_path(BIN)
 WAIT_LIMIT = 15 * 60           # s; how long the setup waits for /start and /bind
 TOKEN_RE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{30,}$")
@@ -960,10 +963,35 @@ def tab_verified_add():
     if not isinstance(have, list):
         return []
     new = sorted((v for v in TAB_VERIFIED if v not in have), key=vkey)
-    if new:
-        conf["versions"] = sorted(set(have) | set(new), key=vkey)
+    if new or set(have) & set(TAB_BLOCKED):                 # a blocked version leaves the list, however it got there
+        conf["versions"] = sorted((set(have) | set(new)) - set(TAB_BLOCKED), key=vkey)
         TAB_CONF.write_text(json.dumps(conf, ensure_ascii=False) + "\n", encoding="utf-8")
     return new
+
+
+def tab_checked(v, rep):
+    """A check of Claude Code v on this computer (pult_tabcheck, stage A) into tab.json: "checked"[v] — when, passed or
+    not, the first step that failed, whether the permission race held, or why it couldn't check; passed — v joins
+    "versions", so tabs that start on it get the wrapper. Couldn't check (no login, a limit, the network) — only the
+    record: the daemon tries again later. No tab.json — writing into tabs isn't set up — or one Pult can't read:
+    nothing. True when v was allowed."""
+    try:
+        conf = json.loads(TAB_CONF.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(conf, dict):
+        return False
+    steps = rep.get("steps") or []
+    rec = {"ts": round(rep.get("ts") or time.time()), "ok": rep.get("ok"), "race": rep.get("race"),
+           "error": rep.get("error"), "step": next((x.get("k") for x in steps if x.get("ok") is False and x.get("k") != "race"), None)}
+    checked = conf.get("checked") if isinstance(conf.get("checked"), dict) else {}
+    checked[v] = rec
+    conf["checked"] = dict(sorted(checked.items(), key=lambda kv: vkey(kv[0]))[-10:])     # the last ten versions
+    allowed = rec["ok"] is True and v not in TAB_BLOCKED
+    if allowed:
+        conf["versions"] = sorted(set(conf.get("versions") or []) | {v}, key=vkey)
+    TAB_CONF.write_text(json.dumps(conf, ensure_ascii=False) + "\n", encoding="utf-8")
+    return allowed
 
 
 def cmd_tab_setup():
@@ -1164,6 +1192,10 @@ def report_lines():
             "".join(" (%s line in %s)" % (why, tilde(f)) for f, why, _ in wrapper_problems()),
             "yes" if TAB_OFF.exists() else "no", len(conf.get("folders") or []),
             ", ".join(conf.get("versions") or []) or "—"),
+        # stage A: what Pult's own checks of new Claude Code versions found here — for an issue when one fails
+        "tab checks: %s" % (" · ".join("%s %s" % (v, "passed" if r.get("ok") else "couldn't (%s)" % r.get("error") if r.get("error")
+                                                   else "failed at %s" % (r.get("step") or "?")) + ("" if r.get("race") is not False else ", race failed")
+                                       for v, r in sorted((conf.get("checked") or {}).items(), key=lambda kv: vkey(kv[0]))[-5:]) or "—"),
     ]
     if env.get("PULT_BOT_TOKEN"):
         routes = ([("via proxy", env["PULT_PROXY"])] if env.get("PULT_PROXY") else []) + [("direct", "")]
@@ -1188,7 +1220,7 @@ def cmd_report():
 
 
 # Pult's own files: removal touches only these, never a whole folder it doesn't know
-HOME_FILES = ("pultd.py", "pult_hook.py", "pult_render.py", "pult_web.py", "pult_i18n.py", "pult_stt.py", "pult_load.py", "pult_new.py", "pult_files.py", "pult_spend.py", "pult_attn.py", "pult_brief.py", "pult_tags.py", "pult_os.py", "pult_setup.py", "pult_update.py",
+HOME_FILES = ("pultd.py", "pult_hook.py", "pult_render.py", "pult_web.py", "pult_i18n.py", "pult_stt.py", "pult_load.py", "pult_new.py", "pult_files.py", "pult_spend.py", "pult_attn.py", "pult_brief.py", "pult_tags.py", "pult_tabcheck.py", "pult_os.py", "pult_setup.py", "pult_update.py",
               "installed.json", "installs.json", "update.json", "health.json", "installed.json.tmp", "installs.json.tmp",
               "update.json.tmp", "health.json.tmp", "prev",
               "pultctl.py", "pult_tab.py", "pult-tab.sh", "pult-tab.exe", "pult-tab.exe.new", "requirements.txt", "state.db",

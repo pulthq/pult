@@ -5,8 +5,9 @@
 ## What you need
 
 - macOS, Linux or Windows; tested on macOS 26 (Apple Silicon), Ubuntu 24.04 (arm64) and Windows 11 (x64).
-- Claude Code, signed in: the VS Code extension, the CLI or both. Tested with the extension 2.1.301 (on Windows,
-  2.1.306) and the Agent SDK 0.2.167.
+- Claude Code, signed in: the VS Code extension, the CLI or both. Tested with the extension 2.1.301 and 2.1.310 (on
+  Windows, 2.1.306) and the Agent SDK 0.2.167. A newer extension VS Code downloads is checked by Pult itself on your
+  computer before the tabs move to it (`pult tab check`).
 - Python 3.10+: `brew install python@3.12`, `sudo apt install python3 python3-venv`, or on Windows
   [python.org](https://www.python.org/downloads/windows/) / `winget install Python.Python.3.12` (not the Microsoft
   Store one).

@@ -62,9 +62,63 @@ def tab_state():
              versions=", ".join(conf.get("versions") or []) or T("cli.tab.none"))
 
 
+def cmd_tab_check(args):
+    """pult tab check [VERSION | path to claude] [--json] [--dry]: Pult checks a Claude Code version on this computer
+    (stage A, pult_tabcheck) — the newest one VS Code has downloaded when none is named — and allows it for the tabs
+    when it passes. --json: the report as one line, for the daemon; --dry: tab.json is left as it was."""
+    import asyncio
+    import pult_tabcheck as C
+    as_json, dry = "--json" in args, "--dry" in args
+    rest = [a for a in args if not a.startswith("--")]
+    found = C.binaries(S.EXT_DIRS)
+    if rest and os.path.isfile(rest[0]):
+        cli, v = Path(rest[0]), C.version_of(rest[0])
+    else:
+        v = rest[0] if rest else max(found, key=C.vkey, default=None)
+        cli = found.get(v)
+
+    def done(rep, text, code):
+        if as_json:
+            print(json.dumps(rep, ensure_ascii=False))
+        else:
+            print(text)
+            if dry:
+                print(T("cli.check.dry"))
+        return code
+    if not cli or not v:
+        return done({"version": v, "ok": None, "race": None, "error": "nobinary", "steps": [], "ts": time.time()},
+                    T("cli.check.none", v=v or "?"), 2)
+    if v in S.TAB_BLOCKED:
+        rep = {"version": v, "ok": False, "race": None, "error": None, "ts": time.time(),
+               "steps": [{"k": "blocked", "ok": False, "s": 0, "note": "a Pult release blocks this version"}]}
+        if not dry:
+            S.tab_checked(v, rep)
+        return done(rep, T("cli.check.blocked", v=v), 1)
+    say = None
+    if not as_json:
+        print(T("cli.check.start", v=v), flush=True)
+        say = lambda k, ok, note="": print("  %s %s%s" % ({True: "✓", False: "✗"}.get(ok, "·"), T("tab.step." + k),  # noqa: E731
+                                                          " — " + note if note and ok is not True else ""), flush=True)
+    try:
+        rep = asyncio.run(asyncio.wait_for(C.run(cli, S.HOME / "pult_tab.py", sys.executable, say), C.TOTAL))
+    except asyncio.TimeoutError:
+        rep = {"version": v, "ok": None, "race": None, "error": "timeout", "steps": [], "ts": time.time()}
+    if not dry:
+        S.tab_checked(v, rep)
+    if rep.get("error"):
+        return done(rep, T("cli.check.err", v=v, why=T("check.why." + rep["error"])), 2)
+    step = next((x["k"] for x in rep["steps"] if x.get("ok") is False and x["k"] != "race"), None)
+    text = T("cli.check.ok", v=v) if rep["ok"] else T("cli.check.fail", v=v, step=T("tab.step." + (step or "own")))
+    if rep.get("race") is False:
+        text += "\n" + T("cli.check.race", v=v)
+    return done(rep, text, 0 if rep["ok"] else 1)
+
+
 def cmd_tab(argv):
     if argv[:1] == ["setup"]:
         return S.cmd_tab_setup()
+    if argv[:1] == ["check"]:
+        return cmd_tab_check(argv[1:])
     if argv[:1] == ["off"]:
         S.TAB_OFF.parent.mkdir(parents=True, exist_ok=True)
         S.TAB_OFF.touch()
