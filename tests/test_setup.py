@@ -691,7 +691,8 @@ class UpdateTest(Base):
         self.files({"relay/relay.py": "r1\n", "relay/web/app.js": "a1\n", "CHANGELOG.md": "# Changelog\n\n## Unreleased\n\n"
                     "- **One.** x\n  more of one\n- **Two.** y\n\n## 1.0.0 — 2026-10-20\n\n- old\n"})
         c2 = self.commit("Pult: relay and app")
-        served = {"relay/web/app.js": U.blob(self.repo / "relay/web/app.js")}
+        # what a server holds: git's own (LF) text — Git for Windows checks these files out with CRLF
+        served = {"relay/web/app.js": U.blob(self.repo / "relay/web/app.js", lf=True)}
         self.files({"relay/web/app.js": "a2\n"})
         c3 = self.commit("Pult: app two")
         self.files({"docs/journal.md": "j3\n"})
@@ -701,11 +702,11 @@ class UpdateTest(Base):
         b = U.built_from(self.repo, head, served, U.PARTS["web"])
         self.assertEqual((b["commit"], b["n"], b["news"]), (c2, 2, ["Pult: app three, x three", "Pult: app two"]))
         self.assertEqual(b["since"], int(self.git("log", "-1", "--format=%ct", c3)))
-        now = {"relay/web/app.js": U.blob(self.repo / "relay/web/app.js")}
+        now = {"relay/web/app.js": U.blob(self.repo / "relay/web/app.js", lf=True)}
         self.assertEqual(U.built_from(self.repo, head, now, U.PARTS["web"])["n"], 0)
         self.assertIsNone(U.built_from(self.repo, head, {"relay/web/app.js": "0" * 40}, U.PARTS["web"]))   # uncommitted
         self.assertIsNone(U.built_from(self.repo, head, dict(now, **{"relay/web/extra.js": "0" * 40}), U.PARTS["web"]))
-        relay = {"relay/relay.py": U.blob(self.repo / "relay/relay.py")}
+        relay = {"relay/relay.py": U.blob(self.repo / "relay/relay.py", lf=True)}
         self.assertEqual(U.built_from(self.repo, head, relay, U.PARTS["relay"])["commit"], c2)
         lag = U.behind(self.repo, self.c1, head, U.TREE)                 # the journal and the relay don't count
         self.assertEqual((lag["n"], lag["news"]), (1, ["Pult: app three, x three"]))

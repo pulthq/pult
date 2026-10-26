@@ -121,8 +121,9 @@ class RelayTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((opened["client"], opened["resume"]), ({"platform": "test", "version": "9"}, None))
         cid = opened["cid"]
         # stage U2: what the server holds, as git blob ids by path in Pult's repository — the Mac finds the commit
-        b, git = opened["build"], lambda f: subprocess.run(["git", "hash-object", str(ROOT / f)], capture_output=True,
-                                                          text=True).stdout.strip()
+        # --no-filters: the bytes as they lie, as the relay reads them (Git for Windows would turn CRLF into LF first)
+        b, git = opened["build"], lambda f: subprocess.run(["git", "hash-object", "--no-filters", str(ROOT / f)],
+                                                          capture_output=True, text=True).stdout.strip()
         self.assertEqual((b["relay/relay.py"], b["relay/web/static/app.js"], b["relay/web/index.html"]),
                          (git("relay/relay.py"), git("relay/web/static/app.js"), git("relay/web/index.html")))
         self.assertFalse([k for k in b if "__pycache__" in k or k.endswith(".DS_Store")])
