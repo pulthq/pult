@@ -100,7 +100,7 @@ ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends i
 STT_WORDS_MAX = 280             # characters of the owner's own words for Whisper: with the sentence, within Groq's 896 bytes
 STT_MAX = 4 * 1024 * 1024       # bytes of one recording from the app (5 min at 32 kbit/s ≈ 1.2 MB; base64 must fit the 8 MB frame)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.18.0"
+VERSION = "0.18.1"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -109,7 +109,9 @@ NEW_ROOT = Path.home()   # a new project and the folder picker stay inside this 
 EDITOR_DIRS = pult_os.editor_dirs()     # VS Code and its forks (and their remote side): where the tab wrapper is set
 TAB_FILE = "pult-tab.exe" if os.name == "nt" else "pult-tab.sh"   # what claudeCode.claudeProcessWrapper points at
 EXT_DIRS = pult_os.extension_dirs()
-TAB_CHECK_EVERY = 3600   # s; check whether a new Claude Code extension version is out
+TAB_CHECK_EVERY = 600    # s; whether VS Code has downloaded a Claude Code version tab.json doesn't list (stage A)
+TAB_RETRY = 3600         # s; a check that couldn't run (no login, a limit, the network) is tried again after this
+TAB_CHECK_LIMIT = 360    # s for the check's process (it gives itself pult_tabcheck.TOTAL and cleans up)
 ANNOUNCE_EVERY = 600     # s; the relay's server is reminded of the release this computer runs while it runs another (U3)
 # the server's updater failed for a reason of the moment: it tries again on the next reminder, nobody is told
 SRV_TRANSIENT = ("network", "pip", "no_mac_before", "git", "no_git")
@@ -118,11 +120,12 @@ MENU_CHECK_EVERY = 1800  # s; the app button in the owner's chat is still ours (
 CONFLICT_WARN_EVERY = 6 * 3600   # s; "someone else reads this bot" at most this often
 WEB_MANIFEST = HOME / "web-manifest.json"   # what the last deploy put on the relay (written by the deploy script)
 PREFS = {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": None, "pace": S.PACE_LOW,
-         "model": None, "effort": None, "gh": True}   # owner prefs:
+         "model": None, "effort": None, "gh": True, "vcheck": True}   # owner prefs:
 # milestones, location (auto/mac/phone), language, a model's line for each result, Telegram as a pager (None — on where the
 # app is set up), the % at a limit's reset that is still "on pace" (stage R), the model and the effort for sessions Pult
 # starts when the session has no choice of its own (None — Claude Code's settings; VS Code tabs keep theirs), whether a
-# clone of Pult's GitHub repository looks there for new releases (stage U3)
+# clone of Pult's GitHub repository looks there for new releases (stage U3), whether Pult checks a Claude Code version
+# VS Code has downloaded, before a window reloads onto it (stage A, Q78: on)
 MODES = ("auto", "mac", "phone")
 REPO_URL = os.environ.get("PULT_REPO_URL") or "https://github.com/pulthq/pult"   # where /feedback sends bugs and ideas
 MODEL_RE = re.compile(r"[A-Za-z0-9][\w.\-\[\]]{0,63}")        # a model alias or id for a session from Telegram
@@ -1012,6 +1015,7 @@ class Pult:
         self.upd_wait = None           # the owner asked to install once Pult's sessions are free: since when
         self._parts = (0.0, None, None)  # the source folder against what's installed and served (stage U2): time, key, facts
         self._cc = (0.0, None)         # Claude Code on this computer (cc_facts), kept half a minute
+        self.tab_checking = None       # the Claude Code version Pult checks for the tabs right now (stage A)
         self.srv = None                # the relay's server (stage U3): {"can": [...], "upd": the updater's report}
         self.told = (None, 0.0)        # the release the relay's server was last told this computer runs, and when
         self.gh = {"at": None, "ok": None, "t": 0.0}   # the last look at GitHub for a release: when, whether it answered
@@ -3222,19 +3226,98 @@ class Pult:
             await asyncio.sleep(TAB_CHECK_EVERY)
 
     async def tab_version_check(self):
-        """A new Claude Code extension version is out: the tab wrapper injects nothing on it until the version is
-        verified (tests/probe_tab.py, probe_race.py → pult tab allow). The owner is told about it once."""
+        """VS Code has downloaded a Claude Code version tab.json doesn't list: the wrapper stays out of tabs on it until
+        it's checked. Pult checks it here (stage A, pult_tabcheck) — while open windows still run the old one, so
+        writing into tabs never goes off. One that failed waits for "Check again"; one it couldn't check is tried again
+        in an hour. With the check off (Settings), the owner is told once, as before 0.18.1."""
         try:
             conf = json.loads(TAB_CONF.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return
+        if not isinstance(conf, dict):
+            return
         wrapped = bool(pult_os.files_with(EDITOR_DIRS, TAB_FILE))
         v = pult_os.newest_extension(EXT_DIRS)
-        if not wrapped or not v or v in (conf.get("versions") or []) or self.store.get("tab_warned") == v:
+        if not wrapped or not v or v in (conf.get("versions") or []):
+            return
+        if self.prefs()["vcheck"]:
+            rec = (conf.get("checked") or {}).get(v) or {}
+            if rec.get("ok") is False and not rec.get("error"):
+                return                                  # failed: "Check again" in the app, or pult tab check
+            if rec.get("error") and time.time() - (rec.get("ts") or 0) < TAB_RETRY:
+                return
+            self.tab_check(v)
+            return
+        if self.store.get("tab_warned") == v:
             return
         self.store.put("tab_warned", v)
         log("Claude Code extension %s is not verified — writing into tabs is off on it" % v)
         await self.send(None, self.t("tab.update", v=R.esc(v)), notify=True)
+
+    def tab_check(self, v):
+        """Start the check of Claude Code v for the tabs, unless one runs already; True when started."""
+        if self.tab_checking:
+            return False
+        self.tab_checking = v
+        self._cc = (0.0, None)
+        if self.web:
+            self.web.emit("update")
+        asyncio.ensure_future(self.tab_check_run(v))
+        return True
+
+    async def tab_check_run(self, v):
+        """The check in a process of its own, at a low priority — `pult tab check --json v`: it writes its findings to
+        tab.json itself, and a version that passed is allowed there. Here: the log, and the owner is told only of a
+        failure (Q79) — once per version; a check that couldn't run says nothing and is tried again later."""
+        log("checking Claude Code %s for the tabs" % v)
+        rep = None
+        try:
+            cmd = [sys.executable, str(HOME / "pultctl.py"), "tab", "check", "--json", v]
+            if os.name == "nt":
+                kw = {"creationflags": 0x00004000 | 0x08000000}     # below normal priority, no console window
+            else:
+                cmd, kw = ["nice", "-n", "10"] + cmd, {}
+            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE,
+                                                        stderr=asyncio.subprocess.PIPE, **kw)
+            try:
+                out, err = await asyncio.wait_for(proc.communicate(), TAB_CHECK_LIMIT)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                out, err = b"", b"the check took too long"
+            lines = (out or b"").decode(errors="replace").strip().splitlines()
+            rep = json.loads(lines[-1]) if lines else None
+            if not rep:
+                log("tab check %s: no report — %s" % (v, (err or b"").decode(errors="replace").strip()[-300:]))
+        except (OSError, ValueError) as e:
+            log("tab check %s: %r" % (v, e))
+        finally:
+            self.tab_checking = None
+            self._cc = (0.0, None)
+            if self.web:
+                self.web.emit("update")
+        if not rep:
+            return
+        steps = rep.get("steps") or []
+        log("tab check %s: %s — %s" % (v, {True: "passed", False: "FAILED", None: "couldn't check"}[rep.get("ok")],
+                                        rep.get("error") or ", ".join("%s %s" % (x.get("k"), x.get("ok")) for x in steps)))
+        if rep.get("ok") is False and self.store.get("tab_check_told") != v:
+            self.store.put("tab_check_told", v)
+            step = next((x.get("k") for x in steps if x.get("ok") is False and x.get("k") != "race"), "own")
+            await self.send(None, self.t("tab.check.fail", v=R.esc(v), step=self.t("tab.step." + step)), notify=True)
+        if rep.get("race") is False and self.store.get("tab_race_told") != v:
+            self.store.put("tab_race_told", v)
+            await self.send(None, self.t("tab.check.race", v=R.esc(v)), notify=True)
+
+    async def api_tab_check(self):
+        """"Check again" in Settings → Pult and its parts: the version the tabs run that the wrapper is out of, else
+        the newest one VS Code has downloaded."""
+        cc = await self.cc_facts(age=0)
+        off = [v for v in cc["running"] if v not in cc["verified"]]
+        v = off[-1] if off else cc["newest"] if cc["newest"] not in cc["verified"] else None
+        if not v:
+            return {"ok": False, "note": self.t("tab.check.nothing")}
+        return {"ok": self.tab_check(v), "v": v, "note": None if self.tab_checking == v else self.t("tab.check.busy")}
 
     def tab_for(self, sid):
         return next((t for t in self.tabs.values() if sid and t.sid == sid), None)
@@ -3266,6 +3349,11 @@ class Pult:
         if not isinstance(conf, dict) or not await asyncio.to_thread(pult_os.files_with, EDITOR_DIRS, TAB_FILE):
             return {"why": "nowrap", "v": v}
         if v not in (conf.get("versions") or []):
+            rec = (conf.get("checked") or {}).get(v) or {}
+            if self.tab_checking == v:
+                return {"why": "checking", "v": v}
+            if rec.get("ok") is False and not rec.get("error"):
+                return {"why": "failed", "v": v, "step": self.t("tab.step." + (rec.get("step") or "own"))}
             return {"why": "version", "v": v}
         if TAB_OFF.exists():
             return {"why": "off", "v": v}
@@ -4704,7 +4792,7 @@ class Pult:
     async def api_prefs(self, **kw):
         cur = self.prefs()
         for k, v in kw.items():
-            if k in ("vehi", "brief", "pager", "gh") and isinstance(v, bool) or k == "mode" and v in MODES or k == "lang" and v in I.LANGS \
+            if k in ("vehi", "brief", "pager", "gh", "vcheck") and isinstance(v, bool) or k == "mode" and v in MODES or k == "lang" and v in I.LANGS \
                     or k == "pace" and v in S.PACES:
                 cur[k] = v
             elif k in ("model", "effort") and (v is None or isinstance(v, str)):
@@ -5116,13 +5204,16 @@ class Pult:
             if m and pr.get("mine", True):
                 running.add(m.group(1))
         try:
-            verified = json.loads(TAB_CONF.read_text(encoding="utf-8")).get("versions") or []
+            conf = json.loads(TAB_CONF.read_text(encoding="utf-8"))
+            verified, checked = conf.get("versions") or [], conf.get("checked") or {}
         except (OSError, ValueError, AttributeError):
-            verified = []
+            verified, checked = [], {}
         wrapped = bool(await asyncio.to_thread(pult_os.files_with, EDITOR_DIRS, TAB_FILE))
         sdk, cli = await asyncio.to_thread(self.sdk_versions)
         v = {"running": sorted(running, key=vnum), "verified": sorted(verified, key=vnum), "wrapped": wrapped,
-             "newest": await asyncio.to_thread(pult_os.newest_extension, EXT_DIRS), "sdk": sdk, "cli": cli}
+             "newest": await asyncio.to_thread(pult_os.newest_extension, EXT_DIRS), "sdk": sdk, "cli": cli,
+             "checked": checked if isinstance(checked, dict) else {}, "checking": self.tab_checking,
+             "auto": self.prefs()["vcheck"]}
         self._cc = (time.monotonic(), v)
         return v
 
@@ -5135,9 +5226,16 @@ class Pult:
         if on and missing:
             out.append({"k": "hooks", "missing": missing})
         cc = await self.cc_facts()
-        off = [v for v in cc["running"] if v not in cc["verified"]] if cc["wrapped"] else []
+        fail = lambda v: (cc.get("checked", {}).get(v) or {}).get("ok") is False and not cc["checked"][v].get("error")  # noqa: E731
+        # tabs on a version the wrapper is out of (not while it's being checked); else one VS Code has downloaded that
+        # failed Pult's check — tabs still write, until a window reloads onto it ("next")
+        off = [v for v in cc["running"] if v not in cc["verified"] and v != cc.get("checking")] if cc["wrapped"] else []
+        nxt = [v for v in [cc["newest"]] if cc["wrapped"] and v and v not in cc["verified"] and v not in cc["running"]
+               and fail(v)]
         if off:
-            out.append({"k": "cc", "v": off[-1]})
+            out.append({"k": "cc", "v": off[-1], "fail": fail(off[-1])})
+        elif nxt:
+            out.append({"k": "cc", "v": nxt[0], "fail": True, "next": True})
         return out
 
     def tab_facts(self):
@@ -5234,10 +5332,16 @@ class Pult:
         off = [v for v in cc["running"] if v not in cc["verified"]] if cc["wrapped"] else []
         fresh = cc["newest"] if cc["wrapped"] and cc["newest"] and cc["newest"] not in cc["verified"] \
             and cc["newest"] not in cc["running"] else None
-        rows.append({"k": "cc", "st": "bad" if off else "attn" if fresh else "ok" if cc["wrapped"] else "info",
-                     "have": (cc["running"] or [cc["newest"]])[-1], "off": off, "fresh": fresh,
+        checked, checking = cc.get("checked") or {}, cc.get("checking")
+        have = (cc["running"] or [cc["newest"]])[-1]
+        failed = [v for v in off + [fresh] if v and (checked.get(v) or {}).get("ok") is False]
+        # stage A: a version being checked is a matter of a minute; one that failed is broken, even before VS Code reloads
+        st = ("attn" if checking in off else "bad") if off else ("bad" if fresh in failed else "attn") if fresh \
+            else "ok" if cc["wrapped"] else "info"
+        rows.append({"k": "cc", "st": st, "have": have, "off": off, "fresh": fresh, "newest": cc["newest"],
                      "verified": cc["verified"][-1] if cc["verified"] else None, "wrapped": cc["wrapped"],
-                     "sdk": cc["sdk"], "cli": cc["cli"]})
+                     "sdk": cc["sdk"], "cli": cc["cli"], "checking": checking, "auto": cc.get("auto"),
+                     "checked": {v: checked[v] for v in {have, fresh, cc["newest"], *off} if v in checked}})
         gh = g.get("gh")
         if gh and gh.get("last"):
             rows.append({"k": "gh", "st": "info" if gh["waiting"] else "ok", "have": gh["last"], "date": gh["date"],

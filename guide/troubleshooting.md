@@ -10,8 +10,9 @@
 | No sessions from VS Code | The hooks are off: `pult hooks on`, then Reload Window. |
 | `409` in the log | Another program reads this bot's updates, such as a second copy of Pult. |
 | No permission buttons, but the feed works | Claude Code's `auto` mode decides by itself. That's normal. |
-| A message to an open tab went to a copy | The app says why when it offers the copy. The tab was opened before the wrapper: Reload Window. The extension updated to a version Pult isn't checked on yet (Pult said so in General): a Pult release checked on it brings writing back once installed; to allow it now, at your own risk, `pult tab allow <version>`, then Reload Window. |
+| A message to an open tab went to a copy | The app says why when it offers the copy. The tab was opened before the wrapper: Reload Window. The extension updated: Pult checks a new version on this computer by itself (Settings → Check new Claude Code versions) — while it's being checked, or once it failed (Pult says so in General), messages go as a copy; `pult tab check` checks it again by hand, `pult tab allow <version>` allows it at your own risk; then Reload Window. |
 | Something else | `pult report`, then [open an issue](https://github.com/pulthq/pult/issues/new/choose). |
 
-**Several people?** No: one Pult has one owner. **Extra cost?** No: Pult uses only what the sessions use; reading
-your limits makes no model request.
+**Several people?** No: one Pult has one owner. **Extra cost?** Hardly: Pult uses what the sessions use, and reading
+your limits makes no model request. Its own: a check of each new Claude Code version — about ten short requests every
+few days (Settings can turn it off) — and the one-line summary, if you turn it on.

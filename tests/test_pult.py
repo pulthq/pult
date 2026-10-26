@@ -1517,13 +1517,13 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_prefs(self):
         self.assertEqual(self.p.prefs(), {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": None, "pace": 90,
-                                          "model": None, "effort": None, "gh": True})
+                                          "model": None, "effort": None, "gh": True, "vcheck": True})
         self.p.env["PULT_FORCE_AWAY"] = "0"                                           # you are at the Mac
         self.assertFalse(await self.p.loud())
         self.assertTrue(await self.p.loud(driven=True))                     # auto: a session from Telegram — with sound
         res = await self.p.api_prefs(mode="phone", vehi="да", lang="xx", brief="да", evil=True, pace="90", gh="off")  # garbage is rejected
         self.assertEqual(res, {"vehi": True, "mode": "phone", "lang": None, "brief": False, "pager": None, "pace": 90,
-                               "model": None, "effort": None, "gh": True})
+                               "model": None, "effort": None, "gh": True, "vcheck": True})
         self.assertFalse((await self.p.api_prefs(gh=False))["gh"])                  # stage U3: no looks at GitHub
         await self.p.api_prefs(gh=True)
         self.assertTrue((await self.p.api_prefs(brief=True))["brief"])
@@ -3215,7 +3215,9 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         w1.close()
 
     async def test_tab_version(self):
-        # a new extension is out — the owner is told once that writing into tabs on it awaits verification
+        # a new extension is out and Pult's own check is off (Settings) — the owner is told once that writing into tabs
+        # on it awaits verification
+        await self.p.api_prefs(vcheck=False)
         ext = TMP / "ext"
         for v in ("2.1.9", "2.1.301", "2.1.30"):
             (ext / ("anthropic.claude-code-%s-darwin-arm64" % v)).mkdir(parents=True, exist_ok=True)
@@ -3243,6 +3245,98 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len([t for t in self.texts() if "Вышел Claude Code" in t]), 1)
         finally:
             pultd.TAB_CONF, pultd.EDITOR_DIRS, pultd.EXT_DIRS = old
+
+    async def test_tab_check(self):
+        # stage A: VS Code has downloaded a version tab.json doesn't list — Pult checks it here, one check at a time, in a
+        # process of its own that writes tab.json; the owner hears only of a failure, once (Q79); a version that failed
+        # waits for "Check again", one it couldn't check is tried again in an hour; the copy, Home and the table say so
+        import pult_setup
+        ext, conf, vs = TMP / "ext-a", TMP / "tab-a.json", TMP / "vscode-a" / "User" / "settings.json"
+        conf.write_text(json.dumps({"folders": ["/Users/x"], "versions": ["2.1.310"]}))
+        vs.parent.mkdir(parents=True, exist_ok=True)
+        vs.write_text('{"claudeCode.claudeProcessWrapper": "/x/%s"}' % pultd.TAB_FILE)
+        steps = [{"k": k, "ok": True, "s": 1, "note": ""} for k in ("service", "own", "send", "model", "effort", "race")]
+        reports = {"2.1.311": {"ok": True, "race": True, "error": None, "steps": steps},
+                   "2.1.312": {"ok": False, "race": False, "error": None,
+                               "steps": steps[:3] + [{"k": "model", "ok": False, "s": 1, "note": "claude-haiku-5-5"}]},
+                   "2.1.313": {"ok": None, "race": None, "error": "login", "steps": []}}
+        runs, real = [], asyncio.create_subprocess_exec
+
+        class Proc:
+            def __init__(self, out):
+                self.out = out
+
+            async def communicate(self):
+                await asyncio.sleep(0.05)
+                return self.out, b""
+
+        async def fake_exec(*cmd, **kw):
+            if "tab" not in cmd or "check" not in cmd:
+                return await real(*cmd, **kw)
+            runs.append(cmd)
+            v = cmd[-1]
+            rep = dict(reports[v], version=v, ts=time.time())
+            pult_setup.tab_checked(v, rep)              # as the real `pult tab check` does
+            return Proc(json.dumps(rep).encode() + b"\n")
+
+        def downloaded(v):
+            (ext / ("anthropic.claude-code-%s-darwin-arm64" % v)).mkdir(parents=True, exist_ok=True)
+
+        async def check():
+            await self.p.tab_version_check()
+            await until(lambda: not self.p.tab_checking)
+
+        def rec(v):
+            return (json.loads(conf.read_text()).get("checked") or {}).get(v)
+        with mock.patch.multiple(pultd, TAB_CONF=conf, EDITOR_DIRS=[vs.parent], EXT_DIRS=[ext]), \
+                mock.patch.object(pult_setup, "TAB_CONF", conf), mock.patch("asyncio.create_subprocess_exec", fake_exec):
+            downloaded("2.1.311")
+            await check()
+            self.assertEqual(len(runs), 1)
+            self.assertEqual(list(runs[0][-5:]), [str(pultd.HOME / "pultctl.py"), "tab", "check", "--json", "2.1.311"])
+            if os.name != "nt":
+                self.assertEqual(list(runs[0][:3]), ["nice", "-n", "10"])           # a low priority
+            self.assertIn("2.1.311", json.loads(conf.read_text())["versions"])        # passed: allowed
+            await check()
+            self.assertEqual(len(runs), 1)                                            # allowed: nothing more to check
+            self.assertFalse([t for t in self.texts() if "2.1.311" in t])             # passed: said nowhere
+            downloaded("2.1.312")
+            await check()
+            await until(lambda: len([t for t in self.texts() if "2.1.312" in t]) >= 2)
+            fail = [t for t in self.texts() if "не прошёл проверку" in t]
+            self.assertEqual(len(fail), 1)
+            self.assertIn("смена модели", fail[0])
+            self.assertTrue(any("кто ответил первым" in t for t in self.texts()))   # the race, told apart
+            self.assertEqual((rec("2.1.312")["ok"], rec("2.1.312")["step"]), (False, "model"))
+            await check()
+            self.assertEqual(len(runs), 2)                                            # failed: waits for "Check again"
+            # the copy says why; Home and the table too
+            self.p._agents = (time.monotonic() + 1e6, [{"sessionId": SID, "pid": 900, "cwd": "/Users/x/proj"}])
+            ext312 = "/Users/x/.vscode/extensions/anthropic.claude-code-2.1.312-darwin-arm64/resources/native-binary/claude"
+            self.p._procs = (time.monotonic() + 1e6, ({900: {"ppid": 1, "cmd": ext312}}, {}))
+            self.assertEqual(await self.p.copy_why(SID), {"why": "failed", "v": "2.1.312", "step": "смена модели"})
+            self.assertIn({"k": "cc", "v": "2.1.312", "fail": True}, await self.p.broken())
+            res = await self.p.api_tab_check()                                        # "Check again"
+            self.assertEqual((res["ok"], res["v"]), (True, "2.1.312"))
+            self.assertEqual(await self.p.copy_why(SID), {"why": "checking", "v": "2.1.312"})
+            await until(lambda: not self.p.tab_checking)
+            self.assertEqual(len(runs), 3)
+            self.assertEqual(len([t for t in self.texts() if "не прошёл проверку" in t]), 1)   # told once per version
+            f = await self.p.parts_facts()
+            row = next(r for r in pultd.Pult.parts_rows(f) if r["k"] == "cc")
+            self.assertEqual((row["st"], row["have"], row["checked"]["2.1.312"]["step"]), ("bad", "2.1.312", "model"))
+            # couldn't check (not logged in): said nowhere, tried again in an hour
+            downloaded("2.1.313")
+            await check()
+            self.assertEqual((len(runs), rec("2.1.313")["error"]), (4, "login"))
+            await check()
+            self.assertEqual(len(runs), 4)
+            c = json.loads(conf.read_text())
+            c["checked"]["2.1.313"]["ts"] -= 2 * 3600
+            conf.write_text(json.dumps(c))
+            await check()
+            self.assertEqual(len(runs), 5)
+            self.assertFalse([t for t in self.texts() if "2.1.313" in t])
 
     async def test_telegram_start_waits(self):
         # Telegram out of reach at start (after logging in to Windows the VPN comes up later, 2026-10-21): the bot's
@@ -4237,6 +4331,84 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.p.drive = drive2
         await self.p.on_message(dict(base, message_id=13, text="ещё", reply_to_message={"message_id": 500}))
         self.assertEqual(seen[-1], (SID, SID, False, True))
+
+
+class TabCheckTest(unittest.IsolatedAsyncioTestCase):
+    """pult_tabcheck (stage A) without Claude: what it reads off the output and the folders, and how a run goes —
+    a second try for a failed step, trouble that isn't a failure, nothing left behind."""
+
+    def test_trouble(self):
+        import pult_tabcheck as C
+        self.assertEqual(C.trouble("Invalid API key · Please run /login"), "login")
+        self.assertEqual(C.trouble("Claude AI usage limit reached|1793030000"), "limit")
+        self.assertEqual(C.trouble("Error: getaddrinfo ENOTFOUND api.anthropic.com"), "network")
+        self.assertIsNone(C.trouble("TWO"))
+
+    def test_binaries(self):
+        import pult_tabcheck as C
+        d = Path(tempfile.mkdtemp(dir=TMP))
+        exe = "claude.exe" if os.name == "nt" else "claude"
+        for v, has in (("2.1.310", True), ("2.1.311", True), ("2.1.312", False)):
+            b = d / ("anthropic.claude-code-%s-darwin-arm64" % v) / "resources" / "native-binary"
+            b.mkdir(parents=True)
+            if has:
+                (b / exe).write_text("")
+        found = C.binaries([d, d / "nothing"])
+        self.assertEqual(sorted(found), ["2.1.310", "2.1.311"])                    # no program — no version to check
+        self.assertEqual(C.version_of(found["2.1.311"]), "2.1.311")
+        self.assertEqual(max(found, key=C.vkey), "2.1.311")
+
+    def test_forget(self):
+        # only the check's own sessions leave Claude Code's history, and their folder once it's empty
+        import pult_tabcheck as C
+        root = Path(tempfile.mkdtemp(dir=TMP))
+        a, b = root / "-tmp-pult-check-x-proj", root / "-Users-x-proj"
+        a.mkdir()
+        b.mkdir()
+        (a / "s1.jsonl").write_text("{}")
+        (a / "s1").mkdir()
+        (b / "s2.jsonl").write_text("{}")
+        (b / "mine.jsonl").write_text("{}")
+        with mock.patch.object(C, "PROJECTS", root):
+            C.forget({"s1", "s2"})
+        self.assertFalse(a.exists())
+        self.assertEqual([x.name for x in b.iterdir()], ["mine.jsonl"])
+
+    async def test_run(self):
+        import pult_tabcheck as C
+        outcomes = []
+
+        async def tab(self):
+            ok = outcomes.pop(0)
+            if isinstance(ok, Exception):
+                raise ok
+            self.sids.add("s%d" % len(outcomes))
+            self.steps.append({"k": "own", "ok": ok, "s": 1, "note": ""})
+            return ok
+
+        async def race(self):
+            return True
+        forgot, made, init = [], [], C.Check.__init__
+
+        def made_by(self, *a):
+            init(self, *a)
+            made.append(self.tmp)
+        with mock.patch.object(C.Check, "tab", tab), mock.patch.object(C.Check, "race", race), \
+                mock.patch.object(C, "forget", forgot.append), mock.patch.object(C.Check, "__init__", made_by):
+            outcomes[:] = [True]
+            rep = await C.run("/x/anthropic.claude-code-2.1.311-darwin-arm64/claude", "/w/pult_tab.py", "py")
+            self.assertEqual((rep["version"], rep["ok"], rep["race"], rep["error"]), ("2.1.311", True, True, None))
+            outcomes[:] = [False, True]                 # one odd answer: passes on the second try
+            rep = await C.run("/x/anthropic.claude-code-2.1.311-darwin-arm64/claude", "/w/pult_tab.py", "py")
+            self.assertEqual((rep["ok"], len(rep["steps"]), "first" in rep), (True, 1, False))
+            outcomes[:] = [False, False]
+            rep = await C.run("/x/anthropic.claude-code-2.1.311-darwin-arm64/claude", "/w/pult_tab.py", "py")
+            self.assertEqual((rep["ok"], rep["first"][0]["ok"]), (False, False))
+            outcomes[:] = [C.Trouble("login", "Please run /login")]
+            rep = await C.run("/x/anthropic.claude-code-2.1.311-darwin-arm64/claude", "/w/pult_tab.py", "py")
+            self.assertEqual((rep["ok"], rep["error"], rep["race"]), (None, "login", None))
+        self.assertEqual(len(forgot), 4)                # every run cleans up after itself
+        self.assertTrue(len(made) == 4 and not any(d.exists() for d in made))
 
 
 if __name__ == "__main__":

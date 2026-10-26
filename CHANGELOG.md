@@ -2,6 +2,20 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## 0.18.1 — 2026-10-26
+
+- **Pult checks a new Claude Code version itself, before your tabs move to it.** VS Code updates the Claude Code
+  extension by itself, nearly every day, and Pult writes into a tab only on a version it's checked on — so after an
+  update, messages to open tabs went as a copy until a Pult release caught up. Now, once VS Code has downloaded a new
+  version, Pult checks it on your computer while the open windows still run the old one (they move to it only when
+  they reload): a utility command through the tab wrapper, a tab's own request, a message from the phone into the tab,
+  switching the model and the effort, and the permission race — on the new version's own `claude`, apart from your
+  sessions and settings, with its sessions removed afterwards. About half a minute and ten short requests, almost all
+  on haiku. Passed — the version is allowed and nothing is said; failed — one message, Home's line, and "Check again"
+  in Settings → Pult and its parts; couldn't run (not logged in, a limit, no network) — tried again in an hour. `pult
+  tab check [VERSION]` does it by hand. On by default; Settings → "Check new Claude Code versions" turns it off. A
+  release can still block a version (`TAB_BLOCKED`): no check passes it and an install takes it out.
+
 ## 0.18.0 — 2026-10-26
 
 - **"Running now" says what runs again.** Each running task shows its title whole — two lines at most, its time

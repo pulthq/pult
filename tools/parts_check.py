@@ -147,8 +147,9 @@ async def main():
                 verdict("now: eight rows, the phone among them", await js("document.querySelectorAll('.part').length") == 8
                         and await chip("phone") == "свежая", await chip("phone"))
                 verdict("now: Claude Code — to check", await chip("cc") == "проверить", await chip("cc"))
-                verdict("now: a tap opens it — what's downloaded and how to allow it", await tap_row("cc")
-                        and "2.1.310" in await more("cc") and "pult tab allow 2.1.310" in await more("cc"), (await more("cc"))[:120])
+                # stage A: with Pult's own check on, a downloaded version is checked here — no "allow it yourself" (vcheck_check.py)
+                verdict("now: a tap opens it — what's downloaded, and that Pult checks it here", await tap_row("cc")
+                        and "2.1.310" in await more("cc") and "Пульт проверит его здесь" in await more("cc"), (await more("cc"))[:120])
                 verdict("now: GitHub — one waits for a release", await chip("gh") == "к выпуску: 1", await chip("gh"))
                 await shot("now")
             finally:
