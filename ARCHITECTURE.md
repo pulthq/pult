@@ -171,6 +171,7 @@ flowchart LR
 | `src/pult_web.py` | the connection to the relay, login checks, transcripts for the app |
 | `src/pult_render.py`, `src/pult_i18n.py` | what messages look like; every visible string in English and Russian |
 | `src/pult_attn.py`, `src/pult_brief.py` | "whose move": each session's outcome; an optional one-line summary by a small model |
+| `src/pult_tags.py` | task tags: each task's section of the project and topic in it, kept by the same small model from the request, Claude's reply and the files it worked with; the owner only corrects |
 | `src/pult_spend.py` | usage pace: transcripts in slots, the curve, the forecast |
 | `src/pult_load.py` | the load each session puts on the computer, from one process snapshot |
 | `src/pult_new.py` | a new project: the folder's name from any title, the checks, the clone link |

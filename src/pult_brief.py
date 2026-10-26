@@ -8,9 +8,14 @@ When unsure the model must say "needs you": a missed call costs more than an ext
 
 Without the model (switched off, no answer, a broken reply) Pult falls back to rules: the first sentence of the
 result, and "nothing runs — your move". Design and the probe: docs/project.html, stage V; tests/probe_brief.py.
+
+The same request also gives the task's tags (stage T, pult_tags) when asked: its section and topic in the project,
+by the project's list and the files the turn worked with — one call per turn instead of two.
 """
 import json
 import re
+
+import pult_tags as G
 
 MODEL = "haiku"
 TIMEOUT = 45          # s: one request; haiku answers in a few seconds (probe_brief.py)
@@ -57,8 +62,9 @@ def clip(text, n):
     return cut.rstrip(" ,;:—-") + "…"
 
 
-def request(prompt, reply, bg=()):
-    """The user message for the model: the request, the last message (its start and end when long), the tasks."""
+def request(prompt, reply, bg=(), tags=None):
+    """The user message for the model: the request, the last message (its start and end when long), the tasks; with
+    tags — the project, its list of tags, the task's current ones and the turn's files (pult_tags.context)."""
     reply = str(reply or "")
     if len(reply) > REPLY_MAX:
         half = REPLY_MAX // 2
@@ -67,24 +73,39 @@ def request(prompt, reply, bg=()):
              "<last_message>\n%s\n</last_message>" % reply]
     if bg:
         parts.append("<background_tasks_running>\n%s\n</background_tasks_running>" % "\n".join("- " + clip(b, 120) for b in bg))
+    if tags:
+        parts.extend(G.context(**tags))
     return "\n\n".join(parts)
 
 
-def options(lang, cwd):
+TAGS_PART = """
+- "sec" and "topic": the task's tags in its project — the <project_tags>, <current_tags>, <task_title> and <files>
+  parts of the input are for these only — by the rules that follow.
+
+"""
+
+
+def options(lang, cwd, tags=False):
     """Agent SDK options: haiku without thinking, no tools, no user or project settings (so no hooks, no CLAUDE.md),
-    Pult's prompt in place of Claude Code's, JSON by schema, nothing saved as a session."""
+    Pult's prompt in place of Claude Code's, JSON by schema, nothing saved as a session. tags — the schema and the
+    prompt ask for the task's tags too."""
     from claude_agent_sdk import ClaudeAgentOptions
+    name = LANGS.get(lang, "English")
+    system = SYSTEM.format(lang=name, line_max=LINE_MAX, need_max=NEED_MAX, replies=REPLIES, reply_len=REPLY_LEN)
+    schema = SCHEMA
+    if tags:
+        system += TAGS_PART + G.RULES.format(lang=name, sec_max=G.SEC_MAX)
+        schema = dict(SCHEMA, required=SCHEMA["required"] + ["sec", "topic"], properties=dict(SCHEMA["properties"], **G.PROPS))
     return ClaudeAgentOptions(
         model=MODEL, cwd=str(cwd), tools=[], setting_sources=[], max_turns=3, env={"PULT_OFF": "1"},
-        thinking={"type": "disabled"},
-        system_prompt=SYSTEM.format(lang=LANGS.get(lang, "English"), line_max=LINE_MAX, need_max=NEED_MAX,
-                                    replies=REPLIES, reply_len=REPLY_LEN),
-        output_format={"type": "json_schema", "schema": SCHEMA}, extra_args={"no-session-persistence": None},
+        thinking={"type": "disabled"}, system_prompt=system,
+        output_format={"type": "json_schema", "schema": schema}, extra_args={"no-session-persistence": None},
         stderr=lambda s: None)
 
 
-def parse(result):
-    """The model's answer from the SDK's ResultMessage → {"line", "you", "need", "replies"}, or None if unusable."""
+def parse(result, tags=False):
+    """The model's answer from the SDK's ResultMessage → {"line", "you", "need", "replies"} (and "tags" — {"sec",
+    "topic"} or None — when they were asked for), or None if unusable."""
     if result is None or getattr(result, "is_error", False):
         return None
     d = getattr(result, "structured_output", None)
@@ -99,8 +120,11 @@ def parse(result):
     replies = d.get("replies") if isinstance(d.get("replies"), list) else []
     replies = list(dict.fromkeys(clip(x, REPLY_LEN) for x in replies if isinstance(x, str) and x.strip()))[:REPLIES] \
         if d["you"] else []
-    return {"line": clip(d["line"], KEEP_MAX), "you": d["you"], "need": clip(d.get("need") or "", KEEP_MAX) if d["you"] else "",
-            "replies": replies}
+    out = {"line": clip(d["line"], KEEP_MAX), "you": d["you"], "need": clip(d.get("need") or "", KEEP_MAX) if d["you"] else "",
+           "replies": replies}
+    if tags:
+        out["tags"] = G.parse(d)
+    return out
 
 
 def first_sentence(text, n=LINE_MAX):
@@ -112,18 +136,19 @@ def first_sentence(text, n=LINE_MAX):
     return clip(m.group(1) if m else text, n)
 
 
-async def brief(prompt, reply, bg, lang, cwd):
-    """Ask the model; None when it can't answer (no Claude Code, an error, a timeout) — the caller uses the rules."""
+async def brief(prompt, reply, bg, lang, cwd, tags=None):
+    """Ask the model; None when it can't answer (no Claude Code, an error, a timeout) — the caller uses the rules.
+    tags — the task's tags are asked too: pult_tags.context's arguments (project, vocab, paths, cur, dirs)."""
     import asyncio
     from claude_agent_sdk import ResultMessage, query
 
     async def ask():
         res = None
-        async for m in query(prompt=request(prompt, reply, bg), options=options(lang, cwd)):
+        async for m in query(prompt=request(prompt, reply, bg, tags), options=options(lang, cwd, bool(tags))):
             if isinstance(m, ResultMessage):
                 res = m
         return res
     try:
-        return parse(await asyncio.wait_for(ask(), TIMEOUT))
+        return parse(await asyncio.wait_for(ask(), TIMEOUT), bool(tags))
     except Exception:
         return None

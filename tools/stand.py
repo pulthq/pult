@@ -18,7 +18,9 @@ STAND_FILES=1 gives the shop a real folder with made-up files and ends the chat 
 Settings' table of Pult's parts and Home's line always run on made-up facts — all fresh; STAND_PARTS=now|lag|bad|public:
 all as in main with a new Claude Code downloaded; several parts behind (with STAND_UPD=ready for the computer); hooks
 missing and tabs on an unverified Claude Code; someone with a clone of the public repository after a `git pull` (no
-release row, no tab wrapper; STAND_UPD=ready) (tools/parts_check.py)."""
+release row, no tab wrapper; STAND_UPD=ready) (tools/parts_check.py)
+STAND_TAGS=1 (stage T): a third project, a maker of 3D printers, fifteen tasks in every state, each with its section and
+topic in the store (PROJT — its screen, SESST — its task that waits for you; tools/tags_check.py)."""
 import asyncio, base64, hashlib, hmac, json, os, random, sys, time, urllib.parse
 from pathlib import Path
 
@@ -179,6 +181,150 @@ def png_sample(w=320, h=200):
 def ev(name, sid, cwd=SHOP, **kw):
     folder = Path(T.TP).parent if cwd == SHOP else Path(T.TP).parent.parent / PKEY2
     return dict(hook_event_name=name, session_id=sid, transcript_path=str(folder / (sid + ".jsonl")), cwd=cwd, **kw)
+
+
+# STAND_TAGS=1 (stage T): a third project — a maker of 3D printers — with fifteen tasks in every state, each with its
+# section and topic as Claude would have given them (made two days ago; one topic a moment ago — the app draws it
+# dashed); the shop's and the desk's tasks get a section and a topic too. The tags go into the store: the daemon's own
+# code hands them to the app (tools/tags_check.py)
+TAGS_D = {
+    "en": dict(
+        name="Printer", secs=["Firmware", "Frame", "Electronics", "Marketing", "Slicer", "Extruder", "Docs"],
+        shop=[("Checkout", "Errors"), ("Search", "Typos"), ("Images", "Thumbnails"), ("Admin", "Dark theme")],
+        desk=[("Tickets", "Sorting"), ("Reports", "Weekly")],
+        tasks=[
+            dict(st="you", ago=1500, tag=("Electronics", "Drivers"), title="Why the layers shift after three hours of printing",
+                 line="The X driver overheats; there are two ways to fix it", need="Pick: lower the motor current or add a heatsink",
+                 replies=["Lower the current", "Add a heatsink", "Explain the difference"]),
+            dict(st="work", ago=660, tag=("Extruder", "Sensors"), title="Add a filament runout sensor",
+                 now="The sensor is on a spare input of the board; next, pause the print and show a message.", edit="firmware/runout.c"),
+            dict(st="work", ago=240, tag=("Marketing", "Trade show"), fresh=True, title="Prepare the trade show page",
+                 now="The draft is ready; picking the photos and the specs.", edit="marketing/show/page.md"),
+            dict(st="bg", ago=900, tag=("Frame", "Strength"), title="Run a strength check on the frame",
+                 line="The frame simulation under 40 kg is running; the outcome when it ends", bg="Frame strength simulation",
+                 bg_cmd="python sim/frame_fea.py --load 40"),
+            dict(st="done", ago=2400, tag=("Electronics", "Power"), title="Power board: reverse polarity protection",
+                 line="Added a diode and a fuse; the schematic and the parts list are updated"),
+            dict(st="done", ago=4200, tag=("Slicer", "Profiles"), title="A PETG profile for the slicer",
+                 line="The profile is ready: 240 °C, 30 % fan, a clean test print"),
+            dict(st="idle", ago=7800, tag=("Frame", "Mounts"), title="A display mount on the frame",
+                 line="The mount is redrawn and prints without supports"),
+            dict(st="old", ago=86400 + 3600, tag=("Marketing", "Customers"), title="Answers to customers' common questions"),
+            dict(st="old", ago=86400 + 9000, tag=("Firmware", "Levelling"), title="25-point bed levelling"),
+            dict(st="old", ago=2 * 86400, tag=("Extruder", "Nozzles"), title="A 0.6 mm nozzle: flow settings"),
+            dict(st="old", ago=3 * 86400, tag=("Firmware", "Wi-Fi"), title="Firmware updates over Wi-Fi"),
+            dict(st="old", ago=3 * 86400 + 7200, tag=("Docs", "Assembly"), title="Assembly guide, chapter 3"),
+            dict(st="old", ago=4 * 86400, tag=("Electronics", "Cooling"), title="The board fan is noisy"),
+            dict(st="old", ago=5 * 86400, tag=("Frame", "Purchasing"), title="Compare prices for 2020 extrusions"),
+            dict(st="old", ago=6 * 86400, tag=("Firmware", "Network updates"), title="Over-the-air firmware: the signature check")]),
+    "ru": dict(
+        name="Принтер", secs=["Прошивка", "Корпус", "Электроника", "Маркетинг", "Слайсер", "Экструдер", "Документы"],
+        shop=[("Оплата", "Ошибки"), ("Поиск", "Опечатки"), ("Картинки", "Превью"), ("Админка", "Тёмная тема")],
+        desk=[("Заявки", "Разбор"), ("Отчёты", "Неделя")],
+        tasks=[
+            dict(st="you", ago=1500, tag=("Электроника", "Драйверы"), title="Почему слой съезжает на третьем часу печати",
+                 line="Причина — перегрев драйвера оси X; есть два способа это убрать",
+                 need="Выбери: снизить ток мотора или поставить радиатор",
+                 replies=["Снизить ток", "Поставить радиатор", "Объясни разницу"]),
+            dict(st="work", ago=660, tag=("Экструдер", "Датчики"), title="Добавь датчик конца филамента",
+                 now="Датчик на свободном входе платы; дальше — пауза печати и сообщение на экране.", edit="firmware/runout.c"),
+            dict(st="work", ago=240, tag=("Маркетинг", "Выставка"), fresh=True, title="Подготовь страницу к выставке",
+                 now="Черновик текста готов, подбираю фото и характеристики.", edit="marketing/show/page.md"),
+            dict(st="bg", ago=900, tag=("Корпус", "Прочность"), title="Посчитай раму на прочность",
+                 line="Запустил расчёт рамы под нагрузкой 40 кг; итог — по готовности", bg="Расчёт прочности рамы",
+                 bg_cmd="python sim/frame_fea.py --load 40"),
+            dict(st="done", ago=2400, tag=("Электроника", "Питание"), title="Схема питания: защита от переполюсовки",
+                 line="Добавил диод и предохранитель; схема и список деталей обновлены"),
+            dict(st="done", ago=4200, tag=("Слайсер", "Профили"), title="Профиль PETG для слайсера",
+                 line="Профиль готов: 240 °C, обдув 30 %, пробник без паутины"),
+            dict(st="idle", ago=7800, tag=("Корпус", "Крепления"), title="Крепление дисплея на раму",
+                 line="Крепление перерисовано, печатается без поддержек"),
+            dict(st="old", ago=86400 + 3600, tag=("Маркетинг", "Покупатели"), title="Ответы на частые вопросы покупателей"),
+            dict(st="old", ago=86400 + 9000, tag=("Прошивка", "Калибровка"), title="Калибровка стола по 25 точкам"),
+            dict(st="old", ago=2 * 86400, tag=("Экструдер", "Сопла"), title="Сопло 0,6 мм: настройки потока"),
+            dict(st="old", ago=3 * 86400, tag=("Прошивка", "Wi-Fi"), title="Обновление прошивки по Wi-Fi"),
+            dict(st="old", ago=3 * 86400 + 7200, tag=("Документы", "Сборка"), title="Инструкция по сборке, глава 3"),
+            dict(st="old", ago=4 * 86400, tag=("Электроника", "Охлаждение"), title="Вентилятор платы шумит"),
+            dict(st="old", ago=5 * 86400, tag=("Корпус", "Закупки"), title="Сравни цены на профиль 2020"),
+            dict(st="old", ago=6 * 86400, tag=("Прошивка", "Обновление по сети"), title="Прошивка по воздуху: проверка подписи")]),
+}[LANG if LANG in ("en", "ru") else "en"]
+
+
+
+async def stand_tags(p, store, projects):
+    """The printer's project, its tasks and every task's tags in the store. → the printer's pkey and its task ids."""
+    G = TAGS_D
+    root = Path(os.environ["PULT_HOME"]).parent / "printer"
+    for m in ("firmware", "frame", "electronics", "marketing", "slicer", "extruder", "docs"):
+        (root / m).mkdir(parents=True, exist_ok=True)
+    (root / "README.md").write_text("# %s\n" % G["name"])
+    path = str(root)
+    pk = pultd.sanitize(path)
+    folder = projects / pk
+    folder.mkdir(parents=True, exist_ok=True)
+    store.set_topic(pk, path, G["name"], 9001)
+
+    def evp(name, sid, **kw):
+        return dict(hook_event_name=name, session_id=sid, transcript_path=str(folder / (sid + ".jsonl")), cwd=path, **kw)
+    sids = []
+    for n, x in enumerate(G["tasks"]):
+        sid = "%08x-7777-4777-8777-%012x" % (0x70000000 + n, n)
+        sids.append(sid)
+        x["sid"] = sid
+        now = time.time()
+        rows = [line("user", x["title"], ago=x["ago"])]
+        if x.get("line"):
+            rows.append(aline(x["line"] + ".", "t%d" % n, 900, ago=max(0, x["ago"] - 300)))
+        f = folder / (sid + ".jsonl")
+        f.write_text("\n".join(rows) + "\n")
+        if x["st"] == "old":
+            os.utime(f, (now - x["ago"] + 600, now - x["ago"] + 600))
+            continue
+        store.touch_session(sid, pk, path=path, title=x["title"])
+        if x["st"] == "work":
+            with f.open("a") as fh:
+                fh.write(aline(x["now"], "w%d" % n, 1200) + "\n")
+            await T.run_hook(evp("UserPromptSubmit", sid, prompt=x["title"]))
+            await T.run_hook(evp("PostToolUse", sid, tool_name="Edit", tool_input={"file_path": path + "/" + x["edit"]}))
+            p.live[sid].turn.started -= x["ago"]
+            p.live[sid].run = p.live[sid].turn.started
+            p.live[sid].title, p.live[sid].named = x["title"], True
+        elif x["st"] == "bg":
+            await T.run_hook(evp("UserPromptSubmit", sid, prompt=x["title"]))
+            await T.run_hook(evp("Stop", sid, last_assistant_message=x["line"],
+                                 background_tasks=[{"id": "bt%d" % n, "type": "shell", "status": "running",
+                                                    "description": x["bg"], "command": x["bg_cmd"]}]))
+            p.live[sid].title, p.live[sid].named = x["title"], True
+        else:
+            r = p.attn.finished(sid, pk, 600, x["line"], x["line"], waits=True, seen=x["st"] == "idle", now=now - x["ago"])
+            p.attn.briefed(sid, r["ts"], {"line": x["line"], "you": x["st"] == "you", "need": x.get("need") or "",
+                                          "replies": x.get("replies") or []}, True)
+    # the earlier tasks: the SDK lists a project's sessions from the real ~/.claude/projects, which the stand never
+    # touches — so for the printer's folder the list is made up here, the same fields
+    import claude_agent_sdk
+    from types import SimpleNamespace
+    real_list = claude_agent_sdk.list_sessions
+    olds = [SimpleNamespace(session_id=x["sid"], custom_title=None, summary=x["title"], last_modified=(time.time() - x["ago"]) * 1000)
+            for x in G["tasks"] if x["st"] == "old"]
+
+    def list_sessions(directory=None, limit=None, *a, **kw):
+        if directory and os.path.realpath(directory) == os.path.realpath(path):
+            return olds[:limit]
+        return real_list(directory, limit, *a, **kw)
+    claude_agent_sdk.list_sessions = list_sessions
+    # the tags: sections first, in their order (that is their colour), then each task's topic
+    old = time.time() - 2 * 86400
+    shop = {T.SID: G["shop"][0], SID4: G["shop"][1], SID6: G["shop"][2], SID7: G["shop"][3]}
+    desk = {SID2: G["desk"][0], SID5: G["desk"][1]}
+    for pkey, secs in ((pk, G["secs"]), (T.PKEY, [s for s, _ in G["shop"]]), (PKEY2, [s for s, _ in G["desk"]])):
+        for s in secs:
+            store.tag_add(pkey, s, None, ts=old)
+    tasks = [(x["sid"], pk, x["tag"], x.get("fresh")) for x in G["tasks"]] + \
+        [(sid, T.PKEY, tg, False) for sid, tg in shop.items()] + [(sid, PKEY2, tg, False) for sid, tg in desk.items()]
+    for sid, pkey, (s, tp), fresh in tasks:
+        store.tag_add(pkey, s, tp, ts=None if fresh else old)
+        store.set_session_tag(sid, pkey, s, tp, False)
+    return pk, sids
 
 
 # STAND_FILES=1: the shop's own folder, made up, and the last reply's links into it — a page, a line of code, a project
@@ -557,6 +703,13 @@ async def main():
                                                  "mem_used": int(10.4 * (1 << 30)), "load": 3.6}))
     p._agents = (time.monotonic() + 1e6, [{"sessionId": SID3, "cwd": "/Users/x/blog", "pid": 3001}])
     p.live[T.SID].pid, p.live[SID2].pid = 1001, 2001
+    if os.environ.get("STAND_TAGS"):
+        tag_pk, tag_sids = await stand_tags(p, store, d.parent)
+        print("PROJT http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
+              (PORT, urllib.parse.quote(init("p_" + tag_pk))), flush=True)        # the printer's project
+        print("SESST http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
+              (PORT, urllib.parse.quote(init("s_" + tag_sids[0]))), flush=True)   # its task that waits for you
+        print("TAGPK", tag_pk, flush=True)
     print("LOAD http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
           (PORT, urllib.parse.quote(init("load"))), flush=True)
     print("SETTINGS http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %

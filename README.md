@@ -83,7 +83,8 @@ An empty folder with git, a `CLAUDE.md` Claude writes from your words, or a clon
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="media/f-newproject.en.dark.png"><img src="media/f-newproject.en.png" width="330" alt="New project in the app: a name, its folder, where to put it and how to start: empty, with a description or from GitHub"></picture></p>
 
-And: voice messages as text, the model and effort per session and a default for both, a pager that knows whether you're at the computer,
+And: tags on every task — the section of the project and the topic in it, kept by Claude (switch them on in Settings), corrected with a tap — voice
+messages as text, the model and effort per session and a default for both, a pager that knows whether you're at the computer,
 ticks on your message — sent, read by Claude — `pult run` for your own long commands, an update installed from the
 app after a `git pull` (macOS, Linux), every part of Pult in one table — what runs where and how far it is behind `main`. **[All of it](guide/usage.md)**.
 

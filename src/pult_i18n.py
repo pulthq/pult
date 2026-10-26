@@ -593,6 +593,7 @@ S = {
     "err.bad_sid": {"en": "invalid session id", "ru": "неверный номер сессии"},
     "err.no_transcript": {"en": "session transcript not found", "ru": "транскрипт сессии не найден"},
     "err.no_project": {"en": "project not found", "ru": "проект не найден"},
+    "tags.e.name": {"en": "the tag needs a name", "ru": "у тега нужно название"},
     "err.empty": {"en": "empty message", "ru": "пустое сообщение"},
     "err.no_folder_short": {"en": "I don't know the session's folder", "ru": "не знаю папку сессии"},
     "err.need_project_text": {"en": "a project and a text are needed", "ru": "нужны проект и текст"},

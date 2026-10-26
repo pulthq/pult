@@ -44,6 +44,7 @@ import pult_os
 import pult_render as R
 import pult_spend as S
 import pult_stt as STT
+import pult_tags as G
 import pult_update as U
 import pult_web as PW
 
@@ -99,7 +100,7 @@ ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends i
 STT_WORDS_MAX = 280             # characters of the owner's own words for Whisper: with the sentence, within Groq's 896 bytes
 STT_MAX = 4 * 1024 * 1024       # bytes of one recording from the app (5 min at 32 kbit/s ≈ 1.2 MB; base64 must fit the 8 MB frame)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.16.2"
+VERSION = "0.17.2"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -520,6 +521,12 @@ CREATE INDEX IF NOT EXISTS usage_log_ts ON usage_log(ts);
 CREATE TABLE IF NOT EXISTS turns(id INTEGER PRIMARY KEY, sid TEXT, pkey TEXT, start REAL, ts REAL, dur REAL,
     n INTEGER, files TEXT);
 CREATE INDEX IF NOT EXISTS turns_sid ON turns(sid, id);
+CREATE TABLE IF NOT EXISTS tag_secs(pkey TEXT, name TEXT, color INTEGER, own INTEGER DEFAULT 0, ts REAL,
+    PRIMARY KEY(pkey, name));
+CREATE TABLE IF NOT EXISTS tag_topics(pkey TEXT, sec TEXT, name TEXT, own INTEGER DEFAULT 0, ts REAL,
+    PRIMARY KEY(pkey, sec, name));
+CREATE TABLE IF NOT EXISTS session_tags(sid TEXT PRIMARY KEY, pkey TEXT, sec TEXT, topic TEXT, own INTEGER DEFAULT 0,
+    ts REAL);
 """
 
 
@@ -557,6 +564,54 @@ class Store:
         self.db.execute("UPDATE sessions SET pkey=?, path=coalesce(?,path), title=coalesce(?,title),"
                         " driven=max(driven,?), last_seen=? WHERE sid=?",
                         (pkey or cur["pkey"], path, title, int(bool(driven)), time.time(), sid))
+
+    # ----- task tags (stage T, pult_tags): the project's sections and topics, and each session's two -----
+
+    def tag_vocab(self, pkey):
+        """The project's tags: [{n, c, own, ts, topics: [{n, own, ts}]}] — sections in the order they were made (c is
+        that order: their colour in the app), each with its topics in theirs."""
+        secs = [{"n": r["name"], "c": r["color"], "own": bool(r["own"]), "ts": r["ts"], "topics": []}
+                for r in self.db.execute("SELECT * FROM tag_secs WHERE pkey=? ORDER BY color, ts", (pkey,))]
+        by = {s["n"]: s for s in secs}
+        for r in self.db.execute("SELECT * FROM tag_topics WHERE pkey=? ORDER BY ts, name", (pkey,)):
+            if r["sec"] in by:
+                by[r["sec"]]["topics"].append({"n": r["name"], "own": bool(r["own"]), "ts": r["ts"]})
+        return secs
+
+    def tag_add(self, pkey, sec, topic=None, own=False, ts=None):
+        """A section, and a topic in it, into the project's list unless they are there; own — the owner picked or made
+        them: they are never "new" again."""
+        ts = ts or time.time()
+        if self.db.execute("SELECT 1 FROM tag_secs WHERE pkey=? AND name=?", (pkey, sec)).fetchone():
+            if own:
+                self.db.execute("UPDATE tag_secs SET own=1 WHERE pkey=? AND name=?", (pkey, sec))
+        else:
+            c = self.db.execute("SELECT coalesce(max(color) + 1, 0) FROM tag_secs WHERE pkey=?", (pkey,)).fetchone()[0]
+            self.db.execute("INSERT INTO tag_secs VALUES(?,?,?,?,?)", (pkey, sec, c, int(own), ts))
+        if not topic:
+            return
+        if self.db.execute("SELECT 1 FROM tag_topics WHERE pkey=? AND sec=? AND name=?", (pkey, sec, topic)).fetchone():
+            if own:
+                self.db.execute("UPDATE tag_topics SET own=1 WHERE pkey=? AND sec=? AND name=?", (pkey, sec, topic))
+        else:
+            self.db.execute("INSERT INTO tag_topics VALUES(?,?,?,?,?)", (pkey, sec, topic, int(own), ts))
+
+    def session_tag(self, sid):
+        return self.db.execute("SELECT * FROM session_tags WHERE sid=?", (sid,)).fetchone()
+
+    def set_session_tag(self, sid, pkey, sec, topic, own):
+        self.db.execute("INSERT OR REPLACE INTO session_tags VALUES(?,?,?,?,?,?)",
+                        (sid, pkey, sec, topic, int(bool(own)), time.time()))
+
+    def tag_uses(self, pkey):
+        """How many sessions have each section and each topic: {(sec, None): n, (sec, topic): n}."""
+        out = {}
+        for r in self.db.execute("SELECT sec, topic, count(*) n FROM session_tags WHERE pkey=? AND sec IS NOT NULL "
+                                 "GROUP BY sec, topic", (pkey,)):
+            out[(r["sec"], None)] = out.get((r["sec"], None), 0) + r["n"]
+            if r["topic"]:
+                out[(r["sec"], r["topic"])] = r["n"]
+        return out
 
     def map_msg(self, msg, sid, kind):
         self.db.execute("INSERT OR REPLACE INTO msgs VALUES(?,?,?,?)", (msg, sid, kind, time.time()))
@@ -616,6 +671,7 @@ class Turn:
         self.note = None          # the turn was started by Claude itself: "⚙️ Background task finished …"
         self.here = False         # the owner typed the prompt at this computer (not from Telegram or the app)
         self.prompt_id = None     # Claude Code's id of the turn: a message absorbed into it comes with the same one
+        self.ask = None           # the owner's request as written, wherever it came from (prompt — only when typed here)
 
 
 class Req:
@@ -1603,8 +1659,10 @@ class Pult:
                     self.seen_here(lv)                         # typed here
                 t = self.start_turn(lv, None if origin else ev.get("prompt"), reply_to=origin, pid=ev.get("prompt_id"))
                 t.here = not origin and not lv.driven
+                t.ask = ev.get("prompt")
                 lv.run = t.started
                 self.out_set(sid, "read", ev.get("prompt"))
+                self.tags_on_prompt(lv, ev.get("prompt"))
         elif name in ("PostToolUse", "PostToolUseFailure"):
             tool, inp = ev.get("tool_name"), ev.get("tool_input")
             for r in list(lv.pending.values()):
@@ -1734,7 +1792,8 @@ class Pult:
         self.changed(lv.sid)
         if not fail and text.strip() and self.prefs()["brief"]:
             bg = [b.get("description") or b.get("command") or "" for b in lv.bg]
-            asyncio.create_task(self.brief_result(lv, rec["ts"], t.prompt if t else None, text, bg, waits))
+            asyncio.create_task(self.brief_result(lv, rec["ts"], (t.ask or t.prompt) if t else None, text, bg, waits,
+                                                  since=t.started if t else 0.0))
 
     async def drop(self, mid):
         """Delete one of Pult's messages (Telegram allows it for 48 h); a refusal only goes to the log."""
@@ -1963,19 +2022,199 @@ class Pult:
                 return lim.get("percent")
         return None
 
-    async def brief_result(self, lv, ts, prompt, text, bg, waits):
+    async def brief_result(self, lv, ts, prompt, text, bg, waits, since=0.0):
         """The model's line for a finished turn (pult_brief: haiku, the owner's subscription), one request at a
-        time; a newer outcome of the same session makes the request moot."""
+        time; a newer outcome of the same session makes the request moot. The same request reads the task's tags
+        (stage T) — unless they are the owner's: theirs are final. since — the turn's start: its files are a hint."""
         async with self.brief_sem:
             r = self.attn.rec.get(lv.sid)
             if not r or r["ts"] != ts:
                 return
             BRIEF_DIR.mkdir(parents=True, exist_ok=True)
-            b = await B.brief(R.prompt_text(prompt) if prompt else None, text, bg, self.lang(), BRIEF_DIR)
+            tags = await self.tag_ctx(lv, since)
+            b = await B.brief(R.prompt_text(prompt) if prompt else None, text, bg, self.lang(), BRIEF_DIR, tags=tags)
             if b is None:
                 log("brief %s: no answer from the model — the first sentence stays" % lv.sid[:8])
-            elif self.attn.briefed(lv.sid, ts, b, waits):
+                return
+            if tags is not None and b.get("tags"):
+                self.tags_set(lv, b["tags"])
+            if self.attn.briefed(lv.sid, ts, b, waits):
                 self.changed(lv.sid)
+
+    # ----- task tags (stage T): a section of the project and a topic in it; the model keeps them, the owner corrects -----
+
+    async def tag_ctx(self, lv, since=0.0, force=False):
+        """What the model needs for a task's tags — pult_tags.context's arguments: the project, its list, the task's
+        current tags, the files its steps worked with since `since`, the top folders while the list is short — or None:
+        the owner's own tags are final (force — their hashtag asks the model to place it anyway), and projects Pult
+        doesn't show get none."""
+        cur = self.store.session_tag(lv.sid)
+        if skip_pkey(lv.pkey) or (cur and cur["own"] and not force):
+            return None
+        vocab = self.store.tag_vocab(lv.pkey)
+        root = self.project_path(lv.pkey, lv.cwd)
+        paths = await asyncio.to_thread(G.turn_paths, lv.transcript, since, root) if lv.transcript else []
+        dirs = await asyncio.to_thread(G.hints, root) if root and len(vocab) < G.HINT_UNDER else []
+        row = self.store.session(lv.sid)
+        return {"project": self.project_label(lv.pkey), "vocab": vocab, "paths": paths, "dirs": dirs,
+                "cur": {"sec": cur["sec"], "topic": cur["topic"]} if cur and cur["sec"] else None,
+                "title": lv.title or (row["title"] if row else None)}
+
+    def tags_set(self, lv, got, own=False):
+        """A task's tags — the model's, or (own) the owner's — placed in the project's list (pult_tags.place: the
+        list's own spelling, its limits); the model never overwrites the owner's. → whether anything changed."""
+        got = G.parse(got)                       # names as shown, whatever the model wrote
+        cur = self.store.session_tag(lv.sid)
+        if got is None or (cur and cur["own"] and not own):
+            return False
+        was = {"sec": cur["sec"], "topic": cur["topic"]} if cur and cur["sec"] else None
+        at = G.place(self.store.tag_vocab(lv.pkey), got, was)
+        if at is None:
+            return False
+        sec, topic = at[0], at[1]
+        if was == {"sec": sec, "topic": topic} and (own == bool(cur["own"])):
+            return False
+        self.store.tag_add(lv.pkey, sec, topic, own=own)
+        self.store.set_session_tag(lv.sid, lv.pkey, sec, topic, own)
+        log("tags %s: %s%s%s" % (lv.sid[:8], sec, " / " + topic if topic else "", " (the owner's)" if own else ""))
+        self.changed(lv.sid)
+        return True
+
+    def tags_on_prompt(self, lv, prompt):
+        """A new request from the owner (stage T). Their hashtags set the task's tags at once, as theirs; a word that
+        is not in the project's list goes to the model, which places it. A task without tags gets them from the model
+        as soon as its request is in: a turn may run for an hour, and "Running now" needs them already."""
+        if skip_pkey(lv.pkey):
+            return
+        text = R.prompt_text(prompt)
+        words = G.hashtags(text)
+        if words and self.tag_by_owner(lv, words):
+            return
+        cur = self.store.session_tag(lv.sid)
+        if self.prefs()["brief"] and (words or not (cur and cur["sec"])):
+            asyncio.create_task(self.tag_task(lv, text, own=words[0] if words else None))
+
+    def tag_by_owner(self, lv, words):
+        """The owner's hashtags → the task's tags, theirs: a section or a topic of the project's list, by name. A word
+        not in the list: with the model it is left to tag_task (False); without it, it becomes a section of its own."""
+        vocab = self.store.tag_vocab(lv.pkey)
+        for w in words:
+            f = G.find(vocab, w)
+            if f and f[0] == "topic":
+                self.tags_set(lv, {"sec": f[1]["n"], "topic": f[2]["n"]}, own=True)
+                return True
+            if f:
+                cur = self.store.session_tag(lv.sid)
+                self.tags_set(lv, {"sec": f[1]["n"], "topic": cur["topic"] if cur and cur["sec"] == f[1]["n"] else None}, own=True)
+                return True
+        if self.prefs()["brief"]:
+            return False
+        sec = G.norm(words[0], G.SEC_LEN)
+        if not sec:
+            return False
+        self.store.tag_add(lv.pkey, sec, None, own=True)
+        self.store.set_session_tag(lv.sid, lv.pkey, sec, None, True)
+        self.changed(lv.sid)
+        return True
+
+    async def tag_task(self, lv, prompt, own=None, reply=None):
+        """The model's tags for a task from its request (and reply, if any), one request at a time with the result
+        lines; own — the owner's hashtag that is not in the project's list: the model places it, and the tags are the
+        owner's."""
+        async with self.brief_sem:
+            ctx = await self.tag_ctx(lv, force=bool(own))
+            if ctx is None:
+                return
+            BRIEF_DIR.mkdir(parents=True, exist_ok=True)
+            reply = reply or (self.attn.rec.get(lv.sid) or {}).get("line")      # how the task's last turn ended, if any
+            got = await G.tag(G.request(prompt=prompt, reply=reply, own=own, **ctx), self.lang(), BRIEF_DIR)
+            if got is None:
+                log("tags %s: no answer from the model" % lv.sid[:8])
+                return
+            if own and G.key(own) not in (G.key(got["sec"]), G.key(got.get("topic"))):
+                got["topic"] = G.norm(own, G.TOPIC_LEN)       # the owner's word stays, wherever the model put the task
+            self.tags_set(lv, got, own=bool(own))
+
+    def tags_of(self, sid, cache=None):
+        """A session's tags for the app: its section and its topic — [{n, c, k: "sec"|"topic", fresh}], coloured by
+        the section's place in the project's list; [] without tags. cache — {pkey: (list, uses)} across one answer."""
+        r = self.store.session_tag(sid)
+        if not r or not r["sec"]:
+            return []
+        cache = {} if cache is None else cache
+        if r["pkey"] not in cache:
+            cache[r["pkey"]] = (self.store.tag_vocab(r["pkey"]), self.store.tag_uses(r["pkey"]))
+        vocab, uses = cache[r["pkey"]]
+        s = next((x for x in vocab if x["n"] == r["sec"]), None)
+        if s is None:
+            return []
+        now = time.time()
+        out = [{"n": s["n"], "c": s["c"], "k": "sec", "fresh": G.is_fresh(s, uses.get((s["n"], None), 0), now)}]
+        t = next((x for x in s["topics"] if x["n"] == r["topic"]), None) if r["topic"] else None
+        if t:
+            out.append({"n": t["n"], "c": s["c"], "k": "topic", "fresh": G.is_fresh(t, uses.get((s["n"], t["n"]), 0), now)})
+        return out
+
+    def tag_list(self, pkey, sids=None):
+        """The project's sections for the app — [{n, c, cnt, fresh, topics: [{n, cnt, fresh}]}]. With sids — what a
+        screen shows: cnt counts those sessions, only the sections and topics they have, the most used first (the tag
+        bar); without — the whole list in its order, cnt over every task (the sheet that corrects a task's tags)."""
+        vocab, uses, now = self.store.tag_vocab(pkey), self.store.tag_uses(pkey), time.time()
+        have = None
+        if sids is not None:
+            have = {}
+            for sid in set(sids):
+                r = self.store.session_tag(sid)
+                if r and r["sec"] and r["pkey"] == pkey:
+                    have[(r["sec"], None)] = have.get((r["sec"], None), 0) + 1
+                    if r["topic"]:
+                        have[(r["sec"], r["topic"])] = have.get((r["sec"], r["topic"]), 0) + 1
+        out = []
+        for s in vocab:
+            cnt = (have if have is not None else uses).get((s["n"], None), 0)
+            tops = [{"n": t["n"], "cnt": (have if have is not None else uses).get((s["n"], t["n"]), 0),
+                     "fresh": G.is_fresh(t, uses.get((s["n"], t["n"]), 0), now)} for t in s["topics"]]
+            if have is not None:
+                if not cnt:
+                    continue
+                tops = [t for t in tops if t["cnt"]]
+            out.append({"n": s["n"], "c": s["c"], "cnt": cnt, "fresh": G.is_fresh(s, uses.get((s["n"], None), 0), now),
+                        "topics": tops})
+        if have is not None:
+            out.sort(key=lambda g: (-g["cnt"], g["c"]))
+        return out
+
+    async def api_tag(self, sid, sec=None, topic=None, auto=False):
+        """The owner's tags for a task (stage T): a section, and a topic in it if any — from the project's list or new
+        (the limits are the model's, not the owner's); final: the model never changes them. auto — back to Claude:
+        the model reads the task again, from its title and its last outcome."""
+        if not re.fullmatch(r"[0-9a-fA-F-]{36}", str(sid or "")):
+            raise ValueError(self.t("err.bad_sid"))
+        lv = self.live.get(sid) or self.stub(sid)
+        if not lv.pkey or skip_pkey(lv.pkey):
+            raise ValueError(self.t("err.no_project"))
+        cur = self.store.session_tag(sid)
+        if auto:
+            if cur and cur["own"]:
+                self.store.set_session_tag(sid, lv.pkey, cur["sec"], cur["topic"], False)
+                log("tags %s: back to Claude" % sid[:8])
+            if self.prefs()["brief"]:
+                rec = self.attn.rec.get(sid) or {}
+                asyncio.create_task(self.tag_task(lv, lv.title or "", reply=rec.get("line")))
+        else:
+            name = G.norm(sec, G.SEC_LEN)
+            if not name:
+                raise ValueError(self.t("tags.e.name"))
+            s = next((x for x in self.store.tag_vocab(lv.pkey) if G.key(x["n"]) == G.key(name)), None)
+            name = s["n"] if s else name
+            tp = G.norm(topic, G.TOPIC_LEN) if topic else None
+            t = next((x for x in s["topics"] if G.key(x["n"]) == G.key(tp)), None) if s and tp else None
+            tp = t["n"] if t else tp
+            self.store.tag_add(lv.pkey, name, tp, own=True)
+            self.store.set_session_tag(sid, lv.pkey, name, tp, True)
+            log("tags %s: %s%s (the owner's)" % (sid[:8], name, " / " + tp if tp else ""))
+        self.changed(sid)
+        return {"tags": self.tags_of(sid), "tagset": self.tag_list(lv.pkey), "auto": bool(auto)}
 
     # ----- tasks without Claude: pult run -- command -----
 
@@ -3330,7 +3569,7 @@ class Pult:
         ended), what the owner has to do, ready replies, the times."""
         opened = {a.get("sessionId"): a for a in agents if a.get("sessionId")}
         sids = set(self.live) | set(self.driven) | set(opened) | set(self.attn.rec)
-        rows = []
+        rows, tagged = [], {}
         for sid in sids:
             rec = self.attn.rec.get(sid) or {}
             lv = self.live.get(sid)
@@ -3357,7 +3596,7 @@ class Pult:
                          "dur": rec.get("dur"), "driven": sid in self.driven, "tab": bool(self.tab_for(sid)),
                          "open": sid in opened, "model": bool(rec.get("model")),
                          "bg": [R.short(b.get("description") or b.get("command") or self.t("task.default"), 80) for b in lv.bg],
-                         "cwd": lv.cwd})
+                         "cwd": lv.cwd, "tags": self.tags_of(sid, tagged)})
         return rows
 
     def name_of(self, pkey, rows=()):
@@ -3425,18 +3664,19 @@ class Pult:
             except Exception as e:
                 log("project sessions not listed:", repr(e))
                 items = []
-            known = {r["sid"]: r for r in rows}
+            known, tagged = {r["sid"]: r for r in rows}, {}
             for x in items:
                 if x.session_id in shown:
                     continue
                 r = known.get(x.session_id) or {}
                 earlier.append({"sid": x.session_id, "title": R.short(x.custom_title or x.summary or "—", 80),
                                 "last": x.last_modified / 1000, "line": r.get("line") or "", "open": bool(r.get("open")),
-                                "driven": x.session_id in self.driven})
+                                "driven": x.session_id in self.driven, "tags": self.tags_of(x.session_id, tagged)})
         turns, secs = self.attn.day_of(pkey)
         return {"pkey": pkey, "name": self.name_of(pkey, rows), "path": path, "pending": pending, "mine": mine,
                 "live": live, "today": today, "earlier": earlier, "turns": turns, "secs": secs,
-                "reset": self.limit_reset(), "stt": self.stt_state()["on"]}
+                "reset": self.limit_reset(), "stt": self.stt_state()["on"],
+                "tagset": self.tag_list(pkey, list(shown) + [x["sid"] for x in earlier])}
 
     # ----- the load on the computer: the processor and memory Claude's sessions take -----
 
@@ -3611,8 +3851,10 @@ class Pult:
         pref = self.prefs()
         dflt = {"model": pref["model"], "effort": pref["effort"]} if ours else None
         # the session's own title, as on the board (its first prompt until it has a name), the project beside it
+        own = self.store.session_tag(sid)
         return {"sid": sid, "title": lv.title or self.title(lv), "project": self.project_label(lv.pkey), "pkey": lv.pkey,
-                "outcome": outcome,
+                "outcome": outcome, "tags": self.tags_of(sid), "tagset": self.tag_list(lv.pkey),
+                "tag_auto": not (own and own["own"]),
                 "live": live, "page": page, "stats": stats, "choice": self.choice.get(sid) or {}, "switch": switch,
                 "switch_effort": switch_effort, "default": dflt, "stt": self.stt_state()["on"],
                 "ctx": {"window": ctx[0], "max_out": ctx[1], "usable": ctx_usable(ctx[0], ctx[1])} if ctx else None,
