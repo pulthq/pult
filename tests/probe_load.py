@@ -11,7 +11,7 @@ Claude starts `sleep 20; echo "it's done"` in the background and ends the turn. 
   4. the pid the hook sees as its parent (pult_hook.py sends os.getppid()): is it claude itself.
 User settings are not loaded (setting_sources=[]); PULT_OFF=1, so the real Pult does not see the events.
 """
-import asyncio, json, os, subprocess, sys, tempfile, time
+import asyncio, json, os, subprocess, sys, tempfile
 from pathlib import Path
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, PermissionResultAllow, ResultMessage
 

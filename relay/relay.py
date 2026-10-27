@@ -40,7 +40,9 @@ MAX_AGE = 7 * 24 * 3600
 MAX_CLIENTS = 6            # app windows at once: the owner's phone and maybe Telegram on the Mac
 HELLO_WAIT = 10            # s for a new connection to say who it is
 WAITING_PER_IP = 3         # connections that haven't said who they are yet: per address and in all
-WAITING_MAX = 30
+# each may bring a frame of up to 8 MB before it says who it is: 6 of them and the relay (~45 MB) stay within its
+# MemoryMax (100 MB on the developer's server), 30 didn't — a stranger could run it out of memory (review 2026-10-27, Б6)
+WAITING_MAX = 6
 # Telegram's public key for checking initData without the bot token ("Validating data for Third-Party Use")
 TG_PUBLIC = bytes.fromhex("e7bf03a2fa4602af4580703d88dda5bb59f32ed8b02a56c187fe7d34caed242d")
 # stage U3, on a server with the updater (install.sh --auto sets both): the folder where the relay leaves the release
@@ -104,6 +106,10 @@ def updater_status():
     if not isinstance(raw, dict):
         return None
     out = {}
+    own = raw.get("self")              # the updater's own files (0.18.6): {path: blob id or None}
+    if isinstance(own, dict):
+        out["self"] = {k[:80]: v for k, v in list(own.items())[:12]
+                       if isinstance(k, str) and (v is None or isinstance(v, str) and re.fullmatch(r"[0-9a-f]{40}", v))}
     for k in STATUS_KEYS:
         v = raw.get(k)
         if isinstance(v, bool) or k == "ts" and isinstance(v, (int, float)):
@@ -182,6 +188,15 @@ class Relay:
         self.waiting = collections.Counter()    # address → connections that haven't said who they are yet
         self.wanted = (None, 0.0)           # the release last written to want.json, and when
         self.told = None                    # the updater's report as last sent to the Mac
+        self.mac_gone = None                # when the Mac went away (None — it's here, or gone before the relay started)
+
+    def mac_off(self):
+        """What a window hears while the Mac isn't connected: that, and for how many seconds now when the relay saw it
+        go — the app says "away since …" (a computer silent for hours is a computer whose Pult doesn't start)."""
+        msg = {"t": "mac", "on": False}
+        if self.mac_gone is not None:
+            msg["away"] = int(time.time() - self.mac_gone)
+        return msg
 
     def hello_mac(self):
         """What the relay says to a Mac that has just connected: whether this server has the updater, its last report,
@@ -199,19 +214,23 @@ class Relay:
             return False
         now = time.time() if now is None else now
         last, at = self.wanted
-        if now - at < WANT_EVERY or last == (tag, commit) and now - at < WANT_REFRESH:
+        retry = msg.get("retry") is True               # the owner asked the server to try again (Settings → parts)
+        if now - at < WANT_EVERY or last == (tag, commit) and now - at < WANT_REFRESH and not retry:
             return False
         p = Path(STATE) / "want.json"
         tmp = p.with_name(".want.json.tmp")
+        data = {"tag": tag, "commit": commit, "ts": int(now)}
+        if retry:
+            data["retry"] = int(now)                   # this server's clock: the updater compares it with its own
         try:
-            tmp.write_text(json.dumps({"tag": tag, "commit": commit, "ts": int(now)}), encoding="utf-8")
+            tmp.write_text(json.dumps(data), encoding="utf-8")
             os.chmod(tmp, 0o644)
             os.replace(tmp, p)
         except OSError as e:
             log("want.json:", e)
             return False
         self.wanted = ((tag, commit), now)
-        log("the computer runs %s (%s) — told the updater" % (tag, commit[:7]))
+        log("the computer runs %s (%s) — told the updater%s" % (tag, commit[:7], ", to try again" if retry else ""))
         return True
 
     async def watch_updater(self, app):
@@ -274,16 +293,21 @@ class Relay:
             self.inits[cid] = {"init": hello.get("init"), "ip": ip, "client": client,
                                "resume": key if isinstance(key, str) and len(key) <= 100 else None}
             mac = await self.to_mac(dict(self.inits[cid], t="open", cid=cid, build=build()))
-            await ws.send_str(json.dumps({"t": "hello", "cid": cid, "mac": mac}))
+            hello = {"t": "hello", "cid": cid, "mac": mac}
+            if not mac and "away" in self.mac_off():
+                hello["away"] = self.mac_off()["away"]
+            await ws.send_str(json.dumps(hello))
             async for m in ws:
                 if m.type != WSMsgType.TEXT:
                     continue
                 msg = json.loads(m.data)
                 if cid not in self.clients:
                     continue                          # the Mac has not confirmed the login yet
+                if not isinstance(msg, dict) or msg.get("t") != "req":
+                    continue                          # a window only asks: what else the Mac hears comes from the relay
                 msg["cid"] = cid
                 if not await self.to_mac(msg):
-                    await ws.send_str(json.dumps({"t": "mac", "on": False}))
+                    await ws.send_str(json.dumps(self.mac_off()))
         except (asyncio.TimeoutError, ValueError, TypeError, AttributeError, ConnectionError) as e:
             log("phone %d: %r" % (cid, e))
         finally:
@@ -313,6 +337,7 @@ class Relay:
         old, self.mac = self.mac, ws
         if old is not None and not old.closed:
             await old.close(code=4000, message=b"replaced")
+        self.mac_gone = None
         log("Mac connected")
         hello = self.hello_mac()
         self.told = hello["upd"]
@@ -357,8 +382,9 @@ class Relay:
         finally:
             if self.mac is ws:
                 self.mac = None
+                self.mac_gone = time.time()
                 log("Mac disconnected")
-                await self.to_clients({"t": "mac", "on": False}, waiting=True)
+                await self.to_clients(self.mac_off(), waiting=True)
         return ws
 
     # ----- pages -----

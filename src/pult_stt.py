@@ -87,6 +87,14 @@ class Stt:
                            [httpx.AsyncClient(timeout=t)]
         self.cur = 0
 
+    async def aclose(self):
+        """Its connections closed: a client replaced when the key changes, or one made only to check a key."""
+        for c in self.clients:
+            try:
+                await c.aclose()
+            except Exception:
+                pass
+
     async def _send(self, method, path, **kw):
         last = None
         for k in range(len(self.clients)):
@@ -94,10 +102,14 @@ class Stt:
             try:
                 r = await self.clients[i].request(method, BASE + path,
                                                   headers={"Authorization": "Bearer " + self.key}, **kw)
-            except (httpx.ConnectError, httpx.ProxyError, httpx.ConnectTimeout, httpx.ReadError,
-                    httpx.ReadTimeout) as e:
+            except httpx.TransportError as e:
+                # any failure on the way — a write timeout of a long recording through the proxy, a dropped
+                # connection: the other route, then words for the owner (before 0.18.6 some escaped as raw errors,
+                # and a voice message got neither words nor "didn't work" — review 2026-10-27, М1)
                 last = e
                 continue
+            except httpx.HTTPError as e:
+                raise SttError("stt.e.net", why=type(e).__name__) from None
             self.cur = i
             return r
         raise SttError("stt.e.net", why=type(last).__name__)

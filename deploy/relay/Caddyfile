@@ -3,7 +3,11 @@
 # WebSockets pass through reverse_proxy as is.
 pult.example.com {
 	handle /pult/* {
-		reverse_proxy 127.0.0.1:8097
+		# the phone's real address, as nginx's proxy_set_header does: a client's own X-Real-IP is overwritten, not passed
+		# on — the relay counts unnamed connections per address with it (review 2026-10-27, Б5)
+		reverse_proxy 127.0.0.1:8097 {
+			header_up X-Real-IP {remote_host}
+		}
 		header {
 			X-Content-Type-Options "nosniff"
 			Referrer-Policy "no-referrer"

@@ -26,11 +26,19 @@ EVENTS = ["SessionStart", "UserPromptSubmit", "PostToolUse", "PostToolUseFailure
           "Stop", "StopFailure", "SessionEnd", "PermissionRequest"]     # StopFailure: an API error ended the turn
 WAIT_TIMEOUT = 6 * 3600 + 60             # wait up to 6 h for a Telegram answer; the Mac dialog stays open meanwhile
 # what a session learns at its start (and again after a resume or a compaction) while Pult runs: how to hand the owner
-# a file (stage F). SessionStart's additionalContext reaches the model — probe tests/probe_sessionctx.py, 2.1.300/2.1.301
-CONTEXT = ("Pult, a Telegram remote for Claude Code, runs on this computer. When the owner asks for a file, or the task "
-           "is to hand them one, send it to their phone with `pult send <file>... [-m \"caption\"]`: it arrives in this "
-           "project's Telegram topic. Only files inside this project's folder, up to 50 MB each. Files the owner sends "
-           "from Telegram are saved in this project's inbox/<date>/ folder.")
+# a file (stage F), and how to ask so the phone can tick several answers. SessionStart's additionalContext reaches the
+# model — probe tests/probe_sessionctx.py, 2.1.300/2.1.301; what the asking sentence changes — tests/probe_multiselect.py
+FILES_NOTE = ("Pult, a Telegram remote for Claude Code, runs on this computer. When the owner asks for a file, or the task "
+              "is to hand them one, send it to their phone with `pult send <file>... [-m \"caption\"]`: it arrives in this "
+              "project's Telegram topic. Only files inside this project's folder, up to 50 MB each. Files the owner sends "
+              "from Telegram are saved in this project's inbox/<date>/ folder.")
+# Claude rarely sets multiSelect and glues combinations into single options instead ("only A" / "A and B"): 2 of 76
+# questions on the owner's computer had ticks, 2026-10-15…26 (tools/ask_stats.py) — the phone shows ticks and "Done"
+# only when the question asks for them
+ASK_NOTE = ("The owner often answers your questions from the phone. In AskUserQuestion, when the options are not "
+            "mutually exclusive (steps to take, places to deploy to, things to include), set multiSelect: true and make "
+            "each option one action, instead of options that combine them (\"A and B\", \"only A\").")
+CONTEXT = FILES_NOTE + " " + ASK_NOTE
 
 
 def hooks_config(command, args=None):

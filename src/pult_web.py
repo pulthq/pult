@@ -64,7 +64,9 @@ def check_init(init, token, owners, now=None, max_age=LOGIN_FRESH):
     """Telegram initData → (is the bot-key signature valid, user ID, reason if not).
     The check string includes every field except hash, the signature field (Bot API 8.0) included. In case
     Telegram computes it without that field, the second variant is accepted too, and the log says which matched."""
-    fields = dict(urllib.parse.parse_qsl(init or "", keep_blank_values=True))
+    if not isinstance(init, str):
+        return False, 0, "no signature"
+    fields = dict(urllib.parse.parse_qsl(init, keep_blank_values=True))
     got = fields.pop("hash", "")
     if not got or not token:
         return False, 0, "no signature"
@@ -510,7 +512,7 @@ class Web:
                             fails = 0
                             async for m in ws:
                                 if m.type == aiohttp.WSMsgType.TEXT:
-                                    await self.on_msg(json.loads(m.data))
+                                    await self.handle(m.data)
                             log("relay connection closed")
                             break
                     except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError) as e:
@@ -543,9 +545,22 @@ class Web:
         if self.on:
             asyncio.ensure_future(self.send(dict(data, t="event", kind=kind)))
 
+    async def handle(self, data):
+        """One message from the relay. Whatever its shape, it ends here: an error in handling it is logged (its kind
+        only — the message may carry a login) and the next one is read. Before 0.18.5 a message of an odd shape —
+        {"t": "relay", "can": 5} — ended the whole daemon, with every session Pult runs, again on each reconnect."""
+        try:
+            msg = json.loads(data)
+            if isinstance(msg, dict):
+                await self.on_msg(msg)
+        except Exception as e:
+            log("a message from the relay not handled: %s" % type(e).__name__)
+
     async def on_msg(self, msg):
         t, cid = msg.get("t"), msg.get("cid")
         if t == "open":
+            if cid in self.clients:
+                return                     # a window that is in already isn't logged in again (only the relay opens one)
             await self.login(cid, msg)
         elif t == "relay":                 # stage U3: on connecting and with each report of the server's updater
             self.note_build(msg.get("build"))
@@ -672,14 +687,18 @@ class Web:
                     log("app files check:", repr(e))
                 await asyncio.sleep(GUARD_EVERY)
 
-    def warns_only(self):
-        """The release whose files the check expects when it only warns (stage U3: a server that takes releases from
-        GitHub; a CDN in front of it may change files), or None — a deploy's record: a difference closes the app."""
+    def release_of(self):
+        """(the release whose files the check expects, whether a difference only warns) — a server that takes releases
+        from GitHub (stage U3); (None, False) — a deploy's record. A difference closes the app either way unless the
+        computer's settings say PULT_GUARD=warn, for a CDN in front of the server that changes files (Q85: before it
+        only warned there, and a changed app.js ran in the owner's window — review 2026-10-27, Б4)."""
         try:
             man = json.loads(self.manifest.read_text()) if self.manifest else None
         except (OSError, ValueError):
-            return None
-        return man.get("tag") or "?" if isinstance(man, dict) and man.get("mode") == "warn" else None
+            return None, False
+        if isinstance(man, dict) and man.get("mode") in ("warn", "release"):
+            return man.get("tag") or "?", man.get("mode") == "warn"
+        return None, False
 
     async def guard_once(self, http):
         bad = await self.check_files(http)
@@ -691,17 +710,19 @@ class Web:
         if bad and not self.locked:
             await asyncio.sleep(GUARD_RECHECK)
             again = await self.check_files(http)
-            tag = self.warns_only()
-            if again and tag:
+            tag, warn = self.release_of()
+            if again and warn:
                 if ", ".join(again) != self.warned:
                     self.warned = ", ".join(again)
-                    log("app files on the server differ from release %s: %s — told, the app stays open" % (tag, self.warned))
-                    await self.p.files_alert(again, tag=tag)
+                    log("app files on the server differ from release %s: %s — told, the app stays open (PULT_GUARD=warn)"
+                        % (tag, self.warned))
+                    await self.p.files_alert(again, tag=tag, warn=True)
             elif again:
                 self.locked = ", ".join(again)
-                log("app files on the server differ from the deploy: %s — the app is closed" % self.locked)
+                log("app files on the server differ from %s: %s — the app is closed"
+                    % ("release " + tag if tag else "the deploy", self.locked))
                 await self.kick_all("locked")
-                await self.p.files_alert(again)
+                await self.p.files_alert(again, tag=tag)
         elif bad == [] and self.locked:
             log("app files on the server match the deploy again — the app is open")
             self.locked = None

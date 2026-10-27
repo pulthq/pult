@@ -20,6 +20,7 @@ function link(t, u) {
 function inline(s) {
   const keep = [];
   const hold = (h) => "\u0000" + (keep.push(h) - 1) + "\u0000";
+  s = s.replace(/\u0000/g, "");        // the placeholders' own mark never comes from the words (it showed "undefined")
   s = s.replace(/`([^`\n]+)`/g, (_, c) => hold("<code>" + esc(c) + "</code>"));
   s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, t, u) => hold(link(t, u)));
   // a link to a project file [name](path), as Claude writes them (stage F5): a tap opens it in the app. Any other
@@ -30,13 +31,17 @@ function inline(s) {
   s = esc(s);
   s = s.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
   s = s.replace(/(^|[^\w*])\*(?!\s)([^*\n]+?)\*(?![\w*])/g, "$1<i>$2</i>");
-  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => keep[+i]);
+  // a link's words may hold code — Claude writes [`app.js`](src/app.js) — so a placeholder can sit inside another: put
+  // them back until none is left (one pass showed "�0�" for the name, review 2026-10-27). Each holds only older ones
+  for (let k = 0; k < 8 && /\u0000\d+\u0000/.test(s); k++) s = s.replace(/\u0000(\d+)\u0000/g, (_, i) => keep[+i] ?? "");
+  return s;
 }
 
 function table(rows) {
   const cells = (r) => r.trim().replace(/^\||\|$/g, "").split("|").map((c) => inline(c.trim()));
   const body = rows.filter((r) => !/^\s*\|?\s*:?-{2,}/.test(r));
   const [head, ...rest] = body;
+  if (head === undefined) return "";   // separators alone: nothing to show (it threw, and the screen stopped updating)
   return '<div class="tbl"><table><thead><tr>' + cells(head).map((c) => "<th>" + c + "</th>").join("") +
     "</tr></thead><tbody>" + rest.map((r) => "<tr>" + cells(r).map((c) => "<td>" + c + "</td>").join("") + "</tr>").join("") +
     "</tbody></table></div>";
@@ -86,11 +91,16 @@ function blocks(text) {
 }
 
 export function md(src) {
-  return String(src ?? "").split(/(```[\s\S]*?```)/g).map((p) => {
-    if (p.startsWith("```") && p.endsWith("```") && p.length >= 6) {
-      const body = p.slice(3, -3).replace(/^[\w+.-]*\n/, "").replace(/\n$/, "");
-      return "<pre><code>" + esc(body) + "</code></pre>";
-    }
-    return blocks(p);
-  }).join("");
+  try {
+    return String(src ?? "").split(/(```[\s\S]*?```)/g).map((p) => {
+      if (p.startsWith("```") && p.endsWith("```") && p.length >= 6) {
+        const body = p.slice(3, -3).replace(/^[\w+.-]*\n/, "").replace(/\n$/, "");
+        return "<pre><code>" + esc(body) + "</code></pre>";
+      }
+      return blocks(p);
+    }).join("");
+  } catch (e) {
+    // whatever the words, the screen goes on: md() runs inside a render, and an error there stopped the whole screen
+    return "<p>" + esc(src).replace(/\n/g, "<br>") + "</p>";
+  }
 }

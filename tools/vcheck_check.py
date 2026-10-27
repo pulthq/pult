@@ -16,8 +16,9 @@ REPO = Path(__file__).resolve().parent.parent
 PY = sys.executable
 OUT = sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp(prefix="pult-vcheck-")
 os.makedirs(OUT, exist_ok=True)
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-PORT, STAND_PORT = int(os.environ.get("CDP_PORT") or 9344), os.environ.get("STAND_PORT") or "18131"
+import _cdp  # noqa: E402  (tools/_cdp.py: where Chrome is, free ports, a profile that goes — review 2026-10-27, Т9)
+CHROME = _cdp.CHROME
+PORT, STAND_PORT = _cdp.free_port(), os.environ.get("STAND_PORT") or str(_cdp.any_port())
 failures = []
 
 
@@ -37,12 +38,12 @@ def stand(parts, lang="ru"):
         if "\nHOME " in "\n" + text and "SETTINGS " in text:
             return p, dict(ln.split(" ", 1) for ln in text.splitlines() if ln[:5] in ("HOME ", "SETTI"))
         time.sleep(0.25)
-    p.kill()
+    _cdp.stop(p)
     raise RuntimeError("the stand didn't come up (%s)" % parts)
 
 
 async def main():
-    prof = tempfile.mkdtemp(prefix="cdp-")
+    prof = _cdp.profile()
     chrome = subprocess.Popen([CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--remote-debugging-port=%d" % PORT,
                                "--user-data-dir=" + prof, "--no-first-run", "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
@@ -141,7 +142,7 @@ async def main():
                 verdict("running: no button meanwhile", not await js(again))
                 await shot("1-running")
             finally:
-                proc.kill()
+                _cdp.stop(proc)
 
             # 2. it failed at a step; Home warns; "Check again" — checking, then passed
             proc, urls = stand("check_fail")
@@ -164,7 +165,7 @@ async def main():
                 verdict("passed: no button any more", not await js(again))
                 await shot("4-again-passed")
             finally:
-                proc.kill()
+                _cdp.stop(proc)
 
             # 3. passed, the tabs run it
             proc, urls = stand("check_here")
@@ -174,7 +175,7 @@ async def main():
                 verdict("here: the row says when", "2.1.311 проверен на этом компьютере" in await more(), await more())
                 await shot("5-here")
             finally:
-                proc.kill()
+                _cdp.stop(proc)
 
             # 4. couldn't check
             proc, urls = stand("check_err")
@@ -192,7 +193,7 @@ async def main():
                 verdict("Settings: a tap turns it off", await until("(%s)?.querySelector('.sw-h')?.getAttribute('aria-checked') === 'false'" % sw, 30))
                 await shot("7-switch")
             finally:
-                proc.kill()
+                _cdp.stop(proc)
 
             # 5. English, for keys left as keys
             proc, urls = stand("check_fail", "en")
@@ -202,7 +203,7 @@ async def main():
                 verdict("English: no key left as a key", "pt.cc." not in text and "tab.step." not in text and "check.why." not in text, text)
                 verdict("English: the step in words", "switching the model" in text, text)
             finally:
-                proc.kill()
+                _cdp.stop(proc)
             verdict("no script errors", not errors, errors)
     finally:
         chrome.kill()

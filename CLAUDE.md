@@ -17,6 +17,8 @@ Claude Code hook (`src/pult_hook.py`), an optional VS Code tab wrapper (`src/pul
 2. Say plainly what you could not check for real. The live checks (`tests/e2e_live.py`, `tests/probe_*.py`) use the
    real Claude Code and spend a little of the plan, so run them only when asked.
 3. `CHANGELOG.md` gets a line.
+4. Before a release: `bash tools/ci_local.sh` — what CI does, in a fresh environment (lint and the version's agreement
+   with the changelog included) — and, after a change in the app, `tools/check.py` (every screen check in Chrome).
 
 ## Rules
 
@@ -30,8 +32,8 @@ Claude Code hook (`src/pult_hook.py`), an optional VS Code tab wrapper (`src/pul
 - **Don't edit the user's settings directly.** `~/.claude/settings.json` changes only through `pult hooks` (with a
   backup); VS Code settings are never edited. Don't touch session transcripts in `~/.claude/projects/`.
 - Before restarting the service, check that no session started from Telegram is running: a restart interrupts it.
-- A new module in `src/` goes into two lists: the `cp` line in `install.sh` and `HOME_FILES` in `src/pult_setup.py`
-  (`test_every_module_installed` checks both); otherwise the installed daemon fails to start.
+- A new module in `src/` goes into `HOME_FILES` in `src/pult_setup.py`, the uninstaller's list
+  (`test_every_module_installed` checks it); `install.sh` and `install.ps1` take every `src/*.py` by themselves.
 
 ## Style
 

@@ -170,10 +170,8 @@ async def main():
     p.live[T.SID].turn.started -= 12 * 60
     await T.run_hook(T.ev("Stop", last_assistant_message=D["summary"]))
     await T.until(lambda: any(t.startswith("✅") for t in [d.get("text", "") for d in fake.of("sendMessage")]))
-    first_turn = p.live[T.SID].turn  # None now; the finished turn's message is edited to ✔️ — not in the picture
 
     # 2. the owner's next message starts a turn; Claude's words show up in it; then a permission request
-    n_before = len(fake.calls)
     await T.run_hook(T.ev("UserPromptSubmit", prompt=D["ask2"]))
     await T.until(lambda: p.live[T.SID].turn and p.live[T.SID].turn.msg)
     p.live[T.SID].turn.started -= 6 * 60

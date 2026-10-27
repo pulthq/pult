@@ -12,8 +12,9 @@ import aiohttp
 URL = sys.argv[1]
 OUT = sys.argv[2] if len(sys.argv) > 2 else tempfile.mkdtemp(prefix="pult-files-")
 os.makedirs(OUT, exist_ok=True)
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-PORT = 9336
+import _cdp  # noqa: E402  (tools/_cdp.py: where Chrome is, free ports, a profile that goes — review 2026-10-27, Т9)
+CHROME = _cdp.CHROME
+PORT = _cdp.free_port()
 failures = []
 
 
@@ -37,7 +38,7 @@ async def main():
     png(pic)
     with open(big, "wb") as f:
         f.truncate(6 * 1024 * 1024)
-    prof = tempfile.mkdtemp(prefix="cdp-")
+    prof = _cdp.profile()
     p = subprocess.Popen([CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--remote-debugging-port=%d" % PORT,
                           "--user-data-dir=" + prof, "--no-first-run", "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:

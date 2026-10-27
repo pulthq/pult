@@ -6,7 +6,7 @@ SHOT_JS="document.querySelector('.mchip').click()" — run on the loaded page be
 SHOT_CLEAR=1 — a transparent background where the page has none (pictures composed for the README).
 Not --screenshot with --virtual-time-budget: the app holds a WebSocket open, the page never "settles", and Chrome
 hangs. Only a type=page tab is used: the first one in the list is sometimes an internal one (Omnibox Popup)."""
-import asyncio, base64, json, os, subprocess, sys, tempfile, time
+import asyncio, base64, json, os, subprocess, sys
 import aiohttp
 
 URL, OUT = sys.argv[1], sys.argv[2]
@@ -17,18 +17,20 @@ HEIGHT = int(os.environ.get("SHOT_HEIGHT") or 0)
 FIT = os.environ.get("SHOT_FIT")
 JS = os.environ.get("SHOT_JS")
 CLEAR = os.environ.get("SHOT_CLEAR") == "1"
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+import _cdp  # noqa: E402  (tools/_cdp.py: where Chrome is, free ports, a profile that goes — review 2026-10-27, Т9)
+CHROME = _cdp.CHROME
+PORT = _cdp.free_port()
 
 
 async def main():
-    prof = tempfile.mkdtemp(prefix="cdp-")
-    p = subprocess.Popen([CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--remote-debugging-port=9333", "--user-data-dir=" + prof,
+    prof = _cdp.profile()
+    p = subprocess.Popen([CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--remote-debugging-port=%d" % PORT, "--user-data-dir=" + prof,
                           "--no-first-run", "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         async with aiohttp.ClientSession() as s:
             for _ in range(50):
                 try:
-                    async with s.get("http://127.0.0.1:9333/json/list") as r:
+                    async with s.get("http://127.0.0.1:%d/json/list" % PORT) as r:
                         tabs = [x for x in await r.json() if x.get("type") == "page"]
                         if tabs:
                             break

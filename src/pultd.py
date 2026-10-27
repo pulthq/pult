@@ -58,7 +58,7 @@ HOOK_PY = os.environ.get("PULT_HOOK_PY") or (
     else sys.executable)                                      # Pult's own Python: the hook needs nothing else
 SEPS = os.sep + "/"                                           # trailing separators of a folder path: / (Windows: \ and /)
 HOOK = str(HOME / "pult_hook.py")
-CLAUDE_PROJECTS = Path("~/.claude/projects").expanduser()
+CLAUDE_PROJECTS = Path(os.environ.get("PULT_PROJECTS") or "~/.claude/projects").expanduser()   # tests and the stand: their own
 
 SID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 SKIP_PREFIXES = ("-private-", "-tmp-", "-var-folders-")   # throwaway folders, not projects
@@ -80,6 +80,7 @@ YOU_LEN = 160            # characters of the owner's prompt in a result's head (
 STALE = 20 * 60          # s without events: check whether the session is alive (a tab may close without SessionEnd)
 OUT_READ = 30            # s a message just read stays in the outbox: the app shows it until the transcript has it
 OUT_GONE = 10 * 60       # s a message that didn't reach Claude stays in the outbox: the app shows it crossed out
+OUT_SENT = 6 * 3600      # s a message may wait to be read; never read by then (its hook never came) — crossed out (A8)
 BRIEF_DIR = HOME / "brief"   # an empty folder the result-reading model runs in (pult_brief): no project, no settings
 APP_ON = 45              # s: the app said "on screen" this recently — the owner is looking at it (stage V)
 AWAY_LOCKABLE = 300      # s: where the screen lock can be read, away after this long without input (locked — at once)
@@ -98,9 +99,10 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_WORDS_MAX = 280             # characters of the owner's own words for Whisper: with the sentence, within Groq's 896 bytes
+STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
 STT_MAX = 4 * 1024 * 1024       # bytes of one recording from the app (5 min at 32 kbit/s ≈ 1.2 MB; base64 must fit the 8 MB frame)
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
-VERSION = "0.18.2"
+VERSION = "0.18.6"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -114,7 +116,8 @@ TAB_RETRY = 3600         # s; a check that couldn't run (no login, a limit, the 
 TAB_CHECK_LIMIT = 360    # s for the check's process (it gives itself pult_tabcheck.TOTAL and cleans up)
 ANNOUNCE_EVERY = 600     # s; the relay's server is reminded of the release this computer runs while it runs another (U3)
 # the server's updater failed for a reason of the moment: it tries again on the next reminder, nobody is told
-SRV_TRANSIENT = ("network", "pip", "no_mac_before", "git", "no_git")
+SRV_TRANSIENT = ("network", "pip", "no_mac_before", "git", "no_git", "no_mac_retry")
+SRV_KEYS = ("state", "tag", "commit", "have", "from", "step", "why", "detail", "back", "back_ok", "ts")   # relay.STATUS_KEYS
 TG_REACH = (2, 30)       # s; at start, the first and the longest pause between tries to reach Telegram
 MENU_CHECK_EVERY = 1800  # s; the app button in the owner's chat is still ours (only the token's holder can change it)
 CONFLICT_WARN_EVERY = 6 * 3600   # s; "someone else reads this bot" at most this often
@@ -141,6 +144,27 @@ async def sdk_effort(client, effort):
     if send is None:
         raise RuntimeError("the SDK has no control requests")
     await send({"subtype": "apply_flag_settings", "settings": {"effortLevel": effort}})
+
+
+def srv_status(upd):
+    """The server updater's report as the relay passes it, in the shapes it has (relay.updater_status): its known fields,
+    strings cut short, flags and the time; anything else — None. The relay is a server Pult doesn't control."""
+    if not isinstance(upd, dict):
+        return None
+    out = {}
+    own = upd.get("self")                 # the updater's own files (0.18.6) — without them, an older updater
+    if isinstance(own, dict):
+        out["self"] = {k: v for k, v in list(own.items())[:12] if isinstance(k, str) and len(k) <= 80
+                       and (v is None or isinstance(v, str) and re.fullmatch(r"[0-9a-f]{40}", v))}
+    for k in SRV_KEYS:
+        v = upd.get(k)
+        if isinstance(v, bool) and k in ("back", "back_ok"):
+            out[k] = v
+        elif k == "ts" and isinstance(v, (int, float)) and not isinstance(v, bool):
+            out[k] = v
+        elif isinstance(v, str) and k not in ("back", "back_ok", "ts"):
+            out[k] = v[:300]
+    return out
 
 
 def vnum(v):
@@ -409,13 +433,21 @@ class Tg:
             except (httpx.ConnectError, httpx.ProxyError, httpx.ConnectTimeout, httpx.ReadError) as e:
                 last = e
                 continue
+            except httpx.HTTPError as e:
+                # any other failure on the way (a timeout, a broken answer): the request may have reached Telegram, so
+                # it isn't tried on the other route — a message would go twice. A TgError like every other Telegram
+                # failure: callers catch only that (a ReadTimeout once closed a session from Telegram, 2026-10-24)
+                raise TgError(url.rsplit("/", 1)[-1], "no answer (%s)" % type(e).__name__) from None
             if i != self.cur:
                 log("Telegram: route switched to", "proxy" if i == 0 and len(self.clients) > 1 else "direct")
                 self.cur = i
             return r
         raise TgError(url.rsplit("/", 1)[-1], "no connection: %r" % last)
 
-    async def call(self, method, files=None, timeout=None, **params):
+    async def call(self, method, files=None, http_timeout=None, **params):
+        """A Bot API method → its result; anything else is a TgError. http_timeout is the HTTP request's own (a big
+        upload); `timeout` among the params is Telegram's — getUpdates holds the request that long (long polling;
+        before 0.18.5 it was taken for the HTTP one, and the daemon asked Telegram every few seconds)."""
         data = {}
         for k, v in params.items():
             if v is None:
@@ -424,8 +456,13 @@ class Tg:
                 v = "true" if v else "false"
             data[k] = json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v
         r = await self._post(self.base + method, data=data, files=files,
-                             timeout=timeout if timeout else httpx.USE_CLIENT_DEFAULT)
-        j = r.json()
+                             timeout=http_timeout if http_timeout else httpx.USE_CLIENT_DEFAULT)
+        try:
+            j = r.json()
+        except ValueError:
+            j = None
+        if not isinstance(j, dict):        # not Telegram's answer (a proxy's error page): no code — not Telegram's word
+            raise TgError(method, "not a Bot API answer (HTTP %s)" % r.status_code)
         if not j.get("ok"):
             raise TgError(method, j.get("description"), j.get("error_code"),
                           (j.get("parameters") or {}).get("retry_after"))
@@ -490,8 +527,10 @@ class Outbox:
     async def run(self):
         while True:
             prio, seq, fn, fut = await self.q.get()
+            key = None
             if isinstance(fn, tuple):
-                fn = self.edits.pop(fn[1], None)
+                key = fn[1]
+                fn = self.edits.pop(key, None)
                 if fn is None:
                     continue           # this message has already been superseded by a newer edit
             await self._token()
@@ -503,7 +542,13 @@ class Outbox:
                 if e.retry_after:
                     log("Telegram asks to wait %s s" % e.retry_after)
                     self.pause_until = time.monotonic() + float(e.retry_after) + 0.5
-                    self._put(prio, fn, fut)
+                    if key is not None:
+                        # by its key again: an edit of this message that comes during the pause takes its place —
+                        # requeued as it was, the stale text landed over the newer one (review 2026-10-27, Я8)
+                        self.edits.setdefault(key, fn)
+                        self._put(prio, ("edit", key), None)
+                    else:
+                        self._put(prio, fn, fut)
                     continue
                 if fut and not fut.done():
                     fut.set_exception(e)
@@ -696,7 +741,8 @@ class Req:
         self.msgs = []            # [(message_id, question index or None)]
         self.closed = None        # (note, answers) once decided: a message still on its way gets the same line on arrival
         self.chosen = {}          # question → [answers]
-        self.picks = {}           # multi-select question → checked options
+        # multi-select question → checked options; Claude's advice ("(Recommended)") is checked from the start
+        self.picks = R.advised_picks(self.inp.get("questions")) if self.kind == "ask" else {}
         self.ts = time.time()     # since when it waits for the owner
         self.paged = False        # posted to Telegram (as a pager, only when the owner is neither in the app nor here)
 
@@ -734,6 +780,9 @@ class Job:
         self.watch = None
 
 
+AskLater = collections.namedtuple("AskLater", "lv ev")     # a permission request: waited for outside the session's lock
+
+
 def same_input(a, b):
     a = {k: v for k, v in (a or {}).items() if k != "answers"}
     b = {k: v for k, v in (b or {}).items() if k != "answers"}
@@ -756,6 +805,9 @@ class Driven:
         self.q = asyncio.Queue()
         self.client = None
         self.asking = False       # the query is sent, no result in the SDK stream yet
+        # the loop is over (idle, the process gone) and the process is on its way out: a message now goes by resume —
+        # put into the queue, nobody would read it (✕ "didn't reach Claude"; review 2026-10-27, Я6)
+        self.closing = False
         self.result = asyncio.Event()
         self.bg = set()           # the process's background tasks: while they run, the process is not closed
         self.model = None         # the main model, from system/init: picks the entry in the result's modelUsage
@@ -793,8 +845,12 @@ class Driven:
         await self.d.queue_shown(self, origin)
         take = asyncio.ensure_future(sem.acquire())
         jump, drop = asyncio.ensure_future(self.jump.wait()), asyncio.ensure_future(self.dropped.wait())
+        cancelled = False
         try:
             await asyncio.wait({take, jump, drop}, return_when=asyncio.FIRST_COMPLETED)
+        except asyncio.CancelledError:
+            cancelled = True                   # the session went (opened on the computer) as the place came
+            raise
         finally:
             jump.cancel()
             drop.cancel()
@@ -804,8 +860,8 @@ class Driven:
             got = take.done() and not take.cancelled() and take.exception() is None
             waited = time.time() - self.queued
             self.queued = self.waiting = None
-            if self.dropped.is_set() and got:
-                sem.release()
+            if got and (self.dropped.is_set() or cancelled):
+                sem.release()                  # a place taken in that very moment goes back: else it's lost till a restart
             await self.d.queue_gone(self)
         how = "dropped" if self.dropped.is_set() else "a place came" if got else "started over the limit"
         log("Telegram session %s: out of the queue after %d s — %s" % (self.sid[:8], waited, how))
@@ -815,8 +871,10 @@ class Driven:
         """A message for this session. During our query's turn it goes straight to Claude Code, which reads it at the
         turn's next step, as in a VS Code tab (a queued_command, absorbed_mid_turn — tests/probe_midturn.py, 2.1.300);
         held here until the result, "stop, wrong project" reached Claude only after a 10-minute turn (2026-10-21).
-        A turn that ends before its next step runs the message as a turn of its own — Claude Code does that itself."""
-        if self.client and self.asking:
+        A turn that ends before its next step runs the message as a turn of its own — Claude Code does that itself.
+        The same during a turn Claude Code started by itself (a background task ended): queued, the message went as a
+        query of the loop, and that other turn's result passed for its answer (review 2026-10-27, Я5)."""
+        if self.client and (self.asking or getattr(self.d.live.get(self.sid), "turn", None) is not None):   # self.running
             try:
                 await self.client.query(text)
                 if origin:
@@ -938,6 +996,7 @@ class Driven:
                             if took:
                                 self.d.run_sem.release()
                 finally:
+                    self.closing = True
                     reader.cancel()
                 if reader.done() and not reader.cancelled():
                     if reader.exception():
@@ -947,9 +1006,11 @@ class Driven:
             log("Telegram session %s crashed: %r" % (self.sid[:8], e))
             await self.d.notice(self.sid, self.d.t("err.session", err=R.esc(R.short(repr(e), 600))))
         finally:
-            self.d.driven.pop(self.sid, None)
+            self.closing = True
             self.client = None
-            self.d.out_gone_all(self.sid)
+            if self.d.driven.get(self.sid) is self:      # a message may have started a new one for the session meanwhile
+                self.d.driven.pop(self.sid, None)
+                self.d.out_gone_all(self.sid)
 
 
 # ---------- daemon ----------
@@ -975,7 +1036,10 @@ class Pult:
         self.topic_locks = {}
         self.cards_seen = set()        # topics whose card was checked since start (Pult.topic_card)
         self.run_sem = asyncio.Semaphore(MAX_RUNNING)
-        self.jobs = {}                 # job id → a clone for a new project in progress (stage S)
+        self.hook_locks = {}           # session id → its hook events, one at a time (on_hook)
+        self.topic_told = {}           # project → when the owner last heard that Telegram refused its topic
+        self.clones = {}               # job id → a clone for a new project in progress (stage S); not self.jobs:
+        # that name is the `pult run` tasks', and sharing it broke Home for an hour after a clone (before 0.18.5)
         self.held = {}                 # topic → files that came without words, waiting for the owner's next message (stage F)
         self.albums = {}               # media_group_id → an album's files being gathered (stage F)
         self._idle = (0.0, None)
@@ -1012,7 +1076,6 @@ class Pult:
         self.t_start = time.time()
         self.health = {}               # reached Telegram / the app's server — health.json, for the installer (stage U)
         self._upd = (0.0, None)        # what the source folder has (pult_update.check), kept a minute
-        self.upd_wait = None           # the owner asked to install once Pult's sessions are free: since when
         self._parts = (0.0, None, None)  # the source folder against what's installed and served (stage U2): time, key, facts
         self._cc = (0.0, None)         # Claude Code on this computer (cc_facts), kept half a minute
         self.tab_checking = None       # the Claude Code version Pult checks for the tabs right now (stage A)
@@ -1060,12 +1123,18 @@ class Pult:
         """body — the words as they go to Claude; tg, react — the Telegram message and the reaction it got (✍ — the
         session was busy: 👀 once Claude reads it). → the message's id for the app."""
         now = time.time()
-        box = [o for o in self.outbox.get(sid) or []
-               if o["st"] == "sent" or now - o["at"] < (OUT_READ if o["st"] == "read" else OUT_GONE)]
+        box = [o for o in self.outbox.get(sid) or [] if self.out_live(o, now)]
         o = {"id": secrets.token_hex(4), "body": body, "ts": now, "at": now, "st": "sent", "tg": tg, "react": react}
         self.outbox[sid] = box + [o]
         self.changed(sid)
         return o["id"]
+
+    @staticmethod
+    def out_live(o, now):
+        """Still shown: on its way (OUT_SENT at most, then crossed out a while), just read, or crossed out a while."""
+        if o["st"] == "sent":
+            return now - o["ts"] < OUT_SENT + OUT_GONE
+        return now - o["at"] < (OUT_READ if o["st"] == "read" else OUT_GONE)
 
     def out_drop(self, sid, oid):
         """The hand-off failed: the app says so itself, and the words stay in its field."""
@@ -1090,9 +1159,9 @@ class Pult:
     def out_view(self, sid):
         """For the session screen: each message as the transcript will show it, with its id and state."""
         now = time.time()
-        return [dict(PW.user_item(PW.user_text(o["body"]), o["ts"]), id=o["id"], st=o["st"])
-                for o in self.outbox.get(sid) or []
-                if o["st"] == "sent" or now - o["at"] < (OUT_READ if o["st"] == "read" else OUT_GONE)]
+        return [dict(PW.user_item(PW.user_text(o["body"]), o["ts"]), id=o["id"],
+                     st="gone" if o["st"] == "sent" and now - o["ts"] >= OUT_SENT else o["st"])
+                for o in self.outbox.get(sid) or [] if self.out_live(o, now)]
 
     def seen_here(self, lv):
         if not lv.driven:
@@ -1141,6 +1210,16 @@ class Pult:
         if m != "auto":
             return m == "phone"
         return await self.where() == "away"
+
+    @property
+    def upd_wait(self):
+        """The owner asked to install once Pult's sessions are free: since when. Kept in the store — in memory a restart
+        for another reason forgot the request, and the app dropped it without a word (review 2026-10-27, У11)."""
+        return self.store.get("upd_wait")
+
+    @upd_wait.setter
+    def upd_wait(self, ts):
+        self.store.put("upd_wait", ts)
 
     def prefs(self):
         stored = self.store.get("prefs") or {}
@@ -1216,6 +1295,16 @@ class Pult:
             self.cards_seen.add(thread)
             await self.topic_card(pkey, thread, new=True)
             return thread
+
+    async def topic_trouble(self, pkey, e):
+        """Telegram refused to open a project's topic — the bot lost the right to manage topics, the group lost its
+        topics: said in General, once in six hours per project, or the project's turns and results vanish without a
+        word (review 2026-10-27, Я7)."""
+        if time.time() - self.topic_told.get(pkey, 0) < 6 * 3600:
+            return
+        self.topic_told[pkey] = time.time()
+        await self.send(None, self.t("topic.refused", project=R.esc(self.project_label(pkey)), why=R.esc(e.desc[:200])),
+                        notify=True)
 
     def project_start(self, pkey):
         """The app's start parameter for a project's screen. Telegram allows 64 characters [A-Za-z0-9_-]; a longer
@@ -1318,7 +1407,13 @@ class Pult:
             if here is not None:
                 thread = here or None
             else:
-                thread = await self.thread_for(pkey) if pkey else None
+                try:
+                    thread = await self.thread_for(pkey) if pkey else None
+                except TgError as e:          # the topic couldn't be made: nothing to send into, and no caller to fail
+                    log("not sent, no topic for %s: %s" % (pkey, e))
+                    if e.code is not None:     # Telegram's refusal, not the network's moment: the owner has to act
+                        await self.topic_trouble(pkey, e)
+                    return None
                 if thread:
                     self.card_check(pkey, thread)
             params = dict(chat_id=self.chat, text=text, parse_mode="HTML",
@@ -1604,6 +1699,24 @@ class Pult:
         return t
 
     async def on_hook(self, msg, reader, writer):
+        """One hook event. A session's events are taken one at a time: each comes over a connection of its own, and
+        the handling awaits in between (the title, the transcript) — two PostToolUse after a restart both saw no turn
+        and started two; a Stop while a PostToolUse waited closed nothing, and that PostToolUse then started a turn
+        nobody would end (review 2026-10-27, Я4). A permission request waits for its answer outside the lock: for hours,
+        sometimes, while the session's other events go on."""
+        sid = (msg.get("event") or {}).get("session_id")
+        if not sid:
+            return await self.hook_event(msg, reader, writer)
+        lock = self.hook_locks.setdefault(sid, asyncio.Lock())
+        async with lock:
+            res = await self.hook_event(msg, reader, writer)
+        if (msg.get("event") or {}).get("hook_event_name") == "SessionEnd" and not lock.locked():
+            self.hook_locks.pop(sid, None)
+        if isinstance(res, AskLater):
+            res = await self.on_permission(res.lv, res.ev, reader)
+        return res
+
+    async def hook_event(self, msg, reader, writer):
         ev = msg.get("event") or {}
         name = ev.get("hook_event_name")
         sid = ev.get("session_id")
@@ -1722,15 +1835,13 @@ class Pult:
             if not lv.driven:                  # a session from Telegram only rests: Pult closes its idle process
                 self.clear_focus(sid)
         elif name == "PermissionRequest":
-            return await self.on_permission(lv, ev, reader)
+            return AskLater(lv, ev)
         return None
 
     async def post_result(self, lv, t, text, bg="", fail=None):
         """bg — the line "⚙️ Still running in the background: …" under the result header: Claude has finished the
         turn, but its background task is still running; when it ends, Claude starts a new turn by itself.
         fail — the API error that ended the turn (StopFailure)."""
-        if t is not None:
-            await t.created
         notify = await self.loud(lv.driven)
         files, n = await self.files_of_turn(lv, t)
         tf = None
@@ -1738,6 +1849,10 @@ class Pult:
             tid = self.store.add_turn(lv.sid, lv.pkey, t.started, (t.done[1] - t.started) if t.done else None, files, n)
             tf = {"id": tid, "n": n, "size": sum(f["size"] for f in files)}
         self.outcome(lv, t, text, fail, seen=bool(t and t.here) and not await self.away(), files=tf)
+        # what follows is Telegram's: it needs the turn's own message (its id to reply to) — the outcome above doesn't
+        # wait for it (a pause for Telegram's rate limit held Home and the app for minutes; review 2026-10-27, Я11)
+        if t is not None:
+            await t.created
         reply_to = t.msg if t else None
         # a message written from Telegram into a tab that was busy: Claude Code absorbs it into the running turn
         # (queued_command, absorbed_mid_turn — 2.1.301, 2026-10-18) and the tab doesn't show it, so no UserPromptSubmit
@@ -2337,7 +2452,11 @@ class Pult:
         notify = await self.loud(lv.driven)
         self.changed(lv.sid)
         try:
-            await self.post_request(lv, req, notify)
+            try:
+                await self.post_request(lv, req, notify)
+            except Exception as e:
+                # not in Telegram (out of reach, a refusal): the request still waits — the app and the computer show it
+                log("request %s: not posted to Telegram — %r" % (req.rid, e))
             eof = asyncio.create_task(reader.read())
             await asyncio.wait({req.fut, eof}, return_when=asyncio.FIRST_COMPLETED)
             eof.cancel()
@@ -2358,7 +2477,7 @@ class Pult:
         rid = req.rid
         if req.kind == "ask":
             for i, q in enumerate(req.inp.get("questions") or []):
-                m = await self.send(lv.pkey, self.req_head(req, "❓", self.t("req.asks")) + R.question_text(q),
+                m = await self.send(lv.pkey, self.req_head(req, "❓", self.t("req.asks")) + R.question_text(q, req.picks.get(i)),
                                     buttons=self.with_app(self.q_buttons(req, i), lv.sid), notify=notify and i == 0, prio=0,
                                     sid=lv.sid, kind="ask")
                 if m:
@@ -2366,6 +2485,8 @@ class Pult:
                     self.req_by_msg[m] = (req, i)
                     if req.closed:             # decided while this one was on its way
                         self.close_req_msgs(req, *req.closed, only=[(m, i)])
+            if not req.msgs:
+                req.paged = False              # nothing reached Telegram: offered again later
             return
         if req.kind == "plan":
             plan = str(req.inp.get("plan") or "")
@@ -2391,6 +2512,8 @@ class Pult:
             self.req_by_msg[m] = (req, None)
             if req.closed:                     # decided while it was on its way: the buttons go at once
                 self.close_req_msgs(req, *req.closed, only=[(m, None)])
+        if not req.msgs:
+            req.paged = False                  # nothing reached Telegram: offered again later (review 2026-10-27, Я10)
 
     def q_buttons(self, req, i):
         q = (req.inp.get("questions") or [])[i]
@@ -2976,8 +3099,24 @@ class Pult:
                 self.env[k] = fresh[k]
             else:
                 self.env.pop(k, None)
-        self.stt = self.make_stt()
+        old, self.stt = self.stt, self.make_stt()
+        self.drop_stt(old)
         log("voice input: %s (the settings file changed)" % ("on" if self.stt else "off"))
+
+    def drop_stt(self, old):
+        """A replaced speech client's connections closed — they stayed open for good (review 2026-10-27, М11) — once
+        a recording still on its way through it is surely done."""
+        if old is None or not hasattr(old, "aclose"):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        async def later():
+            await asyncio.sleep(STT_DROP)
+            await old.aclose()
+        loop.create_task(later())
 
     def stt_lang(self):
         """The language Whisper is told: Pult's own, unless PULT_STT_LANG says otherwise ("auto" — let it guess)."""
@@ -3011,9 +3150,10 @@ class Pult:
             raise STT.SttError("stt.empty")
         return text
 
-    def stt_why(self, e):
-        """An SttError in the owner's words."""
-        return self.t(e.key, **e.kw) if e.key in I.S else str(e)
+    def stt_why(self, e, html=False):
+        """An SttError in the owner's words; html — for Telegram, where Groq's own words are escaped (М12)."""
+        kw = {k: R.esc(str(v)) for k, v in e.kw.items()} if html else e.kw
+        return self.t(e.key, **kw) if e.key in I.S else (R.esc(str(e)) if html else str(e))
 
     async def hear_message(self, spoken, mid, here):
         """A voice message from Telegram → its words, or None after telling the owner why not (a reply to it).
@@ -3027,7 +3167,7 @@ class Pult:
             name, blob = await self.tg.download(spoken["file_id"])
             text = await self.hear(blob, spoken.get("mime_type") or name)
         except (TgError, STT.SttError) as e:
-            why = self.stt_why(e) if isinstance(e, STT.SttError) else R.esc(str(e))
+            why = self.stt_why(e, html=True) if isinstance(e, STT.SttError) else R.esc(str(e))
             await self.send(None, why if why.startswith("🎤") else self.t("stt.failed", err=why),
                             reply_to=mid, here=here)
             return None
@@ -3063,16 +3203,21 @@ class Pult:
         message."""
         text = (text or "").strip()
         paths = []
+        skipped = max(0, len(files or []) - UPLOADS_MAX)
         for f in (files or [])[:UPLOADS_MAX]:
             try:
                 blob = base64.b64decode(str((f or {}).get("data") or ""), validate=True)
             except (ValueError, binascii.Error):
+                skipped += 1
                 continue
             kind = image_kind(blob)
             if not blob or len(blob) > UPLOAD_MAX:
+                skipped += 1
                 continue
             if not kind:
-                if project and os.path.isdir(project) and (f or {}).get("name"):
+                if not (project and os.path.isdir(project) and (f or {}).get("name")):
+                    skipped += 1               # not a picture, and no project folder to put it in
+                else:
                     folder = F.drop_dir(project)
                     os.makedirs(folder, exist_ok=True)
                     F.exclude_inbox(project)
@@ -3086,10 +3231,17 @@ class Pult:
             p = d / ("app-%d-%s.%s" % (int(time.time() * 1000), secrets.token_hex(2), kind))
             p.write_bytes(blob)
             paths.append(p)
+        if skipped:
+            # said where the owner and Claude both see it: before, the app said "sent" and Claude never knew (A4)
+            log("files from the app: %d not taken — unreadable, too big, too many or no place for them" % skipped)
+            if not text and not paths:
+                raise ValueError(self.t("err.files_bad", mb=UPLOAD_MAX // 1048576))
         if paths:
             text = (text or "Have a look at the attachment.") + \
                 "".join("\n\n[Attachment from the Pult app: %s]" % p for p in paths)
             log("files from the app: %d" % len(paths))
+        if skipped:
+            text += "\n\n[Pult: %d attachment(s) from the app couldn't be taken — unreadable or too big.]" % skipped
         if not text:
             raise ValueError(self.t("err.empty"))
         return text
@@ -3108,12 +3260,12 @@ class Pult:
             self.store.map_msg(origin, sid, "owner")     # a reply to one's own message continues the same session
         trow = self.store.topic(pkey)
         quote = bool(trow and trow["thread"] == here)    # a reply in the same topic the session lives in
-        if sid in self.driven:
-            dr = self.driven[sid]
+        dr = self.driven.get(sid)
+        if dr and not getattr(dr, "closing", False):
             mark = "✍" if dr.busy else "👀"
-            await self.react(origin, mark)
             self.out_add(sid, text, tg=origin, react=mark)
-            await dr.say(text, origin if quote else None)
+            await dr.say(text, origin if quote else None)     # the message first: a reaction is only a sign of it
+            await self.react(origin, mark)
             return
         tab = self.tab_for(sid)
         if tab:
@@ -3156,11 +3308,22 @@ class Pult:
                 del self.choice[k]
         self.store.put("choice", self.choice)
 
+    def driven_full(self):
+        """MAX_DRIVEN sessions of Pult's own, none of them free to be closed: a new one has to wait."""
+        return len(self.driven) >= MAX_DRIVEN and not any(not d.busy and d.q.empty() and not d.bg
+                                                          for d in self.driven.values())
+
+    def busy_driven(self):
+        return self.t("busy.driven", n=len(self.driven), sessions=I.plural(len(self.driven), "session"))
+
     async def drive(self, sid, path, text, origin, resume=None, fork=False, pkey=None, quote=True, here=None,
-                    model=None, effort=None):
+                    model=None, effort=None, app=False):
         """quote=False — the owner's message is in another topic (General): the turn doesn't reply to it
         but shows the prompt itself. here — where the owner wrote (for a refusal); the project topic by default.
-        model, effort — the owner's choice for a new session; a resumed one keeps what was chosen for it."""
+        model, effort — the owner's choice for a new session; a resumed one keeps what was chosen for it.
+        → True once the session is on its way; False — refused, told in Telegram. app=True: the refusal is a
+        ValueError, which the app shows where the owner tapped (before 0.18.6 the app heard "ok" for a session that
+        never started, and the refusal went to the topic — review 2026-10-27, A2)."""
         pkey = pkey or sanitize(path)
         if fork:
             resume, sid = sid, str(uuid.uuid4())
@@ -3170,9 +3333,10 @@ class Pult:
         if len(self.driven) >= MAX_DRIVEN:
             idle = [d for d in self.driven.values() if not d.busy and d.q.empty() and not d.bg]
             if not idle:
-                await self.send(pkey, self.t("busy.driven", n=len(self.driven), sessions=I.plural(len(self.driven), "session")),
-                                reply_to=origin, here=here)
-                return
+                if app:
+                    raise ValueError(self.busy_driven())
+                await self.send(pkey, self.busy_driven(), reply_to=origin, here=here)
+                return False
             idle[0].task.cancel()
         self.store.touch_session(sid, pkey, path=path, driven=True)
         self.set_focus(pkey, sid)
@@ -3187,6 +3351,7 @@ class Pult:
         dr.q.put_nowait((text, origin if quote else None))
         await self.react(origin, "👀")
         log("Telegram session:", sid[:8], "fork" if fork else "resume" if resume else "new", path)
+        return True
 
     # ----- VS Code tabs with Pult's wrapper (stage 2) -----
 
@@ -3642,6 +3807,7 @@ class Pult:
         if req.kind == "ask":
             d["questions"] = req.inp.get("questions") or []
             d["chosen"] = {str(i): v for i, v in req.chosen.items()}
+            d["picks"] = {str(i): v for i, v in req.picks.items()}       # checked so far: Claude's advice, Telegram's taps
         elif req.kind == "plan":
             d["plan"] = str(req.inp.get("plan") or "")[:20000]
         else:
@@ -3681,7 +3847,9 @@ class Pult:
         load = await self.load_state()
         return {"mac": {"idle": idle, "away": await self.away(), "mode": self.mode()}, "now": time.time(),
                 "lang": self.lang(), "load": self.load_sum(load[2], load[3]) if load else None,
-                "live": [self.live_item(self.live[s]) for s in shown],
+                # a session may end while this waited for the process snapshot (SessionEnd drops it): it is just gone
+                # from the list — before, Home failed with KeyError until the next event (review 2026-10-27, A1)
+                "live": [self.live_item(self.live[s]) for s in shown if s in self.live],
                 "pending": [self.req_item(r) for r in self.req_by_rid.values() if not r.fut.done()],
                 "open": opened, "recent": list(self.recent),
                 "jobs": [self.job_item(j) for j in self.jobs.values()] + [self.job_item(j) for j in self.jobs_done],
@@ -4019,10 +4187,14 @@ class Pult:
             return {"ok": False, "note": self.t("note.decided")}
         if req.kind == "ask":
             qs = req.inp.get("questions") or []
+            if not isinstance(answers or {}, dict):
+                raise ValueError("bad answers")
             for i, vals in (answers or {}).items():
                 i = int(i)
+                if not isinstance(vals, list):
+                    raise ValueError("bad answers")   # a string fell apart into letters, each an answer (A6)
                 if 0 <= i < len(qs) and vals:
-                    self.answer_question(req, i, [str(v) for v in vals])
+                    self.answer_question(req, i, [str(v)[:2000] for v in vals][:20])
             return {"ok": True}
         note = self.act(req, act, "app", text=(text or "").strip() or None)
         return {"ok": note is None, "note": note}
@@ -4040,7 +4212,7 @@ class Pult:
         if not cwd:
             raise ValueError(self.t("err.no_folder_short"))
         tab = self.tab_for(sid)
-        if sid in self.driven:
+        if sid in self.driven and not getattr(self.driven[sid], "closing", False):
             how = "session"
         elif tab:
             how = "tab"
@@ -4049,6 +4221,8 @@ class Pult:
             how = "fork" if seen or any(a.get("sessionId") == sid for a in await self.agents()) else "resume"
             if how == "fork" and not fork:
                 return {"ok": False, "need": "fork", **await self.copy_why(sid)}
+        if how in ("resume", "fork") and self.driven_full():
+            raise ValueError(self.busy_driven())       # before the pictures are saved: nothing is left behind
         body = self.with_uploads(text, files, self.session_project(sid)[1])
         oid = None
         if how == "session":
@@ -4067,7 +4241,8 @@ class Pult:
                 raise
         else:
             # a resumed session (or a copy — a new session) gets its message into the outbox in drive()
-            await self.drive(sid, cwd, body, None, resume=sid if how == "resume" else None, fork=how == "fork", pkey=pkey)
+            await self.drive(sid, cwd, body, None, resume=sid if how == "resume" else None, fork=how == "fork", pkey=pkey,
+                             app=True)
             if how == "resume":
                 oid = next((o["id"] for o in reversed(self.outbox.get(sid) or []) if o["body"] == body), None)
         self.mark_seen(sid, body)                  # answered: the outcome is behind, and a call about it says with what
@@ -4087,8 +4262,11 @@ class Pult:
         if not (text or files) or not path or not os.path.isdir(path):
             raise ValueError(self.t("err.need_project_text"))
         model, effort = self.check_choice(model, effort)
+        if self.driven_full():
+            raise ValueError(self.busy_driven())       # before the pictures are saved: nothing is left behind
         sid = str(uuid.uuid4())
-        await self.drive(sid, path, self.with_uploads(text, files, path), None, pkey=pkey, model=model, effort=effort)
+        await self.drive(sid, path, self.with_uploads(text, files, path), None, pkey=pkey, model=model, effort=effort,
+                         app=True)
         return {"ok": True, "sid": sid}
 
     # ----- a new project from the phone (stage S) -----
@@ -4108,8 +4286,10 @@ class Pult:
     def place(self, path):
         """A folder the owner picked: an existing one inside NEW_ROOT, links followed; else a refusal."""
         p = os.path.realpath(os.path.expanduser(path)) if path else self.new_parent()
-        if not (os.path.isdir(p) and N.inside(p, NEW_ROOT)):
-            raise ValueError(self.t("new.err.where"))
+        root = os.path.realpath(NEW_ROOT)
+        hidden = any(x.startswith(".") for x in os.path.relpath(p, root).split(os.sep)) if N.inside(p, NEW_ROOT) and p != root else False
+        if not (os.path.isdir(p) and N.inside(p, NEW_ROOT)) or hidden:
+            raise ValueError(self.t("new.err.where"))     # ~/.ssh, ~/.claude: the picker never shows them (A5)
         return p
 
     @staticmethod
@@ -4196,16 +4376,19 @@ class Pult:
                 if mb and mb > N.BIG_MB:
                     return {"big": mb}
             jid = secrets.token_hex(6)
-            self.jobs = {k: j for k, j in self.jobs.items() if time.time() - j["t0"] < 3600}
-            self.jobs[jid] = {"state": "run", "t0": time.time(), "step": None, "name": name}
+            self.clones = {k: j for k, j in self.clones.items() if time.time() - j["t0"] < 3600}
+            self.clones[jid] = {"state": "run", "t0": time.time(), "step": None, "name": name}
             log("new project: cloning %s into %s" % (src[0], dest))
             asyncio.create_task(self.clone(jid, src[0], dest, done))
             return {"job": jid}
-        os.mkdir(dest)
+        try:
+            os.mkdir(dest)
+        except FileExistsError:                       # a second tap, or a second window, a moment later (A7)
+            raise ValueError(self.t("new.err.exists", name=name)) from None
         return await done(await self.git_init(dest))
 
     async def api_job(self, job):
-        j = self.jobs.get(str(job))
+        j = self.clones.get(str(job))
         if not j:
             raise ValueError(self.t("new.err.job"))
         return dict({k: v for k, v in j.items() if k != "t0"}, sec=int(time.time() - j["t0"]))
@@ -4249,7 +4432,7 @@ class Pult:
         """git clone of a new project, at a lower priority, for N.CLONE_LIMIT at most; its progress goes to the job.
         A failed clone removes what it made itself; one stopped by the limit is removed here — the folder did not
         exist before (api_create checked), so it is Pult's own."""
-        job = self.jobs[jid]
+        job = self.clones[jid]
         cmd = ["git", "clone", "--progress", "--", url, dest]
         if os.name != "nt" and shutil.which("nice"):
             cmd = ["nice", "-n", "10"] + cmd
@@ -4302,11 +4485,13 @@ class Pult:
             first = first() if first else None
         except ValueError:
             first = None                                   # nothing of the first turn survived (only a broken file)
-        if first:
+        if first and self.driven_full():
+            out["busy"] = self.busy_driven()           # the project is there; its first turn has no place now
+        elif first:
             sid = str(uuid.uuid4())
             if how == "describe":
                 self.live_of(sid, pkey).title = self.t("new.describe.session")
-            await self.drive(sid, dest, first, None, pkey=pkey, model=model, effort=effort)
+            await self.drive(sid, dest, first, None, pkey=pkey, model=model, effort=effort, app=True)
             out["sid"] = sid
         return out
 
@@ -4544,7 +4729,7 @@ class Pult:
                 params["reply_parameters"] = {"message_id": reply_to, "allow_sending_without_reply": True}
             try:
                 res = await self.out.submit(3, lambda n=name, b=blob, kw=params: self.tg.call(
-                    "sendDocument", files={"document": (n, b)}, timeout=300, **kw))
+                    "sendDocument", files={"document": (n, b)}, http_timeout=300, **kw))
             except TgError as e:
                 refused.append([name, self.t("send.err.tg", why=R.short(str(e), 200))])
                 continue
@@ -4631,10 +4816,13 @@ class Pult:
         if key:
             if not re.fullmatch(STT.KEY_CHARS, key):
                 raise ValueError(self.t("stt.e.key"))
+            probe = STT.Stt(key, proxy=self.env.get("PULT_PROXY") or None)
             try:
-                await STT.Stt(key, proxy=self.env.get("PULT_PROXY") or None).check()
+                await probe.check()
             except STT.SttError as e:
                 raise ValueError(self.stt_why(e)) from None
+            finally:
+                await probe.aclose()
         from pult_setup import write_env           # the same careful writer the command line uses
         write_env(PULT_STT_KEY=key or None)
         self._env_mt = env_mtime()
@@ -4642,7 +4830,8 @@ class Pult:
             self.env["PULT_STT_KEY"] = key
         else:
             self.env.pop("PULT_STT_KEY", None)
-        self.stt = self.make_stt()
+        old, self.stt = self.stt, self.make_stt()
+        self.drop_stt(old)
         log("voice input from the app: key %s" % ("set" if key else "removed"))
         return {"on": bool(self.stt)}
 
@@ -4822,11 +5011,14 @@ class Pult:
                         notify=True, urgent=True, prio=1,
                         buttons=[[{"text": self.t("btn.logout_all"), "callback_data": "k:out"}]])
 
-    async def files_alert(self, bad, tag=None):
-        """The app files on the server differ from the deploy (the app is closed) — or match again ([]). tag: from the
-        release the server's updater took (stage U3) — told, the app stays open."""
-        if bad and tag:
+    async def files_alert(self, bad, tag=None, warn=False):
+        """The app files on the server differ from the deploy or from release `tag` the server's updater took (stage U3)
+        — the app is closed; warn: PULT_GUARD=warn, told and the app stays open — or they match again ([])."""
+        if bad and warn:
             await self.send(None, self.t("files.differ.warn", files=R.esc(", ".join(bad[:6])), tag=R.esc(tag)), notify=True, prio=1)
+        elif bad and tag:
+            await self.send(None, self.t("files.differ.release", files=R.esc(", ".join(bad[:6])), tag=R.esc(tag)),
+                            notify=True, urgent=True, prio=1)
         elif bad:
             await self.send(None, self.t("files.differ", files=R.esc(", ".join(bad[:6]))), notify=True, urgent=True, prio=1)
         else:
@@ -5013,7 +5205,8 @@ class Pult:
                                "back": False, "reported": True, "ts": time.time()})
             self._upd = (0.0, None)
             raise ValueError(self.t("upd.cant.spawn"))
-        self.emit_update()
+        if self.web:                    # on any screen of the app: "installing", not "the computer is offline" (П8)
+            self.web.emit("update", state="run")
 
     async def update_watch(self):
         """Every 5 s (stage U): install once Pult's sessions are free, when the owner asked to; say once, in General,
@@ -5084,12 +5277,13 @@ class Pult:
         """The relay's word (stage U3): on connecting — whether its server has the updater and the updater's last
         report; later — each new report. A server that can follow hears the release this computer runs."""
         if "can" in msg:
-            self.srv = {"can": [c for c in msg.get("can") or [] if isinstance(c, str)], "upd": None}
+            can = msg.get("can")
+            self.srv = {"can": [c for c in can if isinstance(c, str)] if isinstance(can, list) else [], "upd": None}
             self.told = (None, 0.0)
         if self.srv is None:
             return
         if "upd" in msg:
-            upd = msg["upd"] if isinstance(msg.get("upd"), dict) else None
+            upd = srv_status(msg.get("upd"))
             self.srv["upd"] = upd
             await self.srv_report(upd)
         await self.announce(force="can" in msg)
@@ -5115,6 +5309,20 @@ class Pult:
         self.told = ((tag, commit), time.monotonic())
         await self.web.send({"t": "want", "tag": tag, "commit": commit})
         log("app server: told it this computer runs %s" % tag)
+
+    async def api_srv_retry(self):
+        """"Try again on the server" (Settings → Pult and its parts): a release the server's updater didn't take and
+        won't try by itself (stage U3). The relay passes the word on with its own clock, and the updater tries it anew."""
+        srv = self.srv
+        m = U.read(U.MANIFEST, {}) or {}
+        src, commit = m.get("src"), m.get("commit")
+        tag = await asyncio.to_thread(U.release_of, src, commit) if src and commit else None
+        if not self.web or not srv or "want" not in srv["can"] or not tag:
+            raise ValueError(self.t("srv.retry.no"))
+        self.told = ((tag, commit), time.monotonic())
+        await self.web.send({"t": "want", "tag": tag, "commit": commit, "retry": True})
+        log("app server: asked it to try %s again" % tag)
+        return {"ok": True, "v": tag}
 
     async def srv_report(self, upd):
         """Each report of the server's updater, once (the relay repeats the last one on every connection): a release
@@ -5142,24 +5350,27 @@ class Pult:
 
     def expect_release(self, tag):
         """The file check expects what release `tag` hands the phone, from this computer's own copy of it
-        (pult_update.manifest_at) — and only warns: a CDN in front of the server may change files. A deploy script's
-        record (a developer's own server) is never replaced."""
+        (pult_update.manifest_at); a difference closes the app, as after a deploy — or, with PULT_GUARD=warn in the
+        settings (a CDN in front of the server changes files), only warns (Q85). A deploy script's record (a
+        developer's own server) is never replaced."""
+        wanted = "warn" if (self.env.get("PULT_GUARD") or "").strip().lower() == "warn" else "release"
         try:
             cur = json.loads(WEB_MANIFEST.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             cur = None
-        if cur and (cur.get("mode") != "warn" or cur.get("tag") == tag):
+        if cur and (cur.get("mode") not in ("warn", "release") or cur.get("tag") == tag and cur.get("mode") == wanted):
             return
         src = (U.read(U.MANIFEST, {}) or {}).get("src")
         commit = U.git(src, "rev-parse", "-q", "--verify", "refs/tags/%s^{commit}" % tag) if src else None
         man = U.manifest_at(src, commit) if commit else None
         if not man:
             return
-        man.update(mode="warn", tag=tag)
+        man.update(mode=wanted, tag=tag)
         tmp = WEB_MANIFEST.with_name(WEB_MANIFEST.name + ".tmp")
         tmp.write_text(json.dumps(man), encoding="utf-8")
         os.replace(tmp, WEB_MANIFEST)
-        log("app files check: expects release %s (warns only)" % tag)
+        log("app files check: expects release %s (%s)" % (tag, "warns only: PULT_GUARD=warn" if wanted == "warn"
+                                                          else "a difference closes the app"))
 
     # ----- every part of Pult against main (stage U2) -----
 
@@ -5273,6 +5484,8 @@ class Pult:
                "mac": U.behind(repo, m.get("commit"), head, U.TREE),
                "gh": U.changelog(repo, head) if U.makes_releases(repo, head) else None,   # only where releases are made
                "release": U.release_mode(repo, head) is not None}      # a clone of GitHub's: the server may follow (U3)
+        if out["release"] and m.get("commit"):        # what the server's updater should be, at the release this runs
+            out["srv_files"] = U.ls_tree(repo, m["commit"], [p for p in U.SRV_OWN])
         for part, paths in U.PARTS.items():
             files = {p: b for p, b in (build or {}).items() if any(p == x or p.startswith(x + "/") for x in paths)}
             out[part] = U.built_from(repo, head, files, paths) if files else None
@@ -5318,6 +5531,16 @@ class Pult:
                             row["st"] = "warn"
                         elif row["srv"]["final"]:
                             row["st"] = "attn"
+                        if part == "relay":
+                            # the updater and the services only install.sh replaces: older than this release — once,
+                            # there, sudo bash deploy/relay/install.sh ("old": an updater before 0.18.6 doesn't say)
+                            own, want = upd_srv.get("self"), g.get("srv_files") or {}
+                            stale = "old" if own is None else sorted(k.rsplit("/", 1)[-1] for k in U.SRV_OWN
+                                                                     if k in want and own.get(k) != want[k])
+                            if stale:
+                                row["srv"]["self"] = stale
+                                if row["st"] == "ok":
+                                    row["st"] = "warn"
                 rows.append(row)
         tabs, cc = f["tabs"], f["cc"]
         if tabs or cc["wrapped"]:
@@ -5327,8 +5550,9 @@ class Pult:
                          "unknown": sum(t["same"] is None for t in tabs)})
         on = f["hooks"]
         missing = [e for e in pult_hook.EVENTS if e not in on]
-        rows.append({"k": "hooks", "st": "bad" if missing else "ok", "have": len(on), "all": len(pult_hook.EVENTS),
-                     "missing": missing})
+        # an event missing is a step to take at the computer, not "broken": all off is (review 2026-10-27, У10)
+        rows.append({"k": "hooks", "st": "bad" if not on else "warn" if missing else "ok", "have": len(on),
+                     "all": len(pult_hook.EVENTS), "missing": missing})
         off = [v for v in cc["running"] if v not in cc["verified"]] if cc["wrapped"] else []
         fresh = cc["newest"] if cc["wrapped"] and cc["newest"] and cc["newest"] not in cc["verified"] \
             and cc["newest"] not in cc["running"] else None
@@ -5575,6 +5799,9 @@ async def amain():
         sys.exit(2)
     HOME.mkdir(parents=True, exist_ok=True)
     os.chmod(HOME, 0o700)
+    for d in (ENV_FILE.parent, pult_os.LOG_DIR):           # an install before 0.18.6 left them readable on Linux
+        if d.exists():
+            pult_os.private_dir(d)
     __import__("claude_agent_sdk")   # up front: the first import takes ~0.4 s, better not in the middle of events
     tg = Tg(token, proxy=env.get("PULT_PROXY") or None)
     store = Store(HOME / "state.db")

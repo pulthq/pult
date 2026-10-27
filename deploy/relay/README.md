@@ -40,7 +40,8 @@ curl -s http://127.0.0.1:8097/pult/healthz
 
 The script creates a system user `pult`, puts the relay into `/opt/pult-relay` with its own Python environment and
 starts the `pult-relay` service on `127.0.0.1:8097` (only locally — the web server faces the internet). The relay
-can't change its own code, and its secret in `.env` is read by systemd only. `--auto` adds the updater: from then on
+can't change its own code, and its secret in `.env` is read by systemd only; it runs with no network beyond this
+machine, no privileges and no devices (`systemd-analyze security pult-relay`: 1.5, "OK"). `--auto` adds the updater: from then on
 the server takes each release your computer installs ([Updates](#updates)); without it, re-run the script after a
 `git pull` to update. `.env` is kept.
 
@@ -93,6 +94,15 @@ computer ──"I run v0.18.2 (commit)"──► relay ──want.json──► 
 - It counts once the relay answers and the computer is connected again. Otherwise `app/current` goes back to the
   release before — at once when the new relay keeps exiting at start — and the computer says so in Telegram.
 - What happened: Settings → Pult and its parts on the phone, or `journalctl -u pult-relay-update` here.
+- The computer checks the app files the server hands out against that release, as it does after a deploy: a
+  difference closes the app until they match, and Telegram says so — whoever changed the app on the server would
+  otherwise run in your window. A CDN or a proxy in front of the server that changes files: `PULT_GUARD=warn` in
+  `~/.config/pult/env` on the computer, then a restart — it only warns.
+
+The updater takes the relay's code only. The updater itself and the services change by `install.sh` alone: when a
+release changes them, the relay's row in Settings → Pult and its parts says which file is older and asks for
+`git pull` and `sudo bash deploy/relay/install.sh` there, once (an updater from before 0.18.6 doesn't say which files
+it has — the row asks for the same).
 
 Load: a download of about half a megabyte per release and a second copy on disk; `pip` runs only when the relay's
 requirements change. Updating by hand still works: `git pull` and `install.sh` again (it keeps `--auto` on);

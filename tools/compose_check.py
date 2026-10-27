@@ -14,8 +14,9 @@ import aiohttp
 URLS = dict(line.split(" ", 1) for line in open(sys.argv[1]).read().split("\n") if line[:4] in ("NEW ", "SESS"))
 OUT = sys.argv[2] if len(sys.argv) > 2 else tempfile.mkdtemp(prefix="pult-compose-")
 os.makedirs(OUT, exist_ok=True)
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-PORT = 9337
+import _cdp  # noqa: E402  (tools/_cdp.py: where Chrome is, free ports, a profile that goes — review 2026-10-27, Т9)
+CHROME = _cdp.CHROME
+PORT = _cdp.free_port()
 failures = []
 
 
@@ -36,7 +37,7 @@ def png(path):
 async def main():
     pic = os.path.join(OUT, "screenshot.png")
     png(pic)
-    prof = tempfile.mkdtemp(prefix="cdp-")
+    prof = _cdp.profile()
     p = subprocess.Popen([CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--remote-debugging-port=%d" % PORT,
                           "--user-data-dir=" + prof, "--no-first-run", "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
@@ -159,6 +160,13 @@ async def main():
             verdict("at the end a bar shows the project and the session", ok and head[0] in bar and head[1] in bar, repr(bar))
             verdict("the bar is at the top of the screen", await js("Math.round(document.querySelector('.sess-top').getBoundingClientRect().top) === 0"))
             await shot("4-where.png")
+            # earlier history loads by itself as the top comes near and keeps the place being read, so one scroll up
+            # doesn't reach the header of a long session: up again until all of it is in (the check used to catch the
+            # moment before the load — a race, 2026-10-27); then the header is on screen and the bar goes
+            for _ in range(40):
+                await js("window.scrollTo(0, 0)")
+                if await until("!document.querySelector('.earlier')", 15):
+                    break
             await js("window.scrollTo(0, 0)")
             verdict("at the header the bar goes", await until("!document.querySelector('.where-bar')"))
 

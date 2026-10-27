@@ -9,10 +9,10 @@ as in probe_tab.py, the Agent SDK stands in for the extension and a stand-in dae
 3. another prompt — the reply's model must be a sonnet, and the "extension" must not have seen a stray response.
 Run (a few small requests of the subscription): ~/.local/share/pult/venv/bin/python tests/probe_model.py [claude]
 """
-import asyncio, json, os, subprocess, sys, tempfile, time
+import asyncio, json, sys, tempfile, time
 from pathlib import Path
 from claude_agent_sdk import (AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, PermissionResultAllow,
-                              ResultMessage, SystemMessage, TextBlock)
+                              ResultMessage, SystemMessage)
 
 SRC = Path(__file__).resolve().parent.parent / "src"
 CLI = sys.argv[1] if len(sys.argv) > 1 else str(max(
@@ -53,7 +53,7 @@ async def main():
     async def daemon(reader, writer):
         hello = json.loads(await reader.readline())
         tabs.append({"hello": hello, "w": writer})
-        while line := await reader.readline():
+        while await reader.readline():
             pass
     server = await pultd.start_link(daemon, SOCK)
     env = dict(ENV, PULT_TAB_LOG=str(LOG))

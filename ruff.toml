@@ -1,0 +1,4 @@
+# CI's lint (review 2026-10-27, Т10): what a typo costs at a user's — a name that doesn't exist, an import or a value
+# nobody uses — not how the code looks. `ruff check .`
+[lint]
+select = ["F", "E9"]

@@ -185,10 +185,13 @@ class SettingsTest(Base):
         src = root / "src"
         inst = (root / "install.sh").read_text(encoding="utf-8")
         ps1 = (root / "install.ps1").read_text(encoding="utf-8-sig")
-        for name in sorted(p.name for p in src.glob("pult*.py")):
-            self.assertIn("src/" + name, inst, name)
-            self.assertIn("'src/%s'" % name, ps1, name)                       # Windows copies the same files
-            self.assertIn(name, S.HOME_FILES, name)
+        # since 0.18.5 both take every module by a pattern, staged first: none can be left out, none half-copied
+        self.assertIn('cp "$SRC"/src/*.py "$SRC"/src/pult-tab.sh "$SRC"/requirements.txt "$STAGE"/', inst)
+        self.assertIn('for f in "$STAGE"/*; do mv -f "$f" "$DST"/; done', inst)
+        self.assertIn("Copy-Item -Force (Join-Path $Src 'src\\*.py') $stage", ps1)
+        for name in sorted(p.name for p in src.glob("*.py")):
+            self.assertIn(name, S.HOME_FILES, name)                           # and the uninstaller knows each
+        self.assertTrue({".install-new", ".new"} <= set(S.HOME_FILES))
         self.assertTrue((root / "install.ps1").read_bytes().startswith(b"\xef\xbb\xbf"))   # 5.1 reads it as UTF-8
 
     def test_write_env(self):
@@ -342,6 +345,23 @@ class SettingsTest(Base):
         self.run_cli(S.hooks_set, False)
         self.assertEqual(json.loads(S.SETTINGS.read_text()), {"model": "x", "hooks": mine})
         self.assertTrue(list(S.SETTINGS.parent.glob("settings.json.bak-pult-*")))
+
+    @unittest.skipIf(WIN, "a shell script stands in for Python here")
+    def test_environment_check(self):
+        # the daemon can't say its environment is broken — it doesn't start — so `pult status` does (0.18.5)
+        self.assertEqual(S.venv_problem(), "no python")
+        S.PY.parent.mkdir(parents=True, exist_ok=True)
+        S.PY.write_text("#!/bin/sh\necho \"ModuleNotFoundError: No module named 'httpx'\" >&2\nexit 1\n")
+        S.PY.chmod(0o755)
+        self.assertEqual(S.venv_problem(), "ModuleNotFoundError: No module named 'httpx'")
+        out = io.StringIO()
+        with redirect_stdout(out), mock.patch.object(S, "service", lambda lbl: (None, None)), \
+                mock.patch.object(S, "sock_ok", lambda: False):
+            pultctl.cmd_status()
+        self.assertIn("broken (ModuleNotFoundError: No module named 'httpx') — run ./install.sh", out.getvalue())
+        self.assertIn("environment: ModuleNotFoundError", "\n".join(S.report_lines()))
+        S.PY.write_text('#!/bin/sh\nexec %s "$@"\n' % shlex.quote(sys.executable))       # whole: the packages are there
+        self.assertIsNone(S.venv_problem())
 
     def test_launcher(self):
         with mock.patch.dict(os.environ, {"PULT_HOME": ""}):
@@ -709,6 +729,11 @@ class UpdateTest(Base):
         self.assertIsNone(U.built_from(self.repo, head, dict(now, **{"relay/web/extra.js": "0" * 40}), U.PARTS["web"]))
         relay = {"relay/relay.py": U.blob(self.repo / "relay/relay.py", lf=True)}
         self.assertEqual(U.built_from(self.repo, head, relay, U.PARTS["relay"])["commit"], c2)
+        # the same pair again costs no git at all — a copy of uncommitted files included (review 2026-10-27, У12)
+        with mock.patch.object(U, "ls_tree", mock.Mock(side_effect=AssertionError("git again"))), \
+                mock.patch.object(U, "git", mock.Mock(side_effect=AssertionError("git again"))):
+            self.assertEqual(U.built_from(self.repo, head, relay, U.PARTS["relay"])["commit"], c2)
+            self.assertIsNone(U.built_from(self.repo, head, {"relay/web/app.js": "0" * 40}, U.PARTS["web"]))
         lag = U.behind(self.repo, self.c1, head, U.TREE)                 # the journal and the relay don't count
         self.assertEqual((lag["n"], lag["news"]), (1, ["Pult: app three, x three"]))
         self.assertEqual(U.behind(self.repo, head, head, U.TREE)["n"], 0)
@@ -833,7 +858,12 @@ class UpdateTest(Base):
         inst.install = lambda: calls.append("install") or True
         inst.pip = lambda: calls.append("pip")
         answers = list(health)
-        inst.healthy = lambda t0, wait=U.HEALTH_WAIT: answers.pop(0)
+        inst.checks = []                                          # how each check was asked: need_relay or not
+
+        def healthy(t0, wait=U.HEALTH_WAIT, need_relay=True):
+            inst.checks.append(need_relay)
+            return answers.pop(0)
+        inst.healthy = healthy
         inst.error_line = lambda t0: "ImportError: cannot import name 'y'"
         inst.alarm = lambda: calls.append("alarm")
         return inst, calls
@@ -843,8 +873,19 @@ class UpdateTest(Base):
         c2 = self.commit("Pult 1.1")
         self.files({"src/pult_x.py": "x = 'half-made'\n"})       # uncommitted: must not go in
         inst, calls = self.installer([(True, None)])
-        self.assertEqual(inst.run(), 0)
+        moved, real = [], U.os.replace
+
+        def replace(a, b):
+            moved.append((Path(a).parent.name, Path(b).name))
+            return real(a, b)
+        with mock.patch.object(U.os, "replace", replace):
+            self.assertEqual(inst.run(), 0)
         self.assertEqual(calls, ["stop", "install"])             # requirements.txt unchanged: no pip
+        # each file is written beside its place and renamed over it: a hook or a tab starting meanwhile reads the old
+        # one or the new one, never half of one (0.18.5)
+        placed = {b for a, b in moved if a == U.NEW}
+        self.assertTrue({"pultd.py", "pult_new.py", "pult_update.py", "pult-tab.sh"} <= placed, placed)
+        self.assertFalse((S.HOME / U.NEW).exists())
         self.assertEqual((S.HOME / "pultd.py").read_text(), 'VERSION = "1.1"\n')
         self.assertEqual((S.HOME / "pult_new.py").read_text(), "new = 1\n")   # a module the old updater never heard of
         self.assertEqual((S.HOME / "pult_x.py").read_text(), "x = 1\n")
@@ -863,9 +904,11 @@ class UpdateTest(Base):
         inst, calls = self.installer([(False, "restarts"), (True, None)])
         self.assertEqual(inst.run(), 1)
         self.assertEqual(calls, ["stop", "pip", "install", "stop", "pip", "install"])
+        self.assertEqual(inst.checks, [True, False])              # the version going back: up is enough
         self.assertEqual((S.HOME / "pultd.py").read_text(), 'VERSION = "1.0"\n')
         self.assertEqual((S.HOME / "requirements.txt").read_text(), "aiohttp\n")
         self.assertFalse((S.HOME / "pult_new.py").exists())      # what the new version added goes too
+        self.assertFalse((S.HOME / U.NEW).exists())
         st = U.read(U.STATUS)
         self.assertEqual((st["state"], st["why"], st["back"], st["back_ok"], st["reported"], st["commit"], st["to"]),
                          ("fail", "restarts", True, True, False, c2, "1.1"))
@@ -877,6 +920,19 @@ class UpdateTest(Base):
         self.files({"src/pultd.py": 'VERSION = "1.1"\n'})
         self.commit("Pult 1.1: fixed")
         self.assertFalse(U.check()["failed"])
+
+    def test_installer_server_down(self):
+        # the app's server answers nobody while the new version starts: the update counts — before 0.18.5 it went back
+        # and said neither version came up (the old one couldn't reach the server either)
+        self.files({"src/pultd.py": 'VERSION = "1.1"\n'})
+        c2 = self.commit("Pult 1.1")
+        inst, calls = self.installer([(True, "relay_down")])
+        self.assertEqual(inst.run(), 0)
+        self.assertEqual(calls, ["stop", "install"])
+        self.assertEqual((S.HOME / "pultd.py").read_text(), 'VERSION = "1.1"\n')
+        st = U.read(U.STATUS)
+        self.assertEqual((st["state"], st["note"], st["commit"]), ("done", "relay_down", c2))
+        self.assertEqual((U.history()[0]["ok"], U.history()[0]["why"]), (True, "relay_down"))
 
     def test_installer_neither_comes_up(self):
         self.files({"src/pultd.py": 'VERSION = "1.1"\nimport broken\n'})
@@ -915,11 +971,84 @@ class UpdateTest(Base):
             U.write(U.HEALTH, {"pid": 7, "started": t0, "relay": None})        # no app server: the daemon alone
             self.assertEqual(inst.healthy(t0, wait=1), (True, None))
             U.write(U.HEALTH, {"pid": 7, "started": t0, "relay": False})
+            # up without the app's server: the server is asked itself (0.18.5) — it answers, the new version is at fault
+            inst.relay_answers = lambda: True
             self.assertEqual(inst.healthy(t0, wait=0.05), (False, "no_relay"))
+            inst.relay_answers = lambda: False                                     # it answers nobody: not the update
+            self.assertEqual(inst.healthy(t0, wait=0.05), (True, "relay_down"))
+            self.assertEqual(inst.healthy(t0, wait=1, need_relay=False), (True, None))   # going back: up is enough
             U.write(U.HEALTH, {"pid": 7, "started": t0 - 100, "relay": True})  # the old daemon's note
             self.assertEqual(inst.healthy(t0, wait=0.05), (False, "no_start"))
             pids[:] = ["8", "9", "10", "11"]                                       # launchd restarting a crashing one
             self.assertEqual(inst.healthy(t0, wait=1), (False, "restarts"))
+
+    def test_relay_answers(self):
+        # the relay's own /healthz decides whether a daemon without it is the new version's fault (0.18.5)
+        import http.server
+        import threading
+        got = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                got.append(self.path)
+                body = b'{"ok": true, "mac": false}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        port = srv.server_address[1]
+        inst = U.Installer("c" * 40, "app")
+        env = {"PULT_RELAY_URL": "ws://127.0.0.1:%d/pult/agent" % port}
+        inst.S = SimpleNamespace(read_env=lambda: env)
+        self.assertTrue(inst.relay_answers())
+        self.assertEqual(got, ["/pult/healthz"])
+        srv.shutdown()
+        srv.server_close()
+        self.assertFalse(inst.relay_answers())                    # nobody there
+        env.clear()
+        self.assertFalse(inst.relay_answers())                    # no app server at all
+        self.assertEqual(U.health_url("wss://h.example/pult/agent"), "https://h.example/pult/healthz")
+        self.assertIsNone(U.health_url("https://h.example/pult/"))
+
+    def test_alarm_and_install(self):
+        # the installer's last word when neither version came up and no daemon is left to say it (review 2026-10-27,
+        # Т7): straight to the owner in Telegram, through the proxy, in the owner's language; Telegram down too — its
+        # log says so and nothing breaks; no token — nothing to do
+        inst = U.Installer("c" * 40, "app")
+        inst.st.update({"to": "9.9", "from": "9.8"})
+        sent = []
+        env = {"PULT_BOT_TOKEN": "T", "PULT_ALLOWED_USER_IDS": "42,7", "PULT_PROXY": "http://proxy.example:3128"}
+        inst.S = SimpleNamespace(read_env=lambda: env, cli_lang=lambda: "ru", I=S.I,
+                                 bot_call=lambda token, method, **kw: sent.append((token, method, kw)))
+        inst.alarm()
+        self.assertEqual([(t, m, kw["chat_id"], kw["proxy"]) for t, m, kw in sent], [("T", "sendMessage", 42, "http://proxy.example:3128")])
+        self.assertEqual(sent[0][2]["text"], S.I.T("upd.dead", lang="ru", to="9.9", back="9.8"))
+        said = []
+        inst.S.bot_call = mock.Mock(side_effect=OSError("down"))
+        with mock.patch.object(U, "say", lambda *a: said.append(" ".join(map(str, a)))):
+            inst.alarm()
+        self.assertTrue(said and said[0].startswith("couldn't tell the owner"), said)
+        env.clear()
+        inst.S.bot_call = mock.Mock()
+        inst.alarm()
+        inst.S.bot_call.assert_not_called()
+        # its install step: the installed pultctl with PULT_FORCE=1 and who asked; what it says goes to the log
+        (S.HOME / "pultctl.py").write_text("import os, sys\nprint('force', os.environ.get('PULT_FORCE'), 'by', "
+                                           "os.environ.get('PULT_UPDATER'), sys.argv[1:])\nsys.exit(int(os.environ.get('FAKE_EXIT', '0')))\n")
+        inst.S = SimpleNamespace(PY=sys.executable)
+        said = []
+        with mock.patch.object(U, "say", lambda *a: said.append(" ".join(map(str, a)))):
+            self.assertTrue(inst.install())
+            with mock.patch.dict(os.environ, {"FAKE_EXIT": "3"}):
+                self.assertFalse(inst.install())
+        self.assertIn("  pultctl: force 1 by app ['install']", said)
 
     def test_spawn(self):
         seen = {}
@@ -946,6 +1075,121 @@ class UpdateTest(Base):
         self.assertEqual(U.running()["state"], "run")
         U.write(U.STATUS, {"state": "run", "ts": 1, "pid": 99999999})           # long gone: cut short
         self.assertIsNone(U.running())
+
+
+class ServerOwnTest(unittest.TestCase):
+    @unittest.skipIf(WIN, "the updater runs on a Linux server (it imports fcntl)")
+    def test_server_own_files_agree(self):
+        # the files the server's updater reports and the ones the computer compares (review 2026-10-27, У5): one list
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("pult_relay_update_own", SRC.parent / "deploy" / "relay" / "update.py")
+        M = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(M)
+        self.assertEqual(sorted(M.OWN), sorted(U.SRV_OWN))
+        for rel in U.SRV_OWN:                              # each one is in the repository, where install.sh takes it
+            self.assertTrue((SRC.parent / rel).exists(), rel)
+
+class PrivateDirTest(unittest.TestCase):
+    @unittest.skipIf(WIN, "Windows keeps a user's folders by its own rights")
+    def test_private_dir(self):
+        # Pult's own folders for logs and settings are its user's only — made so, and made so again when an older
+        # install left them readable; a folder that isn't Pult's own is never changed (review 2026-10-27, Б7)
+        t = Path(tempfile.mkdtemp(prefix="pult-private-"))
+        self.addCleanup(shutil.rmtree, t, True)
+        fresh = pult_os.private_dir(t / "state" / "pult")
+        self.assertEqual(fresh.stat().st_mode & 0o777, 0o700)
+        old = t / "config" / "pult"
+        old.mkdir(parents=True)
+        old.chmod(0o755)
+        pult_os.private_dir(old)
+        self.assertEqual(old.stat().st_mode & 0o777, 0o700)
+        logs = t / "Library" / "Logs"
+        logs.mkdir(parents=True)
+        logs.chmod(0o755)
+        pult_os.private_dir(logs)
+        self.assertEqual(logs.stat().st_mode & 0o777, 0o755)
+
+class ConsistencyTest(unittest.TestCase):
+    """tools/consistency.py, as CI runs it (review 2026-10-27, Т10): the version against the changelog and a release
+    tag, the relay's requirements against the computer's pins."""
+
+    def tree(self, version, log, pins="aiohttp==3.14.5\n", relay="aiohttp>=3.10\n"):
+        d = Path(tempfile.mkdtemp(prefix="pult-consistency-"))
+        self.addCleanup(shutil.rmtree, d, True)
+        (d / "src").mkdir()
+        (d / "relay").mkdir()
+        (d / "src" / "pultd.py").write_text('VERSION = "%s"\n' % version)
+        (d / "CHANGELOG.md").write_text(log)
+        (d / "requirements.txt").write_text(pins)
+        (d / "relay" / "requirements.txt").write_text(relay)
+        return d
+
+    def test_consistency(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("pult_consistency", SRC.parent / "tools" / "consistency.py")
+        C = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(C)
+        between = "# Changelog\n\n## Unreleased\n\n- a thing\n\n## 1.2.3 — 2026-10-01\n\n- old\n"
+        self.assertEqual(C.problems(self.tree("1.2.4", between)), [])                    # the next one is being made
+        self.assertEqual(len(C.problems(self.tree("1.2.2", between))), 1)                # older than its own changelog
+        released = "# Changelog\n\n## Unreleased\n\n## 1.2.4 — 2026-10-27\n\n- a thing\n\n## 1.2.3\n"
+        self.assertEqual(C.problems(self.tree("1.2.4", released), "refs/tags/v1.2.4"), [])
+        self.assertEqual(len(C.problems(self.tree("1.2.4", between), "refs/tags/v1.2.4")), 2)   # section, Unreleased
+        self.assertEqual(len(C.problems(self.tree("1.2.5", released), "refs/tags/v1.2.4")), 1)  # the tag isn't VERSION
+        self.assertEqual(C.problems(self.tree("1.2.4", between), "refs/heads/main"), [])
+        self.assertEqual(len(C.problems(self.tree("1.2.4", between, relay="aiohttp>=3.20\n"))), 1)   # pins too old
+        self.assertEqual(C.problems(self.tree("1.2.4", between, relay="aiohttp==3.14.5\n")), [])        # the same pin
+        self.assertEqual(len(C.problems(self.tree("1.2.4", between, relay="aiohttp==3.14.4\n"))), 1)   # another one
+        self.assertEqual(C.problems(SRC.parent), [])                                     # this very repository
+
+@unittest.skipIf(WIN, "install.sh is for macOS and Linux")
+class InstallShTest(unittest.TestCase):
+    """install.sh itself, for real, in a sandbox: a stand-in HOME (the service file and the command land there), Pult's
+    folder under it, its Python environment already in place and a pip that only takes notes — no network, no service."""
+
+    def setUp(self):
+        self.t = Path(tempfile.mkdtemp(prefix="pult-installsh-"))
+        self.addCleanup(shutil.rmtree, self.t, True)
+        self.home = self.t / "home"
+        self.dst = self.home / ".local" / "share" / "pult"
+        (self.dst / "venv" / "bin").mkdir(parents=True)
+        py, pip = self.dst / "venv" / "bin" / "python", self.dst / "venv" / "bin" / "pip"
+        py.write_text('#!/bin/sh\nexec %s "$@"\n' % shlex.quote(sys.executable))
+        pip.write_text('#!/bin/sh\necho "$*" >> %s\n' % shlex.quote(str(self.t / "pip.log")))
+        py.chmod(0o755)
+        pip.chmod(0o755)
+
+    def install(self, src):
+        env = {k: v for k, v in os.environ.items() if not k.startswith("PULT_")}
+        env.update(HOME=str(self.home), PULT_LANG="en", PULT_FORCE="1")     # FORCE: never ask a real daemon
+        return subprocess.run(["bash", str(src / "install.sh")], env=env, stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, timeout=120)
+
+    def test_install_sh(self):
+        root = SRC.parent
+        r = self.install(root)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        names = sorted(p.name for p in SRC.glob("*.py")) + ["pult-tab.sh", "requirements.txt"]
+        for name in names:                                    # every module, as it is in the folder
+            src = root / ("requirements.txt" if name == "requirements.txt" else "src/" + name)
+            self.assertEqual((self.dst / name).read_bytes(), src.read_bytes(), name)
+        self.assertTrue(os.access(self.dst / "pult_tab.py", os.X_OK) and os.access(self.dst / "pult-tab.sh", os.X_OK))
+        self.assertFalse((self.dst / ".install-new").exists())
+        self.assertIn("-r %s" % (self.dst / "requirements.txt"), (self.t / "pip.log").read_text())
+        self.assertTrue(list(self.home.rglob("*pult*.plist")) + list(self.home.rglob("*.service")))   # in the sandbox
+        # a source missing: the install stops before anything installed changed (0.18.5; it copied file by file)
+        tree = self.t / "tree"
+        (tree / "src").mkdir(parents=True)
+        shutil.copy2(root / "install.sh", tree / "install.sh")
+        shutil.copy2(root / "requirements.txt", tree / "requirements.txt")
+        for p in SRC.glob("*.py"):
+            (tree / "src" / p.name).write_text("# a newer one\n")
+        (self.dst / "pultd.py").write_text('VERSION = "1.0"  # installed\n')
+        r = self.install(tree)                                # no src/pult-tab.sh there
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual((self.dst / "pultd.py").read_text(), 'VERSION = "1.0"  # installed\n')
+        self.assertEqual((self.dst / "pult_hook.py").read_bytes(), (SRC / "pult_hook.py").read_bytes())
+        self.assertFalse((self.dst / ".install-new").exists())
 
 
 class UninstallTest(Base):

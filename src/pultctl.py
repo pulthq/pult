@@ -32,6 +32,9 @@ def cmd_status():
     state, pid = S.service(lbl)
     row("cli.st.daemon", T("cli.st.running", state=state, pid=pid) if state else T("cli.st.not_loaded", label=lbl))
     row("cli.st.sock", T("cli.st.answers") if S.sock_ok() else T("cli.st.no"))
+    why = S.venv_problem()
+    row("cli.st.env", T("cli.st.env_bad", why=why, cmd="install.ps1" if S.WIN else "./install.sh") if why
+        else T("cli.st.env_ok"))
     hooks = S.hooks_installed()
     missing = [e for e in S.pult_hook.EVENTS if e not in hooks] if hooks else []     # a newer Pult added an event
     row("cli.st.hooks", ", ".join(hooks) + (T("cli.hooks.missing", events=", ".join(missing)) if missing else "")

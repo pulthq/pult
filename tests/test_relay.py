@@ -5,21 +5,27 @@ Telegram's, and the phone and the Mac are real WebSocket connections to a real r
   ~/.local/share/pult/venv/bin/python tests/test_relay.py      (needs aiohttp and cryptography)
 """
 import asyncio
+import atexit
 import base64
 import hashlib
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import types
 import unittest
 import urllib.parse
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 TMP = Path(tempfile.mkdtemp(prefix="pult-relay-test-"))
+atexit.register(shutil.rmtree, TMP, True)
 os.environ.update(PULT_RELAY_SECRET="s3cret", PULT_OWNER_ID="42", PULT_BOT_ID="777",
                   PULT_WEB_DIR=str(ROOT / "relay" / "web"))
 sys.path.insert(0, str(ROOT / "relay"))
@@ -81,6 +87,15 @@ class RelayTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(relay.check_init(init_data(age=8 * 86400))[:3], (True, True, False))  # stale
         self.assertEqual(relay.check_init("")[:3], (False, False, False))
 
+    def test_client_ip(self):
+        # the phone's address as the web server saw it: nginx's X-Real-IP, else the last X-Forwarded-For hop — the one
+        # Caddy appends; what comes before it the client wrote itself (review 2026-10-27, Т7)
+        req = lambda h, remote="10.0.0.1": types.SimpleNamespace(headers=h, remote=remote)
+        self.assertEqual(relay.client_ip(req({"X-Real-IP": " 203.0.113.9 ", "X-Forwarded-For": "1.1.1.1"})), "203.0.113.9")
+        self.assertEqual(relay.client_ip(req({"X-Forwarded-For": "6.6.6.6, 198.51.100.7"})), "198.51.100.7")
+        self.assertEqual(relay.client_ip(req({})), "10.0.0.1")
+        self.assertEqual(relay.client_ip(req({}, None)), "")
+
     async def test_page_and_health(self):
         async with self.http.get(self.url("/pult/")) as r:
             self.assertEqual(r.status, 200)
@@ -140,9 +155,14 @@ class RelayTest(unittest.IsolatedAsyncioTestCase):
         await ws.send_str(json.dumps({"t": "req", "id": 1, "op": "overview"}))     # not forwarded before confirmation
         await mac.send_str(json.dumps({"t": "auth", "cid": cid, "ok": True}))
         self.assertEqual(json.loads((await ws.receive(timeout=5)).data), {"t": "ready"})
+        # a window only asks: anything but a request stays at the relay — a window can't speak for it to the Mac
+        # (a login of its own with a made-up address, an updater's report; review 2026-10-27, Б2)
+        for odd in ({"t": "open", "init": "x", "ip": "203.0.113.9"}, {"t": "relay", "upd": {"state": "done"}},
+                    {"t": "close"}, {"t": "auth", "ok": True}, [1], "req"):
+            await ws.send_str(json.dumps(odd))
         await ws.send_str(json.dumps({"t": "req", "id": 2, "op": "overview"}))
         got = json.loads((await mac.receive(timeout=5)).data)
-        self.assertEqual((got["id"], got["cid"]), (2, cid))
+        self.assertEqual((got["t"], got["id"], got["cid"]), ("req", 2, cid))           # the first the Mac hears
         await mac.send_str(json.dumps({"t": "res", "id": 2, "cid": cid, "data": {"ok": 1}}))
         self.assertEqual(json.loads((await ws.receive(timeout=5)).data), {"t": "res", "id": 2, "data": {"ok": 1}})
         await mac.send_str(json.dumps({"t": "event", "kind": "turn"}))              # no cid: goes to every window
@@ -170,7 +190,11 @@ class RelayTest(unittest.IsolatedAsyncioTestCase):
         await mac.send_str(json.dumps({"t": "auth", "cid": opened["cid"], "ok": True, "resume": "k2"}))
         self.assertEqual(json.loads((await ws.receive(timeout=5)).data), {"t": "ready", "resume": "k2"})
         await mac.close()
-        self.assertEqual(json.loads((await ws.receive(timeout=5)).data), {"t": "mac", "on": False})
+        # the window hears that the Mac went away, and since when (0.18.5) — in seconds, no clocks to compare
+        self.assertEqual(json.loads((await ws.receive(timeout=5)).data), {"t": "mac", "on": False, "away": 0})
+        late, h = await self.phone(init_data())                         # a window opened while the Mac is away
+        self.assertEqual((h["t"], h["mac"], type(h.get("away"))), ("hello", False, int))
+        await late.close()
         mac, _ = await self.agent()
         again = json.loads((await mac.receive(timeout=5)).data)
         self.assertEqual((again["t"], again["cid"], again["resume"]), ("open", opened["cid"], "k2"))
@@ -194,9 +218,13 @@ class RelayTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(m["t"], "hello")
         # behind a proxy that hides the client every phone is 127.0.0.1: only the overall limit applies
         local = [await self.http.ws_connect(self.url("/pult/ws"), headers={"X-Real-IP": "127.0.0.1"})
-                 for _ in range(relay.WAITING_PER_IP)]
+                 for _ in range(relay.WAITING_MAX - relay.WAITING_PER_IP - 1)]
         w2, m = await self.phone(init_data(), ip="127.0.0.1")
         self.assertEqual(m["t"], "hello")
+        # and no more than WAITING_MAX wait in all: each may bring a frame of up to 8 MB (review 2026-10-27, Б6)
+        local.append(await self.http.ws_connect(self.url("/pult/ws"), headers={"X-Real-IP": "127.0.0.1"}))
+        over = await self.http.ws_connect(self.url("/pult/ws"), headers={"X-Real-IP": "127.0.0.1"})
+        self.assertEqual(((await over.receive(timeout=5)).type, over.close_code), (aiohttp.WSMsgType.CLOSE, 4429))
         self.assertFalse(relay.known("::1") or relay.known("") or relay.known("garbage"))
         for h in held + local + [ws, w2]:
             await h.close()
@@ -261,6 +289,11 @@ class RelayUpdaterTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(r.want({"tag": "v0.18.1", "commit": "b" * 40}, now=1011))
         self.assertFalse(r.want({"tag": "v0.18.1", "commit": "b" * 40}, now=1100))         # the same one: later
         self.assertTrue(r.want({"tag": "v0.18.1", "commit": "b" * 40}, now=1011 + relay.WANT_REFRESH))
+        # the owner's "try again": the same one at once (still not more often than WANT_EVERY), with this server's clock
+        later = 1011 + relay.WANT_REFRESH + 20
+        self.assertFalse(r.want({"tag": "v0.18.1", "commit": "b" * 40, "retry": "yes"}, now=later))   # only True counts
+        self.assertTrue(r.want({"tag": "v0.18.1", "commit": "b" * 40, "retry": True}, now=later))
+        self.assertEqual(json.loads((self.dir / "want.json").read_text())["retry"], later)
         relay.STATE = ""
         self.assertFalse(relay.Relay().want({"tag": "v0.18.0", "commit": sha}, now=1))      # no updater here
 
@@ -271,6 +304,10 @@ class RelayUpdaterTest(unittest.IsolatedAsyncioTestCase):
         st = relay.updater_status()
         self.assertEqual((st["state"], st["tag"], st["ts"], st["back"], len(st["detail"])), ("done", "v0.18.1", 5, False, 300))
         self.assertNotIn("token", st)
+        # the updater's own files (0.18.6): blob ids or None pass, anything else stays here
+        self.status.write_text(json.dumps({"state": "done", "self": {"deploy/relay/update.py": "a" * 40, "deploy/relay/x": None,
+                                                                     "deploy/relay/y": "not a blob", "z": 7}}))
+        self.assertEqual(relay.updater_status()["self"], {"deploy/relay/update.py": "a" * 40, "deploy/relay/x": None})
         self.status.write_text("[1, 2]")
         self.assertIsNone(relay.updater_status())
 
@@ -488,6 +525,139 @@ class UpdaterTest(unittest.TestCase):
         self.assertIn("systemd restarted it", st["detail"])
         self.assertLess(type(u).clock, 5)
         self.assertEqual((M.APP / "current").resolve(), self.first.resolve())
+
+    def test_its_own_looks(self):
+        # what the other tests stand in for (review 2026-10-27, Т7): `systemctl show` read field by field, the relay's
+        # healthz over TCP and over a Unix socket, a second run waits for the first, want.json changed on the way
+        M = self.M
+        u = M.Updater()
+        with mock.patch.object(M.subprocess, "run", lambda *a, **k: types.SimpleNamespace(stdout="MainPID=123\nActiveState=active\nNRestarts=2\n")):
+            self.assertEqual(u.service(), {"pid": 123, "state": "active", "restarts": 2})
+        with mock.patch.object(M.subprocess, "run", lambda *a, **k: types.SimpleNamespace(stdout="MainPID=\nActiveState=failed\njunk\n")):
+            self.assertEqual(u.service(), {"pid": 0, "state": "failed", "restarts": 0})
+        with mock.patch.object(M.subprocess, "run", mock.Mock(side_effect=OSError("no systemctl"))):
+            self.assertEqual(u.service(), {})
+        import http.server
+        import socketserver
+        answer = {"code": 200, "body": b'{"ok": true, "mac": false}'}
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(answer["code"])
+                self.send_header("Content-Length", str(len(answer["body"])))
+                self.end_headers()
+                self.wfile.write(answer["body"])
+
+            def address_string(self):
+                return "local"
+
+            def log_message(self, *a):
+                pass
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        sock = str(Path(tempfile.mkdtemp(prefix="pult-sock-", dir="/tmp")) / "relay.sock")      # a short path: sun_path
+
+        class U(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+            daemon_threads = True
+        usrv = U(sock, H)
+        threading.Thread(target=usrv.serve_forever, daemon=True).start()
+        try:
+            for where in ("http://127.0.0.1:%d/pult/healthz" % srv.server_address[1], "unix:" + sock):
+                with mock.patch.object(M, "HEALTH", where):
+                    answer.update(code=200, body=b'{"ok": true, "mac": false}')
+                    self.assertEqual(u.health(), {"ok": True, "mac": False}, where)
+                    answer.update(code=502)
+                    self.assertIsNone(u.health(), where)
+                    answer.update(code=200, body=b"<html>")
+                    self.assertIsNone(u.health(), where)
+        finally:
+            srv.shutdown()
+            srv.server_close()
+            usrv.shutdown()
+            usrv.server_close()
+            shutil.rmtree(Path(sock).parent, ignore_errors=True)
+        with mock.patch.object(M, "HEALTH", "http://127.0.0.1:%d/pult/healthz" % srv.server_address[1]):
+            self.assertIsNone(u.health())                                  # nobody there
+        # a second run while one runs: it leaves at once, the running one looks at want.json again when it ends
+        import fcntl
+        seen = []
+        u.once = lambda: seen.append("once") or {}
+        with open(M.HOME / "lock", "w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            self.assertEqual(u.run(), 0)
+            self.assertEqual(seen, [])
+        # want.json changed while it ran: one more look; it keeps changing — at most ROUNDS
+        self.want("v0.18.1")
+
+        def once():
+            seen.append("once")
+            w = json.loads(M.WANT.read_text())
+            if len(seen) == 1:
+                self.want("v0.18.2")
+            return w
+        u.once = once
+        self.assertEqual(u.run(), 0)
+        self.assertEqual(len(seen), 2)
+        seen.clear()
+
+        def restless():
+            seen.append("once")
+            w = json.loads(M.WANT.read_text())
+            M.WANT.write_text(json.dumps(dict(w, ts=w["ts"] + 1)))
+            return w
+        u.once = restless
+        u.run()
+        self.assertEqual(len(seen), M.ROUNDS)
+
+    def test_its_own_files(self):
+        # every report says which updater and services this server has — git's blob ids, as the computer's clone
+        # has them for the release — so a release that changed them can say install.sh is due (review 2026-10-27, У5)
+        M = self.M
+        units = Path(tempfile.mkdtemp(prefix="pult-units-", dir=TMP))
+        (units / "pult-relay.service").write_text("[Unit]\n")
+        with mock.patch.object(M, "UNITS", units), mock.patch.dict(M.OWN, {
+                "deploy/relay/pult-relay.service": units / "pult-relay.service",
+                "deploy/relay/pult-relay-update.path": units / "pult-relay-update.path"}):
+            own = M.own_files()
+            u = self.updater()
+            u.status(state="idle", have="v0.18.0")
+        self.assertEqual(own["deploy/relay/pult-relay.service"], git(units, "hash-object", str(units / "pult-relay.service")))
+        self.assertEqual(own["deploy/relay/update.py"], git(ROOT, "hash-object", str(ROOT / "deploy" / "relay" / "update.py")))
+        self.assertIsNone(own["deploy/relay/pult-relay-update.path"])
+        self.assertEqual(sorted(own), sorted(M.OWN))
+        self.assertEqual(self.status()["self"], own)
+
+    def test_computer_away_after_the_switch(self):
+        # the computer didn't come back in the minute and a half after the switch (asleep, its network blinked) — not
+        # surely the release's fault: tried again on the computer's next word, NO_MAC_TRIES times in all, then failed
+        # here for good; the owner's "try again" (stamped by the relay) starts the count anew (0.18.5)
+        M = self.M
+        first = self.first.resolve()
+
+        def look(extra=None, back=True):
+            u = self.updater()
+            u.health = lambda: {"ok": True, "mac": not back or M.APP.joinpath("current").resolve() == first}
+            M.WANT.write_text(json.dumps(dict({"tag": "v0.18.1", "commit": self.shas["v0.18.1"], "ts": 1}, **(extra or {}))))
+            u.run()
+            return self.status()
+        for _ in range(M.NO_MAC_TRIES - 1):
+            st = look()
+            self.assertEqual((st["state"], st["why"], st["back"], st["back_ok"]), ("fail", "no_mac_retry", True, True))
+        self.assertEqual(look()["why"], "no_mac")                       # the last try: failed here
+        self.assertEqual((M.APP / "current").resolve(), first)
+        look()                                                          # the same word again: not tried
+        self.assertEqual(self.restarts, [])
+        st = look({"retry": 10 ** 9})                                   # the owner asks: tried anew, counted anew
+        self.assertEqual(st["why"], "no_mac_retry")
+        st = look(back=False)                                           # the computer is back this time
+        self.assertEqual((st["state"], st["tag"]), ("done", "v0.18.1"))
+        self.assertEqual(json.loads((M.HOME / "installed.json").read_text())["tag"], "v0.18.1")
+        # a failure written before 0.18.5 (the reason alone) still counts as final
+        (M.HOME / "failed.json").write_text(json.dumps({"v0.18.2 %s" % self.shas["v0.18.2"]: "no_start"}))
+        u = self.updater()
+        self.want("v0.18.2")
+        u.run()
+        self.assertEqual(self.restarts, [])
 
     def test_no_computer_no_network(self):
         M = self.M

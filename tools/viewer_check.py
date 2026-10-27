@@ -7,14 +7,15 @@ the viewer. Nothing is left in the history.
   ~/.local/share/pult/venv/bin/python tools/viewer_check.py "$(grep '^SESS ' /tmp/stand.out | cut -d' ' -f2)" [out_dir]
 Screenshots go to out_dir (a temporary folder by default). Exit 1 on a failed check. Selectors are by class and order,
 not by text: the stand runs in either language."""
-import asyncio, base64, json, os, re, struct, subprocess, sys, tempfile, zlib
+import asyncio, base64, json, os, struct, subprocess, sys, tempfile, zlib
 import aiohttp
 
 URL = sys.argv[1]
 OUT = sys.argv[2] if len(sys.argv) > 2 else tempfile.mkdtemp(prefix="pult-viewer-")
 os.makedirs(OUT, exist_ok=True)
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-PORT = 9338
+import _cdp  # noqa: E402  (tools/_cdp.py: where Chrome is, free ports, a profile that goes — review 2026-10-27, Т9)
+CHROME = _cdp.CHROME
+PORT = _cdp.free_port()
 W, H = 412, 860
 failures = []
 
@@ -50,7 +51,7 @@ STATE = """(() => { const v = document.querySelector('.viewer');
 async def main():
     pic = os.path.join(OUT, "halves.png")
     png(pic, 400, 300)
-    prof = tempfile.mkdtemp(prefix="cdp-")
+    prof = _cdp.profile()
     p = subprocess.Popen([CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--remote-debugging-port=%d" % PORT,
                           "--user-data-dir=" + prof, "--no-first-run", "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:

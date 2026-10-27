@@ -33,7 +33,9 @@ Checks that use the real Claude Code, and spend a little of your plan:
 - `tests/probe_background.py` checks what Claude Code reports about background tasks.
 
 `tools/stand.py` serves the web app with made-up sessions (`STAND_LANG=en|ru`), and `tools/shot.py` takes phone-size
-screenshots of it. The README pictures come from there.
+screenshots of it. The README pictures come from there. `tools/check.py` runs every check of the app in headless
+Chrome with real taps, each on a stand of its own (about 7 minutes; `tools/check.py copy tags` — only those); the
+checks share `tools/_cdp.py`, which finds Chrome (`CHROME=<path>` for another one) and takes free ports.
 
 ## Where things are
 
