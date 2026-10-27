@@ -12,8 +12,10 @@ the computer refuse the recording's notes as one before 0.14.2 does. Usage is st
 into the public README: STAND_LANG=en|ru picks the texts, STAND_XSS=1 adds markup that must stay text, STAND_ASK2=1
 gives the question a second one, a second session waiting for you and a permission older than it, STAND_ADVICE=1
 makes it a question of several answers with Claude's advice among them (tools/advice_check.py), STAND_QUEUE=1 puts a turn in the queue (all places taken), STAND_UPD=ok|ready|busy|
-wait|run|fail shows Settings → Pult and Home's line in that state (no installer ever runs), STAND_PORT=<port> runs a
-second stand beside one already up. STAND_TICKS=<s> opens the first session in a tab that reads each message <s> s
+wait|run|fail shows Settings → Pult and Home's line in that state (no installer ever runs) — with STAND_UPD=ready,
+STAND_RESTART=answered|lost makes Install stop the stand's daemon as the real installer stops Pult: nothing answered
+from the tap on, the link to the relay down for a second (lost: before the tap's own answer goes out), back, checking
+itself for 4 s, then nothing newer (tools/update_check.py); STAND_PORT=<port> runs a second stand beside one already up. STAND_TICKS=<s> opens the first session in a tab that reads each message <s> s
 later, as Claude Code does at its turn's next step — a message with "#gone" is dropped instead (tools/ticks_check.py).
 STAND_FILES=1 gives the shop a real folder with made-up files and ends the chat with links to them (tools/fileview_check.py).
 Settings' table of Pult's parts and Home's line always run on made-up facts — all fresh; STAND_PARTS=now|lag|bad|public:
@@ -35,6 +37,9 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "tests"))
 import test_web as W  # noqa: E402  (keys, relay with the test key)
 T, PW, pultd, relay = W.T, W.PW, W.pultd, W.relay
+import pult_api  # noqa: E402
+import pult_hook  # noqa: E402
+import pult_parts  # noqa: E402
 import pult_load as L  # noqa: E402
 import pult_update as U  # noqa: E402
 import pult_setup  # noqa: E402  (the Claude Code versions the wrapper is checked on)
@@ -401,13 +406,13 @@ async def main():
     home = T.TMP / "stand-home"
     for d in ("Documents/acme-shop", "Documents/support-desk", "Code"):
         (home / d).mkdir(parents=True, exist_ok=True)
-    pultd.NEW_ROOT, pultd.SKIP_PREFIXES = home, ("-nothing-",)
+    pult_api.NEW_ROOT, pultd.SKIP_PREFIXES = home, ("-nothing-",)
     pultd.TAB_CONF = T.TMP / "stand-tab.json"
     pultd.TAB_CONF.write_text(json.dumps({"folders": [str(home / "Documents"), "/Users/x"],
                                           "versions": list(pult_setup.TAB_VERIFIED)}))
     # VS Code with Pult's wrapper line and the tab switch — made up: why a message goes as a copy is read from them
     pultd.TAB_OFF = T.TMP / "stand-tab-off"
-    pultd.EXT_DIRS = [T.TMP / "stand-extensions"]                 # nor its Claude Code extensions
+    pult_parts.EXT_DIRS = [T.TMP / "stand-extensions"]                 # nor its Claude Code extensions
     pultd.EDITOR_DIRS = [T.TMP / "stand-vscode" / "User"]
     pultd.EDITOR_DIRS[0].mkdir(parents=True, exist_ok=True)
     (pultd.EDITOR_DIRS[0] / "settings.json").write_text(json.dumps({
@@ -416,7 +421,7 @@ async def main():
     # Settings → Model and effort shows under "As in Claude Code"
     pultd.SETTINGS = T.TMP / "stand-settings.json"
     pultd.SETTINGS.write_text(json.dumps({"effortLevel": "high", "hooks": {
-        e: [{"hooks": [{"type": "command", "command": "pult_hook.py"}]}] for e in pultd.pult_hook.EVENTS}}))
+        e: [{"hooks": [{"type": "command", "command": "pult_hook.py"}]}] for e in pult_hook.EVENTS}}))
 
     async def no_drive(sid, path, text, *a, **kw):
         print("DRIVE", path, json.dumps(text[:80], ensure_ascii=False), flush=True)
@@ -446,6 +451,39 @@ async def main():
             "failed": upd == "fail"}
         U.spawn = lambda commit, how, python=None: U.write(U.STATUS, {        # never a real installer here
             "state": "run", "step": "check", "to": nxt, "ts": time.time(), "pid": os.getpid()}) or True
+        # STAND_RESTART: Install does to the stand what the real installer does to the daemon that started it — a
+        # request on its way dies with that daemon, the link drops about a second after the tap, a new daemon comes
+        # back (2026-10-27: a stale Install stayed on screen and was tapped twice; the banner was red for an install)
+        restart = os.environ.get("STAND_RESTART")
+        dead, installed = [False], [False]
+        if restart:
+            loop, fake_check = asyncio.get_running_loop(), U.check
+            U.check = lambda manifest=None: dict(fake_check(manifest), ready=not installed[0])
+
+            async def drop():
+                if p.web.ws is not None:
+                    await p.web.ws.close()
+
+            async def comes_back():
+                if restart != "lost":
+                    await asyncio.sleep(0.6)
+                    await drop()
+                await asyncio.sleep(0.5)
+                dead[0], p._upd = False, (0.0, None)        # the new daemon: pult_web is back on the relay by itself
+                U.write(U.STATUS, {"state": "run", "step": "check", "to": nxt, "ts": time.time(), "pid": os.getpid()})
+                await asyncio.sleep(4.5)
+                installed[0], p._upd = True, (0.0, None)
+                U.write(U.STATUS, {"state": "done", "to": nxt, "ts": time.time()})
+                p.web.emit("update", state="ok")
+
+            def restart_spawn(commit, how, python=None):     # in a worker thread, as the real one
+                U.write(U.STATUS, {"state": "run", "step": "stop", "to": nxt, "ts": time.time(), "pid": os.getpid()})
+                dead[0] = True
+                if restart == "lost":
+                    asyncio.run_coroutine_threadsafe(drop(), loop).result(5)
+                asyncio.run_coroutine_threadsafe(comes_back(), loop)
+                return True
+            U.spawn = restart_spawn
         cut = [{"sid": T.SID, "title": D["title"], "project": "acme-shop", "turn": True, "bg": [], "n": 0},
                {"sid": SID3, "title": D["bg_run"], "project": "support-desk", "turn": False, "bg": [D["bg_run"]], "n": 1}]
         if upd in ("busy", "wait"):
@@ -534,7 +572,7 @@ async def main():
             g["srv_files"] = own                                       # unless the facts say otherwise (auto_self)
             srv = dict(facts["srv"], self=facts["srv"].get("self", own)) if facts.get("srv") else None
             p.srv = {"can": ["want"] if "srv" in facts else [], "upd": srv}
-            pultd.U.release_mode = lambda repo, head: "origin"      # the module itself: U is local to this function
+            pult_parts.U.release_mode = lambda repo, head: "origin"  # the module the parts read: U is local to this function
             p.gh.update(at=now - 140, ok=True)
 
             async def stand_said(msg):              # the stand's own relay has no updater: its hello must not count
@@ -542,7 +580,7 @@ async def main():
             p.relay_said = stand_said
         names = ["acme-shop", "support-desk", "blog", "notes"]
         tabs = [{"project": names[i % 3] if same is not False else names[1 + i % 2], "same": same} for i, same in enumerate(facts["tabs"])]
-        hooks = [e for e in pultd.pult_hook.EVENTS if e not in facts["missing"]]
+        hooks = [e for e in pult_hook.EVENTS if e not in facts["missing"]]
         running, verified, newest = facts["cc"]
         wrapped = facts.get("wrapped", True)
         cc = {"running": running, "verified": verified, "newest": newest, "wrapped": wrapped, "sdk": "0.2.167", "cli": "2.1.300",
@@ -594,6 +632,14 @@ async def main():
                 return await new_stt(data, mime)
             p.api_stt = old_stt
     p.web = PW.Web(p, "ws://127.0.0.1:%d/pult/agent" % PORT, "s3cret", W.TOKEN, {T.OWNER})
+    if upd and os.environ.get("STAND_RESTART"):
+        answer = p.web.answer
+
+        async def answer_gone(cid, msg):          # a daemon that is gone answers nothing (STAND_RESTART)
+            if dead[0]:
+                await asyncio.Event().wait()
+            return await answer(cid, msg)
+        p.web.answer = answer_gone
     asyncio.create_task(p.out.run())
     asyncio.create_task(p.web.run())
 

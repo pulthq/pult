@@ -2,7 +2,8 @@
 Claude works is in the chat at once — the clock, then ✓ and "Claude will read it after the current step"; the field is
 empty. When the tab reads it (the stand's STAND_TICKS s later: the transcript, then the hook) it is the chat's own
 message, "during the turn", with ✓✓ — once, not twice. A message dropped before it was read is crossed out, with why;
-a tap puts its words back in the field. Every message of yours in the chat has ✓✓.
+a tap puts its words back in the field. Every message of yours in the chat has ✓✓. Every tap must land on what it
+aims at, or the check says where it did.
   STAND_TICKS=4 STAND_LANG=ru HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out &
   ~/.local/share/pult/venv/bin/python tools/ticks_check.py /tmp/stand.out [out_dir]
 Screenshots go to out_dir (a temporary folder by default). Exit 1 on a failed check."""
@@ -73,13 +74,21 @@ async def main():
                 open(os.path.join(OUT, name), "wb").write(base64.b64decode(d["data"]))
 
             async def tap(sel, i=0):
-                """A finger on the element's middle — not el.click(): what is on top there gets it."""
+                """A finger on the element's middle — not el.click(): what is on top there gets it. And it must get it: a
+                tap whose click lands elsewhere — the page moved under the finger — fails here, saying where it went."""
                 r = await js("(() => { const el = document.querySelectorAll(%s)[%d]; if (!el) return null; el.scrollIntoView({block: 'nearest'});"
+                             " window.__tapAt = el; window.__tapGot = null;"
+                             " document.addEventListener('click', (e) => { window.__tapGot = e.target; }, {capture: true, once: true});"
                              " const b = el.getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]; })()" % (json.dumps(sel), i))
                 if not r:
                     raise RuntimeError("nothing to tap: " + sel)
                 await cmd("Input.dispatchTouchEvent", type="touchStart", touchPoints=[{"x": r[0], "y": r[1]}])
                 await cmd("Input.dispatchTouchEvent", type="touchEnd", touchPoints=[])
+                await until("window.__tapGot !== null", 10)
+                got = await js("(() => { const g = window.__tapGot; return !g ? 'nothing' : window.__tapAt.contains(g) ? null"
+                               " : g.tagName.toLowerCase() + (typeof g.className === 'string' && g.className ? '.' + g.className.trim().split(/\\s+/).join('.') : ''); })()")
+                if got:
+                    raise RuntimeError("a tap on %s landed on %s" % (sel, got))
 
             async def write(words):
                 await js("(() => { const ta = document.querySelector('.composer textarea'); Object.getOwnPropertyDescriptor("
@@ -100,6 +109,11 @@ async def main():
             verdict("your messages in the chat have ✓✓",
                     await js("[...document.querySelectorAll('.msg.me')].length > 0 && [...document.querySelectorAll('.msg.me')]"
                              ".every((e) => e.querySelector('.tick.read'))"))
+            # the chat opens at its end — the app scrolls there 30 ms after the first page of it comes; a tap before that
+            # landed on whatever the scroll brought under the finger (2026-10-27: a tap meant for Allow opened the sheet
+            # of the line under the field, and the taps after it hit that sheet's backdrop — a third of the runs failed)
+            verdict("the chat opens at its end", await until(
+                "window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2 && !!document.querySelector('.card.perm .row .btn')", 50))
             # Claude at work: Allow the request the stand's session waits on, so its turn goes on — "working…"
             await tap(".card.perm .row .btn")
             verdict("the session works", await until("!!document.querySelector('.working')", 100))

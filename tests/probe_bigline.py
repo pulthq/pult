@@ -16,7 +16,7 @@ SRC = Path(__file__).resolve().parent.parent / "src"
 TMP = Path(tempfile.mkdtemp(prefix="pult-bigline-"))
 os.environ.update(PULT_HOME=str(TMP / "home"), PULT_SOCK=str(TMP / "s.sock"), PULT_ENV=str(TMP / "env"))
 sys.path.insert(0, str(SRC))
-import pultd  # noqa: E402
+import pult_driven  # noqa: E402
 import claude_agent_sdk  # noqa: E402
 from claude_agent_sdk import (ClaudeAgentOptions, ClaudeSDKClient, PermissionResultAllow,  # noqa: E402
                               ResultMessage, UserMessage)
@@ -81,7 +81,7 @@ async def main():
     say("picture: %d KB, base64 ~%d KB" % ((TMP / "pic.png").stat().st_size // 1024,
                                             (TMP / "pic.png").stat().st_size * 4 // 3 // 1024))
     say("SDK default (1 MB):", await once(None))
-    say("Pult's SDK_LINE_MAX (%d MB):" % (pultd.SDK_LINE_MAX // 2 ** 20), await once(pultd.SDK_LINE_MAX))
+    say("Pult's SDK_LINE_MAX (%d MB):" % (pult_driven.SDK_LINE_MAX // 2 ** 20), await once(pult_driven.SDK_LINE_MAX))
 
 
 asyncio.run(main())

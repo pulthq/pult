@@ -25,12 +25,14 @@ os.environ.update(PULT_HOME=str(TMP / "home"), PULT_SOCK=str(TMP / "pult.sock") 
 shutil.copy(SRC / "pult_hook.py", TMP / "home" / "pult_hook.py")
 sys.path.insert(0, str(SRC))
 import httpx
+import pult_api
+import pult_driven
 import pultd
 
 PROJ = TMP / "proj"
 PROJ.mkdir()
 pultd.SKIP_PREFIXES = ()
-pultd.PERMISSION_MODE = "default"
+pult_driven.PERMISSION_MODE = "default"
 pultd.EDIT_EVERY = 0.5
 CHAT, OWNER = -100500, 42
 
@@ -260,7 +262,7 @@ async def main():
     assert "report.md" in kept9, "the turn's files miss report.md"
     # a new project from the phone (stage S): a folder made a moment ago gets git, a topic named by its title and a
     # first turn that writes CLAUDE.md from the description (permission mode here is "default": Write asks)
-    pultd.NEW_ROOT = TMP
+    pult_api.NEW_ROOT = TMP
     mark, t8 = len(calls), time.monotonic()
     r8 = await p.api_create("Дача у моря", how="describe", about="Учёт дел по даче: посадки и полив. Пока только записи.",
                             parent=str(TMP))

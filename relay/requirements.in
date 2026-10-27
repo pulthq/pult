@@ -1,0 +1,5 @@
+# What the relay needs, at exact versions, as on the computer: a server took whatever was newest at each release (review
+# 2026-10-27, Б8). relay/requirements.txt is made from this file by `python3 tools/lock.py`, with the computer's versions
+# for what both use — the tests install both into one environment.
+aiohttp==3.14.5
+cryptography==50.0.2

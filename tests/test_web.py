@@ -31,6 +31,8 @@ from aiohttp.test_utils import TestServer  # noqa: E402
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey  # noqa: E402
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat  # noqa: E402
 
+import pult_parts  # noqa: E402
+import pult_update as U  # noqa: E402
 import pult_web as PW  # noqa: E402
 import pultd  # noqa: E402
 import pult_spend as S  # noqa: E402
@@ -832,11 +834,11 @@ class SecurityTest(ChainBase):
         self.assertIn(cid, self.p.web.clients)
         await ws.close()
         # the updater's report is taken in its own shapes only (relay.updater_status)
-        self.assertEqual(pultd.srv_status({"state": "fail", "why": "no_mac", "back": True, "back_ok": "no", "ts": 5,
+        self.assertEqual(pult_parts.srv_status({"state": "fail", "why": "no_mac", "back": True, "back_ok": "no", "ts": 5,
                                            "x": 1, "tag": "v" * 400, "step": None}),
                          {"state": "fail", "why": "no_mac", "back": True, "ts": 5, "tag": "v" * 300})
-        self.assertIsNone(pultd.srv_status(["a"]))
-        self.assertIsNone(pultd.U.vtag(["v0.18.1"]))
+        self.assertIsNone(pult_parts.srv_status(["a"]))
+        self.assertIsNone(U.vtag(["v0.18.1"]))
         self.assertEqual(PW.check_init({"hash": "x"}, TOKEN, {T.OWNER})[2], "no signature")
 
 

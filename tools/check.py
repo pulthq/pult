@@ -37,6 +37,7 @@ CHECKS = {
     "queue": ({"STAND_QUEUE": "1"}, "out", []),
     "layers-home": ({"STAND_TAGS": "1", "STAND_LANG": "ru"}, "out", ["home"]),
     "layers-session": ({"STAND_LANG": "ru"}, "out", ["session"]),
+    "clip": ({"STAND_LANG": "ru"}, "out", []),
     "parts": None,
     "update": None,
     "vcheck": None,

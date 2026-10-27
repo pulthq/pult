@@ -220,7 +220,10 @@ async def main(keep):
             h = await health(v1, 30)
             verdict("the service runs the old version again", h.get("version") == v1, h.get("version"))
             hist = json.loads((home / "installs.json").read_text())
-            verdict("history: failed, why", (hist[0]["ok"], hist[0]["to"], hist[0].get("why")) == (False, v2, "restarts"), hist[0])
+            # either way it didn't come up: two restarts seen ("restarts"), or a version so broken that launchd never shows
+            # its process before it falls ("no_start" — what this Mac gives since at least 2026-10-27)
+            verdict("history: failed, why", (hist[0]["ok"], hist[0]["to"]) == (False, v2)
+                    and hist[0].get("why") in ("restarts", "no_start"), hist[0])
             end = time.time() + 20                         # the restored daemon tells General within its 5 s tick
             while time.time() < end and U("update.json").get("reported") is not True:
                 await asyncio.sleep(1)

@@ -37,8 +37,10 @@ const noteGone = (m) => { conn.gone = typeof m.away === "number" ? Date.now() - 
 const setState = (s) => { conn.state = s; emit("conn"); };
 const setKey = (k) => { conn.key = k || null; keyStore.set(k); };
 
-// calls made on a socket that is gone get no answer: they fail now, not in 30 s
-const dropWaits = () => { for (const w of conn.wait.values()) { clearTimeout(w.timer); w.reject(new Error(t("conn.lost"))); } conn.wait.clear(); };
+// calls made on a socket that is gone, or sent to a computer that is gone, get no answer: they fail now, not in 30 s
+// (2026-10-27: a reload sent as an install stopped Pult held the table's next one back — a stale Install was tapped
+// twice); `lost` — the call may have reached the computer before it went
+const dropWaits = () => { for (const w of conn.wait.values()) { clearTimeout(w.timer); w.reject(Object.assign(new Error(t("conn.lost")), { lost: true })); } conn.wait.clear(); };
 function connect() {
   if (conn.ws && conn.ws.readyState <= 1) return;
   conn.ready = false;
@@ -60,7 +62,7 @@ function connect() {
       conn.ready = true; conn.retry = 0; setState("ok"); emit("ready"); api("lang").then(useLang).catch(() => {});
     }
     else if (m.t === "denied") { conn.ready = false; conn.why = m.why || null; if (m.why === "out") setKey(null); setState("denied"); }
-    else if (m.t === "mac") { conn.mac = m.on; if (!m.on) { noteGone(m); conn.ready = false; setState("nomac"); } else { conn.gone = 0; if (!conn.ready) setState("auth"); } }
+    else if (m.t === "mac") { conn.mac = m.on; if (!m.on) { noteGone(m); conn.ready = false; dropWaits(); setState("nomac"); } else { conn.gone = 0; if (!conn.ready) setState("auth"); } }
     else if (m.t === "res") {
       const w = conn.wait.get(m.id);
       if (w) { conn.wait.delete(m.id); clearTimeout(w.timer); if (!m.error) conn.fresh = Date.now(); m.error ? w.reject(new Error(m.error)) : w.resolve(m.data); }
@@ -225,6 +227,34 @@ const modelName = (m) => {
 const haptic = (k) => tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred(k);
 const alertBox = (s) => (tg && tg.showAlert ? tg.showAlert(s) : alert(s));
 const confirmBox = (s) => new Promise((ok) => (tg && tg.showConfirm ? tg.showConfirm(s, ok) : ok(confirm(s))));
+// a block of code — in Claude's words, a plan, a markdown file, the command a permission asks about — is copied whole
+// by a tap: the commands Claude gives to run, with no selecting by hand on the phone (the owner, 2026-10-27). Text
+// selected by hand in it is left alone; a swipe that scrolls it is no tap; without the clipboard API — the old way
+const COPY_BLOCKS = ".md pre, .perm-b pre";
+async function copyText(s) {
+  try { await navigator.clipboard.writeText(s); return; } catch (e) { /* some webviews have no clipboard API */ }
+  const ta = document.createElement("textarea");
+  ta.value = s;
+  ta.setAttribute("readonly", "");
+  ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  const ok = document.execCommand("copy");
+  ta.remove();
+  if (!ok) throw new Error("copy");
+}
+document.addEventListener("click", (ev) => {
+  const pre = ev.target && ev.target.closest ? ev.target.closest(COPY_BLOCKS) : null;
+  const sel = window.getSelection ? window.getSelection() : null;
+  if (!pre || (sel && !sel.isCollapsed && pre.contains(sel.anchorNode))) return;
+  copyText(pre.textContent.replace(/\n+$/, "")).then(() => {
+    haptic("success");
+    emit("toast", t("copied"));
+    pre.classList.add("copied");
+    setTimeout(() => pre.classList.remove("copied"), 1500);
+  }, () => emit("toast", t("copy.fail")));
+});
 // the message fields take the words as typed: no auto-capitals, no autocorrect, no spelling marks (the webview on
 // the Mac and the phone's keyboard both read these). Set as attributes: as a DOM property, autocorrect is a
 // boolean, so the string "off" would switch it on
@@ -1618,7 +1648,13 @@ function UpdBody({ v, set, row }) {
   const act = async (op) => {
     setBusy(true);
     try { const r = await api(op); set(r); haptic("success"); }
-    catch (e) { alertBox(e.message); api("update").then(set).catch(() => {}); }
+    catch (e) {
+      // Install stops Pult itself: when its answer is lost on the way, the install most likely runs — "Installing…"
+      // until the computer is back and says how it went, not an error and the same button again (2026-10-27). Into
+      // the screen's data, so the table and the banner say the same
+      if (op === "update_go" && e.lost) { noteUpd("run"); set({ ...v, state: "run", step: "start" }); }
+      else { alertBox(e.message); api("update").then(set).catch(() => {}); }
+    }
     setBusy(false);
   };
   const head = (icon, title, chip, cls) => html`<div class=${"upd-h " + (cls || "")}><b>${icon}${title}</b>${chip}</div>`;
@@ -1815,6 +1851,12 @@ function Parts() {
   if (err && !d) return html`<${UpdCard}/>`;      // a computer before stage U2 ("no such request: parts"), or a failure
   if (!d) return "";
   const reload = () => api("parts").then(set).catch(() => {});
+  // the computer's own answer to its buttons shows at once ("Installing…"), the table follows: a reload sent as the
+  // install stops Pult may get no answer at all (2026-10-27)
+  const setMac = (u) => {
+    if (u && u.state) set((cur) => cur && { ...cur, rows: cur.rows.map((x) => (x.k === "mac" ? { ...x, upd: u } : x)) });
+    reload();
+  };
   const rows = d.rows.slice();
   if (OWN_V) {
     const ph = { k: "phone", have: OWN_V, srv: served.v, st: !served.v ? "info" : phoneOld() ? "warn" : "ok" };
@@ -1836,7 +1878,7 @@ function Parts() {
           <span class="part-v mono">${partHave(r)}</span>
           <span class=${"pchip " + r.st}>${r.st === "ok" ? ic("check", 13) : ""}${partChip(r, b)}</span>
         </button>
-        ${shown === r.k ? html`<div class="part-x"><${PartMore} r=${r} set=${reload} b=${b}/></div>` : ""}
+        ${shown === r.k ? html`<div class="part-x"><${PartMore} r=${r} set=${r.k === "mac" ? setMac : reload} b=${b}/></div>` : ""}
       </div>`)}
     </div>
     ${d.head ? html`<div class="dim parts-f">${t("pt.foot", { b, head: d.head, hm: hhmm(toDate(d.at)) })}</div>` : ""}
@@ -3070,7 +3112,8 @@ function Banner() {
   const stale = c.fresh && ["offline", "nomac"].includes(c.state) ? " " + t("banner.stale", { hm: hhmm(new Date(c.fresh)) }) : "";
   const g = c.gone && c.state === "nomac" && !upd ? new Date(c.gone) : null;
   const gone = g ? " " + t("banner.gone", { when: g.toDateString() === new Date().toDateString() ? hhmm(g) : ddmm(c.gone / 1000) + ", " + hhmm(g) }) : "";
-  return text ? html`<div class=${"banner " + c.state} role="status">${text}${gone}${stale}</div>` : "";
+  // installing is no alarm: the calm colour, not the computer-offline red it had (2026-10-27)
+  return text ? html`<div class=${"banner " + (upd ? "updating" : c.state)} role="status">${text}${gone}${stale}</div>` : "";
 }
 
 function App() {

@@ -12,8 +12,9 @@ trap 'rm -rf "$T"' EXIT
 PY=${PYTHON:-$(command -v python3.12 || command -v python3)}      # CI runs 3.12
 echo "environment: $("$PY" --version) → $T"
 "$PY" -m venv "$T/venv" || exit 2
-"$T/venv/bin/pip" install -q --disable-pip-version-check -r requirements.txt -r relay/requirements.txt \
-  ruff==0.17.3 shellcheck-py==0.11.0.1 || exit 2
+# the requirements only as locked, with their hashes (Q91); the lint's tools aside — they come without hashes
+"$T/venv/bin/pip" install -q --disable-pip-version-check --require-hashes -r requirements.txt -r relay/requirements.txt || exit 2
+"$T/venv/bin/pip" install -q --disable-pip-version-check ruff==0.17.3 shellcheck-py==0.11.0.1 || exit 2
 mkdir "$T/home" "$T/tmp"
 # what a runner has: git, and node for the app's markdown tests; nothing of this computer's Pult or proxies
 NODE=$(command -v node || true)

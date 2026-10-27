@@ -35,11 +35,14 @@ Copy the Pult folder to the server (`git clone` or `scp`), then as root:
 sudo bash deploy/relay/install.sh --auto
 sudo nano /opt/pult-relay/.env          # paste the three lines from `pult app`
 sudo systemctl restart pult-relay
-curl -s http://127.0.0.1:8097/pult/healthz
+curl -s --unix-socket /run/pult-relay/relay.sock http://relay/pult/healthz
 ```
 
 The script creates a system user `pult`, puts the relay into `/opt/pult-relay` with its own Python environment and
-starts the `pult-relay` service on `127.0.0.1:8097` (only locally — the web server faces the internet). The relay
+starts the `pult-relay` service on the socket `/run/pult-relay/relay.sock` — a folder only the relay and your web
+server can enter (the script adds the web server's user — `www-data`, `caddy` or `nginx` — to the group `pult`), so no
+other program on the server can take the relay's place while it restarts, as one can take a free port. A server set
+up before 0.18.7 keeps its port `127.0.0.1:8097`: `PULT_RELAY_SOCKET` in `.env` decides (remove it for the port). The relay
 can't change its own code, and its secret in `.env` is read by systemd only; it runs with no network beyond this
 machine, no privileges and no devices (`systemd-analyze security pult-relay`: 1.5, "OK"). `--auto` adds the updater: from then on
 the server takes each release your computer installs ([Updates](#updates)); without it, re-run the script after a
@@ -48,16 +51,18 @@ the server takes each release your computer installs ([Updates](#updates)); with
 ## 3. The web server
 
 **nginx:** copy [nginx-pult.conf](nginx-pult.conf) to `/etc/nginx/snippets/pult.conf`, add
-`include /etc/nginx/snippets/pult.conf;` inside the HTTPS `server { … }` block of your domain, and the rate-limit
-zone once in `http { … }`:
+`include /etc/nginx/snippets/pult.conf;` inside the HTTPS `server { … }` block of your domain, and once in
+`http { … }` (for example `/etc/nginx/conf.d/pult.conf`) the rate-limit zone and where the relay listens:
 
 ```
 limit_req_zone $binary_remote_addr zone=pult:1m rate=10r/s;
+upstream pult_relay { server unix:/run/pult-relay/relay.sock; }    # set up before 0.18.7: server 127.0.0.1:8097;
 ```
 
-then `nginx -t && systemctl reload nginx`.
+then `nginx -t && systemctl reload nginx` (the reload also lets nginx in to the socket's folder).
 
-**Caddy:** see [Caddyfile](Caddyfile) — replace the domain; Caddy gets the certificate by itself.
+**Caddy:** see [Caddyfile](Caddyfile) — replace the domain; Caddy gets the certificate by itself. Restart Caddy once
+after the script, so that it reaches the socket.
 
 Check from anywhere: `curl https://your.domain/pult/healthz` → `{"ok": true, "mac": true}` once the computer is
 connected (`mac: false` — see Pult's log, `~/Library/Logs/pult.log` on macOS or `~/.local/state/pult/pult.log` on Linux,

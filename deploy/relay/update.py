@@ -266,7 +266,7 @@ class Updater:
         if old is not None and (old / "requirements.txt").is_file() and (old / "requirements.txt").read_bytes() == req.read_bytes():
             return
         p = subprocess.run([str(VENV / "bin" / "pip"), "install", "-q", "--disable-pip-version-check", "--no-cache-dir",
-                            "-r", str(req)], capture_output=True, text=True, timeout=600,
+                            "--require-hashes", "-r", str(req)], capture_output=True, text=True, timeout=600,
                            env=dict(os.environ, HOME=str(HOME), PIP_NO_INPUT="1"))
         if p.returncode:
             raise Fail("pip", (p.stderr.strip().splitlines() or ["?"])[-1][:300])

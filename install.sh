@@ -112,7 +112,7 @@ rmdir "$STAGE"
 trap - EXIT
 
 say "Installing dependencies…" "Ставлю зависимости…"
-"$DST/venv/bin/pip" install -q --disable-pip-version-check -r "$DST/requirements.txt"
+"$DST/venv/bin/pip" install -q --disable-pip-version-check --require-hashes -r "$DST/requirements.txt"
 
 # where the files came from: the app's "Install" button installs the next commits from here
 PULT_SRC="$SRC" exec "$DST/venv/bin/python" "$DST/pultctl.py" install

@@ -3,3 +3,6 @@ __pycache__/
 .venv/
 venv/
 .DS_Store
+
+# Claude Code settings of this computer only (permissions the owner gave here)
+.claude/settings.local.json

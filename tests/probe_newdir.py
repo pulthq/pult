@@ -16,7 +16,7 @@ SRC = Path(__file__).resolve().parent.parent / "src"
 TMP = Path(tempfile.mkdtemp(prefix="pult-newdir-"))
 os.environ.update(PULT_HOME=str(TMP / "home"), PULT_SOCK=str(TMP / "s.sock"), PULT_ENV=str(TMP / "env"))
 sys.path.insert(0, str(SRC))
-import pultd  # noqa: E402
+import pult_driven  # noqa: E402
 import pult_new  # noqa: E402
 import claude_agent_sdk  # noqa: E402
 from claude_agent_sdk import (AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, PermissionResultAllow,  # noqa: E402
@@ -44,9 +44,9 @@ async def main():
     d.mkdir()
     subprocess.run(["git", "init", "-q", str(d)], check=True)
     kw = dict(cwd=str(d), system_prompt={"type": "preset", "preset": "claude_code"}, model="claude-haiku-5-5",
-              permission_mode=pultd.PERMISSION_MODE, can_use_tool=allow, setting_sources=["user", "project", "local"],
+              permission_mode=pult_driven.PERMISSION_MODE, can_use_tool=allow, setting_sources=["user", "project", "local"],
               env={"PULT_OFF": "1", "PULT_SOCK": "/nonexistent", "CLAUDE_CODE_ENTRYPOINT": "claude-vscode"},
-              max_buffer_size=pultd.SDK_LINE_MAX, stderr=lambda s: None)
+              max_buffer_size=pult_driven.SDK_LINE_MAX, stderr=lambda s: None)
     if CLI:
         kw["cli_path"] = CLI
     tools, result = [], None

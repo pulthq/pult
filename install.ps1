@@ -86,7 +86,7 @@ Copy-Item -Force (Join-Path $stage '*') $Dst
 Remove-Item -Recurse -Force $stage
 
 Say 'Installing dependencies...' 'Ставлю зависимости…'
-& $VenvPy -m pip install -q --disable-pip-version-check -r (Join-Path $Dst 'requirements.txt')
+& $VenvPy -m pip install -q --disable-pip-version-check --require-hashes -r (Join-Path $Dst 'requirements.txt')
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
 # the pult command: ~\.local\bin in the user's PATH (Claude Code's own installer puts claude.exe there too). The

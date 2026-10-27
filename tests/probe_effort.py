@@ -9,7 +9,7 @@ user's (effortLevel medium):
 1. a prompt — effort medium (settings);
 2. the "daemon" sends {"op": "control", ...} with effortLevel low → the next request is low; then max;
 3. effortLevel null → back to medium; no stray control responses reach the "extension".
-Then the same for a session Pult runs itself: no wrapper, pultd.sdk_effort on the SDK client.
+Then the same for a session Pult runs itself: no wrapper, pult_api.sdk_effort on the SDK client.
 Run (a few small haiku requests): ~/.local/share/pult/venv/bin/python tests/probe_effort.py [claude]
 """
 import asyncio, json, sys, tempfile, time
@@ -22,6 +22,7 @@ CLI = sys.argv[1] if len(sys.argv) > 1 else str(max(
      for p in Path.home().glob(pat + "/anthropic.claude-code-*/resources/native-binary/claude")],
     key=lambda p: [int(x) for x in p.parts[-4].split("-")[2].split(".")]))
 sys.path.insert(0, str(SRC))
+import pult_api  # noqa: E402
 import pult_tab  # noqa: E402
 import pultd  # noqa: E402
 
@@ -118,7 +119,7 @@ async def main():
         reader = asyncio.create_task(read2())
         for n, level in enumerate((None, "high", None), start=1):
             if n > 1:
-                await pultd.sdk_effort(c, level)
+                await pult_api.sdk_effort(c, level)
             await c.query("Reply with one word: SDK%d" % n)
             while len(results) < n:
                 await asyncio.sleep(0.2)
@@ -126,7 +127,7 @@ async def main():
             sdk_seen.append(efforts(results[-1])[-1])
             say("SDK%d → effort" % n, sdk_seen[-1])
         reader.cancel()
-    say("VERDICT (SDK):", "pultd.sdk_effort switches a running session" if sdk_seen == ["medium", "high", "medium"]
+    say("VERDICT (SDK):", "pult_api.sdk_effort switches a running session" if sdk_seen == ["medium", "high", "medium"]
         else "NO: %s" % sdk_seen)
 
 
