@@ -10,8 +10,9 @@ import aiohttp
 
 URL = sys.argv[1]
 OUT = sys.argv[2] if len(sys.argv) > 2 else tempfile.mkdtemp(prefix="pult-editor-")
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-PORT = 9334
+import _cdp  # noqa: E402  (tools/_cdp.py: where Chrome is, free ports, a profile that goes — review 2026-10-27, Т9)
+CHROME = _cdp.CHROME
+PORT = _cdp.free_port()
 RED, GREEN, BLUE, YELLOW = (255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)
 RESET, CANCEL, DONE = ".ed-top .ed-b", ".ed-bar .ed-b:first-child", ".ed-b.ok"
 TURN, MIRROR = ".ed-bar .ed-i:nth-child(2)", ".ed-bar .ed-i:nth-child(3)"
@@ -60,7 +61,7 @@ async def main():
     small, big = os.path.join(OUT, "quad-400.png"), os.path.join(OUT, "quad-3200.png")
     png(small, 400, 300)
     png(big, 3200, 2400)
-    prof = tempfile.mkdtemp(prefix="cdp-")
+    prof = _cdp.profile()
     p = subprocess.Popen([CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--remote-debugging-port=%d" % PORT,
                           "--user-data-dir=" + prof, "--no-first-run", "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:

@@ -20,8 +20,9 @@ REPO = Path(__file__).resolve().parent.parent
 PY = sys.executable
 OUT = sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp(prefix="pult-parts-")
 os.makedirs(OUT, exist_ok=True)
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-PORT, STAND_PORT = int(os.environ.get("CDP_PORT") or 9341), os.environ.get("STAND_PORT") or "18117"
+import _cdp  # noqa: E402  (tools/_cdp.py: where Chrome is, free ports, a profile that goes — review 2026-10-27, Т9)
+CHROME = _cdp.CHROME
+PORT, STAND_PORT = _cdp.free_port(), os.environ.get("STAND_PORT") or str(_cdp.any_port())
 TOUCH = REPO / "relay" / "web" / "static" / "md.js"     # its time moves: the server's page names a newer copy
 failures = []
 
@@ -44,12 +45,12 @@ def stand(parts, lang="ru", upd=None):
         if "\nHOME " in "\n" + text and "SETTINGS " in text:
             return p, dict(ln.split(" ", 1) for ln in text.splitlines() if ln[:5] in ("HOME ", "SETTI"))
         time.sleep(0.25)
-    p.kill()
+    _cdp.stop(p)
     raise RuntimeError("the stand didn't come up (%s)" % parts)
 
 
 async def main():
-    prof = tempfile.mkdtemp(prefix="cdp-")
+    prof = _cdp.profile()
     chrome = subprocess.Popen([CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--remote-debugging-port=%d" % PORT,
                                "--user-data-dir=" + prof, "--no-first-run", "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     mtime = TOUCH.stat().st_mtime
@@ -153,15 +154,16 @@ async def main():
                 verdict("now: GitHub — one waits for a release", await chip("gh") == "к выпуску: 1", await chip("gh"))
                 await shot("now")
             finally:
-                proc.kill()
+                _cdp.stop(proc)
                 proc.wait()
 
             # 2. several parts behind
             proc, urls = stand("lag", upd="ready")
             try:
                 line, cls = await home(urls)
-                verdict("lag: Home — update the computer, a hook missing", (line or "").startswith("Обновить: компьютер")
-                        and "StopFailure" in line and "bad" in cls, line, cls)
+                # a hook missing is a step to take, in amber — red is for what is really off (review 2026-10-27, У10)
+                verdict("lag: Home — update the computer, a hook missing, in amber", (line or "").startswith("Обновить: компьютер")
+                        and "StopFailure" in line and "pult hooks on" in line and "attn" in cls and "bad" not in cls, line, cls)
                 await shot("lag-home")
                 verdict("lag: the table", await settings(urls))
                 verdict("lag: four of eight to update", "Обновить: 4 из 8" in (await js(head) or ""), await js(head))
@@ -183,7 +185,7 @@ async def main():
                         and "pult hooks on" in text, text[:120])
                 await shot("lag-hooks")
             finally:
-                proc.kill()
+                _cdp.stop(proc)
                 proc.wait()
 
             # 3. what doesn't work
@@ -204,7 +206,7 @@ async def main():
                         and "все на установленной" not in text, text[:120])
                 await shot("bad")
             finally:
-                proc.kill()
+                _cdp.stop(proc)
                 proc.wait()
 
             # 4. someone with a clone of the public repository: no release of their own, no wrapper; the words are theirs too
@@ -222,7 +224,7 @@ async def main():
                 verdict("public: nothing written for the owner alone", not any(w in text for w in ("агент", "по твоему")), text[:120])
                 await shot("public")
             finally:
-                proc.kill()
+                _cdp.stop(proc)
                 proc.wait()
 
             # 4a. that clone with the server's updater (stage U3): it took the computer's release; the install block says
@@ -239,7 +241,7 @@ async def main():
                 verdict("auto: the switch for GitHub, when it last looked", bool(sw) and "Каждые 5 минут" in sw and "последний раз" in sw, sw)
                 await shot("auto")
             finally:
-                proc.kill()
+                _cdp.stop(proc)
                 proc.wait()
             proc, urls = stand("auto_run", upd="ok")
             try:
@@ -251,7 +253,20 @@ async def main():
                 verdict("auto_run: the step", "качает с GitHub" in text, text[:200])
                 await shot("auto-run")
             finally:
-                proc.kill()
+                _cdp.stop(proc)
+                proc.wait()
+            # its code is the release's, its updater isn't: install.sh once, on the server (review 2026-10-27, У5)
+            proc, urls = stand("auto_self", upd="ok")
+            try:
+                verdict("auto_self: the table", await settings(urls))
+                verdict("auto_self: the relay's chip says install.sh", await chip("relay") == "install.sh", await chip("relay"))
+                text = await more("relay") if await tap_row("relay") else ""
+                verdict("auto_self: which files are older and who runs what", "update.py" in text and "старше этого выпуска" in text
+                        and "sudo bash deploy/relay/install.sh" in text, text[:240])
+                verdict("auto_self: the app's own row says nothing of it", await chip("web") == "как в main", await chip("web"))
+                await shot("auto-self")
+            finally:
+                _cdp.stop(proc)
                 proc.wait()
             proc, urls = stand("auto_fail", upd="ok")
             try:
@@ -262,9 +277,11 @@ async def main():
                 text = await more("web") if await tap_row("web") else ""
                 verdict("auto_fail: why and what runs", "посредник не запустился" in text and "работает v0.16.2" in text
                         and "ModuleNotFoundError" in text, text[:200])
+                # a release it won't try by itself: the owner's word starts it anew (0.18.5)
+                verdict("auto_fail: try again on the server", "Повторить на сервере" in text, text[-160:])
                 await shot("auto-fail")
             finally:
-                proc.kill()
+                _cdp.stop(proc)
                 proc.wait()
 
             # 5. this phone's copy: the server starts handing out a newer one; "Refresh the app" brings it
@@ -304,7 +321,7 @@ async def main():
                         and await until(row("phone") + "?.querySelector('.pchip')?.textContent === 'свежая'"), await chip("phone"))
             finally:
                 os.utime(TOUCH, (mtime, mtime))
-                proc.kill()
+                _cdp.stop(proc)
                 proc.wait()
 
             # 6. English: no key left as a key
@@ -318,7 +335,7 @@ async def main():
                         text[:160])
                 await shot("en")
             finally:
-                proc.kill()
+                _cdp.stop(proc)
                 proc.wait()
             verdict("no script errors", not errors, errors[:3])
     finally:

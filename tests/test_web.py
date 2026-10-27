@@ -17,6 +17,7 @@ import time
 import unittest
 import urllib.parse
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -163,6 +164,50 @@ class InitTest(unittest.TestCase):
         self.assertIn("&quot;", lines[5])
         self.assertNotIn("data-file", lines[6])
         self.assertIn('data-file="file:///tmp/a.md"', lines[7])
+
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_md_never_breaks(self):
+        # review 2026-10-27: a link whose words hold code showed "\u00000\u0000" for the name (П1); a table of separators
+        # alone threw inside the render and froze the screen (П2); a stray \u0000 in the words read "undefined"
+        md = (HERE.parent / "relay" / "web" / "static" / "md.js").as_uri()
+        cases = ["see [`app.js`](src/app.js)", "[`docs`](https://example.com/a)", "|---|---|\n|---|---|", "a \u00000\u0000 b",
+                 "**[`x`](y.md)** and `z`"]
+        js = "import {md} from %s; for (const s of %s) console.log(JSON.stringify(md(s)));" % (json.dumps(md), json.dumps(cases))
+        out = subprocess.run(["node", "--input-type=module", "-e", js], capture_output=True, text=True, timeout=30)
+        lines = [json.loads(x) for x in out.stdout.splitlines()]
+        self.assertEqual(len(lines), len(cases), out.stderr)
+        self.assertIn('data-file="src/app.js"><code>app.js</code></a>', lines[0])
+        self.assertIn('data-ext><code>docs</code></a>', lines[1])
+        self.assertEqual(lines[2], "")
+        self.assertEqual(lines[3], "<p>a 0 b</p>")
+        self.assertIn('<b><a class="flink" role="link" tabindex="0" data-file="y.md"><code>x</code></a></b>', lines[4])
+        self.assertFalse([x for x in lines if "\u0000" in x or "undefined" in x])
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_pacer_in_the_app(self):
+        # screens load at most every 0.4 s while events stream, one load at a time: before 0.18.6 a stream of events
+        # faster than that kept the screen from updating until it paused (review 2026-10-27, П8)
+        import re
+        src = (HERE.parent / "relay" / "web" / "static" / "app.js").read_text()
+        fn = re.search(r"function pacer\(run, gap = 400\) \{.*?\n\}\n", src, re.S).group(0)
+        js = fn + """
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const t0 = Date.now(), runs = [];
+const kick = pacer(async () => { runs.push(Date.now() - t0); await sleep(30); }, 200);
+for (let i = 0; i < 12; i++) { kick(); await sleep(50); }
+await sleep(400);
+let live = 0, most = 0, slow = 0;
+const k2 = pacer(async () => { live++; most = Math.max(most, live); slow++; await sleep(300); live--; }, 200);
+k2(); await sleep(50); k2(); k2(); await sleep(800);
+let n = 0; const k3 = pacer(async () => { n++; }); k3(); k3.stop(); k3(); await sleep(300);
+console.log(JSON.stringify({ runs, most, slow, n }));"""
+        out = subprocess.run(["node", "--input-type=module", "-e", js], capture_output=True, text=True, timeout=30)
+        r = json.loads(out.stdout or "null")
+        self.assertIsNotNone(r, out.stderr)
+        self.assertLess(r["runs"][0], 60)                     # the first at once
+        self.assertGreaterEqual(len(r["runs"]), 3)            # and every 0.2 s while it streams (debounced: once, at the end)
+        self.assertEqual((r["most"], r["slow"], r["n"]), (1, 2, 0))   # never two at once; asked meanwhile — once more; stopped — none
 
 
 class TranscriptTest(unittest.TestCase):
@@ -349,6 +394,9 @@ class SpendTest(unittest.TestCase):
         rows = S.curve(slots_of([0, 0, 0, 5], t0), t0, t0 + 1200, 5, [(t0 + 900, "session", 3, t0 + 18000)],
                        "session", t0 + 18000, S.FACTOR)
         self.assertEqual([(r[2], r[3]) for r in rows], [(1, 1), (1, 1), (1, 1), (2, 0), (0, 0)])  # no tokens here — elsewhere
+        # two readings at one moment, one without a reset time: they don't compare their None (review 2026-10-27, М9)
+        log = [(t0 + 900, "session", 4, None), (t0 + 900, "session", 4, t0 + 18000)]
+        self.assertEqual(S.anchors(t0, t0 + 18000, t0 + 1200, 5, log, "session"), [(t0, 0.0), (t0 + 900, 4.0), (t0 + 1200, 5.0)])
 
     def lims(self, now, week, h5=None, h5_left=7200):
         out = [{"kind": "weekly_all", "name": "Неделя", "percent": week, "resets_at": now + 86400}]
@@ -386,6 +434,14 @@ class SpendTest(unittest.TestCase):
         v = S.view(slots, self.lims(now, 60, h5=2), [], now, 90, {"k": {"h5": 0.5}})
         self.assertEqual((round(v["limits"][1]["rate"], 2), v["known"]["k"]["h5"]), (6.0, 0.5))
         self.assertEqual(S.view(slots, self.lims(now, 60, h5=2), [], now, 90, {})["limits"][1]["state"], "none")
+        # right after a reset, spend from elsewhere is averaged over no less than the local pace's span: 2 % in half an
+        # hour isn't 4 %/h for the whole week (review 2026-10-27, М4) — while 40 % in five minutes still runs out
+        def fresh(kind, span, after, used):
+            lim = {"kind": kind, "name": "x", "percent": used, "resets_at": now + span - after}
+            return S.view({}, {"limits": [lim], "shares": []}, [], now, 90, {"k": {"week": 0.5, "h5": 0.5}})["limits"][0]["state"]
+        self.assertEqual(fresh("weekly_all", 7 * 86400, 1800, 2), "under")
+        self.assertEqual(fresh("session", 5 * 3600, 300, 2), "under")
+        self.assertEqual(fresh("session", 5 * 3600, 300, 40), "over")
 
     def test_fable_factor(self):
         t0 = S.SLOT * 4_000_000
@@ -480,7 +536,9 @@ class ChainBase(unittest.IsolatedAsyncioTestCase):
         self.p = pultd.Pult({"PULT_ALLOWED_USER_IDS": str(T.OWNER), "PULT_FORCE_AWAY": "1"}, tg, self.store)
         self.p.out = pultd.Outbox(rate=60000, burst=1000)
         self.p._agents = (time.monotonic() + 1e6, [])
-        pultd.EDIT_EVERY = 0.05
+        fast = mock.patch.object(pultd, "EDIT_EVERY", 0.05)       # undone after each test (review 2026-10-27, Т8)
+        fast.start()
+        self.addCleanup(fast.stop)
         self.sock = await pultd.start_link(self.p.handle_conn, os.environ["PULT_SOCK"])
         self.srv = TestServer(relay.app())
         await self.srv.start_server()
@@ -753,6 +811,35 @@ class SecurityTest(ChainBase):
         await T.until(lambda: said("вебхук"))
 
 
+    async def test_odd_relay_messages(self):
+        # whatever the relay sends, the daemon goes on: before 0.18.5 {"t": "relay", "can": 5} ended it — with every
+        # session Pult runs — and again on each reconnect (a server taken over, or a bug of the relay)
+        odd = ['{"t": "relay", "can": 5}', '{"t": "relay", "can": ["want"], "upd": {"have": ["v1"], "ts": "x"}}',
+               '{"t": "relay", "upd": {"state": 7, "tag": {"a": 1}, "back": "yes"}}',
+               '{"t": "open", "cid": 9, "init": {"a": 1}}', '{"t": "open", "cid": 10, "init": 5, "resume": ["k"]}',
+               '{"t": "req", "cid": 1, "op": 5}', '[1, 2]', 'not json', '{"t": 5}', '{"t": "relay", "build": [1]}']
+        for m in odd:
+            await self.p.web.handle(m)
+        self.assertFalse(self.tasks[1].done())                       # the connection to the relay lives on
+        self.assertEqual(self.p.srv, {"can": ["want"], "upd": {}})
+        ws = await self.phone()                                       # and the app works
+        self.assertIn("live", (await self.call(ws, "overview"))["data"])
+        # a window that is in already isn't logged in again: only the relay opens one (a relay before 0.18.5 passed a
+        # window's own "open" on — with an address it made up)
+        cid, n = next(iter(self.p.web.clients)), len(self.p.web.logins.recent())
+        await self.p.web.handle(json.dumps({"t": "open", "cid": cid, "init": "x", "ip": "203.0.113.9"}))
+        self.assertEqual(len(self.p.web.logins.recent()), n)
+        self.assertIn(cid, self.p.web.clients)
+        await ws.close()
+        # the updater's report is taken in its own shapes only (relay.updater_status)
+        self.assertEqual(pultd.srv_status({"state": "fail", "why": "no_mac", "back": True, "back_ok": "no", "ts": 5,
+                                           "x": 1, "tag": "v" * 400, "step": None}),
+                         {"state": "fail", "why": "no_mac", "back": True, "ts": 5, "tag": "v" * 300})
+        self.assertIsNone(pultd.srv_status(["a"]))
+        self.assertIsNone(pultd.U.vtag(["v0.18.1"]))
+        self.assertEqual(PW.check_init({"hash": "x"}, TOKEN, {T.OWNER})[2], "no signature")
+
+
 class AppStringsTest(unittest.TestCase):
     def test_app_strings(self):
         # the app's dictionary: every key has both languages with the same {placeholders}, and every key the app
@@ -768,8 +855,14 @@ class AppStringsTest(unittest.TestCase):
         self.assertEqual(len(entries), len(re.findall(r'^\s*"?[\w.]+"?:\s*\{', body, re.M)))   # none unparsed
         for k, (en, ru) in entries.items():
             self.assertEqual(sorted(re.findall(r"\{(\w+)\}", en)), sorted(re.findall(r"\{(\w+)\}", ru)), k)
-        used = {k for k in re.findall(r'\bt\("([\w.]+)"', (web / "app.js").read_text()) if not k.endswith(".")}
+        app = (web / "app.js").read_text()
+        used = {k for k in re.findall(r'\bt\("([\w.]+)"', app) if not k.endswith(".")}
         self.assertFalse(used - set(entries), "keys the app uses but the dictionary lacks")
+        # and every key is named by the app — as it is, or under a prefix it builds ("upd.how." + how): 21 had no
+        # use left (review 2026-10-27, П8)
+        named, built = set(re.findall(r'"([\w.]+)"', app)), set(re.findall(r'"([\w.]+\.)"\s*\+', app))
+        self.assertFalse([k for k in entries if k not in named and not any(k.startswith(b) for b in built)],
+                         "keys in the dictionary the app never names")
         for e in ("low", "medium", "high", "xhigh", "max"):                  # effortName() builds these
             self.assertIn("effort." + e, entries)
         for how in set(PW.REFUSED.values()) | {"open", "key", "locked"}:     # the logins list builds these

@@ -92,7 +92,13 @@ def program(args):
 
 
 def is_claude(args):
-    return os.path.basename((args or "").split(" ", 1)[0]) == "claude"
+    """Whether a process's command line runs claude (claude.exe too). Its path may hold a space — a home folder with
+    one — then the line up to "claude" must be a file: `python /x/claude` stays no claude (review 2026-10-27, М16)."""
+    s = (args or "").strip()
+    if os.path.basename(s.split(" ", 1)[0]) in ("claude", "claude.exe"):
+        return True
+    m = re.match(r"(\S.*?[\\/]claude(?:\.exe)?)(?= |$)", s)
+    return bool(m) and " " in m.group(1) and os.path.isfile(m.group(1))
 
 
 def session_arg(args):

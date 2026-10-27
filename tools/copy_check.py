@@ -15,8 +15,9 @@ URLS = dict(line.split(" ", 1) for line in open(STAND_OUT).read().split("\n") if
 URLS = {k.strip(): v for k, v in URLS.items()}
 OUT = sys.argv[2] if len(sys.argv) > 2 else tempfile.mkdtemp(prefix="pult-copy-")
 os.makedirs(OUT, exist_ok=True)
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-PORT = 9341
+import _cdp  # noqa: E402  (tools/_cdp.py: where Chrome is, free ports, a profile that goes — review 2026-10-27, Т9)
+CHROME = _cdp.CHROME
+PORT = _cdp.free_port()
 COPY = re.compile(r"копией|as a copy")                    # "goes as a copy" under the field and on the card
 WHY = re.compile(r"2\.1\.311.*(не проверен|hasn't been checked)", re.S)
 ASK = re.compile(r"Продолжить копией|Continue as a copy")
@@ -31,7 +32,7 @@ def verdict(name, ok, *info):
 
 
 async def main():
-    prof = tempfile.mkdtemp(prefix="cdp-")
+    prof = _cdp.profile()
     p = subprocess.Popen([CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--remote-debugging-port=%d" % PORT,
                           "--user-data-dir=" + prof, "--no-first-run", "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
@@ -105,8 +106,18 @@ async def main():
                          " w.showAlert = (s) => window.__said.push(['alert', String(s)]);"
                          " w.showConfirm = (s, cb) => (window.__said.push(['confirm', String(s)]), cb(false)); }")
 
-            async def said():
-                return await js("window.__said.splice(0)") or []
+            async def said(wait=2.0):
+                """What the app said since the last look — waiting a little for the first word. A miss tells why: the
+                page reloaded under the check (its catchers gone) or nothing was said (1 run in 3 missed, 2026-10-27)."""
+                for _ in range(int(wait / 0.1)):
+                    got = await js("window.__said ? window.__said.splice(0) : null")
+                    if got is None:
+                        return [["lost", await js("JSON.stringify([location.href.slice(0, 60), "
+                                                  "(performance.getEntriesByType('navigation')[0] || {}).type])")]]
+                    if got:
+                        return got
+                    await asyncio.sleep(0.1)
+                return []
 
             await cmd("Page.enable")
             await cmd("Runtime.enable")

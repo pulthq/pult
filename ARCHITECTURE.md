@@ -115,7 +115,8 @@ sequenceDiagram
 
 The relay keeps no data: every screen comes from the computer when you open it. The page loads scripts only from
 your server and Telegram (Content-Security-Policy), and the computer compares the files the server hands out with
-what was deployed, closing the app if they differ.
+what was deployed — or with the release the server took itself — closing the app if they differ (`PULT_GUARD=warn`:
+only a warning, for a CDN that changes files).
 
 ## Usage pace: how the curve is computed
 

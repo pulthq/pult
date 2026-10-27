@@ -20,6 +20,24 @@ HOME = Path.home()
 # Logs: where each system keeps them. Fixed paths, like ~/.config/pult: the service, the CLI and the tab wrapper
 # run with different environments and must all agree (the tab wrapper repeats this line: it imports nothing of Pult's)
 LOG_DIR = HOME / "Library" / "Logs" if KIND == "mac" else HOME / ".local" / "state" / "pult"
+
+
+def private_dir(path):
+    """A folder for Pult's logs or settings, made if missing. Pult's own one (named "pult": ~/.local/state/pult,
+    ~/.config/pult) is its user's only — under the usual umask anyone on a Linux machine could read what Pult writes
+    there: messages, project paths, the networks of logins (review 2026-10-27, Б7). A folder that isn't Pult's own
+    (~/Library/Logs) is never changed."""
+    path = Path(path)
+    own = path.name == "pult"
+    path.mkdir(parents=True, exist_ok=True, mode=0o700 if own else 0o777)
+    if own and KIND != "windows":
+        try:
+            os.chmod(path, 0o700)
+        except OSError:
+            pass
+    return path
+
+
 PALETTE = "Cmd+Shift+P" if KIND == "mac" else "Ctrl+Shift+P"     # VS Code's command palette
 
 # VS Code and its forks: the folder name of their settings, and of their server when a window is remote (Remote-SSH)
@@ -195,8 +213,12 @@ def screen_locked():
     """Whether the screen is locked: True / False, or None where the system can't tell. macOS — the console session's
     CGSSessionScreenIsLocked in the IORegistry (the key is there only while locked); Linux — logind's LockedHint."""
     if KIND == "mac":
-        out = subprocess.run(["ioreg", "-n", "Root", "-d1", "-a"], capture_output=True, timeout=5).stdout \
-            if shutil.which("ioreg") else b""
+        try:
+            # on a loaded Mac ioreg may take longer than 5 s: unknown, not an error — a turn's outcome waits on this
+            out = subprocess.run(["ioreg", "-n", "Root", "-d1", "-a"], capture_output=True, timeout=5).stdout \
+                if shutil.which("ioreg") else b""
+        except (OSError, subprocess.SubprocessError):
+            return None
         try:
             users = plistlib.loads(out).get("IOConsoleUsers") or []
         except Exception:

@@ -6,15 +6,16 @@ Claude over the limit and the card goes.
   ~/.local/share/pult/venv/bin/python tools/queue_check.py /tmp/stand.out [out_dir]
 Screenshots go to out_dir (a temporary folder by default). Exit 1 on a failed check. Selectors are by class, not by
 text, except the stand's own words: the stand runs in either language."""
-import asyncio, base64, json, os, subprocess, sys, tempfile, time
+import asyncio, base64, json, os, subprocess, sys, tempfile
 import aiohttp
 
 STAND = sys.argv[1]
 URLS = dict(line.split(" ", 1) for line in open(STAND).read().split("\n") if line.startswith("HOME "))
 OUT = sys.argv[2] if len(sys.argv) > 2 else tempfile.mkdtemp(prefix="pult-queue-")
 os.makedirs(OUT, exist_ok=True)
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-PORT = 9339
+import _cdp  # noqa: E402  (tools/_cdp.py: where Chrome is, free ports, a profile that goes — review 2026-10-27, Т9)
+CHROME = _cdp.CHROME
+PORT = _cdp.free_port()
 SID6 = "66666666-4444-4444-8444-444444444444"
 failures = []
 
@@ -26,7 +27,7 @@ def verdict(name, ok, *info):
 
 
 async def main():
-    prof = tempfile.mkdtemp(prefix="cdp-")
+    prof = _cdp.profile()
     p = subprocess.Popen([CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--remote-debugging-port=%d" % PORT,
                           "--user-data-dir=" + prof, "--no-first-run", "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:

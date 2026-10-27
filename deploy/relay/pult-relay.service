@@ -17,10 +17,29 @@ RestartSec=3
 MemoryHigh=80M
 MemoryMax=120M
 Nice=10
+# what the relay needs is the web server on this machine: no network beyond it, no rights, no devices, nothing of the
+# kernel's — the set the developer's own server has run with since 2026-10-20 (review 2026-10-27, Б11)
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressAllow=localhost
+IPAddressDeny=any
 NoNewPrivileges=true
+CapabilityBoundingSet=
 PrivateTmp=true
+PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
 # its own code is read-only to it; the one place it writes: /var/lib/pult-relay, where — on a server with the updater
 # (install.sh --auto, pult-relay.service.d/update.conf) — it leaves the release the computer runs
 StateDirectory=pult-relay

@@ -8,6 +8,25 @@ permissions:
   contents: read
 
 jobs:
+  lint:
+    # what a typo costs at a user's, before the suites (review 2026-10-27, Т10); tools/ci_local.sh does the same here
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5, by commit: a tag can move
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1   # v6
+        with:
+          python-version: "3.12"
+      - name: Lint tools
+        run: python -m pip install ruff==0.17.3 shellcheck-py==0.11.0.1
+      - name: Names that don't exist, imports and values nobody uses (ruff)
+        run: ruff check .
+      - name: Shell scripts (shellcheck)
+        if: success() || failure()
+        run: shellcheck install.sh deploy/relay/install.sh src/pult-tab.sh tools/ci_local.sh
+      - name: Version, changelog, tag and requirements agree
+        if: success() || failure()
+        run: python tools/consistency.py
+
   test:
     strategy:
       fail-fast: false
@@ -17,8 +36,8 @@ jobs:
     env:
       PYTHONUTF8: "1"          # as Pult runs: the daemon and the pult command use -X utf8 on Windows
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5, by commit: a tag can move
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1   # v6
         with:
           python-version: "3.12"
       - name: Dependencies

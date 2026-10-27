@@ -42,7 +42,7 @@ TAP_MAX = 4 * 1024 * 1024                                  # longer lines are no
 
 def log(*a):
     try:
-        os.makedirs(os.path.dirname(LOG), exist_ok=True)
+        os.makedirs(os.path.dirname(LOG), mode=0o700, exist_ok=True)    # Linux: its user's only (pult_os.private_dir)
         with open(LOG, "a", encoding="utf-8") as f:
             f.write("%s %d %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), os.getpid(), " ".join(map(str, a))))
     except OSError:

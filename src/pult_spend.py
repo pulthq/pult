@@ -227,7 +227,7 @@ def anchors(t0, t1, now, used, log, kind):
     """The readings the curve passes through: the start at 0, the readings of this window that rose at least
     MIN_STEP points, now at `used`."""
     out = [(t0, 0.0)]
-    for ts, k, pc, resets in sorted(log):
+    for ts, k, pc, resets in sorted(log, key=lambda e: e[0]):     # by time alone: a None among resets broke it (М9)
         if k == kind and t0 < ts < now and resets and abs(resets - t1) < 600 and out[-1][1] + MIN_STEP <= pc <= used:
             out.append((ts, float(pc)))
     out.append((now, float(used)))
@@ -302,8 +302,10 @@ def view(slots, usage, log, now, pace, known):
         if k is not None:
             ks[key] = k
         k = k if k is not None else ks.get(key)
-        elapsed = max(1.0, min(now, t1) - t0)
         recent = RECENT[key]
+        # spend from elsewhere is averaged over no less than the span the local pace uses: right after a reset 2 % in
+        # half an hour read as 4 %/h over the week — "runs out" on Home until a turn here (review 2026-10-27, М4)
+        elapsed = max(float(recent), min(now, t1) - t0)
         w_recent = sum(s.weight(factor) for i, s in slots.items() if now - recent <= i * SLOT < now)
         rate = (w_recent * k / (recent / 3600) + ext / (elapsed / 3600)) if k is not None else None   # % per hour
         left = max(0.0, t1 - now) / 3600

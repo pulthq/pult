@@ -8,7 +8,7 @@ appeared. Run (a few tiny haiku requests): ~/.local/share/pult/venv/bin/python t
 """
 import asyncio, os, subprocess, sys, tempfile, time
 from pathlib import Path
-from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
+from claude_agent_sdk import ResultMessage, query
 
 SRC = Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))

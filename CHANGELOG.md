@@ -2,6 +2,164 @@
 
 Versions 0.x come before the first public release. Newest first.
 
+## Unreleased
+
+## 0.18.6 — 2026-10-27
+
+- **Settings tell what only you can update on the server.** The server's updater takes the relay's code from each
+  release, but not itself or its services: when a release changes them, the relay's row now says which file is older
+  and that `sudo bash deploy/relay/install.sh` is due there, once. "Install once they're free" survives a restart of
+  Pult; a hook event missing reads as a step to take (`pult hooks on`), in amber, not as something broken; and the
+  parts table no longer runs git a hundred times a minute when the server's copy matches no commit.
+- **Smaller holes closed.** On Linux, Pult's folders for logs and settings are its user's only — anyone on the
+  machine could read the messages and paths there; `pult send` refuses more kinds of secrets by their names (key
+  stores, tokens and passwords kept as files, databases, Terraform's state); the check of a new Claude Code version
+  gives the model no tools at all; the relay lets fewer connections wait without saying who they are (each could
+  bring 8 MB first); behind Caddy a client can't pass its own address on any more — take the new `reverse_proxy` block
+  from `deploy/relay/Caddyfile`; the relay's requirements are exact versions, and CI's actions are pinned by commit.
+- **The relay on your own server runs locked down**: no network beyond the web server on that machine, no privileges,
+  no devices, no way into the kernel's settings — systemd's own measure of exposure went from 8.3 ("exposed") to 1.5
+  ("OK"). It works as before; re-run `sudo bash deploy/relay/install.sh` once to have it.
+- **A server that takes releases itself now closes the app when its files differ from the release**, as a server
+  you deploy to always did: before, it only said so in Telegram, and a changed app ran in your window meanwhile. A CDN
+  or a proxy in front of the server that changes files: `PULT_GUARD=warn` in the computer's settings — then it only
+  warns.
+- **More of Pult is checked before it reaches you.** The queue in front of Telegram — three messages at once, then
+  one a second; a wait Telegram asks for; one message's edits sent once, its latest text; questions ahead of turn
+  updates — is now tested on a clock of its own: every other test turns its limits off. The tests refuse to run
+  against Pult's real folder or the real transcripts (`PULT_PROJECTS` points both readers of transcripts at one place)
+  and no longer leave a temporary folder behind on every run. What updates Pult is covered where it wasn't: the look
+  for a release on GitHub, the installer's own message to Telegram when no version comes up, how a check of a new
+  Claude Code version reads a login prompt, silence or a crash, Stop while a turn runs with a message waiting, and
+  the server's updater reading systemd, its relay's health and a want that changes on the way. Tests that passed or
+  failed by the machine's speed now wait for what they check.
+- **One command runs every check of the app in Chrome** — `tools/check.py`, each on a stand of its own; the checks
+  share `tools/_cdp.py`: Chrome is found (`CHROME` for another one), DevTools and stands take free ports — two checks at
+  once no longer meet on one — and a check's Chrome profile and a stand's temporary folder go when they end.
+- **CI checks more than the tests.** A lint job — names that don't exist, imports and values nobody uses (ruff), the
+  shell scripts (shellcheck), and whether the version, the changelog, a release tag and the requirements agree
+  (`tools/consistency.py`); `tools/ci_local.sh` does what CI does, in a fresh environment, on your own computer.
+- **The app's small things.** A folder picked for a new project went back to the default whenever the connection
+  blinked; with a sheet open on Home the phone's own Back closed the whole app instead of the sheet; two quick taps on
+  ✕ went back twice and left the screen; one Back closed a file and the sheet under it, and the next Back did nothing;
+  the late end of a connection already replaced failed the new one's requests. While events came faster than every
+  0.4 s — a turn's quick steps, agents side by side — a screen didn't update until they paused; now it keeps up. An
+  update started while you read a session looked like "the computer is offline"; a HEIC photo the phone couldn't draw
+  was dropped instead of going as a file; told "too many windows", the app now waits for the server to let go of the
+  dead ones instead of knocking every few seconds. Rows and folding headings can be reached from a keyboard, ✕ and a
+  card's links are easier to hit, and 21 strings nothing used are gone.
+- **Small things in the helpers, each visible somewhere.** A permission request whose description ran over two lines
+  showed its decided line with no formatting in Telegram; a one-line code block longer than one Telegram message lost
+  its first character; an option saying "(Recommended against)" — or a spec such as "(recommended 5 V)" — was ticked
+  in advance as Claude's advice, and now only the mark itself counts; a file name in capitals such as README.md could
+  become a task's tag; two spend readings in the same second could stop the Resources screen from building; Groq's own
+  words in a voice error made Telegram refuse the message; a long paragraph folded in Telegram could be cut through a
+  bold word or a link, showing its stars and brackets. The small model that writes the result line and the tags is told
+  that the session's text is data, never instructions to it; a replaced voice key's connections are closed; the log
+  says why the small model gave nothing; a `claude` whose path has a space counts on the load screen.
+- **Small things in the daemon, each a way something could go quietly wrong.** After Telegram asked Pult to wait, an
+  older text of a message could land over its newer one; a request nothing of which reached Telegram counted as shown
+  there; a turn's outcome waited for its Telegram message before Home had it; a queued turn cancelled the moment it got
+  its place kept that place; files from the app that couldn't be taken vanished without a word (now the message says
+  so); a hidden folder (`~/.ssh`) was accepted for a new project; an answer that wasn't a list fell apart into letters;
+  a second tap of Create showed the system's own error; a message never read stayed "on its way" for good (now crossed
+  out after six hours).
+- **A session's events are handled in order, and fewer messages go nowhere.** Each hook event arrives on its own and
+  its handling waits in between, so two events at once — after a restart mid-turn, say — could both start a turn, or a
+  turn's end could slip past a step and leave a turn "working" for good; a session's events now go one at a time (a
+  permission request still waits apart). A message to a session of Pult's own while Claude works on a turn it started
+  by itself now joins that turn, as it does any other, and one sent as the session closes for idleness resumes it
+  instead of being lost. When Telegram refuses to open a project's topic — the bot lost the right to manage topics —
+  General says so, instead of that project's turns vanishing without a word.
+- **What you are in the middle of is no longer lost.** The app's copy reloads itself when the server has a newer
+  one, and it could do so under Telegram's microphone question, during a ready reply's countdown, with answers you had
+  ticked but not sent, or while you read a session far from its end — it now waits for those. A ready reply whose
+  countdown was running when you left the screen is sent, as it said it would be, instead of quietly dropped; words you
+  dictated just as you left come back in that field when you return.
+- **A long session reads smoothly on the phone.** Each time the connection came back — Telegram in the background
+  for a minute is enough — the session screen reloaded from its end and dropped the earlier history you had scrolled
+  to, right under your finger; now it loads only what is new. Loading earlier history no longer rebuilds every message
+  on the screen (pictures were asked for again, "Show all" folded back), and a message's text is formatted once
+  instead of every second.
+- **No false "runs out" right after a limit resets.** Spend from another computer or claude.ai was spread over the
+  time since the reset, so 2 % in the first half hour read as 4 % an hour for the whole week, and Home said the week
+  would run out until a turn ran here. It is now spread over no less than the span the local pace uses — an hour for the
+  five-hour window, a day for the week; spending that is really fast still shows.
+- **Three rare failures no longer cost you anything.** A tool call of an odd shape in a session — the model can write
+  one, and Claude Code keeps it as written — broke that session's screen in the app for good; now the step shows by
+  its name. A long voice message whose upload timed out on the way to Groq got neither words nor "didn't work"; every
+  network failure now tries the other route and then says it. And on a busy Mac a slow answer about the screen lock
+  could lose the end of a turn — it now counts as "don't know".
+- **When Pult runs as many sessions as it may, the app says so.** With five sessions of Pult's own busy, a new task
+  from **+** answered "done" for a session that never started — the session screen then couldn't find it — and a
+  message to a closed session vanished; the refusal went to the project's topic in Telegram instead. Now the app shows
+  it where you tapped, before any picture is saved; a new project is made and says its first turn has to wait. And
+  Home no longer fails for a moment when a session ends while it loads.
+- **Claude's words show right in the app, whatever they are.** A link to a file with its name in code — the way
+  Claude often writes them — showed `�0�` instead of the name; a table made of separator lines alone froze the session
+  screen until the message scrolled away. Both are fixed, and the app's markdown can no longer stop a screen: if it ever
+  fails, the words show as they are.
+- **When the computer has been silent for hours, you can tell.** A computer whose Pult doesn't start — say, its
+  Python environment lost its Python to a Homebrew upgrade — looks just like one that is asleep: the hook and the tab
+  wrapper stay quiet by design, and the app only said the computer was offline. The app now says since when ("Away
+  since 03:10" — the relay counts it), and `pult status` and `pult report` check that Pult's environment can still run
+  the daemon, and say what to run when it can't.
+- **A server that updates itself doesn't give up on a release because the computer dozed off.** If the computer
+  didn't reconnect in the minute and a half after the server switched to a new release — asleep, its network blinked —
+  the server went back and never tried that release again, staying behind until the next one. Now it tries again on the
+  computer's next word, about ten minutes later, three times in all. And Settings → Pult and its parts has **Try again
+  on the server** for a release the server won't try by itself. The server's updater doesn't update itself: to take this
+  one, run `sudo bash deploy/relay/install.sh` once on the server, after `git pull`.
+- **`install.sh` and `install.ps1` change nothing until every file is at hand.** They copied Pult's files one by
+  one over the installed ones, so a file missing halfway left a mix of two versions for the next start. Now they take
+  every module in `src/` by a pattern — none can be left out of a list any more — into a folder beside the install
+  first, and only then put them in place (on macOS and Linux each by a rename, as Install from the app does).
+  `install.sh` has a test of its own that runs it for real in a sandbox.
+- **Install puts each file in place in one step.** The hook runs on every event of every Claude Code session and the
+  tab wrapper starts with every VS Code tab; an update emptied each file before writing it, so one starting in that
+  instant could read half of it. Each file is now written beside its place and renamed over the old one.
+- **An update isn't taken back because the app's server is down.** The installer counted a new version in only once
+  it had reached the app's server, so with the server down for a minute, Install put the old version back — and,
+  as the old one couldn't reach the server either, told you in Telegram that neither had come up. Now the installer
+  asks the server itself: if it answers and the new version can't reach it, that version goes back as before; if it
+  answers nobody, the update counts. The version going back only has to come up.
+- **The relay passes on only what an app window may say: a request.** A window that was in could send the computer
+  anything the relay itself sends — a login with an address it made up, a report of the server's updater — and the
+  computer took it for the relay's word. Now the relay keeps everything but requests to itself, and the computer
+  doesn't log in a window that is in already.
+- **Home opens while a new project is cloned from the phone.** The clone's progress and the tasks run with `pult run`
+  were kept under one name, so after a clone Home failed to load for up to an hour (and a running `pult run` task broke
+  a new project's creation). They are kept apart now.
+- **An odd message from the app's server can't stop Pult.** The daemon took the relay's messages in the shapes it
+  expected, and one of another shape — a list where a word was due — raised an error that ended the whole daemon, with
+  every session Pult runs, and again after each restart while the server kept sending it. Each message is now handled
+  on its own: one that can't be is noted in the log and dropped; the server updater's report is read field by field,
+  in the shapes it has.
+- **Telegram is read the way it was meant to: one request waits up to 50 s for news.** The daemon handed
+  Telegram's long-poll timeout to its own HTTP client instead, so Telegram answered at once and Pult asked again every
+  few seconds — tens of thousands of requests a day instead of under two thousand, all through the proxy when there is
+  one. A message from a topic now arrives the moment it's sent.
+- **A network hiccup on the way to Telegram no longer breaks anything.** A timeout, a dropped connection or a proxy's
+  error page escaped as a raw error: a session started from Telegram could close, a permission request vanished from
+  the app and the computer, and a topic that couldn't be created ended the turn that needed it. Every such failure is
+  now handled like any refusal from Telegram — the message isn't sent, the request still waits in the app and on the
+  computer, the session goes on. A message to a session of Pult's own reaches Claude before its 👀, not after.
+- **Claude's questions let you tick several answers where they combine.** When Claude asks with options and marks
+  the question as taking several answers, Pult shows ticks and "Done" — in the app and in Telegram. Claude seldom
+  did: it glued the combinations into options of a single choice instead ("Only the server (Recommended) / The server
+  and the release / Nothing yet"), mostly when it had advice of its own, and a question holds four options at most.
+  The note Pult gives each session at its start (the one about `pult send`) now asks for ticks where the options
+  combine, one action per option. A probe on Opus (`tests/probe_multiselect.py`) — where several answers make
+  sense: glued options in 5 of 12 questions without the note, none with it, all 12 with ticks; where only one does,
+  a single choice both ways. VS Code tabs get it too (their question dialog has ticks), from a session's next start, resume or
+  compaction. `tools/ask_stats.py` counts how this computer's sessions ask: how many questions have ticks and how many
+  look glued.
+- **Claude's advice comes checked.** In a question of several answers, the options Claude marks as its advice
+  ("(Recommended)", or the session's own words for it) are checked from the start — in the app and in Telegram — so
+  "Done" alone takes the advice, as one tap takes it in a question of one answer; uncheck or add before "Done" as you
+  like. Telegram's hint says the advice is checked. A checked option is now filled in the app, not told by its box
+  alone. `tools/advice_check.py` checks it with real taps on the stand (`STAND_ADVICE=1`).
+
 ## 0.18.2 — 2026-10-26
 
 - **The README opens with what the phone can do.** Twelve tiles under the opening picture — allow or deny, answer a

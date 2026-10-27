@@ -16,8 +16,9 @@ REPO = Path(__file__).resolve().parent.parent
 PY = sys.executable
 OUT = sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp(prefix="pult-update-")
 os.makedirs(OUT, exist_ok=True)
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-PORT, STAND_PORT = 9339, "18113"
+import _cdp  # noqa: E402  (tools/_cdp.py: where Chrome is, free ports, a profile that goes — review 2026-10-27, Т9)
+CHROME = _cdp.CHROME
+PORT, STAND_PORT = _cdp.free_port(), str(_cdp.any_port())
 failures = []
 
 
@@ -37,12 +38,12 @@ def stand(state):
         if "\nHOME " in "\n" + text and "SETTINGS " in text:
             return p, dict(ln.split(" ", 1) for ln in text.splitlines() if ln[:5] in ("HOME ", "SETTI"))
         time.sleep(0.25)
-    p.kill()
+    _cdp.stop(p)
     raise RuntimeError("the stand didn't come up (%s)" % state)
 
 
 async def main():
-    prof = tempfile.mkdtemp(prefix="cdp-")
+    prof = _cdp.profile()
     chrome = subprocess.Popen([CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--remote-debugging-port=%d" % PORT,
                                "--user-data-dir=" + prof, "--no-first-run", "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
@@ -170,7 +171,7 @@ async def main():
                         verdict("fail: rolled back, why, the error", "откат" in text and "падает при запуске" in text
                                 and "ModuleNotFoundError" in text and "больше не предлагаю" in text, text[:200])
                 finally:
-                    proc.kill()
+                    _cdp.stop(proc)
                     proc.wait()
             verdict("no script errors", not errors, errors[:3])
     finally:

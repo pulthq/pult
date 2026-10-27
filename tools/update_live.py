@@ -12,13 +12,14 @@ Everything goes at the end: the service, its file in ~/Library/LaunchAgents, the
 more daemon (~100 MB) and a venv (~200 MB on disk).
   ~/.local/share/pult/venv/bin/python tools/update_live.py [--keep]
 The owner's Pult is never touched: another label, folder and socket. Exit 1 on a failed check."""
-import asyncio, base64, hashlib, hmac, json, os, re, shutil, subprocess, sys, tempfile, time, urllib.parse
+import asyncio, base64, hashlib, hmac, json, os, shutil, subprocess, sys, tempfile, time, urllib.parse
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 LABEL = "io.github.pulthq.pult-livetest"
-RELAY_PORT, CDP_PORT = 18121, 9341
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+import _cdp  # noqa: E402  (tools/_cdp.py: where Chrome is, free ports, a profile that goes — review 2026-10-27, Т9)
+RELAY_PORT, CDP_PORT = _cdp.any_port(), _cdp.free_port()
+CHROME = _cdp.CHROME
 failures = []
 
 
@@ -111,7 +112,7 @@ async def main(keep):
         v0 = (await health()).get("version")
         verdict("the test daemon is up and reached the relay", bool(v0), U("health.json"))
 
-        prof = tempfile.mkdtemp(prefix="cdp-")
+        prof = _cdp.profile()
         chrome = subprocess.Popen([CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--remote-debugging-port=%d" % CDP_PORT,
                                    "--user-data-dir=" + prof, "--no-first-run", "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         import aiohttp

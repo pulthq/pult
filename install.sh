@@ -97,11 +97,19 @@ if [ ! -t 0 ] && [ "${PULT_FORCE:-}" != 1 ] && [ -f "$DST/pultd.py" ]; then
   fi
 fi
 
-cp "$SRC"/src/pultd.py "$SRC"/src/pult_hook.py "$SRC"/src/pult_render.py "$SRC"/src/pult_web.py "$SRC"/src/pult_i18n.py "$SRC"/src/pult_stt.py \
-   "$SRC"/src/pult_load.py "$SRC"/src/pult_new.py "$SRC"/src/pult_files.py "$SRC"/src/pult_spend.py "$SRC"/src/pult_attn.py "$SRC"/src/pult_brief.py "$SRC"/src/pult_tags.py "$SRC"/src/pult_tabcheck.py "$SRC"/src/pult_os.py "$SRC"/src/pult_setup.py "$SRC"/src/pult_update.py "$SRC"/src/pultctl.py "$SRC"/requirements.txt "$DST"/
-# VS Code tab wrapper: takes effect only after the claudeCode.claudeProcessWrapper setting (pult tab setup)
-cp "$SRC"/src/pult_tab.py "$SRC"/src/pult-tab.sh "$DST"/
-chmod 755 "$DST"/pult_tab.py "$DST"/pult-tab.sh
+# Pult's files — every module in src/ (none can be left out), the tab wrapper, requirements.txt: first all into a staging
+# folder, so a missing one stops the install before anything changed; then each renamed into place — the hook runs on
+# every event of every session and the wrapper starts with every VS Code tab, and a plain copy empties a file before
+# writing it (review 2026-10-27). The wrapper takes effect only after the claudeCode.claudeProcessWrapper setting.
+STAGE="$DST/.install-new"
+rm -rf "$STAGE"
+mkdir "$STAGE"
+trap 'rm -rf "$STAGE"' EXIT
+cp "$SRC"/src/*.py "$SRC"/src/pult-tab.sh "$SRC"/requirements.txt "$STAGE"/
+chmod 755 "$STAGE"/pult_tab.py "$STAGE"/pult-tab.sh
+for f in "$STAGE"/*; do mv -f "$f" "$DST"/; done
+rmdir "$STAGE"
+trap - EXIT
 
 say "Installing dependencies…" "Ставлю зависимости…"
 "$DST/venv/bin/pip" install -q --disable-pip-version-check -r "$DST/requirements.txt"

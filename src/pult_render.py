@@ -252,6 +252,18 @@ FOLD_FROM = 700     # a result longer than this (markdown characters) folds: its
 FOLD_LEAD = 320     # the beginning: whole paragraphs up to about this much
 
 
+MARKS = re.compile(r"`[^`\n]+`|\*\*.+?\*\*|\[[^\]\n]+\]\([^\s)]+\)")
+
+
+def whole_marks(b, cut):
+    """A cut moved back to the start of `code`, **bold** or a [link](…) it falls inside: each half is shown on its
+    own, and a mark cut in two showed its stars and brackets (review 2026-10-27, М15). None to move before — as it was."""
+    for m in MARKS.finditer(b):
+        if m.start() < cut < m.end():
+            return m.start() if m.start() > 0 else cut
+    return cut
+
+
 def folded_html(md):
     """A reply for Telegram: short — as it is; longer — its first paragraphs, the rest in a folded quote that opens
     with a tap. Code, links and code blocks stay inside it: Telegram keeps them there (tests/probe_quote.py,
@@ -271,7 +283,7 @@ def folded_html(md):
             break                                   # a code block folds whole; a lone heading takes the next paragraph
         if len(b) > FOLD_FROM:                      # one long paragraph: its beginning, to a line or a sentence
             cut = max(b.rfind("\n", 0, FOLD_LEAD), b.rfind(". ", 0, FOLD_LEAD) + 1)
-            cut = cut if cut > FOLD_LEAD // 3 else FOLD_LEAD
+            cut = whole_marks(b, cut if cut > FOLD_LEAD // 3 else FOLD_LEAD)
             lead.append(b[:cut].rstrip())
             blocks = blocks[:len(lead) - 1] + [b[:cut].rstrip(), b[cut:].lstrip()] + blocks[len(lead):]
             break
@@ -361,7 +373,7 @@ def split_md(s, limit=CHUNK):
                 paras.append(b)
                 continue
             head = b[: b.find("\n") + 1] if "\n" in b else "```\n"
-            body = b[len(head):-3]
+            body = b[b.find("\n") + 1 if "\n" in b else 3:-3]     # a one-line block: only its own ``` goes (М6)
             step = limit - len(head) - 8
             for i in range(0, len(body), step):
                 paras.append(head + body[i:i + step].strip("\n") + "\n```")
@@ -411,9 +423,18 @@ def _rel(path, cwd):
 
 def tool_step(name, inp, cwd=None, failed=False, sub=False):
     """One line per step: “📖 README.md”, “⌘ git status”. None — don't show the step.
-    Steps no longer go to the chat (the turn shows Claude's own words); the app shows them."""
+    Steps no longer go to the chat (the turn shows Claude's own words); the app shows them. A step of an odd shape —
+    the model may write a tool call that doesn't fit the tool, and Claude Code keeps it in the transcript as written —
+    is shown by its name: before 0.18.6 it broke the session's screen in the app for good (review 2026-10-27, М3)."""
+    try:
+        return _tool_step(name, inp, cwd, failed, sub)
+    except Exception:
+        return short(("↳ " if sub else "") + "• " + str(name or "?"), 90)
+
+
+def _tool_step(name, inp, cwd, failed, sub):
     inp = inp if isinstance(inp, dict) else {}
-    n = name or "?"
+    n = str(name or "?")
     if n in ("TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet"):
         return None
     if n == "Read":
@@ -421,7 +442,7 @@ def tool_step(name, inp, cwd=None, failed=False, sub=False):
     elif n in ("Edit", "MultiEdit", "Write", "NotebookEdit"):
         s = "✏️ " + _rel(inp.get("file_path") or inp.get("notebook_path"), cwd)
     elif n == "Bash":
-        s = "⌘ " + (inp.get("description") or inp.get("command") or "")
+        s = "⌘ " + str(inp.get("description") or inp.get("command") or "")
     elif n in ("Grep", "Glob"):
         s = "🔎 " + str(inp.get("pattern") or "")
     elif n == "WebSearch":
@@ -431,9 +452,9 @@ def tool_step(name, inp, cwd=None, failed=False, sub=False):
     elif n in ("Agent", "Task"):
         s = "🤖 " + str(inp.get("description") or inp.get("subagent_type") or T("step.subagent"))
     elif n == "AskUserQuestion":
-        qs = inp.get("questions") or []
-        ans = inp.get("answers") or {}
-        s = "❓ " + "; ".join("%s → %s" % (q.get("header") or q.get("question"), ans.get(q.get("question"), "…"))
+        qs = [q for q in inp.get("questions") or [] if isinstance(q, dict)] if isinstance(inp.get("questions"), list) else []
+        ans = inp.get("answers") if isinstance(inp.get("answers"), dict) else {}
+        s = "❓ " + "; ".join("%s → %s" % (q.get("header") or q.get("question"), ans.get(str(q.get("question")), "…"))
                               for q in qs)
     elif n == "ExitPlanMode":
         s = "📋 " + T("step.plan")
@@ -482,7 +503,8 @@ def permission_text(tool, inp, cwd=None):
     nobody should decide blind."""
     inp = inp if isinstance(inp, dict) else {}
     if tool == "Bash":
-        d = inp.get("description")
+        # one line: a break in it cut the decided request's line inside its <b> (review 2026-10-27, М5)
+        d = " ".join(str(inp.get("description") or "").split())
         return "%s\n%s" % (T("perm.bash", desc=": <b>%s</b>" % esc(I.q(d)) if d else ""), _code(inp.get("command"), 1200))
     if tool in ("Edit", "MultiEdit"):
         edits = inp.get("edits") if tool == "MultiEdit" else [inp]
@@ -512,6 +534,27 @@ def permission_text(tool, inp, cwd=None):
     return "%s\n%s" % (what, _code(json.dumps(inp, ensure_ascii=False, indent=1), 900))
 
 
+# Claude's advice among a question's options: "(Recommended)" at the end of the label, as AskUserQuestion asks, or the
+# session's own language for it — "(Рекомендую)", "(Рекомендуется)", "(Рекоменд.)" (the probe of 2026-10-26)
+ADVICE_RE = re.compile(r"\((?:recommended|recommend|рекомендую|рекомендуется|рекомендовано|рекоменд\.?)\)", re.I)
+
+
+def advised(label):
+    return bool(ADVICE_RE.search(str(label or "")))
+
+
+def advised_picks(questions):
+    """{question index: [labels]} — Claude's advice in the multi-select questions, checked from the start: advice
+    takes one "Done", as a single choice takes one tap (the owner, 2026-10-27)."""
+    out = {}
+    for i, q in enumerate(questions if isinstance(questions, list) else []):
+        if isinstance(q, dict) and q.get("multiSelect"):
+            labels = [o.get("label") for o in q.get("options") or [] if isinstance(o, dict) and advised(o.get("label"))]
+            if labels:
+                out[i] = labels
+    return out
+
+
 def question_text(q, picked=None, done=False):
     """An AskUserQuestion question: the title, options with their descriptions, what's checked."""
     picked = picked or []
@@ -521,7 +564,10 @@ def question_text(q, picked=None, done=False):
         d = (" — " + esc(short(o.get("description"), 160))) if o.get("description") else ""
         lines.append("%s %s%s" % (mark, esc(o.get("label")), d))
     if not done:
-        lines.append("<i>%s</i>" % T("ask.hint.many" if q.get("multiSelect") else "ask.hint.one"))
+        hint = "ask.hint.one"
+        if q.get("multiSelect"):
+            hint = "ask.hint.advice" if advised_picks([q]) else "ask.hint.many"
+        lines.append("<i>%s</i>" % T(hint))
     return "\n".join(lines)
 
 

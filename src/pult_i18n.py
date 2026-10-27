@@ -244,6 +244,10 @@ S = {
                      "ru": "выбери вариант кнопкой или напиши свой — ответом на это сообщение"},
     "ask.hint.many": {"en": "check the options and tap “Done”, or reply to this message with your own answer",
                       "ru": "отметь варианты и нажми «Готово» или напиши свой ответ — ответом на это сообщение"},
+    "ask.hint.advice": {"en": "Claude's advice is checked: change it if you like and tap “Done”, or reply to this message "
+                              "with your own answer",
+                        "ru": "совет Claude уже отмечен: поправь, если нужно, и нажми «Готово» или напиши свой ответ — "
+                              "ответом на это сообщение"},
 
     # ----- daemon messages (pultd) -----
     "when.yesterday": {"en": "yesterday {hm}", "ru": "вчера {hm}"},
@@ -420,6 +424,14 @@ S = {
                    "ru": "Эта сессия открыта на компьютере (вкладка VS Code или терминал). Писать в неё отсюда нельзя — "
                          "переписка перемешается. Могу продолжить <b>копией</b>: вся история та же, дальше — "
                          "отдельная сессия."},
+    "topic.refused": {"en": "⚠️ Telegram didn't let Pult open a topic for <b>{project}</b>: {why}. Until it does, that "
+                           "project's turns and results don't reach Telegram — check that the bot is an admin allowed to "
+                           "manage topics and that the group has topics on.",
+                      "ru": "⚠️ Telegram не дал Пульту открыть тему для <b>{project}</b>: {why}. Пока так, ходы и итоги "
+                            "этого проекта в Telegram не приходят — проверь, что бот — админ с правом управлять темами, "
+                            "а в группе включены темы."},
+    "err.files_bad": {"en": "The files couldn't be taken: unreadable or too big (up to {mb} MB each).",
+                      "ru": "Файлы не взяты: не читаются или слишком большие (до {mb} МБ каждый)."},
     "busy.driven": {"en": "{n} {sessions} from Telegram are already running — wait until one finishes.",
                     "ru": "Уже идут {n} {sessions} из Telegram — подожди, пока какая-нибудь закончит."},
     "tab.update": {"en": "🔄 Claude Code <b>{v}</b> is out. Pult hasn't been checked on it yet, so messages to its "
@@ -468,7 +480,8 @@ S = {
                        "На компьютере, в папке Пульта: bash install.sh — и посмотри pult status."},
     "upd.why.restarts": {"en": "it kept restarting — it crashes at start", "ru": "перезапускался снова и снова — падает при запуске"},
     "upd.why.no_start": {"en": "it didn't start", "ru": "не запустился"},
-    "upd.why.no_relay": {"en": "it didn't reach the app's server in 90 s", "ru": "не связался с сервером приложения за 90 с"},
+    "upd.why.no_relay": {"en": "the app's server answers, but the new version didn't reach it in 90 s",
+                         "ru": "сервер приложения отвечает, а новая версия не связалась с ним за 90 с"},
     "upd.why.no_commit": {"en": "the folder no longer has that commit", "ru": "в папке больше нет этого коммита"},
     "upd.why.no_source": {"en": "Pult doesn't know which folder it was installed from", "ru": "Пульт не знает, из какой папки его ставили"},
     "upd.why.pip": {"en": "the dependencies didn't install", "ru": "не поставились зависимости"},
@@ -483,11 +496,23 @@ S = {
                               "On the server: journalctl -u pult-relay -u pult-relay-update",
                         "ru": "⚠️ <b>Сервер приложения не отвечает</b> после {to}, и возврат к {back} не помог. "
                               "На сервере: journalctl -u pult-relay -u pult-relay-update"},
+    "srv.retry.no": {"en": "This server doesn't take releases by itself, or this computer doesn't run a release from GitHub.",
+                     "ru": "Этот сервер не берёт выпуски сам, или на компьютере не выпуск с GitHub."},
     "srv.why.no_start": {"en": "the relay didn't start", "ru": "посредник не запустился"},
     "srv.why.no_mac": {"en": "the computer couldn't connect to it", "ru": "компьютер не смог к нему подключиться"},
     "srv.why.no_restart": {"en": "systemd didn't restart the relay", "ru": "systemd не перезапустил посредника"},
     "srv.why.broken": {"en": "the release lacks the relay's files", "ru": "в выпуске нет файлов посредника"},
     "srv.why.error": {"en": "the updater failed", "ru": "сбой обновлятеля"},
+    "files.differ.release": {"en": "⚠️ <b>The app is closed.</b> The server hands out the app not as release {tag} has it: "
+                                   "{files}. That's what it looks like when someone changes the app on the server. Until "
+                                   "the files match, the computer doesn't answer the app.\nA CDN or a proxy in front of the "
+                                   "server that changes files? <code>PULT_GUARD=warn</code> in Pult's settings on the "
+                                   "computer — then it only warns. Otherwise check the server.",
+                             "ru": "⚠️ <b>Приложение закрыто.</b> Сервер отдаёт приложение не таким, как в выпуске {tag}: "
+                                   "{files}. Так бывает, если приложение на сервере подменили. Пока файлы не совпадут, "
+                                   "компьютер не отвечает приложению.\nПеред сервером стоит CDN или прокси, который меняет "
+                                   "файлы? <code>PULT_GUARD=warn</code> в настройках Пульта на компьютере — тогда только "
+                                   "предупреждение. Иначе проверь сервер."},
     "files.differ.warn": {"en": "⚠️ The server hands out the app not as release {tag} has it: {files}. A CDN or a proxy in "
                                 "front of the server may change files — otherwise check the server. The app stays open.",
                           "ru": "⚠️ Сервер отдаёт приложение не таким, как в выпуске {tag}: {files}. Так бывает, если перед "
@@ -836,6 +861,10 @@ S = {
     "cli.st.running": {"en": "{state}, pid {pid}", "ru": "{state}, pid {pid}"},
     "cli.st.not_loaded": {"en": "not running ({label})", "ru": "не запущен ({label})"},
     "cli.st.sock": {"en": "socket:", "ru": "сокет:"},
+    "cli.st.env": {"en": "python:", "ru": "python:"},
+    "cli.st.env_ok": {"en": "Pult's environment is whole", "ru": "среда Пульта цела"},
+    "cli.st.env_bad": {"en": "Pult's environment is broken ({why}) — run {cmd} from the Pult folder again",
+                       "ru": "среда Пульта сломана ({why}) — запусти {cmd} из папки Пульта ещё раз"},
     "cli.st.answers": {"en": "answers", "ru": "отвечает"},
     "cli.st.no": {"en": "no", "ru": "нет"},
     "cli.st.hooks": {"en": "hooks:", "ru": "хуки:"},

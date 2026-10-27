@@ -11,8 +11,9 @@ import aiohttp
 
 URL, KEEP = sys.argv[1], sys.argv[2]
 SOUND = sys.argv[3] if len(sys.argv) > 3 else "speech"
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-PORT = 9337
+import _cdp  # noqa: E402  (tools/_cdp.py: where Chrome is, free ports, a profile that goes — review 2026-10-27, Т9)
+CHROME = _cdp.CHROME
+PORT = _cdp.free_port()
 PHRASE = "Посмотри логи демона на Орионе, потом сделай коммит."
 failures = []
 

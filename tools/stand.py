@@ -10,7 +10,8 @@ Telegram passes initData in the URL after # (tgWebAppData=…); that is how the 
 STAND_STT=<folder> turns the microphone on: recordings are saved there instead of going to Groq, STAND_STT_OLD=1 makes
 the computer refuse the recording's notes as one before 0.14.2 does. Usage is stubbed (38 % of the 5-hour window, 71 % of the week, a made-up week of work): the real request launches Claude Code. The data is made up and neutral — the screenshots go
 into the public README: STAND_LANG=en|ru picks the texts, STAND_XSS=1 adds markup that must stay text, STAND_ASK2=1
-gives the question a second one, a second session waiting for you and a permission older than it, STAND_QUEUE=1 puts a turn in the queue (all places taken), STAND_UPD=ok|ready|busy|
+gives the question a second one, a second session waiting for you and a permission older than it, STAND_ADVICE=1
+makes it a question of several answers with Claude's advice among them (tools/advice_check.py), STAND_QUEUE=1 puts a turn in the queue (all places taken), STAND_UPD=ok|ready|busy|
 wait|run|fail shows Settings → Pult and Home's line in that state (no installer ever runs), STAND_PORT=<port> runs a
 second stand beside one already up. STAND_TICKS=<s> opens the first session in a tab that reads each message <s> s
 later, as Claude Code does at its turn's next step — a message with "#gone" is dropped instead (tools/ticks_check.py).
@@ -27,7 +28,7 @@ downloaded — running, failed at a step, passed, couldn't run; "Check again" pa
 STAND_COPY=1: the session that waits for you is open in a VS Code tab on a Claude Code Pult isn't checked on — its card
 says "goes as a copy" before you type, and sending says why (tools/copy_check.py). VS Code's settings and the tab
 switch are made up on every stand: the app never reads this computer's."""
-import asyncio, base64, hashlib, hmac, json, os, random, sys, time, urllib.parse
+import asyncio, base64, hashlib, hmac, json, os, random, shutil, signal, sys, time, urllib.parse
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -40,9 +41,14 @@ import pult_setup  # noqa: E402  (the Claude Code versions the wrapper is checke
 
 # Pult's folder must be the tests' temporary one: pultd imported before test_pult set PULT_HOME keeps the real
 # ~/.local/share/pult, and the stand would write its made-up install history there (it did, 2026-10-26)
-for _home in (pultd.HOME, U.HOME):
+import pult_tabcheck  # noqa: E402  (it deletes its own transcripts: the stand's must be the tests' folder too)
+for _home in (pultd.HOME, U.HOME, pultd.CLAUDE_PROJECTS, pult_tabcheck.PROJECTS):
     if not Path(_home).resolve().is_relative_to(Path(T.TMP).resolve()):
         sys.exit("stand: Pult's folder is %s, not a temporary one — run tools/stand.py as a script of its own" % _home)
+# stopped by a signal, as tools/check.py and the checks with stands of their own stop it: its temporary folder goes
+# with it at once (a plain SIGTERM skipped that — one run of all checks left 36 — and the orderly way, the web
+# server's cleanup, waits up to a minute for the connections still open)
+signal.signal(signal.SIGTERM, lambda *a: (shutil.rmtree(T.TMP, ignore_errors=True), os._exit(0)))
 from aiohttp import web  # noqa: E402
 
 HOLD = float(os.environ.get("HOLD", "90"))
@@ -73,6 +79,8 @@ D = {
         tickets="Sort the new support tickets", question="Which tickets should I start with?", header="Order",
         opt1="Urgent", opt1d="due tonight", opt2="Oldest first",
         question2="Reply to the customers as well?", header2="Replies", opt3="Yes, briefly", opt4="No, only sort",
+        question3="What else should I do with the tickets?", header3="Also", opt5="Reply briefly (Recommended)",
+        opt6="Tag them in the CRM", opt7="Merge the duplicates (Recommended)",
         tickets_done="Sorted **12 tickets**: 3 urgent, 9 can wait. The list is in the report.",
         bg_run="Export the tickets to the CRM", bg_cmd="python scripts/export_tickets.py --to crm",
         job_last="epoch 27/40 · loss 0.31", user="Sam",
@@ -103,6 +111,8 @@ D = {
         tickets="Разбери новые заявки в поддержку", question="С каких заявок начать?", header="Порядок",
         opt1="Срочные", opt1d="до вечера", opt2="Сначала старые",
         question2="Отвечать ли клиентам?", header2="Ответы", opt3="Да, коротко", opt4="Нет, только разобрать",
+        question3="Что ещё сделать с заявками?", header3="Ещё", opt5="Ответить коротко (Рекомендую)",
+        opt6="Пометить в CRM", opt7="Объединить дубли (Рекомендую)",
         tickets_done="Разобрал **12 заявок**: 3 срочные, 9 подождут. Список — в отчёте.",
         bg_run="Выгрузка заявок в CRM", bg_cmd="python scripts/export_tickets.py --to crm",
         job_last="эпоха 27/40 · потери 0,31", user="Саша",
@@ -423,7 +433,7 @@ async def main():
         return PW.simplify_usage(r)
     p.usage = fake_usage
     upd = os.environ.get("STAND_UPD")      # stage U: Settings → Pult and Home's line in one state (tools/update_check.py)
-    clone = (os.environ.get("STAND_PARTS") or "") in ("public", "auto", "auto_run", "auto_fail")   # stage U3
+    clone = (os.environ.get("STAND_PARTS") or "") in ("public", "auto", "auto_run", "auto_fail", "auto_self")   # stage U3
     if upd:
         import pult_update as U
         nums = [int(x) for x in pultd.VERSION.split(".")]
@@ -494,6 +504,12 @@ async def main():
                                  "relay": dict(lag(1, 1, ["Pult " + pultd.VERSION]), commit=sha("e5f2b10"), ts=now - 9 * 86400), "gh": None},
                          "tabs": [], "missing": [], "cc": (["2.1.310"], ["2.1.301", "2.1.310"], "2.1.310"), "wrapped": False,
                          "srv": {"state": "run", "step": "fetch", "tag": "v" + pultd.VERSION, "have": "v0.16.2", "ts": now - 4}},
+            # its code is the release's, its updater isn't: install.sh once, there (review 2026-10-27, У5)
+            "auto_self": {"git": {"mac": lag(0, 0, []), "web": dict(lag(0, 0, []), commit=sha("e5f2b10"), ts=now - 300),
+                                  "relay": dict(lag(0, 0, []), commit=sha("e5f2b10"), ts=now - 300), "gh": None},
+                          "tabs": [], "missing": [], "cc": (["2.1.310"], ["2.1.301", "2.1.310"], "2.1.310"), "wrapped": False,
+                          "srv": {"state": "done", "tag": "v" + pultd.VERSION, "have": "v" + pultd.VERSION, "ts": now - 300,
+                                  "self": {"deploy/relay/update.py": sha("0ld")}}},
             "auto_fail": {"git": {"mac": lag(0, 0, []), "web": dict(lag(1, 1, ["Pult " + pultd.VERSION]), commit=sha("e5f2b10"), ts=now - 9 * 86400),
                                   "relay": dict(lag(1, 1, ["Pult " + pultd.VERSION]), commit=sha("e5f2b10"), ts=now - 9 * 86400), "gh": None},
                           "tabs": [], "missing": [], "cc": (["2.1.310"], ["2.1.301", "2.1.310"], "2.1.310"), "wrapped": False,
@@ -514,7 +530,10 @@ async def main():
         }[parts]
         g = dict(facts["git"], repo=str(Path.home() / "pult"), head=sha("a41c9e2"), branch="main", release=clone)
         if clone:                     # stage U3: the relay's server says whether it has the updater, and its report
-            p.srv = {"can": ["want"] if "srv" in facts else [], "upd": facts.get("srv")}
+            own = {"deploy/relay/update.py": sha("ab12cd3")}           # the updater the release has, and the server too —
+            g["srv_files"] = own                                       # unless the facts say otherwise (auto_self)
+            srv = dict(facts["srv"], self=facts["srv"].get("self", own)) if facts.get("srv") else None
+            p.srv = {"can": ["want"] if "srv" in facts else [], "upd": srv}
             pultd.U.release_mode = lambda repo, head: "origin"      # the module itself: U is local to this function
             p.gh.update(at=now - 140, ok=True)
 
@@ -656,6 +675,9 @@ async def main():
     if os.environ.get("STAND_ASK2") == "1":            # two questions in one: answered one by one (tools/ask_check.py)
         q["questions"].append({"question": D["question2"], "header": D["header2"], "multiSelect": False,
                                "options": [{"label": D["opt3"]}, {"label": D["opt4"]}]})
+    if os.environ.get("STAND_ADVICE") == "1":          # several answers, Claude's advice checked (tools/advice_check.py)
+        q = {"questions": [{"question": D["question3"], "header": D["header3"], "multiSelect": True,
+                            "options": [{"label": D["opt5"]}, {"label": D["opt6"]}, {"label": D["opt7"]}]}]}
     (d.parent / PKEY2 / (SID2 + ".jsonl")).write_text(line("user", D["tickets"]) + "\n" +
                                                       aline(D["tickets_done"], "t1", 3100) + "\n")
     blog = d.parent / "-Users-x-blog"                  # a third project: only "today by project" sees it

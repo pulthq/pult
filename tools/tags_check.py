@@ -14,8 +14,9 @@ URLS = dict(line.split(" ", 1) for line in open(sys.argv[1]).read().split("\n") 
 URLS = {k.strip(): v.strip() for k, v in URLS.items()}
 OUT = sys.argv[2] if len(sys.argv) > 2 else tempfile.mkdtemp(prefix="pult-tags-")
 os.makedirs(OUT, exist_ok=True)
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-PORT = 9347
+import _cdp  # noqa: E402  (tools/_cdp.py: where Chrome is, free ports, a profile that goes — review 2026-10-27, Т9)
+CHROME = _cdp.CHROME
+PORT = _cdp.free_port()
 failures = []
 
 
@@ -26,7 +27,7 @@ def verdict(name, ok, *info):
 
 
 async def main():
-    prof = tempfile.mkdtemp(prefix="cdp-")
+    prof = _cdp.profile()
     p = subprocess.Popen([CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--remote-debugging-port=%d" % PORT,
                           "--user-data-dir=" + prof, "--no-first-run", "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
@@ -93,7 +94,6 @@ async def main():
                 await cmd("Page.navigate", url=url)
 
             # the rows' titles on the project's screen; each row's tags as [section, topic]
-            titles = "[...document.querySelectorAll('.project .card-h .c-title, .project .item.brow .item-h b, .project .item.run .run-t')].map((e) => e.textContent.trim())"
             row_tags = ("[...document.querySelectorAll('.project .card.mine, .project .item.brow, .project .item.run')].map((r) =>"
                         " [...r.querySelectorAll('.tagc')].map((t) => t.textContent.trim()))")
             bar = lambda sub: ("[...document.querySelectorAll('.tagbar%s .tagf')].map((b) => [b.firstChild && b.firstChild.nodeType === 3 ?"

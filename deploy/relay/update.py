@@ -18,6 +18,7 @@ The report — status.json — reaches the computer through the relay. Install i
   python3 -I update.py run          # pult-relay-update.service
 """
 import fcntl
+import hashlib
 import http.client
 import json
 import os
@@ -41,11 +42,27 @@ REPO = os.environ.get("PULT_UPDATE_REPO", "https://github.com/pulthq/pult.git")
 TAG_RE = re.compile(r"v\d{1,4}\.\d{1,4}\.\d{1,4}")
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 NEED = ("relay/relay.py", "relay/requirements.txt", "relay/web/index.html")
+# what install.sh puts in place and only install.sh replaces — the updater itself and the services — by where each lies
+# in the repository: every report says which these are here, so the computer can tell a release that changed them
+# needs `sudo bash deploy/relay/install.sh` once (review 2026-10-27, У5)
+UNITS = Path(os.environ.get("PULT_UPDATE_UNITS", "/etc/systemd/system"))
+OWN = {"deploy/relay/update.py": Path(__file__).resolve(),
+       "deploy/relay/pult-relay.service": UNITS / "pult-relay.service",
+       "deploy/relay/pult-relay-update.service": UNITS / "pult-relay-update.service",
+       "deploy/relay/pult-relay-update.path": UNITS / "pult-relay-update.path",
+       "deploy/relay/pult-relay-restart.service": UNITS / "pult-relay-restart.service",
+       "deploy/relay/pult-relay-restart.path": UNITS / "pult-relay-restart.path",
+       "deploy/relay/pult-relay-update.conf": UNITS / "pult-relay.service.d" / "update.conf"}
 MAC_WAIT = 60        # s for the computer to be connected before the switch: a check needs it
 UP_WAIT = 90          # s for the restarted relay to answer with the computer connected again
 ROUNDS = 3            # want.json changed while this ran: look again, at most this many times
-# failures that belong to the release itself: it isn't tried again until the computer names another one
+# failures that belong to the release itself: it isn't tried again until the computer names another one, or the owner
+# asks for it again (the relay stamps that word with this server's clock: "retry" in want.json)
 FINAL = ("not_official", "broken", "no_restart", "no_start", "no_mac")
+# the computer didn't come back after the switch: it may only have been asleep or off the network for that minute and a
+# half, so the release is tried again on the computer's next word (~10 min later), this many times in all (0.18.5;
+# before, once was final, and a server stayed behind its computer until the next release)
+NO_MAC_TRIES = 3
 
 
 class Fail(Exception):
@@ -85,6 +102,19 @@ class UnixHTTP(http.client.HTTPConnection):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.settimeout(self.timeout)
         self.sock.connect(self.path)
+
+
+def own_files():
+    """{path in the repository: the git blob id of the file here, None — missing} for OWN."""
+    out = {}
+    for rel, path in OWN.items():
+        try:
+            data = path.read_bytes()
+        except OSError:
+            out[rel] = None
+            continue
+        out[rel] = hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+    return out
 
 
 class Updater:
@@ -288,6 +318,7 @@ class Updater:
 
     def status(self, **st):
         st["ts"] = int(self.now())
+        st["self"] = own_files()
         write(HOME / "status.json", st)
         say("status:", json.dumps(st, ensure_ascii=False))
 
@@ -309,7 +340,16 @@ class Updater:
                 self.status(state="refused", tag=tag, commit=commit, have=have.get("tag"), why="older")
             return w
         failed, key = read(HOME / "failed.json", {}) or {}, "%s %s" % (tag, commit)
-        if failed.get(key):
+        rec = failed.get(key)
+        if isinstance(rec, str):                       # before 0.18.5: the reason alone, always final
+            rec = {"why": rec, "n": NO_MAC_TRIES, "ts": 0, "final": True}
+        retry = w.get("retry")
+        if rec and isinstance(retry, (int, float)) and not isinstance(retry, bool) and retry > (rec.get("ts") or 0):
+            say("asked to try %s again" % tag)         # the owner's word, newer than the failure: the count starts anew
+            failed.pop(key, None)
+            write(HOME / "failed.json", failed)
+            rec = None
+        if rec and rec.get("final"):
             return w                                   # this release didn't come up here: the report says so already
         old = have.get("tag")
         base = dict(tag=tag, commit=commit, have=old)
@@ -341,8 +381,12 @@ class Updater:
             return w
         say("%s not installed: %s %s" % (tag, why, detail or ""))
         if why in FINAL:
-            failed[key] = why
+            n = ((rec or {}).get("n") or 0) + 1
+            final = why != "no_mac" or n >= NO_MAC_TRIES
+            failed[key] = {"why": why, "n": n, "ts": int(self.now()), "final": final}
             write(HOME / "failed.json", failed)
+            if not final:
+                why = "no_mac_retry"                   # tried again on the computer's next word
         if not switched:
             self.status(state="refused" if why == "not_official" else "fail", why=why, detail=detail, back=False, **base)
             return w

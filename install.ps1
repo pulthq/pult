@@ -75,11 +75,15 @@ if ([Console]::IsInputRedirected -and $env:PULT_FORCE -ne '1' -and (Test-Path (J
     }
 }
 
-# the same files install.sh copies (tests/test_setup.py checks both lists)
-$files = 'src/pultd.py', 'src/pult_hook.py', 'src/pult_render.py', 'src/pult_web.py', 'src/pult_i18n.py', 'src/pult_stt.py',
-         'src/pult_load.py', 'src/pult_new.py', 'src/pult_files.py', 'src/pult_spend.py', 'src/pult_attn.py', 'src/pult_brief.py', 'src/pult_tags.py', 'src/pult_tabcheck.py', 'src/pult_os.py', 'src/pult_setup.py', 'src/pult_update.py', 'src/pultctl.py',
-         'src/pult_tab.py', 'requirements.txt'
-foreach ($f in $files) { Copy-Item -Force (Join-Path $Src $f) $Dst }
+# the files install.sh copies — every module in src\ (none can be left out) and requirements.txt — first all into a
+# staging folder: a missing one stops the install before anything changed (review 2026-10-27)
+$stage = Join-Path $Dst '.install-new'
+if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+New-Item -ItemType Directory -Force -Path $stage | Out-Null
+Copy-Item -Force (Join-Path $Src 'src\*.py') $stage
+Copy-Item -Force (Join-Path $Src 'requirements.txt') $stage
+Copy-Item -Force (Join-Path $stage '*') $Dst
+Remove-Item -Recurse -Force $stage
 
 Say 'Installing dependencies...' 'Ставлю зависимости…'
 & $VenvPy -m pip install -q --disable-pip-version-check -r (Join-Path $Dst 'requirements.txt')

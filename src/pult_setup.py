@@ -315,7 +315,7 @@ def write_service(lbl):
             env[k] = os.environ[k]                 # a separate (test) install keeps its own paths
     if pwd and str(Path.home()) != pwd.getpwuid(os.getuid()).pw_dir:
         env["HOME"] = str(Path.home())             # a trial install in a stand-in HOME: the service would get the real one
-    LOG.parent.mkdir(parents=True, exist_ok=True)
+    pult_os.private_dir(LOG.parent)
     # Windows: pythonw (no console window); the daemon then writes its own log, and UTF-8 is said explicitly
     argv = [PYW, "-X", "utf8", HOME / "pultd.py"] if WIN else [PY, "-u", HOME / "pultd.py"]
     return SVC.write(lbl, argv, env, LOG, HOME)
@@ -399,6 +399,22 @@ def busy_text(busy):
             name = "%s · %s" % (name, b["title"]) if name else b["title"]
         lines.append("  • %s — %s" % (name, "; ".join(what)))
     return "\n".join(lines)
+
+
+def venv_problem():
+    """Why Pult's Python environment can't run the daemon, or None: its Python is gone (a Homebrew upgrade takes away the
+    one the environment was made from) or a package is missing. The daemon can't say it — it doesn't start — and the
+    hook and the tab wrapper stay quiet by design: so `pult status` and `pult report` do (0.18.5)."""
+    if not PY.exists():
+        return "no python"
+    try:
+        p = subprocess.run([str(PY), "-c", "import claude_agent_sdk, httpx, aiohttp"], capture_output=True, text=True,
+                           timeout=60, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as e:
+        return type(e).__name__
+    if p.returncode:
+        return ((p.stderr or "").strip().splitlines() or ["exit %d" % p.returncode])[-1][:200]
+    return None
 
 
 def forced():
@@ -1001,7 +1017,7 @@ def cmd_tab_setup():
     folders = [f.strip() for f in ask(T("cli.tab.folders", default=default), default).split(",") if f.strip()]
     conf["folders"] = folders
     conf["versions"] = sorted(set(conf.get("versions") or []) | set(TAB_VERIFIED), key=vkey)
-    TAB_CONF.parent.mkdir(parents=True, exist_ok=True)
+    pult_os.private_dir(TAB_CONF.parent)
     TAB_CONF.write_text(json.dumps(conf, ensure_ascii=False) + "\n", encoding="utf-8")
     say(T("cli.tab.saved", path=tilde(TAB_CONF)))
     line = wrapper_line()
@@ -1183,6 +1199,7 @@ def report_lines():
         "settings: token %s · owner %s · group %s · language %s · proxy %s · app %s · voice %s" % (
             have("PULT_BOT_TOKEN"), have("PULT_ALLOWED_USER_IDS"), "set" if sget("chat") else "—", cli_lang(),
             have("PULT_PROXY"), have("PULT_RELAY_URL"), have("PULT_STT_KEY")),
+        "environment: %s" % (venv_problem() or "whole"),
         "hooks: %s" % (", ".join(hooks_installed()) or "off"),
         "this computer: desktop %s · keyboard idle from %s · VS Code server %s" % (
             pult_os.desktop() if pult_os.KIND == "linux" else pult_os.NAME, pult_os.idle_source(),
@@ -1222,7 +1239,7 @@ def cmd_report():
 # Pult's own files: removal touches only these, never a whole folder it doesn't know
 HOME_FILES = ("pultd.py", "pult_hook.py", "pult_render.py", "pult_web.py", "pult_i18n.py", "pult_stt.py", "pult_load.py", "pult_new.py", "pult_files.py", "pult_spend.py", "pult_attn.py", "pult_brief.py", "pult_tags.py", "pult_tabcheck.py", "pult_os.py", "pult_setup.py", "pult_update.py",
               "installed.json", "installs.json", "update.json", "health.json", "installed.json.tmp", "installs.json.tmp",
-              "update.json.tmp", "health.json.tmp", "prev",
+              "update.json.tmp", "health.json.tmp", "prev", ".new", ".install-new",
               "pultctl.py", "pult_tab.py", "pult-tab.sh", "pult-tab.exe", "pult-tab.exe.new", "requirements.txt", "state.db",
               "state.db-journal", "state.db-wal", "state.db-shm", "pult.sock", "pult.sock.tmp", "venv", "__pycache__")
 CONF_FILES = ("env", "env.tmp", "tab.json", "tab-off")

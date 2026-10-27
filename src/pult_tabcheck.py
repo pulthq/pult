@@ -41,7 +41,9 @@ TAB_STEPS = STEPS[:5]           # writing into tabs depends on these
 WAIT = 90                       # s for one answer of the model
 TOTAL = 300                     # s for the whole check (the daemon gives the process a little more)
 SWITCH_WAIT = 10                # s for the wrapper to say a switch is done
-PROJECTS = Path.home() / ".claude" / "projects"     # where Claude Code keeps transcripts (pultd.CLAUDE_PROJECTS)
+# where Claude Code keeps transcripts — the same place as pultd.CLAUDE_PROJECTS: tests and the stand set PULT_PROJECTS,
+# and forget() deletes the check's own transcripts there (review 2026-10-27, Т8)
+PROJECTS = Path(os.environ.get("PULT_PROJECTS") or Path.home() / ".claude" / "projects").expanduser()
 LOGIN = re.compile(r"log ?in\b|authenticat|credential|api[ _-]?key|oauth|unauthori[sz]ed|\b401\b", re.I)
 LIMIT = re.compile(r"usage limit|rate[ _-]?limit|limit reached|\b429\b|overloaded|\b529\b", re.I)
 NET = re.compile(r"connect|network|timed? ?out|econn|enotfound|getaddrinfo|socket hang|unreachable|proxy", re.I)
@@ -148,6 +150,7 @@ class Check:
         self.sids = set()
         self.steps = []
         self.runs = 0                                   # tab sessions so far: each gets a folder of its own
+        self.extra = []                                 # short folders for a socket, gone with self.tmp
 
     def step(self, k, ok, t0, note=""):
         ok = bool(ok)
@@ -183,8 +186,14 @@ class Check:
         (proj / ".claude" / "settings.json").write_text(json.dumps({"effortLevel": "medium"}))
         conf, log = run / "tab.json", run / "tab.log"
         conf.write_text(json.dumps({"folders": [str(proj)], "versions": [self.v]}))
-        # a unix socket's path is at most 104 bytes: a long temporary folder gets a short name of its own
-        sock = str(run / "d.sock") if len(str(run / "d.sock")) < 100 else "/tmp/pult-check-%d.sock" % os.getpid()
+        # a unix socket's path is at most 104 bytes: a long temporary folder gets a short one of its own — a folder
+        # only this user enters, not a name anyone on the machine could guess in /tmp (review 2026-10-27, Б10)
+        if len(str(run / "d.sock")) < 100:
+            sock = str(run / "d.sock")
+        else:
+            short = tempfile.mkdtemp(prefix="pc-", dir="/tmp")
+            self.extra.append(short)
+            sock = os.path.join(short, "d.sock")
         env = {"PULT_TAB_CONF": str(conf), "PULT_SOCK": sock, "PULT_OFF": "1", "PULT_TAB_LOG": str(log)}
         spawn = spawner(run, self.wrapper, self.cli, self.py)
         if not await self.service(spawn, env):
@@ -240,9 +249,11 @@ class Check:
 
         server = await start_link(daemon, sock)
         t0 = time.monotonic()
+        # no tools at all: the steps are words and switches, and the model may not run anything here (it could, with
+        # `allow` on every request — review 2026-10-27, Б10)
         opts = ClaudeAgentOptions(cli_path=str(spawn), cwd=str(proj), model="haiku", permission_mode="default",
                                   can_use_tool=allow, setting_sources=["project"], env=env, stderr=err.append,
-                                  extra_args={"replay-user-messages": None})
+                                  tools=[], extra_args={"replay-user-messages": None})
         ok = True
         try:
             async with ClaudeSDKClient(options=opts) as c:
@@ -359,6 +370,7 @@ class Check:
                 {"type": "command", "command": "%s %s" % (shlex.quote(self.py), shlex.quote(str(hook))), "timeout": 60}]}]}
             opts = ClaudeAgentOptions(cli_path=str(self.cli), cwd=str(cwd), model="haiku", permission_mode="default",
                                       can_use_tool=window, setting_sources=[], settings=json.dumps({"hooks": hooks}),
+                                      tools=["Bash"],                  # the one the race asks for, nothing else
                                       env={"MARK": str(mark), "HOOK_DELAY": str(hook_delay), "PULT_OFF": "1",
                                            "PULT_SOCK": str(self.tmp / "none")}, stderr=lambda s: None)
             t0 = time.time()
@@ -412,5 +424,6 @@ async def run(cli, wrapper, py, say=None):
         rep["error"], rep["note"] = "crash", ("%s: %s" % (type(e).__name__, e))[:200]
     finally:
         forget(ch.sids)
-        shutil.rmtree(ch.tmp, ignore_errors=True)
+        for d in [ch.tmp] + ch.extra:
+            shutil.rmtree(d, ignore_errors=True)
     return rep

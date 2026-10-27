@@ -30,6 +30,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import urllib.request
 from pathlib import Path
 
 import pult_os
@@ -37,6 +38,7 @@ import pult_os
 HOME = Path(os.environ.get("PULT_HOME") or "~/.local/share/pult").expanduser()
 LOG = (Path(os.environ["PULT_LOG"]).expanduser().parent if os.environ.get("PULT_LOG") else pult_os.LOG_DIR) / "pult-update.log"
 MANIFEST, HISTORY, STATUS, HEALTH, PREV = "installed.json", "installs.json", "update.json", "health.json", "prev"
+NEW = ".new"                          # a file on its way into Pult's folder: written here, then renamed over the old one
 TREE = ("src", "requirements.txt")    # what the installer copies, as paths in the repository
 EXEC = ("pult_tab.py", "pult-tab.sh")
 KEEP = 20                             # installs kept in the history
@@ -216,20 +218,37 @@ def ls_tree(repo, commit, paths):
     return files
 
 
+BUILT = {}           # (repo, head, files, paths) → built_from's answer: for the same pair it never changes
+# what only the server's install.sh replaces — the updater itself and the services (deploy/relay/update.py, OWN): a
+# release that changes them leaves a server on the old ones until it is run again (review 2026-10-27, У5)
+SRV_OWN = ("deploy/relay/update.py", "deploy/relay/pult-relay.service", "deploy/relay/pult-relay-update.service",
+           "deploy/relay/pult-relay-update.path", "deploy/relay/pult-relay-restart.service",
+           "deploy/relay/pult-relay-restart.path", "deploy/relay/pult-relay-update.conf")
+
+
 def built_from(repo, head, files, paths):
     """Which commit of head's history a copy of these paths is. files — {path in the repository: blob id} of what the
     copy holds (the relay says it of its own folder). A copy made at any commit equals the tree of the last commit
     before it that changed these paths, so only those are looked at, newest first. → lag() plus "commit" and "ts" (its
     time); None — no commit among the last SEARCH has exactly these files: made from uncommitted files, another
-    branch, or older."""
+    branch, or older. Remembered for the pair (head, files): a copy that matches no commit cost up to SEARCH git runs
+    each minute while Settings were open (review 2026-10-27, У12); a git that failed isn't remembered."""
+    key = (str(repo), head, tuple(sorted(files.items())), tuple(paths))
+    if key in BUILT:
+        return BUILT[key]
     rows = log_rows(git(repo, "log", "--format=%H %ct %s", "-n", str(SEARCH), head, "--", *paths))
+    res = None
     for i, (c, ct, _) in enumerate(rows):
         have = ls_tree(repo, c, paths)
         if have is None:
             return None
         if have == files:
-            return dict(lag(rows[:i]), commit=c, ts=ct)
-    return None
+            res = dict(lag(rows[:i]), commit=c, ts=ct)
+            break
+    if len(BUILT) > 64:
+        BUILT.clear()
+    BUILT[key] = res
+    return res
 
 
 def makes_releases(repo, head):
@@ -259,7 +278,7 @@ RELEASE_RE = re.compile(r"v(\d{1,4})\.(\d{1,4})(?:\.(\d{1,4}))?")
 
 def vtag(tag):
     """"v0.18.1" → (0, 18, 1), "v1.0" → (1, 0, 0); None for anything else."""
-    m = RELEASE_RE.fullmatch(tag or "")
+    m = RELEASE_RE.fullmatch(tag) if isinstance(tag, str) else None
     return tuple(int(x or 0) for x in m.groups()) if m else None
 
 
@@ -414,6 +433,27 @@ def installed_by(how, src, ok, prev_version=None):
         write(STATUS, {"state": "done", "ts": time.time()})          # put in by hand after a failed one
 
 
+def place(src, name, mode=None, meta=False):
+    """src → HOME/name in one step: written as HOME/.new/name, then renamed over it. The hook runs on every event of
+    every session and the tab wrapper starts with every tab: either reads the old file or the new one, never half of
+    one (a plain copy empties the file first — before 0.18.5). meta: with the source's times and mode (going back)."""
+    tmp = HOME / NEW / name
+    tmp.parent.mkdir(exist_ok=True)
+    (shutil.copy2 if meta else shutil.copyfile)(src, tmp)
+    if mode is not None:
+        os.chmod(tmp, mode)
+    os.replace(tmp, HOME / name)
+
+
+def health_url(relay_url):
+    """wss://host/pult/agent (PULT_RELAY_URL) → https://host/pult/healthz, the relay's public check; None for anything
+    else. ws:// — http:// (a test stand)."""
+    m = re.fullmatch(r"(wss?)://([^/?#\s]+)(/[^?#\s]*)?/agent", relay_url or "")
+    if not m:
+        return None
+    return "%s://%s%s/healthz" % ("https" if m.group(1) == "wss" else "http", m.group(2), m.group(3) or "")
+
+
 # ---------- starting the installer (the daemon) ----------
 
 SETENV = ("PULT_HOME", "PULT_ENV", "PULT_SOCK", "PULT_LOG", "PULT_LABEL", "PULT_LANG", "PULT_PROXY", "HOME", "PATH",
@@ -432,7 +472,7 @@ def spawn(commit, how, python=None):
         sets = ["--setenv=%s=%s" % (k, os.environ[k]) for k in SETENV if os.environ.get(k)]
         argv = ["systemd-run", "--user", "--collect", "--quiet", "--unit", "pult-update-%d" % time.time(),
                 *sets, *argv]
-    LOG.parent.mkdir(parents=True, exist_ok=True)
+    pult_os.private_dir(LOG.parent)
     with open(LOG, "ab") as out:          # what fails before the installer opens its log (systemd-run's own words)
         p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, cwd=str(HOME),
                              start_new_session=True, close_fds=True)
@@ -507,10 +547,13 @@ class Installer:
         if p.returncode:
             raise Fail("pip", (p.stderr.strip().splitlines() or ["?"])[-1][:300])
 
-    def healthy(self, t0, wait=HEALTH_WAIT):
+    def healthy(self, t0, wait=HEALTH_WAIT, need_relay=True):
         """(True, None) once a daemon started after t0 has stayed up STABLE s and reached the app's server (when it
-        has one); (False, why) when it doesn't in `wait` s, or keeps restarting."""
-        end, pid0, restarts, h = time.time() + wait, None, 0, {}
+        has one); (False, why) when it doesn't in `wait` s or keeps restarting. Up but without the app's server, the
+        server is asked itself: it answers — the new version can't reach it, (False, "no_relay"); it answers nobody —
+        not the update's doing, (True, "relay_down") (before 0.18.5 a server down took the new version back and said
+        that neither came up). need_relay=False — the version going back: up is enough, it reached the server before."""
+        end, pid0, restarts, up = time.time() + wait, None, 0, False
         while time.time() < end:
             pid = self.S.service(self.lbl)[1]
             if pid and pid0 and pid != pid0:
@@ -519,15 +562,31 @@ class Installer:
                     return False, "restarts"
             pid0 = pid or pid0
             h = read(HEALTH, {}) or {}
-            if pid and str(h.get("pid")) == str(pid) and (h.get("started") or 0) >= t0 - 1 \
-                    and time.time() - h["started"] >= STABLE and h.get("relay") is not False:
+            up = bool(pid and str(h.get("pid")) == str(pid) and (h.get("started") or 0) >= t0 - 1
+                      and time.time() - h["started"] >= STABLE)
+            if up and (not need_relay or h.get("relay") is not False):
                 return True, None
             time.sleep(1)
-        if not pid0:
+        if not pid0 or not up:
             return False, "no_start"
-        if str(h.get("pid")) == str(pid0) and h.get("relay") is False:
-            return False, "no_relay"
-        return False, "no_start"
+        return (False, "no_relay") if self.relay_answers() else (True, "relay_down")
+
+    def relay_answers(self):
+        """Whether the app's server answers anyone at all — its /healthz, through Pult's proxy when it has one, else
+        directly. Then a daemon that can't reach it is the new version's fault. No address or no answer: False."""
+        env = self.S.read_env()
+        url = health_url(env.get("PULT_RELAY_URL"))
+        if not url:
+            return False
+        for proxy in ([env["PULT_PROXY"]] if env.get("PULT_PROXY") else []) + [""]:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy} if proxy else {}))
+            try:
+                with opener.open(url, timeout=10) as r:
+                    if r.status == 200 and (json.loads(r.read(4096) or b"{}") or {}).get("ok") is True:
+                        return True
+            except (OSError, ValueError, AttributeError):
+                continue
+        return False
 
     def error_line(self, t0):
         """The last exception the service's log has since t0 — the reason a new version didn't come up."""
@@ -575,14 +634,12 @@ class Installer:
 
     def put(self, files):
         for name, p in files.items():
-            shutil.copyfile(p, HOME / name)
-            if name in EXEC:
-                os.chmod(HOME / name, 0o755)
+            place(p, name, 0o755 if name in EXEC else None)
 
     def restore(self, added):
         prev = HOME / PREV
         for p in prev.iterdir():
-            shutil.copy2(p, HOME / p.name)
+            place(p, p.name, meta=True)
         for name in added:
             (HOME / name).unlink(missing_ok=True)
 
@@ -618,10 +675,12 @@ class Installer:
                 m = (read(MANIFEST, {}) or {})
                 write(MANIFEST, {"src": m.get("src"), "commit": self.commit, "dirty": False, "version": self.st["to"],
                                  "ts": time.time()})
-                record(**{"from": self.st["from"], "to": self.st["to"], "how": self.how, "ok": True, "commit": self.commit})
-                write(STATUS, {"state": "done", "commit": self.commit, "from": self.st["from"], "to": self.st["to"],
-                               "ts": time.time()})
-                say("done:", self.st["to"], "is up")
+                record(**{"from": self.st["from"], "to": self.st["to"], "how": self.how, "ok": True, "commit": self.commit,
+                          "why": why})
+                write(STATUS, dict({"state": "done", "commit": self.commit, "from": self.st["from"], "to": self.st["to"],
+                                    "ts": time.time()}, **({"note": why} if why else {})))
+                say("done:", self.st["to"], "is up" + (" — the app's server answers nobody now, not the update's doing"
+                                                     if why == "relay_down" else ""))
                 return 0
             detail = self.error_line(t0)
             say("the new version didn't come up:", why, detail or "")
@@ -641,6 +700,7 @@ class Installer:
             return 1
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+            shutil.rmtree(HOME / NEW, ignore_errors=True)
 
     def back(self, added, reqs, why, detail):
         """The old version back in place, started and checked; the history and the status say why."""
@@ -652,7 +712,7 @@ class Installer:
             if reqs:
                 self.pip()
             self.install()
-            ok, _ = self.healthy(t0)
+            ok, _ = self.healthy(t0, need_relay=False)        # it reached the server before: up is enough
         except Exception as e:
             say("rollback:", repr(e))
             ok = False
@@ -680,7 +740,7 @@ class Installer:
 def main(argv):
     if len(argv) == 4 and argv[1] == "run":
         # its own log on every system: under systemd-run the output would go to the journal
-        LOG.parent.mkdir(parents=True, exist_ok=True)
+        pult_os.private_dir(LOG.parent)
         sys.stdout = sys.stderr = open(LOG, "a", encoding="utf-8", buffering=1)
         return Installer(argv[2], argv[3]).run()
     print(__doc__.strip().splitlines()[-1].strip(), file=sys.stderr)

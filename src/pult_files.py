@@ -21,9 +21,15 @@ SCAN_TIME = 1.0                    # s, at most
 SKIP_DIRS = {"node_modules", "__pycache__", "venv", "site-packages", "dist-packages"}   # deliverables may sit in build/: kept
 # never sent: folders and names of keys, passwords and settings (any case); the project's own .git as well
 SECRET_DIRS = {".ssh", ".aws", ".gnupg", ".config", ".kube", ".docker", ".git", ".azure", ".gcloud"}
-SECRET_NAMES = (".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx", "*.kdbx", "*.keychain", "*.keychain-db",
+# — and, since a page Claude read could ask it to `pult send` one (review 2026-10-27, Б9), the other usual homes of
+# secrets: key stores and signed or encrypted files, tokens and passwords as data, databases, Terraform's state.
+# Code named after them (tokenizer.py, password_reset.py) still goes
+SECRET_NAMES = (".env", ".env.*", "*.pem", "*.key", "*.p8", "*.p12", "*.pfx", "*.jks", "*.keystore", "*.ppk",
+                "*.kdbx", "*.keychain", "*.keychain-db", "*.gpg", "*.asc", "*.age",
                 "id_rsa*", "id_dsa*", "id_ecdsa*", "id_ed25519*", ".netrc", ".npmrc", ".pypirc", ".pgpass",
-                "credentials", "credentials.*", "*.ovpn")
+                ".git-credentials", ".htpasswd", ".s3cfg", ".boto", ".dockercfg", "*credentials*", "*secret*",
+                "token", "token.*", "tokens.*", "*.token", "*_token", "*_token.*", "*-token.*", "passwords*",
+                "*password*.txt", "*.ovpn", "*.tfstate", "*.tfstate.*", "*.sqlite", "*.sqlite3", "*.db", "*.db-*")
 # a document's lock and temporary files: never "made by the turn"
 TEMP_NAMES = ("~$*", ".~lock*", "*.tmp", "*.swp", "*.swx", ".DS_Store", "Thumbs.db", "*.crdownload", "*.part")
 # a project's file opened in the app from a link in Claude's words (stage F5): text in full up to this, a longer one

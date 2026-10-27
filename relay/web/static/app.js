@@ -30,37 +30,51 @@ const keyStore = {
   set(k) { try { k ? sessionStorage.setItem("pult.resume", k) : sessionStorage.removeItem("pult.resume"); } catch (e) {} },
 };
 const conn = { ws: null, state: "connecting", ready: false, mac: null, seq: 0, wait: new Map(), retry: 0,
-  key: keyStore.get(), why: null, fresh: 0, updating: 0 };   // updating: since when Pult installs an update (stage U)       // fresh: when the Mac last answered — what's on screen is from then
+  key: keyStore.get(), why: null, fresh: 0, updating: 0, gone: 0 };   // gone: since when the computer is away (ms, this phone's clock)
+// the relay says how many seconds ago the computer went away (0.18.5): a computer silent for hours is one whose Pult
+// doesn't start, and the banner says since when
+const noteGone = (m) => { conn.gone = typeof m.away === "number" ? Date.now() - m.away * 1000 : conn.gone; };   // updating: since when Pult installs an update (stage U)       // fresh: when the Mac last answered — what's on screen is from then
 const setState = (s) => { conn.state = s; emit("conn"); };
 const setKey = (k) => { conn.key = k || null; keyStore.set(k); };
 
+// calls made on a socket that is gone get no answer: they fail now, not in 30 s
+const dropWaits = () => { for (const w of conn.wait.values()) { clearTimeout(w.timer); w.reject(new Error(t("conn.lost"))); } conn.wait.clear(); };
 function connect() {
   if (conn.ws && conn.ws.readyState <= 1) return;
+  conn.ready = false;
+  dropWaits();
   const ws = (conn.ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/pult/ws"));
   setState("connecting");
   ws.onopen = () => ws.send(JSON.stringify({ t: "hello", init: (tg && tg.initData) || "", resume: conn.key,
     client: { platform: tg && tg.platform, version: tg && tg.version } }));
+  // a socket replaced while it was closing says nothing more: its late end failed the new one's calls and planned an
+  // extra reconnect (review 2026-10-27, П8); a frame that isn't JSON is no message
   ws.onmessage = (ev) => {
-    const m = JSON.parse(ev.data);
-    if (m.t === "hello") { conn.mac = m.mac; setState(m.mac ? "auth" : "nomac"); }
+    if (ws !== conn.ws) return;
+    let m;
+    try { m = JSON.parse(ev.data); } catch (e) { return; }
+    if (!m || typeof m !== "object") return;
+    if (m.t === "hello") { conn.mac = m.mac; conn.gone = 0; if (!m.mac) noteGone(m); setState(m.mac ? "auth" : "nomac"); }
     else if (m.t === "ready") {
       if (m.resume) setKey(m.resume);
       conn.ready = true; conn.retry = 0; setState("ok"); emit("ready"); api("lang").then(useLang).catch(() => {});
     }
     else if (m.t === "denied") { conn.ready = false; conn.why = m.why || null; if (m.why === "out") setKey(null); setState("denied"); }
-    else if (m.t === "mac") { conn.mac = m.on; if (!m.on) { conn.ready = false; setState("nomac"); } else if (!conn.ready) setState("auth"); }
+    else if (m.t === "mac") { conn.mac = m.on; if (!m.on) { noteGone(m); conn.ready = false; setState("nomac"); } else { conn.gone = 0; if (!conn.ready) setState("auth"); } }
     else if (m.t === "res") {
       const w = conn.wait.get(m.id);
       if (w) { conn.wait.delete(m.id); clearTimeout(w.timer); if (!m.error) conn.fresh = Date.now(); m.error ? w.reject(new Error(m.error)) : w.resolve(m.data); }
     } else if (m.t === "event") emit("event", m);
   };
-  ws.onclose = () => {
+  ws.onclose = (ev) => {
+    if (ws !== conn.ws) return;
     conn.ready = false;
-    for (const w of conn.wait.values()) { clearTimeout(w.timer); w.reject(new Error(t("conn.lost"))); }
-    conn.wait.clear();
+    dropWaits();
     if (conn.state === "denied") return;
     setState("offline");
-    setTimeout(connect, [500, 1000, 2000, 5000, 10000][Math.min(conn.retry++, 4)]);
+    // "too many windows" (4429): the relay holds this phone's dead sockets up to its 25-s heartbeat — wait them out
+    // instead of knocking again every few seconds
+    setTimeout(connect, ev && ev.code === 4429 ? 15000 + Math.random() * 15000 : [500, 1000, 2000, 5000, 10000][Math.min(conn.retry++, 4)]);
   };
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden) connect(); });
@@ -76,21 +90,38 @@ function api(op, args = {}) {
   });
 }
 
+// a load that runs at most every `gap` ms, one at a time — the next right after it when asked meanwhile. While events
+// came faster than 0.4 s (a turn's steps, agents side by side) the screen used to wait for a pause to update at all
+function pacer(run, gap = 400) {
+  let busy = false, again = false, timer = 0, last = 0, dead = false;
+  const go = async () => {
+    timer = 0; busy = true; last = Date.now();
+    try { await run(); } catch (e) { /* the screen shows its own error */ }
+    busy = false;
+    if (again && !dead) { again = false; kick(); }
+  };
+  const kick = () => {
+    if (dead) return;
+    if (busy) { again = true; return; }
+    if (!timer) timer = setTimeout(go, Math.max(0, last + gap - Date.now()));
+  };
+  kick.stop = () => { dead = true; clearTimeout(timer); };
+  return kick;
+}
+
 // screen data: load when the connection is ready, on "something changed" events (at most every 0.4 s) and every
-// `every` ms
+// `every` ms. What an earlier screen asked for (its deps changed meanwhile) never lands on this one
 function useLive(load, deps, match, every = 30000) {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
-  const ref = useRef({ timer: null, alive: true });
   useEffect(() => {
-    ref.current.alive = true;
-    const run = () => load().then((d) => { if (ref.current.alive) { setData(d); setErr(null); } })
-      .catch((e) => ref.current.alive && setErr(e.message));
-    const soon = () => { clearTimeout(ref.current.timer); ref.current.timer = setTimeout(run, 400); };
-    if (conn.ready) run();
-    const offs = [on("ready", run), on("event", (m) => (!match || match(m)) && soon())];
-    const tick = setInterval(() => conn.ready && run(), every);
-    return () => { ref.current.alive = false; offs.forEach((f) => f()); clearInterval(tick); clearTimeout(ref.current.timer); };
+    let alive = true;
+    const kick = pacer(() => load().then((d) => { if (alive) { setData(d); setErr(null); } })
+      .catch((e) => alive && setErr(e.message)));
+    if (conn.ready) kick();
+    const offs = [on("ready", kick), on("event", (m) => (!match || match(m)) && kick())];
+    const tick = setInterval(() => conn.ready && kick(), every);
+    return () => { alive = false; offs.forEach((f) => f()); clearInterval(tick); kick.stop(); };
   }, deps);
   return [data, err, setData];
 }
@@ -117,6 +148,10 @@ function useConn() {
 }
 
 // ---------- small helpers ----------
+
+// a tappable thing that can't be a button — a row holding another tappable inside it, a heading that folds a list:
+// reached and pressed from a keyboard too, as in Telegram Desktop (review 2026-10-27, П8)
+const keyTap = (fn) => (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fn(e); } };
 
 function dur(sec) {
   sec = Math.max(0, Math.floor(sec));
@@ -160,7 +195,8 @@ const durShort = (sec) => (sec >= 3600 ? t("dur.h", { n: Math.floor(sec / 3600) 
 const TIMED = ["st.work", "st.bg.t", "job.running", "st.queue"];
 function TimeChip({ cls, text, onClick }) {
   const widest = TIMED.flatMap((k) => [t(k, { dur: t("dur.s", { n: 59 }) }), t(k, { dur: t("dur.m", { n: 59 }) })]);
-  return html`<span class=${"chip timer " + cls + (onClick ? " tap" : "")} onClick=${onClick}><span>${text}</span>${widest.map((w) => html`<span class="ghost" aria-hidden="true">${w}</span>`)}</span>`;
+  return html`<span class=${"chip timer " + cls + (onClick ? " tap" : "")} role=${onClick ? "button" : undefined} tabindex=${onClick ? 0 : undefined}
+    onClick=${onClick} onKeyDown=${onClick ? keyTap(onClick) : undefined}><span>${text}</span>${widest.map((w) => html`<span class="ghost" aria-hidden="true">${w}</span>`)}</span>`;
 }
 const workChip = (since, now) => html`<${TimeChip} cls="ok" text=${since ? t("st.work", { dur: durShort(now - since) }) : t("load.st.work")}/>`;
 // a message waits for a place among the turns that may run at once (Driven.slot): amber, since when it waits
@@ -283,7 +319,12 @@ function useAttach() {
     const out = [];
     let docs = files.reduce((n, f) => n + (f.doc ? f.size : 0), 0);
     for (const f of list) {
-      if (/^image\/(jpeg|png|gif|webp|heic|heif)$/.test(f.type)) { try { out.push(await bake(f)); } catch (err) { alertBox(t("attach.failed")); } continue; }
+      if (/^image\/(jpeg|png|gif|webp|heic|heif)$/.test(f.type)) {
+        try { out.push(await bake(f)); continue; } catch (err) {
+          // a HEIC photo this phone's WebView can't draw goes as a file, as it is (it was dropped — review 2026-10-27, П8)
+          if (!/hei[cf]$/.test(f.type)) { alertBox(t("attach.failed")); continue; }
+        }
+      }
       if (docs + f.size > DOC_MAX) { alertBox(t("attach.big", { name: f.name, mb: num(f.size / 1048576, 1) })); continue; }
       try { out.push({ name: f.name, data: await asB64(f), doc: true, size: f.size }); docs += f.size; } catch (err) { alertBox(t("attach.failed")); }
     }
@@ -704,10 +745,15 @@ async function sttSend(data, mime, notes) {
   }
   return api("stt", { data, mime });
 }
-function useRecorder(onText) {
+function useRecorder(onText, draft) {
   const [st, setSt] = useState("idle");           // idle | wait (the microphone wakes up) | rec | busy
   const [secs, setSecs] = useState(0);
   const cur = useRef(null);
+  const alive = useRef(true);                     // the screen is still here: words go to its field, else to its draft
+  const held = useRef(false);
+  const hold = (on) => { if (on !== held.current) { held.current = on; holds += on ? 1 : -1; } };
+  const idle = () => { hold(false); if (alive.current) { setSt("idle"); setSecs(0); } };
+  const say = (k) => { if (alive.current) alertBox(t(k)); };
   const dot = useRef(null);                       // the red dot: it breathes with the voice
   const stop = () => {
     const x = cur.current;
@@ -721,16 +767,17 @@ function useRecorder(onText) {
     if (st !== "idle") return stop();
     if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder)) return alertBox(t("rec.unsupported"));
     audioCtx();                                   // within the tap itself: a browser lets audio start only from one
+    hold(true);
     setSt("wait");
     let stream, asked;
-    try { [stream, asked] = await getMic(); } catch (e) { dropMic(); setSt("idle"); return alertBox(t("rec.denied")); }
+    try { [stream, asked] = await getMic(); } catch (e) { dropMic(); idle(); return say("rec.denied"); }
     // the wait for sound counts from the microphone given, not from the tap: Telegram's question took its own time,
     // and "speak" right after it, before sound flows, was what lost the first syllable
     const t0 = Date.now();
     const mime = REC_MIME.find((m) => MediaRecorder.isTypeSupported(m)) || "";
     let rec;
     try { rec = new MediaRecorder(stream, Object.assign({ audioBitsPerSecond: 32000 }, mime ? { mimeType: mime } : {})); }
-    catch (e) { dropMic(); setSt("idle"); return alertBox(t("rec.unsupported")); }
+    catch (e) { dropMic(); idle(); return say("rec.unsupported"); }
     const m = meterOn(stream), chunks = [];
     const x = (cur.current = { rec, timer: 0, started: false, stopping: false, live: 0, heard: false, secs: 0,
                                loud: 0, voice: null, first: -200, peak: -200 });
@@ -745,9 +792,9 @@ function useRecorder(onText) {
       clearInterval(x.timer); restMic(); cur.current = null;
       if (dot.current) { dot.current.style.transform = ""; dot.current.style.animation = ""; }
       const blob = new Blob(chunks, { type: rec.mimeType || mime || "audio/webm" });
-      if (blob.size < 1000 || !x.live) { setSt("idle"); setSecs(0); return alertBox(t("rec.empty")); }
-      if (x.heard && x.loud < VOICE_MIN) { setSt("idle"); setSecs(0); return alertBox(t("rec.silent")); }
-      setSt("busy");
+      if (blob.size < 1000 || !x.live) { idle(); return say("rec.empty"); }
+      if (x.heard && x.loud < VOICE_MIN) { idle(); return say("rec.silent"); }
+      if (alive.current) setSt("busy");
       const r1 = (v) => Math.round(v * 10) / 10;
       const notes = { secs: r1((Date.now() - x.live) / 1000) };
       if (asked !== null) notes.asked = asked;
@@ -755,9 +802,10 @@ function useRecorder(onText) {
       try {
         const url = await new Promise((ok, no) => { const f = new FileReader(); f.onload = () => ok(f.result); f.onerror = no; f.readAsDataURL(blob); });
         const res = await sttSend(url.split(",")[1], blob.type, notes);
-        if (res.text) { onText(res.text); haptic("success"); }
-      } catch (e) { alertBox(e.message); }
-      setSt("idle"); setSecs(0);
+        if (res.text && alive.current) { onText(res.text); haptic("success"); }
+        else if (res.text && draft) drafts.put(draft, res.text);      // the screen went meanwhile: its field gets them back
+      } catch (e) { if (alive.current) alertBox(e.message); }
+      idle();
     };
     x.timer = setInterval(() => {
       const now = Date.now();
@@ -782,7 +830,12 @@ function useRecorder(onText) {
     }, 50);
     rec.start(1000);
   };
-  useEffect(() => () => { const x = cur.current; if (x) { clearInterval(x.timer); try { x.rec.stop(); } catch (e) { /* already gone */ } } }, []);
+  // the screen goes: the recording stops and its words, once heard, go to the draft (the hold lasts until then)
+  useEffect(() => () => {
+    alive.current = false;
+    const x = cur.current;
+    if (x) { clearInterval(x.timer); try { x.rec.stop(); } catch (e) { hold(false); } } else hold(false);
+  }, []);
   return { st, secs, toggle, dot };
 }
 const MIC = html`<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg>`;
@@ -812,7 +865,7 @@ function Pic({ a, all }) {
 }
 
 // the model of a session from Telegram: aliases Claude Code accepts, plus whatever the settings say
-const MODELS = [["", "model.default"], ["fable", "Fable"], ["opus", "Opus"], ["sonnet", "Sonnet"], ["haiku", "Haiku"]];
+const MODELS = [["", ""], ["fable", "Fable"], ["opus", "Opus"], ["sonnet", "Sonnet"], ["haiku", "Haiku"]];
 const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
 // the model and the effort for a new session, in words: what is picked, the rest from Pult's default (Settings);
 // nothing in either — as Claude Code's own settings say
@@ -886,20 +939,47 @@ addEventListener("hashchange", () => {
   if (stack[stack.length - 1] === location.hash) return;      // replaced in place (go with replace, back to home)
   if (stack.length > 1 && stack[stack.length - 2] === location.hash) stack.pop(); else stack.push(location.hash);
 });
-let overlays = 0;      // a picture full screen, the model menu: steps in the history, so Back closes them, not the screen
-function back() {
-  if (overlays > 0 || stack.length > 1) history.back(); else { history.replaceState(null, "", "#/"); stack[0] = "#/"; dispatchEvent(new HashChangeEvent("hashchange")); }
+// what the page's own reload must not cut (the copy following the server, stage U3): a recording from the tap on (the
+// microphone's question included), a countdown to send a ready reply, answers ticked by hand — counted here (0.18.6;
+// before, the page could reload under Telegram's microphone question or a ticked question — review 2026-10-27)
+let holds = 0;
+function useHold(on) {
+  useEffect(() => { if (!on) return undefined; holds++; return () => { holds--; }; }, [on]);
 }
-// an overlay's open/close go through the history: the system back gesture, Telegram's Back, a tap outside — all the same
-function useOverlay(open, setOpen) {
+// words that would be lost with the screen they belonged to — dictated after the screen was left — kept for this
+// window's life by their place, and given back when it opens again
+const drafts = {
+  take(k) { try { const v = sessionStorage.getItem("pult.draft." + k) || ""; sessionStorage.removeItem("pult.draft." + k); return v; } catch (e) { return ""; } },
+  put(k, v) { try { const old = sessionStorage.getItem("pult.draft." + k); sessionStorage.setItem("pult.draft." + k, old ? old + " " + v : v); } catch (e) { /* lost */ } },
+};
+// the overlays open now, the newest last — a picture full screen, the model menu, a file: each a step in the history,
+// so Back closes the top one, not the screen. Each used to listen for Back itself: one Back closed a file and the sheet
+// under it, and the sheet's step stayed — the next Back did nothing (review 2026-10-27, П8)
+const layers = [];
+addEventListener("popstate", () => { const top = layers.pop(); if (top) top(); });
+const openLayer = (close) => { layers.push(close); history.pushState({ overlay: true }, ""); };
+// on Home Telegram's Back is hidden, and the phone's own Back then closes the whole app: shown while a layer is open
+function useBackFor(open) {
   useEffect(() => {
-    if (!open) return;
-    const onPop = () => { overlays = Math.max(0, overlays - 1); setOpen(false); };
-    addEventListener("popstate", onPop);
-    return () => removeEventListener("popstate", onPop);
+    if (!open || !tg || !tg.BackButton) return undefined;
+    tg.BackButton.show();
+    return () => { if (parse().name === "home" && !layers.length) tg.BackButton.hide(); };
   }, [open]);
-  return [() => { if (!open) { overlays++; history.pushState({ overlay: true }, ""); setOpen(true); } },
-          () => { if (open) history.back(); }];
+}
+function back() {
+  if (layers.length > 0 || stack.length > 1) history.back(); else { history.replaceState(null, "", "#/"); stack[0] = "#/"; dispatchEvent(new HashChangeEvent("hashchange")); }
+}
+// an overlay's open/close go through the history: the system back gesture, Telegram's Back, a tap outside — all the
+// same. Two quick taps on ✕ go back once: the second went on to the screen before
+function useOverlay(open, setOpen) {
+  const me = useRef(null);
+  useEffect(() => () => {                       // its screen went with it open: no longer a layer
+    const i = layers.indexOf(me.current);
+    if (i >= 0) layers.splice(i, 1);
+  }, []);
+  useBackFor(open);
+  return [() => { if (!open && !me.current) { const close = () => { me.current = null; setOpen(false); }; me.current = close; openLayer(close); setOpen(true); } },
+          () => { const c = me.current; if (open && c && !c.closing) { c.closing = true; history.back(); } }];
 }
 function useRoute() {
   const [r, set] = useState(parse());
@@ -941,9 +1021,13 @@ function useRcpt(list, key = (r) => r.rid) {
 function Req({ r, onDone, showWhere = true, showProject = true }) {
   const [busy, setBusy] = useState(false);
   const [why, setWhy] = useState(null);
-  const [picks, setPicks] = useState({});
+  // checked from the start: Claude's advice in a multi-select question ("(Recommended)"), or what Telegram has checked —
+  // the computer says which (0.18.4; an older one doesn't, nothing is checked); advice takes one "Done" (the owner, 2026-10-27)
+  const [picks, setPicks] = useState(() => Object.fromEntries(Object.entries(r.picks || {}).map(([i, v]) => [i, [...v]])));
   const [own, setOwn] = useState({});
+  const [touched, setTouched] = useState(false);   // ticks changed by hand: a reload would put the first ones back
   const [done, setDone] = useState(null);      // the answer went: "✓ Allowed" in place of the card, until the list drops it
+  useHold(touched && !done);
   const [mine, setMine] = useState({});        // questions answered here, shown as answered before the list brings them back
   const chosen = Object.assign({}, r.chosen, mine);
   const send = async (args) => {
@@ -980,7 +1064,7 @@ function Req({ r, onDone, showWhere = true, showProject = true }) {
           ${(qn.options || []).map((o) => {
             const on_ = (picks[i] || []).includes(o.label);
             return html`<button class=${"opt" + (on_ ? " on" : "")} disabled=${busy} onClick=${() => {
-              if (qn.multiSelect) setPicks(Object.assign({}, picks, { [i]: on_ ? picks[i].filter((x) => x !== o.label) : [...(picks[i] || []), o.label] }));
+              if (qn.multiSelect) { setTouched(true); setPicks(Object.assign({}, picks, { [i]: on_ ? picks[i].filter((x) => x !== o.label) : [...(picks[i] || []), o.label] })); }
               else send({ answers: { [i]: [o.label] } });
             }}><b>${qn.multiSelect ? html`${ic(on_ ? "boxon" : "box", 16)} ` : ""}${o.label}</b>${o.description ? html`<span class="dim">${o.description}</span>` : ""}</button>`;
           })}
@@ -1056,7 +1140,7 @@ function Load({ embedded }) {
     <h3>${t("load.sessions", { n: l.claude.n, sessions: plural(l.claude.n, "session"), cpu: pct(l.claude.cpu), mem: bytes(l.claude.mem) })}</h3>
     ${!d.sessions.length && html`<div class="empty">${t("load.nosessions")}</div>`}
     ${busy.length > 0 && html`<div class="list">${busy.map((s) => html`<${LoadRow} key=${s.sid} s=${s} now=${now}/>`)}</div>`}
-    ${idle.length > 0 && html`<h3 class="toggle" onClick=${() => setRest(!rest)}>${t("load.resting", { n: idle.length, mem: bytes(idle.reduce((a, s) => a + s.mem, 0)) })} <span class=${"chev" + (rest ? " open" : "")}>${ic("chev", 14)}</span></h3>
+    ${idle.length > 0 && html`<h3 class="toggle" role="button" tabindex="0" aria-expanded=${rest} onClick=${() => setRest(!rest)} onKeyDown=${keyTap(() => setRest(!rest))}>${t("load.resting", { n: idle.length, mem: bytes(idle.reduce((a, s) => a + s.mem, 0)) })} <span class=${"chev" + (rest ? " open" : "")}>${ic("chev", 14)}</span></h3>
       ${rest && html`<div class="list">${idle.map((s) => html`<${LoadRow} key=${s.sid} s=${s} now=${now}/>`)}</div>`}`}
     <${About} text=${t("load.about")}/>
   </div>`;
@@ -1212,21 +1296,30 @@ const UNDO = 3;
 function Replies({ sid, replies, onSent }) {
   const [wait, setWait] = useState(null);         // {text, left}
   const timer = useRef(0);
-  useEffect(() => () => clearInterval(timer.current), []);
+  const pend = useRef(null);                      // the reply counting down: it goes even if the screen goes first
+  useHold(!!wait);
+  useEffect(() => () => {
+    clearInterval(timer.current);
+    const text = pend.current;
+    pend.current = null;
+    if (text) sendTo(sid, text).catch((err) => alertBox(err.message));   // the owner saw "sending" and left: it goes
+  }, []);
   if (!replies || !replies.length) return "";
   const pick = (text, e) => {
     e && e.stopPropagation();
     clearInterval(timer.current);
+    pend.current = text;
     setWait({ text, left: UNDO });
     timer.current = setInterval(() => setWait((w) => {
       if (!w) return w;
       if (w.left > 1) return Object.assign({}, w, { left: w.left - 1 });
       clearInterval(timer.current);
+      pend.current = null;
       sendTo(sid, w.text).then((ok) => ok && onSent && onSent(w.text)).catch((err) => alertBox(err.message));
       return null;
     }), 1000);
   };
-  const undo = (e) => { e.stopPropagation(); clearInterval(timer.current); setWait(null); };
+  const undo = (e) => { e.stopPropagation(); clearInterval(timer.current); pend.current = null; setWait(null); };
   return wait ? html`<div class="qr wait"><span>${t("reply.will", { text: wait.text })} · ${wait.left}</span><button class="link" onClick=${undo}>${t("undo")}</button></div>`
     : html`<div class="qr">${replies.map((x) => html`<button key=${x} onClick=${(e) => pick(x, e)}>${x}</button>`)}</div>`;
 }
@@ -1235,7 +1328,8 @@ function Replies({ sid, replies, onSent }) {
 function QuickReply({ sid, stt, onSent }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
-  const v = useRecorder((w) => setText((c) => (c ? c.replace(/\s+$/, "") + " " : "") + w));
+  const v = useRecorder((w) => setText((c) => (c ? c.replace(/\s+$/, "") + " " : "") + w), "q:" + sid);
+  useEffect(() => { const d = drafts.take("q:" + sid); if (d) setText((c) => (c ? c + " " : "") + d); }, [sid]);
   const send = async () => {
     if (!text.trim() || busy) return;
     setBusy(true);
@@ -1283,7 +1377,7 @@ function Mine({ r, now, onGot, stt, showProject = true }) {
   const copy = r.open && !r.tab && !r.driven;
   const aboutCopy = (e) => { e.stopPropagation(); alertBox(t("ex.copy")); };
   return html`<div class=${"card mine" + (r.state === "fail" ? " fail" : "")}>
-    <div class="card-h tap" onClick=${open}><div class="c-proj"><span class="run-w">${showProject && r.project ? html`<span class="run-who">${avatar(r.project, 18)}<span class="run-p">${r.project}</span></span>` : ""}${tagChips(r.tags)}</span><span class="c-wait">${t("mine.waits", { dur: nb(dur(now - r.since)) })}</span></div>
+    <div class="card-h tap" role="button" tabindex="0" onClick=${open} onKeyDown=${keyTap(open)}><div class="c-proj"><span class="run-w">${showProject && r.project ? html`<span class="run-who">${avatar(r.project, 18)}<span class="run-p">${r.project}</span></span>` : ""}${tagChips(r.tags)}</span><span class="c-wait">${t("mine.waits", { dur: nb(dur(now - r.since)) })}</span></div>
       <b class="c-title">${r.state === "fail" ? ic("alert", 16) : ""}${r.title}</b></div>
     ${r.need ? html`<div class="ln dim tap" onClick=${open}>${r.line}</div><div class="now tap" onClick=${open}>${r.need}</div>` : html`<div class="now tap" onClick=${open}>${r.line}</div>`}
     ${r.fail === "rate_limit" ? html`<${ResumeAt} sid=${r.sid} resume=${resume} reset=${r.reset} onSet=${setResume}/>` : html`<${Replies} sid=${r.sid} replies=${r.replies} onSent=${sent}/>`}
@@ -1314,11 +1408,13 @@ function BoardRow({ r, now, onBg }) {
     : r.state === "queue" ? queueChip(r.since, now)
     : r.state === "bg" ? bgChip(r.since, now, bgTap)
     : html`<span class="dim nowrap">${agoShort(r.ts)}</span>`;
-  return html`<button class=${"item brow" + (r.state === "idle" ? " rest" : "") + (r.state === "done" ? " fresh" : "")} onClick=${() => go("#/s/" + r.sid)}>
+  const open = () => go("#/s/" + r.sid);
+  // a row, not a <button>: its background task is a tap of its own, and a button can't hold one
+  return html`<div role="button" tabindex="0" class=${"item brow" + (r.state === "idle" ? " rest" : "") + (r.state === "done" ? " fresh" : "")} onClick=${open} onKeyDown=${keyTap(open)}>
     <div class="item-h"><b class="one">${rowIcon(r)}${r.title}</b><span class="meta">${ctxWarn(r)}${right}</span></div>
     ${(r.line || (r.tags && r.tags.length > 0)) && html`<div class="ln">${tagChips(r.tags)}${r.line}</div>`}
-    ${r.bg && r.bg.length > 0 && html`<div class="bg tap" onClick=${bgTap}>${bgLine(r.bg)} ${ic("chev", 14)}</div>`}
-  </button>`;
+    ${r.bg && r.bg.length > 0 && html`<div class="bg tap" role="button" tabindex="0" onClick=${bgTap} onKeyDown=${keyTap(bgTap)}>${bgLine(r.bg)} ${ic("chev", 14)}</div>`}
+  </div>`;
 }
 
 // the request and the title say the same in a task's first turn (the title is its first request, cut)
@@ -1335,13 +1431,14 @@ function RunRow({ r, now, onBg, showProject = true }) {
   const said = r.state === "queue" ? "" : r.state === "work" && "now" in r ? r.now || (!r.ask && r.note) : r.line;
   const asked = r.state === "queue" ? r.line : r.state === "work" ? r.ask : "";
   const ask = asked && !sameStart(asked, r.title) ? asked : "";
-  return html`<button class="item run" onClick=${() => go("#/s/" + r.sid)}>
+  const open = () => go("#/s/" + r.sid);
+  return html`<div role="button" tabindex="0" class="item run" onClick=${open} onKeyDown=${keyTap(open)}>
     ${(showProject && r.project) || (r.tags && r.tags.length > 0) ? html`<div class="run-w">${showProject && r.project ? html`<span class="run-who">${avatar(r.project, 16)}<span class="run-p">${r.project}</span></span>` : ""}${tagChips(r.tags)}</div>` : ""}
     <div class="run-h"><div class="run-t">${rowIcon(r)}${r.title}</div><span class="meta">${ctxWarn(r)}${chip}</span></div>
     ${ask && html`<div class=${"run-ask" + (said ? "" : " solo")}>${t("run.you", { text: ask })}</div>`}
     ${said && html`<div class="run-now">${said}</div>`}
-    ${r.state === "bg" && r.bg && r.bg.length > 0 && html`<div class="bg tap" onClick=${bgTap}>${bgLine(r.bg)} ${ic("chev", 14)}</div>`}
-  </button>`;
+    ${r.state === "bg" && r.bg && r.bg.length > 0 && html`<div class="bg tap" role="button" tabindex="0" onClick=${bgTap} onKeyDown=${keyTap(bgTap)}>${bgLine(r.bg)} ${ic("chev", 14)}</div>`}
+  </div>`;
 }
 
 // a project on the board: who works and who waits for you, today's turns; its live sessions; the resting folded
@@ -1430,6 +1527,8 @@ function noteUpd(state) {
   conn.updSrv = state === "srv_run";         // stage U3: the app's server restarts — seconds, not the computer's 15
   if (!was !== !conn.updating) emit("conn");
 }
+// on any screen: an install started while the owner reads a session was "the computer is offline" (review 2026-10-27, П8)
+on("event", (m) => { if (m.kind === "update" && m.state) noteUpd(m.state); });
 const tOr = (k, other) => { const v = t(k); return v === k ? other : v; };     // a code the app has no words for: as is
 const updWhy = (w) => tOr("upd.why." + w, w || "?");
 const updWho = (b, i) => html`<div class="upd-who" key=${i}>${b.turn ? html`<span class="st st-work"></span>` : html`<span class="st-ic">${ic("bg", 15)}</span>`}<span>${b.project ? html`<b>${b.project}</b>${b.title && b.title !== b.project ? " · " + b.title : ""}` : b.title} <span class="dim">— ${[b.turn ? t("upd.busy.turn") : "", b.n ? t("upd.busy.bg", { n: b.n }) : ""].filter(Boolean).join(", ")}</span></span></div>`;
@@ -1457,7 +1556,9 @@ const useServed = () => { const [, bump] = useState(0); useEffect(() => on("serv
 // writes its files one by one), and only when nothing would be lost: no words typed anywhere, no menu or picture
 // open, no recording, no request on its way. Until then: Settings → "Refresh the app"
 function idleHere() {
-  if (overlays > 0 || conn.wait.size) return false;
+  if (layers.length > 0 || holds > 0 || conn.wait.size) return false;
+  // a session read away from its end: a reload would open it at the end and lose the place — on Home, or at the end
+  if (/^#\/s\//.test(location.hash) && window.innerHeight + window.scrollY < document.body.scrollHeight - 200) return false;
   if (mic && mic.getTracks().some((tr) => tr.enabled && tr.readyState === "live")) return false;
   const a = document.activeElement;
   if (a && /^(TEXTAREA|INPUT|SELECT)$/.test(a.tagName)) return false;
@@ -1504,8 +1605,10 @@ function UpdRow({ u }) {
   const acts = [mac ? t("pt.home.mac") : "", phone ? t("pt.home.phone") : ""].filter(Boolean);
   const probs = broken.map((b) => (b.k === "hooks" ? t("pt.home.hooks", { ev: b.missing.join(", ") }) : t(b.next ? "pt.home.cc.next" : b.fail ? "pt.home.cc.fail" : "pt.home.cc", { v: b.v })));
   if (!acts.length && !probs.length) return "";
-  if (!acts.length) return row(ic("alert", 17), probs[0], probs.slice(1).join(" · ") || t("pt.home.more"), "bad");
-  return row(ic("up", 17), t("pt.home.upd", { what: acts.join(", ") }), probs.join(" · ") || t(mac ? "upd.row.ready" : "pt.home.phone.sub", { v: u && u.have }), probs.length ? "bad" : "");
+  // a hook event missing is a step to take, in amber; red is for what is really off (review 2026-10-27, У10)
+  const sev = broken.some((b) => b.k !== "hooks") ? "bad" : "attn";
+  if (!acts.length) return row(ic("alert", 17), probs[0], probs.slice(1).join(" · ") || t("pt.home.more"), sev);
+  return row(ic("up", 17), t("pt.home.upd", { what: acts.join(", ") }), probs.join(" · ") || t(mac ? "upd.row.ready" : "pt.home.phone.sub", { v: u && u.have }), probs.length ? sev : "");
 }
 
 // the computer's Pult: the state, the one button, the history — the "Pult" block of a computer before stage U2, and
@@ -1587,6 +1690,7 @@ function partChip(r, b) {
     const s = r.srv;
     if (s && s.state === "run") return t("pt.srv.run", { v: s.tag });
     if (s && s.final) return t("pt.srv.fail", { v: s.tag });
+    if (s && s.self && !r.n) return t("pt.srv.self.chip");          // its code is current, its updater isn't (0.18.6)
     return r.st === "warn" ? "\u2212" + commits(r.n) : t(r.why === "other" ? "pt.other" : "pt.unknown", { b });
   }
   if (r.k === "phone") return t(r.st === "warn" ? "pt.phone.old" : "pt.unknown");
@@ -1620,8 +1724,17 @@ function srvMore(r) {
     : s.state === "fail" ? t("pt.srv.st.retry", { v: s.tag, why: why(s.why) })
     : s.state === "refused" ? t(s.why === "older" ? "pt.srv.st.older" : "pt.srv.st.unofficial", { v: s.tag })
     : s.have ? t("pt.srv.st.idle", { v: s.have }) : "";
+  // a release it won't try by itself: the owner's word starts it anew (0.18.5)
+  const again = async () => {
+    try { const x = await api("srv_retry"); haptic("success"); alertBox(t("pt.srv.retry.sent", { v: x.v })); }
+    catch (e) { alertBox(e.message); }
+  };
+  // what only the server's install.sh replaces is older than this release (review 2026-10-27, У5)
+  const own = s.self === "old" ? t("pt.srv.self.old") : s.self && s.self.length ? t("pt.srv.self", { files: s.self.join(", ") }) : "";
   return html`${who("auto", t("pt.srv.auto"))}${line ? html`<div class=${"upd-note" + (s.final ? "" : " dim")}>${line}</div>` : ""}
-    ${s.detail && s.state === "fail" ? html`<div class="upd-detail mono">${s.detail}</div>` : ""}`;
+    ${own ? html`<div class="upd-note">${own}</div>${who("server", t("pt.srv.self.who"))}` : ""}
+    ${s.detail && s.state === "fail" ? html`<div class="upd-detail mono">${s.detail}</div>` : ""}
+    ${s.final ? html`<button class="btn wide" onClick=${again}>${t("pt.srv.retry")}</button>` : ""}`;
 }
 
 // Claude Code in the table: what the tabs run, what the wrapper is allowed on, and what Pult's own check on this
@@ -1895,7 +2008,7 @@ function Project({ pkey, tag, topic }) {
     ${liveF.length > 0 && html`<h3>${t("proj.live", { n: liveF.length })}</h3><div class="list">${liveF.map((r) => html`<${RunRow} key=${r.sid} r=${r} now=${now} onBg=${onBg} showProject=${false}/>`)}</div>`}
     ${todayF.length > 0 && html`<h3>${t("proj.today")}</h3><div class="list">${todayF.map((r) => html`<${BoardRow} key=${r.sid} r=${r} now=${now} onBg=${onBg}/>`)}</div>`}
     ${!waits && !mineF.length && !liveF.length && !todayF.length && !(sel && earlierF.length) && html`<div class="empty small">${t("proj.nothing")}</div>`}
-    ${earlierF.length > 0 && html`<h3 class="toggle" onClick=${() => setMore(!more)}>${t("proj.earlier", { n: earlierF.length })} <span class=${"chev" + (more || sel ? " open" : "")}>${ic("chev", 14)}</span></h3>
+    ${earlierF.length > 0 && html`<h3 class="toggle" role="button" tabindex="0" aria-expanded=${more} onClick=${() => setMore(!more)} onKeyDown=${keyTap(() => setMore(!more))}>${t("proj.earlier", { n: earlierF.length })} <span class=${"chev" + (more || sel ? " open" : "")}>${ic("chev", 14)}</span></h3>
       ${(more || sel) && html`<div class="list">${earlierF.map((x) => html`<button class="item brow rest" key=${x.sid} onClick=${() => go("#/s/" + x.sid)}>
         <div class="item-h"><b>${x.driven ? html`<span class="st-ic">${ic("phone", 14)}</span>` : ""}${x.title}</b><span class="meta"><span class="dim nowrap">${agoShort(x.last)}</span></span></div>
         ${x.line || x.open || (x.tags && x.tags.length > 0) ? html`<div class="ln">${tagChips(x.tags)}${x.line || (x.open ? t("open.mac") : "")}</div>` : ""}</button>`)}</div>`}`}
@@ -1978,6 +2091,11 @@ function merge(items) {
 function group(items) {
   const out = [];
   let day = null;
+  // a key of its own for each message — its kind, its time and its place among those alike — that earlier history
+  // loading in above doesn't move: keyed by place in the list, every card was made anew (pictures asked for again,
+  // "Show all" folded back; review 2026-10-27)
+  const seen = new Map();
+  const keyed = (i) => { const b = i.k + "@" + (i.ts || ""), c = seen.get(b) || 0; seen.set(b, c + 1); return Object.assign({}, i, { key: b + "#" + c }); };
   for (const i of items) {
     if (i.k === "result") continue;
     const d = i.ts ? toDate(i.ts).toDateString() : day;
@@ -1986,8 +2104,8 @@ function group(items) {
       const last = out[out.length - 1];
       if (last && last.k === "steps") last.steps.push(i);
       else if (i.k === "tool") out.push({ k: "steps", steps: [i], key: "g" + i.id, ts: i.ts });
-      else out.push(i);                       // Claude's line before any step: on its own
-    } else out.push(i);
+      else out.push(keyed(i));                // Claude's line before any step: on its own
+    } else out.push(keyed(i));
   }
   return out;
 }
@@ -2020,7 +2138,8 @@ const LONG = 900;
 function TextMsg({ i, fold }) {
   const [open, setOpen] = useState(false);
   const folded = fold && !open;
-  return html`<div class="msg"><div class=${"md" + (folded ? " fold" : "")} dangerouslySetInnerHTML=${{ __html: md(i.text) }}/>
+  const h = useMemo(() => md(i.text), [i.text]);     // the screen redraws every second: the words only when they change
+  return html`<div class="msg"><div class=${"md" + (folded ? " fold" : "")} dangerouslySetInnerHTML=${{ __html: h }}/>
     ${fold ? html`<button class="link more2" onClick=${() => setOpen(!open)}>${t(open ? "msg.less" : "msg.more")}</button>` : ""}
     ${i.att && i.att.length ? html`<div class="atts shown">${i.att.map((a, k) => html`<${Pic} key=${k} a=${a} all=${i.att}/>`)}</div>` : ""}<${At} ts=${i.ts}/></div>`;
 }
@@ -2109,20 +2228,10 @@ const PIC_EXT = /\.(png|jpe?g|gif|webp)$/i;
 const lit = (s) => s.replace(/[%#]/g, encodeURIComponent);     // a real name as a link: % and # stay themselves
 function FileHost() {
   const [trail, setTrail] = useState([]);
-  useEffect(() => on("file", (x) => { overlays++; history.pushState({ overlay: true }, ""); setTrail((tr) => tr.concat([x])); }), []);
+  useEffect(() => on("file", (x) => { openLayer(() => setTrail((tr) => tr.slice(0, -1))); setTrail((tr) => tr.concat([x])); }), []);
   const open = trail.length > 0;
-  useEffect(() => {
-    if (!open) return undefined;
-    const onPop = () => { overlays = Math.max(0, overlays - 1); setTrail((tr) => tr.slice(0, -1)); };
-    addEventListener("popstate", onPop);
-    return () => removeEventListener("popstate", onPop);
-  }, [open]);
   useNoFold(open);
-  useEffect(() => {                     // a link in a plan on Home: Telegram's Back closes the file, not the app
-    if (!open || !tg || !tg.BackButton) return undefined;
-    tg.BackButton.show();
-    return () => { if (parse().name === "home") tg.BackButton.hide(); };
-  }, [open]);
+  useBackFor(open);                     // a link in a plan on Home: Telegram's Back closes the file, not the app
   // every step stays mounted under the next one: Back finds the folder or the page scrolled where it was
   return trail.map((x, k) => html`<${FileView} key=${k} job=${x}/>`);
 }
@@ -2271,7 +2380,8 @@ function Session({ sid }) {
   const comp = useRef(null);
   const ta = useRef(null);
   const v = useRecorder((w) => { setText((c) => (c ? c.replace(/\s+$/, "") + " " : "") + w);
-    setTimeout(() => { const el = ta.current; if (el) { el.style.height = "auto"; el.style.height = Math.min(el.scrollHeight, 160) + "px"; } }, 0); });
+    setTimeout(() => { const el = ta.current; if (el) { el.style.height = "auto"; el.style.height = Math.min(el.scrollHeight, 160) + "px"; } }, 0); }, "s:" + sid);
+  useEffect(() => { const d = drafts.take("s:" + sid); if (d) setText((c) => (c ? c + " " : "") + d); }, [sid]);
   const taRef = useMemo(() => (el) => { ta.current = el; plainField(el); }, []);   // one function: Preact sets the ref once
   useEffect(() => {
     const el = comp.current, main = document.querySelector("main");
@@ -2334,11 +2444,12 @@ function Session({ sid }) {
     setS({ items: [], before: null, end: null, info: null, err: null });
     ref.current = { items: [], before: null, end: null, info: null, err: null };
     firstOut.current = null;
-    let timer;
     if (conn.ready) load("full");
-    const offs = [on("ready", () => load("full")),
-      on("event", (m) => { if (!m.sid || m.sid === sid) { clearTimeout(timer); timer = setTimeout(() => load("after"), 400); } })];
-    return () => { offs.forEach((f) => f()); clearTimeout(timer); };
+    // a reconnect (Telegram in the background for a minute) brings only what is new: a full load dropped the earlier
+    // history read so far, under the finger; "after" falls back to a full load itself when it has to
+    const kick = pacer(() => load("after"));
+    const offs = [on("ready", kick), on("event", (m) => { if (!m.sid || m.sid === sid) kick(); })];
+    return () => { offs.forEach((f) => f()); kick.stop(); };
   }, [sid]);
 
   // the field fits its words: one line when empty, up to 160 px with a long message
@@ -2397,10 +2508,10 @@ function Session({ sid }) {
     : lv.bg && lv.bg.length > 0 ? bgChip(lv.bg_since || (out && out.ts), now, openBgs) : "";
   const ts = info.stats && info.stats.turn;
   // the context gauge, the same number VS Code shows: used ÷ (window − the reserve for the answer)
-  const pct = info.ctx && info.stats ? Math.min(100, Math.round(info.stats.context * 100 / info.ctx.usable)) : null;
+  const used = info.ctx && info.stats ? Math.min(100, Math.round(info.stats.context * 100 / info.ctx.usable)) : null;   // not pct(): that is the helper
   // the status under the message field: where the text goes (a tab, a copy), the model, the context gauge
   const dest = lv.tab ? html`${ic("monitor", 13)} ${t("dest.tab")}` : lv.open ? html`${ic("copy", 13)} ${t("dest.copy")}` : "";
-  const ctxText = info.stats && info.stats.model ? (pct !== null ? t("ctx.pct", { pct, win: kilo(info.ctx.window) }) : t("context", { n: kilo(info.stats.context) })) : "";
+  const ctxText = info.stats && info.stats.model ? (used !== null ? t("ctx.pct", { pct: used, win: kilo(info.ctx.window) }) : t("context", { n: kilo(info.stats.context) })) : "";
   // two steady lines: the model with its effort (a tap picks them) · where the text goes and the context gauge
   // the model: the one picked for the session, else the one its last request used; the effort — the same way
   const chosen = info.choice && info.choice.model;
@@ -2412,13 +2523,13 @@ function Session({ sid }) {
   const explain = () => { setNote([lv.tab ? t("ex.tab") : lv.open ? (copyWhy(lv) ? copyWhy(lv) + " " + t("ex.copy.then") : t("ex.copy")) : t("ex.session"),
     info.stats && info.stats.model ? t("ex.model", { m: modelName(info.stats.model) }) + (info.switch ? "" : " " + (lv.tab ? t("model.reload") : t("model.fixed"))) : "",
     effortNow ? t("ex.effort", { e: effortName(effortNow).toLowerCase() }) + (lv.tab && info.switch && !info.switch_effort ? " " + t("effort.reload") : "") : "",
-    info.stats && info.stats.model ? t("ex.ctx", { n: kilo(info.stats.context), win: pct !== null ? t("ex.ctx.win", { w: kilo(info.ctx.window), pct }) : "" }) : "",
+    info.stats && info.stats.model ? t("ex.ctx", { n: kilo(info.stats.context), win: used !== null ? t("ex.ctx.win", { w: kilo(info.ctx.window), pct: used }) : "" }) : "",
     // the last turn's figures — once in the session's header, now here: the header keeps the title and the state
     ts ? t("turn.stats", { n: ts.req, requests: plural(ts.req, "request"), out: kilo(ts.out) }) + (ts.think ? t("turn.think", { n: kilo(ts.think) }) : "") : ""
   ].filter(Boolean)); openNote(); };
   const line1 = (modelText || canPick) && html`<button class=${"mchip" + (canPick ? " on" : "")} onClick=${canPick ? () => (pick ? closePick() : openPick()) : explain}>
     <span>${modelText || t("model")}</span>${effortNow && html`<${Dots} e=${effortNow}/>`}${canPick ? html`<span class="caret">${ic("down", 13)}</span>` : ""}</button>`;
-  const line2 = (dest || ctxText) && html`<button class="where" onClick=${explain}>${dest}${dest && ctxText ? " · " : ""}<span class=${pct >= 90 ? "bad" : pct >= 70 ? "warn" : ""}>${ctxText}</span></button>`;
+  const line2 = (dest || ctxText) && html`<button class="where" onClick=${explain}>${dest}${dest && ctxText ? " · " : ""}<span class=${used >= 90 ? "bad" : used >= 70 ? "warn" : ""}>${ctxText}</span></button>`;
   return html`<div class="session">
     <div class="sess-h"><h2>${info.title}</h2>
       ${info.tagset && html`<button class="sess-tags" onClick=${() => (tagPick ? closeTagPick() : openTagPick())}>${(info.tags || []).length ? tagChips(info.tags) : html`<span class="dim">${t("tags.none")}</span>`}<span class="caret">${ic("down", 14)}</span></button>`}
@@ -2434,10 +2545,10 @@ function Session({ sid }) {
       <span class="pin-tx">${pin.text}</span></span></span></button>`}</div>`}
     ${(shown.current = group(s.items)).map((i, n, all) => i.k === "day" ? html`<div class="day" key=${i.key}>${i.label}</div>`
       : i.k === "steps" ? html`<${Steps} key=${i.key} steps=${i.steps}/>`
-      : i.k === "user" ? html`<div class="msg me" key=${n} data-n=${n}>${i.voice ? html`<span class="mic-i">${ic("mic", 14)}</span>` : ""}${i.text}${i.att && i.att.length ? html`<div class="atts">${i.att.map((a, k) => html`<${Pic} key=${k} a=${a} all=${i.att}/>`)}</div>` : ""}<${At} ts=${i.ts} mid=${i.mid} st="read"/></div>`
-      : i.k === "note" ? html`<div class="note" key=${n}>${i.text}${i.ts ? " · " + hhmm(toDate(i.ts)) : ""}</div>`
-      : i.k === "update" ? html`<div class="upd solo" key=${n}>${i.text}</div>`
-      : html`<${TextMsg} key=${n} i=${i} fold=${i.text.length > LONG && all.slice(n + 1).some((x) => x.k === "text")}/>`)}
+      : i.k === "user" ? html`<div class="msg me" key=${i.key} data-n=${n}>${i.voice ? html`<span class="mic-i">${ic("mic", 14)}</span>` : ""}${i.text}${i.att && i.att.length ? html`<div class="atts">${i.att.map((a, k) => html`<${Pic} key=${k} a=${a} all=${i.att}/>`)}</div>` : ""}<${At} ts=${i.ts} mid=${i.mid} st="read"/></div>`
+      : i.k === "note" ? html`<div class="note" key=${i.key}>${i.text}${i.ts ? " · " + hhmm(toDate(i.ts)) : ""}</div>`
+      : i.k === "update" ? html`<div class="upd solo" key=${i.key}>${i.text}</div>`
+      : html`<${TextMsg} key=${i.key} i=${i} fold=${i.text.length > LONG && all.slice(n + 1).some((x) => x.k === "text")}/>`)}
     ${onTheWay(s.items, info.out || [], sending).filter((o) => !putBack.includes(o.id)).map((o) => html`<div key=${"o" + (o.id || o.key)} class=${"msg me out " + o.st}
         onClick=${o.st === "gone" ? () => { setText(o.text); fit(); setPutBack((x) => [...x, o.id]); } : null}>${o.voice ? html`<span class="mic-i">${ic("mic", 14)}</span>` : ""}${o.text}${o.att && o.att.length
         ? html`<div class="atts">${o.att.map((x, k) => html`<${Pic} key=${k} a=${x} all=${o.att}/>`)}</div>`
@@ -2511,7 +2622,8 @@ function NewTask({ pkey }) {
   const [effort, setEffort] = useState("");
   const [sheet, setSheet] = useState(null);         // {k: "project", list} — the list as it was when opened — or {k: "model"}
   const a = useAttach();
-  const v = useRecorder((w) => setText((c) => (c ? c.replace(/\s+$/, "") + " " : "") + w));
+  const v = useRecorder((w) => setText((c) => (c ? c.replace(/\s+$/, "") + " " : "") + w), "new");
+  useEffect(() => { const d = drafts.take("new"); if (d) setText((c) => (c ? c + " " : "") + d); }, []);
   useEffect(() => {
     const last = LAST_NEW.get();
     if (d && !p && last && d.projects.some((x) => x.pkey === last)) setP(last);
@@ -2593,7 +2705,12 @@ function NewProject() {
   const v = useRecorder((w) => (howRef.current === "describe" ? add(setAbout) : add(setText))(w));
   const alive = useRef(true);
   useEffect(() => () => { alive.current = false; }, []);
-  useEffect(() => { if (conn.ready) api("dirs").then(setPlace).catch(() => {}); return on("ready", () => !place && api("dirs").then(setPlace).catch(() => {})); }, []);
+  // the default place until the owner picks one: a reconnect put the default back over their choice (review 2026-10-27, П8)
+  useEffect(() => {
+    const dflt = () => api("dirs").then((x) => setPlace((p) => p || x)).catch(() => {});
+    if (conn.ready) dflt();
+    return on("ready", dflt);
+  }, []);
   useEffect(() => {                                    // the folder's name, as the computer will make it
     if (edited) return;
     const src = how === "clone" ? link : "";
@@ -2604,6 +2721,7 @@ function NewProject() {
   const finish = (r) => {
     haptic("success");
     if (r.git === false) alertBox(t("np.nogit"));
+    if (r.busy) alertBox(r.busy);            // the project is made; its first turn has no place yet (0.18.6)
     go(r.sid ? "#/s/" + r.sid : "#/p/" + encodeURIComponent(r.pkey), true);
   };
   const watch = (job) => new Promise((ok, no) => {
@@ -2950,7 +3068,9 @@ function Banner() {
     : upd ? t(c.updSrv ? "banner.srv" : "banner.updating")
     : ["connecting", "offline", "auth", "nomac"].includes(c.state) ? t("banner." + c.state) : "";
   const stale = c.fresh && ["offline", "nomac"].includes(c.state) ? " " + t("banner.stale", { hm: hhmm(new Date(c.fresh)) }) : "";
-  return text ? html`<div class=${"banner " + c.state} role="status">${text}${stale}</div>` : "";
+  const g = c.gone && c.state === "nomac" && !upd ? new Date(c.gone) : null;
+  const gone = g ? " " + t("banner.gone", { when: g.toDateString() === new Date().toDateString() ? hhmm(g) : ddmm(c.gone / 1000) + ", " + hhmm(g) }) : "";
+  return text ? html`<div class=${"banner " + c.state} role="status">${text}${gone}${stale}</div>` : "";
 }
 
 function App() {
@@ -2973,7 +3093,7 @@ function App() {
     : r.name === "load" ? html`<${Load}/>`
     : r.name === "settings" ? html`<${Settings}/>`
     : html`<${Home}/>`;
-  const tab = (name, h, label, icon) => html`<a class=${(r.name === name ? "on" : "") + (name === "new" ? " new" : "")} href=${h}><span class="ti">${ic(icon, name === "new" ? 22 : 22)}</span><span class="tl">${label}</span></a>`;
+  const tab = (name, h, label, icon) => html`<a class=${(r.name === name ? "on" : "") + (name === "new" ? " new" : "")} href=${h}><span class="ti">${ic(icon, 22)}</span><span class="tl">${label}</span></a>`;
   return html`<${Banner}/><main class=${r.name === "s" ? "with-composer" : ""}>${screen}</main>
     ${r.name !== "s" && html`<nav class="tabs">${tab("home", "#/", t("tab.home"), "home")}${tab("projects", "#/projects", t("tab.projects"), "folder")}${tab("usage", "#/usage", t("tab.res"), "gauge")}${tab("new", "#/new", t("tab.new"), "plus")}</nav>`}
     <${EditHost}/><${ViewHost}/><${FileHost}/><${Toast}/>`;

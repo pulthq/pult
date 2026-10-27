@@ -46,9 +46,9 @@ h3.toggle { cursor: pointer; }
 .md .host { color: var(--muted); font-size: .9em; }
 .small { font-size: var(--fs-sec); margin-top: 10px; }
 .empty { color: var(--muted); text-align: center; padding: 40px 16px; }
-button, a { -webkit-tap-highlight-color: transparent; }
+button, a, [role="button"] { -webkit-tap-highlight-color: transparent; }
 button { font: inherit; color: inherit; }
-button:focus-visible, a:focus-visible, label:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }   /* fields show their own border instead */
+button:focus-visible, a:focus-visible, label:focus-visible, [role="button"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }   /* fields show their own border instead */
 .item:active, .opt:active, .btn:active, .where-b:active, .gear:active, .seg button:active, .steps-h:active, .step-h:active { opacity: .7; }
 .item, .opt, .btn, .where-b, .gear, .seg button { transition: opacity .08s; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
@@ -331,6 +331,10 @@ pre.cmdline { background: var(--code); border-radius: 8px; padding: 6px 9px; fon
 .pick-h { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .sheet-p { margin: 6px 0; font-size: var(--fs-sec); }
 .pick-h .x { background: none; border: 0; color: var(--muted); font-size: 22px; line-height: 1; padding: 0 2px; cursor: pointer; }
+/* a ✕ and a card's links are small to look at, not to hit: the finger gets about 44 px around them, the layout stays */
+.card .x, .pick-h .x, .foot .link { position: relative; }
+.card .x::after, .pick-h .x::after { content: ""; position: absolute; inset: -12px -10px; }
+.foot .link::after { content: ""; position: absolute; inset: -6px -8px; }
 .backdrop { position: fixed; inset: 0; z-index: 7; background: rgba(0, 0, 0, .08); }
 .composer { z-index: 8; }
 .field { display: flex; justify-content: space-between; align-items: center; gap: 8px; width: 100%; text-align: left;
@@ -593,6 +597,8 @@ table.tv th { color: var(--muted); font-weight: 500; }
   border-radius: 12px; padding: 7px 13px; font-size: var(--fs-body); font-weight: 600; min-height: 40px; text-align: left; }
 .q .opt b { font-weight: 600; } .q .opt span { color: var(--muted); font-weight: 400; font-size: var(--fs-cap); }
 .q .opt .ic { vertical-align: -3px; }
+/* checked in a question of several answers — Claude's advice comes checked (0.18.4): seen at a glance, not by the box alone */
+.q .opt.on { background: color-mix(in srgb, var(--accent) 13%, transparent); border-color: var(--accent); }
 .q { display: flex; flex-wrap: wrap; gap: 8px; } .q > .kind, .q > .q-t, .q > .own, .q > .btn { flex-basis: 100%; }
 .qr { gap: 8px; margin-top: 10px; }
 /* your own words: one round field; its button shows up once there is text */
