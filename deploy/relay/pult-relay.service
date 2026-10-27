@@ -5,6 +5,7 @@ Wants=network-online.target
 
 [Service]
 User=pult
+Group=pult
 # the release that runs: app/current points into app/releases/ (deploy/relay/install.sh, or the updater)
 WorkingDirectory=/opt/pult-relay/app/current
 # the secret: read by systemd, never by the relay (root, 600)
@@ -43,6 +44,12 @@ SystemCallFilter=@system-service
 # its own code is read-only to it; the one place it writes: /var/lib/pult-relay, where — on a server with the updater
 # (install.sh --auto, pult-relay.service.d/update.conf) — it leaves the release the computer runs
 StateDirectory=pult-relay
+# where it listens since 0.18.7 (PULT_RELAY_SOCKET in a new install's .env): a socket in /run/pult-relay, which only the
+# relay and the web server — a member of the group pult — can enter; a free port can be taken by any program on the
+# server in the seconds the relay restarts (review 2026-10-27, Б11). An install from before keeps its port.
+RuntimeDirectory=pult-relay
+RuntimeDirectoryMode=0750
+UMask=0007
 
 [Install]
 WantedBy=multi-user.target

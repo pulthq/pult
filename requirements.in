@@ -1,0 +1,6 @@
+# What Pult on the computer needs, at the versions it was checked on. requirements.txt is made from this file by
+# `python3 tools/lock.py`: every package pinned, with the hashes of its files, for every system and Python Pult runs
+# on — pip installs only those files (review 2026-10-27, Б8; Q91). A new version here, then tools/lock.py.
+claude-agent-sdk==0.2.167
+httpx==0.28.1
+aiohttp==3.14.5

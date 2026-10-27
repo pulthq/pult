@@ -1,7 +1,8 @@
 # Pult — notes for coding agents
 
 Pult is a Telegram remote for the Claude Code sessions on a computer (macOS, Linux or Windows): a per-user daemon
-(`src/pultd.py`, run by launchd, systemd --user or a logon task; what differs between systems is in `src/pult_os.py`), a
+(`src/pultd.py`, run by launchd, systemd --user or a logon task; the sessions it runs through the Agent SDK are in
+`src/pult_driven.py`, the handlers of the app's requests — a mixin of the daemon's class — in `src/pult_api.py`, the parts and updates — another such mixin — in `src/pult_parts.py`, its Telegram client, the outbox and the state database in `src/pult_tg.py`, what differs between systems in `src/pult_os.py`), a
 Claude Code hook (`src/pult_hook.py`), an optional VS Code tab wrapper (`src/pult_tab.py`, `src/pult-tab.sh`), the
 `pult` command (`src/pultctl.py`, `src/pult_setup.py`), a speech-to-text client used only when a key is set
 (`src/pult_stt.py`, Groq Whisper), the load view's counting (`src/pult_load.py`; the process snapshot is in

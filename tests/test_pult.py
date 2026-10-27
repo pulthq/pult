@@ -33,17 +33,21 @@ sys.path.insert(0, str(HERE))
 
 import httpx  # noqa: E402
 
+import pult_api  # noqa: E402
 import pult_attn as A  # noqa: E402
 import pult_brief as B  # noqa: E402
+import pult_driven  # noqa: E402
 import pult_hook  # noqa: E402
 import pult_i18n as I  # noqa: E402
 import pult_load as L  # noqa: E402
 import pult_new as N  # noqa: E402
 import pult_files as F  # noqa: E402
 import pult_os  # noqa: E402
+import pult_parts  # noqa: E402
 import pult_render as R  # noqa: E402
 import pult_stt as STT  # noqa: E402
 import pult_tags as G  # noqa: E402
+import pult_tg  # noqa: E402
 import pult_update as U  # noqa: E402
 import pultd  # noqa: E402
 
@@ -488,8 +492,8 @@ class HelpersTest(unittest.TestCase):
 
     def test_injected_hook_command(self):
         # the hook Pult injects into its own sessions runs through a shell: paths with spaces stay whole
-        with mock.patch.object(pultd, "HOOK_PY", "/x y/venv/bin/python"), \
-                mock.patch.object(pultd, "HOOK", "/x y/pult_hook.py"):
+        with mock.patch.object(pult_driven, "HOOK_PY", "/x y/venv/bin/python"), \
+                mock.patch.object(pult_driven, "HOOK", "/x y/pult_hook.py"):
             me = types.SimpleNamespace(path="/x", sid=SID, resume=None, fork=False, _wait_hook=None,
                                        d=types.SimpleNamespace(wanted=lambda m, e: (m, e)))
             opts = pultd.Driven.options(me)
@@ -498,10 +502,93 @@ class HelpersTest(unittest.TestCase):
             self.assertEqual((h["command"], h["args"]), ("/x y/venv/bin/python", ["/x y/pult_hook.py", "--injected"]))
         else:
             self.assertEqual(h["command"], "PULT_INJECTED=1 '/x y/venv/bin/python' '/x y/pult_hook.py'")
-        with mock.patch.object(pultd, "HOOK_PY", r"C:\Py\pythonw.exe"), mock.patch.object(pultd, "HOOK", r"C:\P\pult_hook.py"):
-            h = pultd.injected_hooks(windows=True)["PermissionRequest"][0]["hooks"][0]
+        with mock.patch.object(pult_driven, "HOOK_PY", r"C:\Py\pythonw.exe"), mock.patch.object(pult_driven, "HOOK", r"C:\P\pult_hook.py"):
+            h = pult_driven.injected_hooks(windows=True)["PermissionRequest"][0]["hooks"][0]
         self.assertEqual(list(h), ["type", "command", "args", "timeout"])
         self.assertEqual(h["args"], [r"C:\P\pult_hook.py", "--injected"])
+
+    def test_sessions_module_finds_the_daemon(self):
+        # pult_driven works out Pult's folder and the daemon's socket itself, as pult_setup and pult_update do: the hook
+        # in a session Pult runs has to reach this daemon (review 2026-10-27, 6.2)
+        self.assertEqual((pult_driven.HOME, pult_driven.SOCK), (pultd.HOME, pultd.SOCK))
+
+    def test_split_of_the_daemon(self):
+        # pultd.py is split into modules by moving code (review 2026-10-27, 6.2), and what goes wrong there goes wrong
+        # quietly. The daemon runs as `python pultd.py`, its module is __main__: a module it loads that imports pultd
+        # would load a second copy of the daemon, and these tests, which import it as pultd, would never see that
+        import ast
+
+        def called(n):                       # f(…) or x.f(…) → "f"
+            return isinstance(n, ast.Call) and (getattr(n.func, "attr", None) or getattr(n.func, "id", None))
+
+        def imported(n):
+            if isinstance(n, ast.Import):
+                return [a.name for a in n.names]
+            if isinstance(n, ast.ImportFrom):
+                return [n.module or ""]
+            if called(n) in ("__import__", "import_module") and n.args and isinstance(n.args[0], ast.Constant):
+                return [str(n.args[0].value)]
+            return []
+        who, todo = {}, ["pultd"]
+        while todo:
+            name = todo.pop()
+            for n in ast.walk(ast.parse((HERE / (name + ".py")).read_text(encoding="utf-8"))):
+                for m in imported(n):
+                    if (HERE / (m + ".py")).exists() and m not in who:
+                        who[m] = name
+                        todo.append(m)
+        self.assertTrue({"pult_api", "pult_parts", "pult_driven", "pult_tg", "pult_web"} <= set(who), sorted(who))
+        self.assertNotIn("pultd", who, "%s imports pultd" % who.get("pultd"))
+        # run as the service runs it, the daemon's file gets as far as its settings: no token here — exit 2
+        env = {k: v for k, v in os.environ.items() if k != "PULT_BOT_TOKEN"}
+        env.update(PULT_ENV=str(TMP / "no-env"), PULT_LOG=str(TMP / "script.log"))
+        r = subprocess.run([sys.executable, "-u", str(HERE / "pultd.py")], env=env, capture_output=True, text=True,
+                           timeout=60)
+        self.assertEqual((r.returncode, "Traceback" in r.stderr), (2, False), r.stdout + r.stderr)
+        self.assertIn("no PULT_BOT_TOKEN in", r.stdout)
+        # a setting a test or a tool changes on pultd is pultd's own: one that moved (NEW_ROOT is pult_api's) and is
+        # changed on pultd changes nothing the moved code reads — the new-project tests would make folders in the real
+        # home. pultd's own: what it assigns, defines or imports as a module (patching pultd.time changes its clock)
+        own = set()
+        for n in ast.parse((HERE / "pultd.py").read_text(encoding="utf-8")).body:
+            if isinstance(n, (ast.Assign, ast.AnnAssign)):
+                for t in n.targets if isinstance(n, ast.Assign) else [n.target]:
+                    own |= {x.id for x in ast.walk(t) if isinstance(x, ast.Name)}
+            elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                own.add(n.name)
+            elif isinstance(n, ast.Import):
+                own |= {(a.asname or a.name).split(".")[0] for a in n.names}
+        changed = []
+        for f in sorted([*(HERE.parent / "tests").glob("*.py"), *(HERE.parent / "tools").glob("*.py")]):
+            for n in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
+                if isinstance(n, (ast.Assign, ast.AugAssign)):
+                    for t in n.targets if isinstance(n, ast.Assign) else [n.target]:
+                        for x in t.elts if isinstance(t, (ast.Tuple, ast.List)) else [t]:
+                            if isinstance(x, ast.Attribute) and getattr(x.value, "id", None) == "pultd":
+                                changed.append((f.name, x.attr))
+                elif called(n) and n.args and getattr(n.args[0], "id", None) == "pultd":
+                    if called(n) in ("object", "setattr") and len(n.args) > 1 and isinstance(n.args[1], ast.Constant):
+                        changed.append((f.name, n.args[1].value))         # mock.patch.object(pultd, "X"), setattr
+                    elif called(n) == "multiple":
+                        changed += [(f.name, k.arg) for k in n.keywords]  # mock.patch.multiple(pultd, X=…)
+                elif called(n) == "patch" and n.args and isinstance(n.args[0], ast.Constant) \
+                        and str(n.args[0].value).startswith("pultd."):
+                    changed.append((f.name, n.args[0].value.split(".")[1]))   # mock.patch("pultd.X")
+        self.assertGreater(len(changed), 30)
+        self.assertEqual(sorted({c for c in changed if c[1] not in own}), [], "changed on pultd, but not pultd's own")
+        # moved, not copied: a method in two of the classes would be the first one's in the MRO, the other dead code
+        mixins = {pult_api: pult_api.Api, pult_parts: pult_parts.Parts}
+        self.assertEqual(pultd.Pult.__bases__, tuple(mixins.values()))
+        names = [{k for k in vars(c) if not k.startswith("__")} for c in (pultd.Pult, *mixins.values())]
+        self.assertEqual([a & b for i, a in enumerate(names) for b in names[i + 1:]], [set()] * 3)
+        # the daemon's names the mixins read late, self.D.X, are its own: a renamed one fails here, not on a tap
+        self.assertIs(pultd.Pult.D, pultd)
+        for m in mixins:
+            late = {n.attr for n in ast.walk(ast.parse(Path(m.__file__).read_text(encoding="utf-8")))
+                    if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Attribute) and n.value.attr == "D"
+                    and getattr(n.value.value, "id", None) == "self"}
+            self.assertGreater(len(late), 5, m.__name__)
+            self.assertEqual(sorted(late - own), [], m.__name__)
 
     def test_injected_flag(self):
         # Windows: the injected hook says so with an argument (no shell for PULT_INJECTED=1); the global one is quiet
@@ -1361,8 +1448,8 @@ class OutboxTest(unittest.IsolatedAsyncioTestCase):
         aio.sleep = sleep
         clock = types.SimpleNamespace(**{k: getattr(time, k) for k in dir(time) if not k.startswith("_")})
         clock.monotonic = lambda: self.now
-        for name, value in (("asyncio", aio), ("time", clock)):     # pultd's own names only: the loop keeps its clock
-            patch = mock.patch.object(pultd, name, value)
+        for name, value in (("asyncio", aio), ("time", clock)):     # the queue's module's own names only: the loop keeps its clock
+            patch = mock.patch.object(pult_tg, name, value)
             patch.start()
             self.addCleanup(patch.stop)
 
@@ -1797,12 +1884,12 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         import pult_tab
         mu = {"claude-haiku-4-5": {"inputTokens": 5, "cacheReadInputTokens": 0, "contextWindow": 200000, "maxOutputTokens": 32000},
               "claude-opus-5-5": {"inputTokens": 3000, "cacheReadInputTokens": 150000, "contextWindow": 1000000, "maxOutputTokens": 64000}}
-        self.assertEqual(pultd.ctx_from_usage(mu, "claude-haiku-4-5"), (200000, 32000))
-        self.assertEqual(pultd.ctx_from_usage(mu, None), (1000000, 64000))             # the one that read the most
-        self.assertIsNone(pultd.ctx_from_usage({"m": {"inputTokens": 1}}, "m"))
+        self.assertEqual(pult_driven.ctx_from_usage(mu, "claude-haiku-4-5"), (200000, 32000))
+        self.assertEqual(pult_driven.ctx_from_usage(mu, None), (1000000, 64000))             # the one that read the most
+        self.assertIsNone(pult_driven.ctx_from_usage({"m": {"inputTokens": 1}}, "m"))
         self.assertEqual(pult_tab.ctx_from_result({"type": "result", "modelUsage": mu}, "claude-haiku-4-5"), (200000, 32000))
         self.assertIsNone(pult_tab.ctx_from_result({"type": "assistant", "modelUsage": mu}))
-        self.assertEqual(pultd.ctx_usable(200000, 32000), 167000)                       # 200k − 20k − 13k, like VS Code
+        self.assertEqual(pult_api.ctx_usable(200000, 32000), 167000)                       # 200k − 20k − 13k, like VS Code
         self.store.touch_session(SID, PKEY, path="/Users/x/proj")
         self.p.live_of(SID, PKEY).transcript = TP
         Path(TP).parent.mkdir(parents=True, exist_ok=True)
@@ -1836,7 +1923,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         tabs = TMP / "tab-new.json"
         tabs.write_text(json.dumps({"folders": [str(root / "Documents")]}))
         # the test's home is in the temp folder, which Pult otherwise never lists as a project
-        with mock.patch.object(pultd, "NEW_ROOT", root), mock.patch.object(pultd, "TAB_CONF", tabs), \
+        with mock.patch.object(pult_api, "NEW_ROOT", root), mock.patch.object(pultd, "TAB_CONF", tabs), \
                 mock.patch.object(pultd, "SKIP_PREFIXES", ("-nothing-",)), mock.patch.object(self.p, "drive", mock.AsyncMock()) as drive:
             d = await self.p.api_dirs()
             self.assertEqual((d["show"], d["dirs"], d["tabs"]), (os.path.join("~", "Documents"), ["old"], True))   # ~\Documents on Windows
@@ -1897,7 +1984,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         subprocess.run(["git", "-C", str(origin), "-c", "user.name=t", "-c", "user.email=t@t", "add", "."], check=True)
         subprocess.run(["git", "-C", str(origin), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"], check=True)
         local = lambda link: (str(origin), "origin-repo", None) if link == "ok" else None if link == "nope" else (str(TMP / "none"), "none", None)
-        with mock.patch.object(pultd, "NEW_ROOT", root), mock.patch.object(pultd.N, "repo", local), \
+        with mock.patch.object(pult_api, "NEW_ROOT", root), mock.patch.object(pultd.N, "repo", local), \
                 mock.patch.object(self.p, "drive", mock.AsyncMock()):
             r = await self.p.api_create(how="clone", link="ok")
             self.assertIn("job", r)
@@ -2160,9 +2247,9 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.p.api_turn_files("00000000-0000-4000-8000-000000000000"), {"id": None, "files": []})
         with self.assertRaises(ValueError):
             await self.p.api_turn_files("../x")
-        for i in range(pultd.TURNS_KEPT + 3):                         # kept: the latest 50 per session
+        for i in range(pult_tg.TURNS_KEPT + 3):                         # kept: the latest 50 per session
             self.store.add_turn("00000000-0000-4000-8000-000000000001", PKEY, 0, 0, [], 0)
-        self.assertEqual(self.store.db.execute("SELECT count(*) FROM turns WHERE sid LIKE '%0001'").fetchone()[0], pultd.TURNS_KEPT)
+        self.assertEqual(self.store.db.execute("SELECT count(*) FROM turns WHERE sid LIKE '%0001'").fetchone()[0], pult_tg.TURNS_KEPT)
         out = await run_hook(ev("SessionStart", source="startup"), extra_env={"PULT_SOCK": os.environ["PULT_SOCK"]})
         ctx = json.loads(out)["hookSpecificOutput"]
         self.assertEqual(ctx["hookEventName"], "SessionStart")
@@ -2369,7 +2456,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(d.task.done())               # the turn ended with its result, the session is alive
         d.q.put_nowait(None)
         await asyncio.wait_for(d.task, 10)
-        old, pultd.SDK_LINE_MAX = pultd.SDK_LINE_MAX, 1024 * 1024
+        old, pult_driven.SDK_LINE_MAX = pult_driven.SDK_LINE_MAX, 1024 * 1024
         try:
             d = D(self.p, SID, str(TMP))
             d.q.put_nowait(("глянь", None))
@@ -2384,7 +2471,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.1)
                 gc.collect()
         finally:
-            pultd.SDK_LINE_MAX = old
+            pult_driven.SDK_LINE_MAX = old
 
     async def test_new_session_before_transcript(self):
         # the app opens a new session at once, before Claude Code has written its file: an empty chat, not
@@ -2514,7 +2601,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         webm = base64.b64encode(b"\x1aE\xdf\xa3" + b"\0" * 30).decode()
         self.assertEqual(await self.p.api_stt(webm, "audio/webm;codecs=opus"), {"text": "привет мир"})
         notes = {"secs": 7.4, "ready": 640, "voice": 0, "first": -31.6, "peak": -12.2}
-        with mock.patch.object(pultd, "log") as lg:
+        with mock.patch.object(pult_api, "log") as lg:
             self.assertEqual(await self.p.api_stt(webm, "audio/webm", notes=notes), {"text": "привет мир"})
         self.assertIn("0 KB, 7 s, sound 0.64 s after the tap, voice from +0.0 s, first second -32 dB, loudest -12 dB "
                       "→ 10 characters", lg.call_args.args[0])
@@ -2542,7 +2629,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.p.api_stt_words("  Орион,\n  Кубер ,, Claude  Code;"), {"words": "Орион, Кубер, Claude Code"})
         self.assertEqual(self.p.stt_state()["words"], "Орион, Кубер, Claude Code")
         long = (await self.p.api_stt_words("слово " * 100))["words"]
-        self.assertTrue(len(long) <= pultd.STT_WORDS_MAX and long.endswith(" слово"), long[-12:])
+        self.assertTrue(len(long) <= pult_api.STT_WORDS_MAX and long.endswith(" слово"), long[-12:])
         self.assertEqual(await self.p.api_stt_words(""), {"words": ""})
         self.assertEqual((await self.p.api_settings())["stt"]["words"], "")
 
@@ -3423,8 +3510,8 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         conf.write_text('{"folders": ["~/Documents"], "versions": ["2.1.300"]}')
         vs.parent.mkdir(parents=True, exist_ok=True)
         vs.write_text('{\n  // настройки\n  "claudeCode.claudeProcessWrapper": "/x/%s",\n}' % pultd.TAB_FILE)
-        old = (pultd.TAB_CONF, pultd.EDITOR_DIRS, pultd.EXT_DIRS)
-        pultd.TAB_CONF, pultd.EDITOR_DIRS, pultd.EXT_DIRS = conf, [TMP / "nothing", vs.parent], [ext, server]
+        old = (pultd.TAB_CONF, pultd.EDITOR_DIRS, pult_parts.EXT_DIRS)
+        pultd.TAB_CONF, pultd.EDITOR_DIRS, pult_parts.EXT_DIRS = conf, [TMP / "nothing", vs.parent], [ext, server]
         try:
             await self.p.tab_version_check()
             await self.p.tab_version_check()
@@ -3439,7 +3526,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.1)
             self.assertEqual(len([t for t in self.texts() if "Вышел Claude Code" in t]), 1)
         finally:
-            pultd.TAB_CONF, pultd.EDITOR_DIRS, pultd.EXT_DIRS = old
+            pultd.TAB_CONF, pultd.EDITOR_DIRS, pult_parts.EXT_DIRS = old
 
     async def test_tab_check(self):
         # stage A: VS Code has downloaded a version tab.json doesn't list — Pult checks it here, one check at a time, in a
@@ -3483,7 +3570,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
 
         def rec(v):
             return (json.loads(conf.read_text()).get("checked") or {}).get(v)
-        with mock.patch.multiple(pultd, TAB_CONF=conf, EDITOR_DIRS=[vs.parent], EXT_DIRS=[ext]), \
+        with mock.patch.multiple(pultd, TAB_CONF=conf, EDITOR_DIRS=[vs.parent]), mock.patch.object(pult_parts, "EXT_DIRS", [ext]), \
                 mock.patch.object(pult_setup, "TAB_CONF", conf), mock.patch("asyncio.create_subprocess_exec", fake_exec):
             downloaded("2.1.311")
             await check()
@@ -3694,7 +3781,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         root = TMP / ("home-" + self._testMethodName)
         (root / ".ssh").mkdir(parents=True, exist_ok=True)
         (root / "Documents").mkdir(exist_ok=True)
-        with mock.patch.object(pultd, "NEW_ROOT", root):
+        with mock.patch.object(pult_api, "NEW_ROOT", root):
             with self.assertRaises(ValueError):
                 self.p.place(str(root / ".ssh"))
             self.assertEqual(self.p.place(str(root / "Documents")), os.path.realpath(root / "Documents"))
@@ -3966,8 +4053,8 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
                     yield await self.out.get()
 
         closed, stream = [], []
-        old = (claude_agent_sdk.ClaudeSDKClient, pultd.DRIVEN_IDLE)
-        claude_agent_sdk.ClaudeSDKClient, pultd.DRIVEN_IDLE = FakeClient, 0.1    # 0.5 s below: five times it
+        old = (claude_agent_sdk.ClaudeSDKClient, pult_driven.DRIVEN_IDLE)
+        claude_agent_sdk.ClaudeSDKClient, pult_driven.DRIVEN_IDLE = FakeClient, 0.1    # 0.5 s below: five times it
         try:
             d = pultd.Driven(self.p, SID, "/Users/x/proj")
             d.q.put_nowait(("фон", None))
@@ -3983,7 +4070,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             c.out.put_nowait(bg([]))
             await until(lambda: closed, timeout=3)     # no background tasks — the idle process is closed
         finally:
-            claude_agent_sdk.ClaudeSDKClient, pultd.DRIVEN_IDLE = old
+            claude_agent_sdk.ClaudeSDKClient, pult_driven.DRIVEN_IDLE = old
 
     async def test_driven_say_during_its_own_turn(self):
         # Claude Code started a turn by itself (a background task ended) while Pult's loop waits: a message from the
@@ -4055,8 +4142,8 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             drives.append((sid, text, kw.get("resume")))
             self.p.driven[sid] = types.SimpleNamespace(closing=False, busy=False, bg=set(), q=asyncio.Queue())
             return True
-        old = (claude_agent_sdk.ClaudeSDKClient, pultd.DRIVEN_IDLE)
-        claude_agent_sdk.ClaudeSDKClient, pultd.DRIVEN_IDLE = FakeClient, 0.2
+        old = (claude_agent_sdk.ClaudeSDKClient, pult_driven.DRIVEN_IDLE)
+        claude_agent_sdk.ClaudeSDKClient, pult_driven.DRIVEN_IDLE = FakeClient, 0.2
         self.store.touch_session(SID, PKEY, path="/Users/x/proj", driven=True)
         try:
             d = self.p.driven[SID] = pultd.Driven(self.p, SID, "/Users/x/proj")
@@ -4070,7 +4157,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNot(self.p.driven.get(SID), d)
             self.assertIn(SID, self.p.driven)                  # the new one keeps its place
         finally:
-            claude_agent_sdk.ClaudeSDKClient, pultd.DRIVEN_IDLE = old
+            claude_agent_sdk.ClaudeSDKClient, pult_driven.DRIVEN_IDLE = old
             gate.set()
             self.p.driven.pop(SID, None)
 
@@ -4224,7 +4311,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("четвёртое", c.sent)
             self.p.live[SID].turn = None
             # a permission nobody answers in Telegram: declined after ASK_TIMEOUT, with words for Claude
-            with mock.patch.object(pultd, "ASK_TIMEOUT", 0):
+            with mock.patch.object(pult_driven, "ASK_TIMEOUT", 0):
                 r = await d._wait_hook("Bash", {"command": "ls"}, None)
             self.assertEqual((type(r).__name__, r.message.startswith("No answer from Telegram")), ("PermissionResultDeny", True))
         finally:
@@ -4427,7 +4514,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.upd_reset(self.READY)
         f = {"upd": await self.p.update_view(), "git": dict(self.PARTS_GIT), "relay": True,
              "tabs": [{"project": "a", "same": True}, {"project": "b", "same": False}, {"project": "b", "same": False}],
-             "hooks": [e for e in pultd.pult_hook.EVENTS if e != "StopFailure"], "cc": dict(self.PARTS_CC)}
+             "hooks": [e for e in pult_hook.EVENTS if e != "StopFailure"], "cc": dict(self.PARTS_CC)}
         rows = {r["k"]: r for r in self.p.parts_rows(f)}
         self.assertEqual(list(rows), ["mac", "web", "relay", "tabs", "hooks", "cc", "gh"])   # the phone's row is the app's
         st = {k: r["st"] for k, r in rows.items()}
@@ -4494,6 +4581,24 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         u = (await self.p.api_overview())["update"]
         self.assertEqual((u["state"], [b["k"] for b in u["broken"]]), ("ok", ["hooks", "cc"]))
 
+    async def test_parts_table_is_fresh(self):
+        # Settings → Pult and its parts after a commit: the folder's news within 10 s, as in the Pult block before the
+        # table — with 60 s the new commit's Install came a minute late (tools/update_live.py, 2026-10-27)
+        ages = []
+
+        async def view(age=60):
+            ages.append(("upd", age))
+            return {"state": "ok", "have": "1.0"}
+
+        async def facts(age=60):
+            ages.append(("git", age))
+            return {"repo": None}
+        with mock.patch.object(self.p, "update_view", view), mock.patch.object(self.p, "git_facts", facts), \
+                mock.patch.object(self.p, "cc_facts", mock.AsyncMock(return_value={})), \
+                mock.patch.object(self.p, "tab_facts", lambda: []), mock.patch.object(self.p, "hooks_on", lambda: []):
+            await self.p.parts_facts()
+        self.assertEqual(ages, [("upd", 10), ("git", 10)])
+
     async def test_server_follows(self):
         # stage U3: a relay whose server has the updater hears the release this computer runs — on connecting, and
         # again while it hasn't taken it; a release it didn't take is told once, a failure of the moment not at all;
@@ -4511,44 +4616,49 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
                 pass
         self.p.web = Web()
         rec = {"src": "/x/pult", "commit": "b" * 40}
+
+        async def said(msg):                    # the relay's word; the release goes out on a task of its own
+            await self.p.relay_said(msg)
+            if self.p.announcing:
+                await self.p.announcing
         with mock.patch.object(U, "read", lambda name, default=None: dict(rec) if name == U.MANIFEST else default), \
                 mock.patch.object(U, "release_of", lambda src, commit: "v9.1.0"), \
                 mock.patch.object(self.p, "expect_release", seen.append):
-            await self.p.relay_said({"t": "relay", "can": [], "upd": None})          # no updater there: nothing said
+            await said({"t": "relay", "can": [], "upd": None})          # no updater there: nothing said
             self.assertEqual(sent, [])
-            await self.p.relay_said({"t": "relay", "can": ["want"], "upd": {"state": "idle", "have": "v9.0.0", "ts": 1}})
+            await said({"t": "relay", "can": ["want"], "upd": {"state": "idle", "have": "v9.0.0", "ts": 1}})
             self.assertEqual(sent, [{"t": "want", "tag": "v9.1.0", "commit": "b" * 40}])
             self.assertEqual(seen, ["v9.0.0"])
             await self.p.announce()                                                  # not again so soon
             self.assertEqual(len(sent), 1)
-            self.p.told = (self.p.told[0], time.monotonic() - pultd.ANNOUNCE_EVERY - 1)
+            self.p.told = (self.p.told[0], time.monotonic() - pult_parts.ANNOUNCE_EVERY - 1)
             await self.p.announce()
             self.assertEqual(len(sent), 2)
             # the server takes it: Home says so; then it runs it — nothing in Telegram, nothing more to say to it
-            await self.p.relay_said({"t": "relay", "upd": {"state": "run", "step": "fetch", "tag": "v9.1.0", "have": "v9.0.0", "ts": 2}})
+            await said({"t": "relay", "upd": {"state": "run", "step": "fetch", "tag": "v9.1.0", "have": "v9.0.0", "ts": 2}})
             self.assertEqual((await self.p.update_row())["state"], "srv_run")
-            await self.p.relay_said({"t": "relay", "upd": {"state": "done", "tag": "v9.1.0", "have": "v9.1.0", "from": "v9.0.0", "ts": 3}})
+            await said({"t": "relay", "upd": {"state": "done", "tag": "v9.1.0", "have": "v9.1.0", "from": "v9.0.0", "ts": 3}})
             self.assertEqual(seen[-1], "v9.1.0")
             self.assertIsNone(await self.p.update_row())
             await self.p.announce(force=True)
             self.assertEqual(len(sent), 2)
             # a release it didn't take: told once — the relay repeats its last report on every connection
             fail = {"state": "fail", "why": "no_start", "back": True, "back_ok": True, "tag": "v9.2.0", "have": "v9.1.0", "ts": 4}
-            await self.p.relay_said({"t": "relay", "upd": fail})
-            await self.p.relay_said({"t": "relay", "can": ["want"], "upd": fail})
+            await said({"t": "relay", "upd": fail})
+            await said({"t": "relay", "can": ["want"], "upd": fail})
             await asyncio.sleep(0.2)
             told = [x for x in self.texts() if "v9.2.0" in x]
             self.assertEqual(len(told), 1)
             self.assertIn("не взял", told[0])
             self.assertIn("посредник не запустился", told[0])
             self.assertIn("v9.1.0", told[0])
-            await self.p.relay_said({"t": "relay", "upd": dict(fail, why="network", tag="v9.3.0", ts=5)})    # of the moment
+            await said({"t": "relay", "upd": dict(fail, why="network", tag="v9.3.0", ts=5)})    # of the moment
             await asyncio.sleep(0.1)
             self.assertFalse([x for x in self.texts() if "v9.3.0" in x])
             # a computer on a release the server didn't take for good: it isn't asked again
             rec["commit"] = "d" * 40
             with mock.patch.object(U, "release_of", lambda src, commit: "v9.2.0"):
-                await self.p.relay_said({"t": "relay", "upd": dict(fail, have="v9.1.0")})
+                await said({"t": "relay", "upd": dict(fail, have="v9.1.0")})
                 await self.p.announce(force=True)
             self.assertEqual(len(sent), 2)
             await asyncio.sleep(0.1)
@@ -4558,7 +4668,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(await self.p.api_srv_retry(), {"ok": True, "v": "v9.2.0"})
             self.assertEqual(sent[-1], {"t": "want", "tag": "v9.2.0", "commit": "d" * 40, "retry": True})
             # the computer away after the switch: of the moment — nothing in Telegram, and it is reminded again
-            await self.p.relay_said({"t": "relay", "upd": dict(fail, why="no_mac_retry", tag="v9.2.0", ts=6)})
+            await said({"t": "relay", "upd": dict(fail, why="no_mac_retry", tag="v9.2.0", ts=6)})
             await asyncio.sleep(0.1)
             self.assertEqual(len([x for x in self.texts() if "v9.2.0" in x]), 1)
             n = len(sent)
@@ -4569,6 +4679,41 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 await self.p.api_srv_retry()
         self.p.web = None
+
+    async def test_server_follows_the_developers_folder(self):
+        # the folder releases are made in (the developer's own, Q83): it tells the server the newest release on GitHub not
+        # newer than the version it runs, with GitHub's commit — asked at most every ANNOUNCE_EVERY
+        sent, asked = [], []
+
+        class Web:
+            async def send(self, msg):
+                sent.append(msg)
+
+            def emit(self, kind, **data):
+                pass
+
+        def gh(repo, remote, proxy=None):
+            asked.append(remote)
+            return [((0, 18, 7), "v0.18.7", "c" * 40), ((0, 18, 6), "v0.18.6", "b" * 40), ((0, 18, 2), "v0.18.2", "a" * 40)]
+        self.p.web, self.p.srv = Web(), {"can": ["want"], "upd": {"state": "idle", "have": "v0.18.2", "ts": 1}}
+        rec = {"src": "/x/dev", "commit": "e" * 40}
+        slow = lambda repo, remote, proxy=None: time.sleep(0.6) or gh(repo, remote, proxy)    # GitHub takes its time
+        with mock.patch.object(U, "read", lambda name, default=None: dict(rec) if name == U.MANIFEST else default), \
+                mock.patch.object(U, "makes_releases", lambda repo, head: True), \
+                mock.patch.object(U, "remote_releases", gh), mock.patch.object(pultd, "VERSION", "0.18.6"):
+            # the relay's word on connecting waits for nothing: the app's requests behind it on the link go on at once
+            with mock.patch.object(U, "remote_releases", slow):
+                t0 = time.monotonic()
+                await self.p.relay_said({"t": "relay", "can": ["want"], "upd": {"state": "idle", "have": "v0.18.2", "ts": 1}})
+                self.assertLess(time.monotonic() - t0, 0.3)
+                self.assertEqual(sent, [])
+                await self.p.announcing
+            self.assertEqual(sent, [{"t": "want", "tag": "v0.18.6", "commit": "b" * 40}])
+            await self.p.announce(force=True)
+            self.assertEqual(len(asked), 1)                                          # GitHub asked once
+            self.assertEqual(await self.p.api_srv_retry(), {"ok": True, "v": "v0.18.6"})
+            self.assertEqual(sent[-1], {"t": "want", "tag": "v0.18.6", "commit": "b" * 40, "retry": True})
+        self.p.web = self.p.srv = None
 
     async def test_release_look(self):
         # the daemon's look at GitHub for a release (stage U3; review 2026-10-27, Т7): off in Settings — GitHub isn't
@@ -4590,12 +4735,19 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(looks, [])
                 self.store.put("prefs", {"gh": True})
                 self.p._upd = (time.monotonic(), {"state": "ok"})
-                await self.p.release_look()
-                self.assertEqual(looks, [("/x/pult", "origin", "9.8.0")])
-                self.assertEqual((self.p.gh["tag"], self.p.gh["ok"], self.p._upd[0]), ("v9.9.0", True, 0.0))
-                self.p.web.emit.assert_called_with("update")
-                await self.p.release_look()                               # within the minute
-                self.assertEqual(len(looks), 1)
+                # pultd's own clock, 5 s after the computer's boot: the first look happens whatever it says — on a
+                # machine up for less than a minute it was skipped (a fresh CI machine, 2026-10-27)
+                clock = types.SimpleNamespace(**{k: getattr(time, k) for k in dir(time) if not k.startswith("_")})
+                clock.monotonic = lambda: now[0]
+                now = [5.0]
+                with mock.patch.object(pult_parts, "time", clock):
+                    await self.p.release_look()
+                    self.assertEqual(looks, [("/x/pult", "origin", "9.8.0")])
+                    self.assertEqual((self.p.gh["tag"], self.p.gh["ok"], self.p._upd[0]), ("v9.9.0", True, 0.0))
+                    self.p.web.emit.assert_called_with("update")
+                    now[0] = 30.0
+                    await self.p.release_look()                           # within the minute
+                    self.assertEqual(len(looks), 1)
                 self.p.web.emit.reset_mock()
                 await self.p.release_look(force=True)                     # Settings opened: a look — nothing new
                 self.assertEqual(len(looks), 2)
@@ -4612,8 +4764,9 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         man = d / "web-manifest.json"
         with mock.patch.object(pultd, "WEB_MANIFEST", man), \
                 mock.patch.object(U, "read", lambda name, default=None: {"src": "/x/pult"} if name == U.MANIFEST else default), \
-                mock.patch.object(U, "git", lambda repo, *a, **k: "c" * 40), \
+                mock.patch.object(U, "git", lambda repo, *a, **k: ancestor[0] if a[0] == "merge-base" else "c" * 40), \
                 mock.patch.object(U, "manifest_at", lambda repo, commit: {"index": "<p>", "files": {"app.js": "0" * 64}}):
+            ancestor = [None]
             self.p.expect_release("v9.1.0")
             m = json.loads(man.read_text())
             self.assertEqual((m["mode"], m["tag"], m["files"]), ("release", "v9.1.0", {"app.js": "0" * 64}))
@@ -4625,6 +4778,14 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             man.write_text(json.dumps({"index": "<p>", "files": {}}))              # a deploy script's record
             self.p.expect_release("v9.2.0")
             self.assertNotIn("mode", json.loads(man.read_text()))
+            # a deploy's record of a commit: the developer's server moved to releases (Q83, Q90) — a release that holds
+            # what was deployed takes its place; something deployed after the release keeps its record
+            man.write_text(json.dumps({"index": "<p>", "files": {}, "commit": "d" * 40}))
+            self.p.expect_release("v9.2.0")                                      # d isn't in it
+            self.assertNotIn("mode", json.loads(man.read_text()))
+            ancestor[0] = ""
+            self.p.expect_release("v9.2.0")
+            self.assertEqual(json.loads(man.read_text())["mode"], "release")
 
     async def test_guard_warns_only(self):
         # the file check on a release from GitHub (stage U3): with PULT_GUARD=warn a difference is told once and the app
@@ -4674,7 +4835,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         # itself and how its last one went; the developer's own folder hears nothing of it
         self.upd_reset(self.READY)
         f = {"upd": await self.p.update_view(), "git": dict(self.PARTS_GIT, release=True), "relay": True, "tabs": [],
-             "hooks": list(pultd.pult_hook.EVENTS), "cc": dict(self.PARTS_CC), "srv": {"can": [], "upd": None}}
+             "hooks": list(pult_hook.EVENTS), "cc": dict(self.PARTS_CC), "srv": {"can": [], "upd": None}}
         rows = {r["k"]: r for r in self.p.parts_rows(f)}
         self.assertEqual((rows["web"]["auto"], "srv" in rows["web"]), (False, False))       # no updater: how to have it
         f["srv"] = {"can": ["want"], "upd": {"state": "run", "step": "fetch", "tag": "v9.1.0", "have": "v9.0.0", "ts": 1}}
@@ -4699,7 +4860,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((rows["relay"]["st"], rows["relay"]["srv"]["self"], "self" in rows["web"]["srv"]), ("warn", ["update.py"], False))
         f["srv"]["upd"] = dict(fail, why="network")
         self.assertEqual({r["k"]: r for r in self.p.parts_rows(f)}["relay"]["srv"]["self"], "old")
-        self.assertEqual(pultd.srv_status({"state": "done", "self": {"deploy/relay/update.py": "a" * 40, "x": "nope", 5: "a" * 40}})["self"],
+        self.assertEqual(pult_parts.srv_status({"state": "done", "self": {"deploy/relay/update.py": "a" * 40, "x": "nope", 5: "a" * 40}})["self"],
                          {"deploy/relay/update.py": "a" * 40})
         f["git"] = dict(self.PARTS_GIT)
         self.assertNotIn("auto", {r["k"]: r for r in self.p.parts_rows(f)}["web"])

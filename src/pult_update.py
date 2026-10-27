@@ -390,6 +390,22 @@ def release_of(repo, commit):
     return max(tags, key=vtag)
 
 
+def release_for_server(repo, commit, version, proxy=None):
+    """What this computer tells the relay's server to take (stage U3) → (tag, commit), or None. A clone of Pult's GitHub
+    repository: the release its commit is (release_of). The folder releases are made in — the developer's own, whose
+    server takes releases as well (Q83): the newest release on GitHub not newer than the version it runs, with the commit
+    GitHub has for it — the updater checks the tag there points at that very commit, and a commit of this folder is
+    never one of GitHub's (without this, such a server would never hear of a release at all)."""
+    if not repo or not commit:
+        return None
+    if not makes_releases(repo, commit):
+        tag = release_of(repo, commit)
+        return (tag, commit) if tag else None
+    mine = vtag("v%s" % version)
+    found = remote_releases(repo, "https://" + OFFICIAL, proxy=proxy) if mine else None
+    return next(((tag, sha) for v, tag, sha in found or [] if v <= mine), None)
+
+
 def release_news(repo, commit, have):
     """What the releases after `have` brought, from the CHANGELOG at `commit`: each entry's bold title (the first
     sentence where there is none), newest release first, at most NEWS."""
@@ -542,8 +558,8 @@ class Installer:
         return p.returncode == 0
 
     def pip(self):
-        p = subprocess.run([str(self.S.PY), "-m", "pip", "install", "-q", "--disable-pip-version-check", "-r",
-                            str(HOME / "requirements.txt")], capture_output=True, text=True, timeout=600)
+        p = subprocess.run([str(self.S.PY), "-m", "pip", "install", "-q", "--disable-pip-version-check", "--require-hashes",
+                            "-r", str(HOME / "requirements.txt")], capture_output=True, text=True, timeout=600)
         if p.returncode:
             raise Fail("pip", (p.stderr.strip().splitlines() or ["?"])[-1][:300])
 

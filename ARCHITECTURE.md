@@ -167,7 +167,11 @@ flowchart LR
 
 | File | Role |
 |---|---|
-| `src/pultd.py` | the daemon: events, sessions, Telegram, the app's requests, warnings |
+| `src/pultd.py` | the daemon: events, sessions, Telegram, warnings |
+| `src/pult_api.py` | what the app's screens ask — Home, projects, a session, a new project, files, voice, spend, settings: the handlers of their requests, a part of the daemon itself (a mixin of its class), reading the daemon's own settings through the daemon |
+| `src/pult_parts.py` | Pult's parts and its updates — the Settings screen "Pult and its parts" and what keeps Pult current: an update installed from the app, the relay's server following this computer, releases on GitHub, every part against what is installed, the check of a Claude Code version VS Code has downloaded; a mixin of the daemon's class, like `pult_api` |
+| `src/pult_driven.py` | the sessions Pult runs itself through the Agent SDK — new, continued or a copy, their place among the turns that run at once, the hooks put into them — and what Pult keeps of every live session |
+| `src/pult_tg.py` | the daemon's line to Telegram — the Bot API client (through the proxy first, directly when that fails) and the queue every message goes through within Telegram's limits — and its state database |
 | `src/pult_hook.py` | the hook: an event to the daemon, a decision back; standard library only |
 | `src/pult_tab.py`, `src/pult-tab.sh` | the tab wrapper and its launcher |
 | `src/pult_tabcheck.py` | checks a Claude Code version VS Code has downloaded, on your computer, before a window reloads onto it: the wrapper, a message from the phone, the model, the effort and the permission race on the new version's own `claude` (`pult tab check`) |

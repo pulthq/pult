@@ -6,8 +6,10 @@ restart would cut off, "Install once they're free" → waiting, "Cancel" → bac
 their own block and line. No script errors anywhere.
   ~/.local/share/pult/venv/bin/python tools/update_check.py [out_dir]
 The stand never starts an installer (pult_update.spawn is a fake there); the real one is checked by tests/test_setup.py
-and on a real service. The banner while the computer restarts is seen only with a real restart. Screenshots go to
-out_dir (a temporary folder by default). Exit 1 on a failed check."""
+and on a real service. The restart is made up as well (STAND_RESTART): from the tap on the stand answers nothing, its
+link to the relay drops and comes back — with the tap's own answer delivered, and lost — and the block says
+"Installing…" the whole time, Install never comes back, the banner says so without red, no alert, then up to date.
+Screenshots go to out_dir (a temporary folder by default). Exit 1 on a failed check."""
 import asyncio, base64, json, os, subprocess, sys, tempfile, time
 from pathlib import Path
 import aiohttp
@@ -28,10 +30,12 @@ def verdict(name, ok, *info):
         failures.append(name)
 
 
-def stand(state):
-    """A stand in this state → (process, {name: url})."""
-    out = Path(OUT) / ("stand-%s.out" % state)
+def stand(state, restart=None):
+    """A stand in this state → (process, {name: url}); restart — Install stops the stand's daemon (STAND_RESTART)."""
+    out = Path(OUT) / ("stand-%s%s.out" % (state, "-" + restart if restart else ""))
     env = dict(os.environ, STAND_UPD=state, STAND_LANG="ru", STAND_PORT=STAND_PORT, HOLD="120")
+    if restart:
+        env["STAND_RESTART"] = restart
     p = subprocess.Popen([PY, str(REPO / "tools" / "stand.py")], env=env, stdout=open(out, "w"), stderr=subprocess.DEVNULL)
     for _ in range(120):
         text = out.read_text() if out.exists() else ""
@@ -170,6 +174,42 @@ async def main():
                     elif state == "fail":
                         verdict("fail: rolled back, why, the error", "откат" in text and "падает при запуске" in text
                                 and "ModuleNotFoundError" in text and "больше не предлагаю" in text, text[:200])
+                finally:
+                    _cdp.stop(proc)
+                    proc.wait()
+            # Install, and the computer stops Pult to put the new files in (STAND_RESTART): the block says "Installing…"
+            # the whole time and Install never comes back; the banner says so, not in red; no alert; then up to date.
+            # "answered" — the tap's answer came, the table's reload after it died with the daemon (2026-10-27: a stale
+            # Install, tapped twice, and a red banner); "lost" — the daemon stopped before even that answer went out
+            for mode in ("answered", "lost"):
+                proc, urls = stand("ready", restart=mode)
+                try:
+                    await open_("about:blank")
+                    await open_(urls["SETTINGS"])
+                    ready = await until(card + " && " + card + ".className.includes('upd-s-ready')")
+                    await asyncio.sleep(0.6)             # a person's tap comes after the screen has settled, not in its frame
+                    await js("window.__alerts = []; window.alert = (s) => window.__alerts.push(String(s))")
+                    tapped = ready and await tap("Поставить 0.")
+                    seen, t0 = [], time.time()          # [s since the tap, Install shown, banner class, its text, block text, class]
+                    while time.time() - t0 < 10:
+                        seen.append([round(time.time() - t0, 1)] + await js("""(() => { const c = %s, b = document.querySelector('.banner');
+                            const btn = [...document.querySelectorAll('.upg button')].some((x) => x.textContent.includes('Поставить 0.'));
+                            return [btn, b ? b.className : '', b ? b.textContent : '', c ? c.textContent : '', c ? c.className : ''] })()""" % card))
+                        if "Ставлю обновление" in seen[-1][3] and not any("Ставлю обновление" in s[3] for s in seen[:-1]):
+                            await shot("settings-restart-%s-banner" % mode)       # the computer away, mid-install
+                        await asyncio.sleep(0.1)
+                    back = [s[0] for s in seen if s[0] >= 0.5 and s[1]]
+                    red = sorted({s[2] for s in seen if "nomac" in s[2] or "denied" in s[2]})
+                    told = any("Ставлю обновление" in s[3] for s in seen)
+                    alerts, end = await js("window.__alerts"), seen[-1]
+                    verdict("restart, %s: the tap" % mode, tapped)
+                    verdict("restart, %s: Install never comes back while it installs" % mode, not back, back[:5])
+                    verdict("restart, %s: the block says installing" % mode, any("Ставлю 0." in s[4] for s in seen))
+                    flips = [(s[0], s[2], s[3][:24]) for i, s in enumerate(seen) if i == 0 or seen[i - 1][2:4] != s[2:4]]
+                    verdict("restart, %s: the banner says installing, not in red" % mode, told and not red, flips[:6])
+                    verdict("restart, %s: no alert" % mode, not alerts, alerts)
+                    verdict("restart, %s: then up to date" % mode, not end[1] and "upd-s-ok" in end[5], end[5], end[4][:80])
+                    await shot("settings-restart-" + mode)
                 finally:
                     _cdp.stop(proc)
                     proc.wait()

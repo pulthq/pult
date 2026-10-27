@@ -1,11 +1,12 @@
 # Pult web app on Caddy: Caddy gets the HTTPS certificate by itself. Replace the domain, then:
 #     caddy run --config Caddyfile        (or merge the handle block into your existing Caddyfile)
-# WebSockets pass through reverse_proxy as is.
+# WebSockets pass through reverse_proxy as is. The relay's socket: Caddy's user is in the group pult (install.sh puts it
+# there; restart Caddy once after); an install from before 0.18.7 listens on 127.0.0.1:8097 — put that instead.
 pult.example.com {
 	handle /pult/* {
 		# the phone's real address, as nginx's proxy_set_header does: a client's own X-Real-IP is overwritten, not passed
 		# on — the relay counts unnamed connections per address with it (review 2026-10-27, Б5)
-		reverse_proxy 127.0.0.1:8097 {
+		reverse_proxy unix//run/pult-relay/relay.sock {
 			header_up X-Real-IP {remote_host}
 		}
 		header {

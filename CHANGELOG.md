@@ -4,6 +4,40 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.7 — 2026-10-28
+
+- **Install shows up in Settings right after a new version is in the folder.** The parts table read the folder at
+  most once a minute, so Settings opened just after a commit said everything was current for up to a minute; now it
+  reads it every 10 seconds, as the Pult block before it did.
+- **Dependencies are installed only as locked, with their hashes.** `requirements.txt` and `relay/requirements.txt`
+  pin every package, the ones they bring along too, with the hashes of their files for macOS, Linux and Windows on
+  Python 3.10 and newer; every installer — the computer's, the server's and its updater — installs only those files.
+  They are made from `requirements.in` and `relay/requirements.in` by `tools/lock.py`.
+- **A new relay server listens on a socket, not a port.** `deploy/relay/install.sh` sets new servers up on
+  `/run/pult-relay/relay.sock`, a folder only the relay and the web server can enter, and adds the web server's user to
+  the group `pult`; a free port can be taken by any program on the server while the relay restarts. A server set up
+  before keeps its port; the nginx and Caddy examples show both.
+- **A server also follows the computer where Pult's releases are made.** Such a computer runs commits of its own, so
+  it never named a release to its server's updater; now it names the newest release on GitHub that isn't newer than
+  the version it runs. The app files check moves from a deploy script's record to that release once the release holds
+  what was deployed.
+- **Pult looks for a new release right after the computer starts.** "Never looked" read as a look a moment ago
+  during the computer's first minute after a boot, so that first look was skipped until the next one.
+- **A tap copies a block of code.** Commands and other code in Claude's words, and the command a permission asks
+  about, carry a copy sign in the corner; a tap copies the block whole, and a tick and "Copied" say so. Text selected
+  by hand inside a block is left alone.
+- **Installing an update from the app no longer looks like a failure.** While the computer restarts Pult, the banner
+  says it's installing in its calm colour, not the red of a computer gone; the parts table says "Installing…" at once
+  and never offers Install again meanwhile — a reload sent as Pult stopped held the next one back for half a minute,
+  so the old button stayed and got tapped twice; an answer lost to the restart reads as installing, not as an error.
+  Calls to a computer that has gone fail at once instead of after 30 seconds.
+- **For contributors: `pultd.py` is split up, one module at a time.** The daemon's Telegram client, its outbox and
+  the state database are in `src/pult_tg.py`; the sessions Pult runs through the Agent SDK and what it keeps of every
+  live session in `src/pult_driven.py`; the handlers of what the app's screens ask in `src/pult_api.py` and Pult's
+  parts and updates in `src/pult_parts.py` — mixins of the daemon's class that read the daemon's own settings through
+  the daemon (`self.D`): a module the daemon loads never imports `pultd`, which runs as `__main__`, and a test says
+  so; `tools/split_check.py <commit>` checks that a step only moved code. Nothing changes in how Pult works.
+
 ## 0.18.6 — 2026-10-27
 
 - **Settings tell what only you can update on the server.** The server's updater takes the relay's code from each

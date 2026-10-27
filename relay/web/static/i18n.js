@@ -4,6 +4,8 @@
 const S = {
   // connection
   "conn.lost": { en: "connection lost", ru: "связь прервалась" },
+  "copied": { en: "Copied", ru: "Скопировано" },
+  "copy.fail": { en: "Couldn't copy — select the text and copy it by hand", ru: "Не скопировалось — выдели текст и скопируй вручную" },
   "conn.nomac": { en: "no connection to the computer", ru: "нет связи с компьютером" },
   "conn.timeout": { en: "the computer didn't answer", ru: "компьютер не ответил" },
   "banner.connecting": { en: "Connecting…", ru: "Подключаюсь…" },
