@@ -4,6 +4,13 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.8 — 2026-10-28
+
+- **The server's updater waits its turn.** A run that found the lock taken left at once, trusting the other run to
+  look again — but `install.sh` holds that lock to its end, and the release the computer named in those seconds went
+  unread, so the computer kept naming it. Now it waits for the lock, up to 15 minutes. Takes effect where
+  `deploy/relay/install.sh` runs again (the updater doesn't update itself).
+
 ## 0.18.7 — 2026-10-28
 
 - **Install shows up in Settings right after a new version is in the folder.** The parts table read the folder at

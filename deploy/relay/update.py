@@ -56,6 +56,7 @@ OWN = {"deploy/relay/update.py": Path(__file__).resolve(),
 MAC_WAIT = 60        # s for the computer to be connected before the switch: a check needs it
 UP_WAIT = 90          # s for the restarted relay to answer with the computer connected again
 ROUNDS = 3            # want.json changed while this ran: look again, at most this many times
+LOCK_WAIT = 900       # s this run waits for the lock — another run, or install.sh (flock -w 900 there too)
 # failures that belong to the release itself: it isn't tried again until the computer names another one, or the owner
 # asks for it again (the relay stamps that word with this server's clock: "retry" in want.json)
 FINAL = ("not_official", "broken", "no_restart", "no_start", "no_mac")
@@ -407,11 +408,18 @@ class Updater:
     def run(self):
         HOME.mkdir(parents=True, exist_ok=True)
         with open(HOME / "lock", "w") as lock:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
-                say("another update runs — it looks at want.json again when it ends")
-                return 0
+            # one at a time, and this one waits its turn: install.sh holds the lock to its end, and a want.json the relay
+            # it had just restarted wrote meanwhile went unread when this run left at once (a live server, 2026-10-28)
+            end = self.now() + LOCK_WAIT
+            while True:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if self.now() >= end:
+                        say("the lock stayed taken for %d min — want.json is looked at when it changes" % (LOCK_WAIT // 60))
+                        return 0
+                    self.sleep(1)
             seen = None
             for _ in range(ROUNDS):
                 now = read(WANT, {}) or {}
