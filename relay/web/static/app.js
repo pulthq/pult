@@ -11,6 +11,7 @@ import { NewProject, NewTask, Project, Projects } from "./screens/projects.js";
 import { Resources } from "./screens/resources.js";
 import { FileHost, Session, TurnFilesScreen } from "./screens/session.js";
 import { Settings, ddmm } from "./screens/settings.js";
+import { Tags } from "./screens/tags.js";
 import { hhmm, ic } from "./ui/kit.js";
 import { Load } from "./ui/load.js";
 import { EditHost, ViewHost } from "./ui/pics.js";
@@ -49,6 +50,7 @@ function App() {
   const screen = r.name === "s" ? html`<${Session} sid=${r.id}/>`
     : r.name === "f" ? html`<${TurnFilesScreen} sid=${r.id} turn=${r.q.get("t")}/>`
     : r.name === "p" ? html`<${Project} key=${r.id + "?" + (r.q.get("tag") || "") + "/" + (r.q.get("topic") || "")} pkey=${r.id} tag=${r.q.get("tag")} topic=${r.q.get("topic")}/>`
+    : r.name === "tags" ? html`<${Tags} key=${r.id} pkey=${r.id} open=${r.q.get("open")}/>`
     : r.name === "projects" ? html`<${Projects}/>`
     : r.name === "new" ? html`<${NewTask} pkey=${r.q.get("pkey")}/>`
     : r.name === "newproject" ? html`<${NewProject}/>`

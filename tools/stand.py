@@ -24,7 +24,8 @@ missing and tabs on an unverified Claude Code; someone with a clone of the publi
 release row, no tab wrapper; STAND_UPD=ready) (tools/parts_check.py); STAND_PARTS=auto|auto_run|auto_fail — that clone
 with the server's updater (stage U3): the server took the computer's release; is taking it; didn't take it and went back
 STAND_TAGS=1 (stage T): a third project, a maker of 3D printers, fifteen tasks in every state, each with its section and
-topic in the store (PROJT — its screen, SESST — its task that waits for you; tools/tags_check.py).
+topic in the store (PROJT — its screen, SESST — its task that waits for you; tools/tags_check.py); T2 — Claude's offer to
+merge two of its topics, on the project's tags screen.
 STAND_PARTS=check_run|check_fail|check_here|check_err (stage A): Pult's own check of a Claude Code version VS Code has
 downloaded — running, failed at a step, passed, couldn't run; "Check again" passes in 3 s, no Claude (tools/vcheck_check.py).
 STAND_COPY=1: the session that waits for you is open in a VS Code tab on a Claude Code Pult isn't checked on — its card
@@ -212,6 +213,7 @@ def ev(name, sid, cwd=SHOP, **kw):
 TAGS_D = {
     "en": dict(
         name="Printer", secs=["Firmware", "Frame", "Electronics", "Marketing", "Slicer", "Extruder", "Docs"],
+        merge=["Wi-Fi", "Network updates"],
         shop=[("Checkout", "Errors"), ("Search", "Typos"), ("Images", "Thumbnails"), ("Admin", "Dark theme")],
         desk=[("Tickets", "Sorting"), ("Reports", "Weekly")],
         tasks=[
@@ -243,6 +245,7 @@ TAGS_D = {
             dict(st="old", ago=6 * 86400, tag=("Firmware", "Network updates"), title="Over-the-air firmware: the signature check")]),
     "ru": dict(
         name="Принтер", secs=["Прошивка", "Корпус", "Электроника", "Маркетинг", "Слайсер", "Экструдер", "Документы"],
+        merge=["Wi-Fi", "Обновление по сети"],
         shop=[("Оплата", "Ошибки"), ("Поиск", "Опечатки"), ("Картинки", "Превью"), ("Админка", "Тёмная тема")],
         desk=[("Заявки", "Разбор"), ("Отчёты", "Неделя")],
         tasks=[
@@ -353,6 +356,10 @@ async def stand_tags(p, store, projects):
     for sid, pkey, (s, tp), fresh in tasks:
         store.tag_add(pkey, s, tp, ts=None if fresh else old)
         store.set_session_tag(sid, pkey, s, tp, False)
+    # T2: Claude's offer to merge two topics of the firmware that name the same thing — its answer as it would come
+    # (the model never runs on the stand); the project's tags screen shows it on top
+    store.put("tags.tidy." + pk, {"sig": "", "ts": time.time(), "raw": {"pairs": [
+        {"a": {"sec": G["secs"][0], "topic": G["merge"][0]}, "keep": {"sec": G["secs"][0], "topic": G["merge"][1]}}]}})
     return pk, sids
 
 

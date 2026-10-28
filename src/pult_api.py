@@ -48,6 +48,8 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 KEEP = object()        # an api_model argument the app did not send: that half of the choice stays as it is
 CTX_RESERVE = 13000        # VS Code's context gauge: used ÷ (window − min(maxOutputTokens, 20000) − 13000) (webview 2.1.301)
 CTX_OUT_CAP = 20000
+TAGS_RECENT = 30 * 86400   # s: the tags screen puts first the tags of the tasks of these last days (stage T, T2)
+TIDY_RETRY = 600           # s: the model gave nothing on a project's list — not asked about the same names before this
 
 
 def log(*a):
@@ -373,10 +375,12 @@ class Api:
                                 "last": x.last_modified / 1000, "line": r.get("line") or "", "open": bool(r.get("open")),
                                 "driven": x.session_id in self.driven, "tags": self.tags_of(x.session_id, tagged)})
         turns, secs = self.attn.day_of(pkey)
+        # tags_n: the project has a list at all — the way to its tags screen, even when nothing on this one has tags
         return {"pkey": pkey, "name": self.name_of(pkey, rows), "path": path, "pending": pending, "mine": mine,
                 "live": live, "today": today, "earlier": earlier, "turns": turns, "secs": secs,
                 "reset": self.limit_reset(), "stt": self.stt_state()["on"],
-                "tagset": self.tag_list(pkey, list(shown) + [x["sid"] for x in earlier])}
+                "tagset": self.tag_list(pkey, list(shown) + [x["sid"] for x in earlier]),
+                "tags_n": len(self.store.tag_vocab(pkey))}
 
     async def api_sessions(self, pkey):
         path = self.project_path(pkey)
@@ -393,8 +397,10 @@ class Api:
     def tag_list(self, pkey, sids=None):
         """The project's sections for the app — [{n, c, cnt, fresh, topics: [{n, cnt, fresh}]}]. With sids — what a
         screen shows: cnt counts those sessions, only the sections and topics they have, the most used first (the tag
-        bar); without — the whole list in its order, cnt over every task (the sheet that corrects a task's tags)."""
+        bar); without — the whole list in its order, cnt over every task (the sheet that corrects a task's tags). What
+        the owner hid is in neither (stage T, T2)."""
         vocab, uses, now = self.store.tag_vocab(pkey), self.store.tag_uses(pkey), time.time()
+        hidden = self.store.tag_hidden(pkey)
         have = None
         if sids is not None:
             have = {}
@@ -406,9 +412,12 @@ class Api:
                         have[(r["sec"], r["topic"])] = have.get((r["sec"], r["topic"]), 0) + 1
         out = []
         for s in vocab:
+            if (s["n"], None) in hidden:
+                continue
             cnt = (have if have is not None else uses).get((s["n"], None), 0)
             tops = [{"n": t["n"], "cnt": (have if have is not None else uses).get((s["n"], t["n"]), 0),
-                     "fresh": G.is_fresh(t, uses.get((s["n"], t["n"]), 0), now)} for t in s["topics"]]
+                     "fresh": G.is_fresh(t, uses.get((s["n"], t["n"]), 0), now)} for t in s["topics"]
+                    if (s["n"], t["n"]) not in hidden]
             if have is not None:
                 if not cnt:
                     continue
@@ -445,11 +454,141 @@ class Api:
             tp = G.norm(topic, G.TOPIC_LEN) if topic else None
             t = next((x for x in s["topics"] if G.key(x["n"]) == G.key(tp)), None) if s and tp else None
             tp = t["n"] if t else tp
+            if not s:                            # a name the owner gives is theirs, even an old one of another tag
+                self.store.tag_unalias(lv.pkey, name)
+            if tp and not t:
+                self.store.tag_unalias(lv.pkey, name, tp)
+            self.store.tag_hide(lv.pkey, name, None, False)        # and what they pick is seen again, if it was hidden
+            if tp:
+                self.store.tag_hide(lv.pkey, name, tp, False)
             self.store.tag_add(lv.pkey, name, tp, own=True)
             self.store.set_session_tag(sid, lv.pkey, name, tp, True)
+            self.store.tag_prune(lv.pkey)
             log("tags %s: %s%s (the owner's)" % (sid[:8], name, " / " + tp if tp else ""))
         self.changed(sid)
         return {"tags": self.tags_of(sid), "tagset": self.tag_list(lv.pkey), "auto": bool(auto)}
+
+    # ----- the project's tags screen (stage T, T2): the owner tidies what Claude keeps -----
+
+    def tags_pkey(self, pkey):
+        if not isinstance(pkey, str) or not pkey or self.D.skip_pkey(pkey) or not (
+                self.store.topic(pkey) or self.store.tag_vocab(pkey)):
+            raise ValueError(self.t("err.no_project"))
+        return pkey
+
+    async def api_tags(self, pkey):
+        """The project's tags screen: its sections, each with its topics and how many tasks of the whole project have
+        them, the most used in the last 30 days first; what the owner hid, apart; Claude's offers to merge two tags
+        that name the same thing (looked for in the background, when the names have changed: tidy_soon)."""
+        self.tags_pkey(pkey)
+        self.store.tag_prune(pkey)
+        vocab, now = self.store.tag_vocab(pkey), time.time()
+        uses, recent = self.store.tag_uses(pkey), self.store.tag_uses(pkey, now - TAGS_RECENT)
+        hidden, kept = self.store.tag_hidden(pkey), self.store.tag_kept(pkey)
+        rank = lambda k, c: (-recent.get(k, 0), -uses.get(k, 0), c)
+        secs, gone = [], []
+        for s in vocab:
+            tops = []
+            for i, t in enumerate(s["topics"]):
+                k = (s["n"], t["n"])
+                if k in hidden:
+                    gone.append({"sec": s["n"], "topic": t["n"], "c": s["c"], "cnt": uses.get(k, 0)})
+                    continue
+                tops.append((rank(k, i), {"n": t["n"], "cnt": uses.get(k, 0), "own": t["own"],
+                                          "fresh": G.is_fresh(t, uses.get(k, 0), now)}))
+            k = (s["n"], None)
+            if k in hidden:
+                gone.append({"sec": s["n"], "topic": None, "c": s["c"], "cnt": uses.get(k, 0)})
+                continue
+            secs.append((rank(k, s["c"]), {"n": s["n"], "c": s["c"], "cnt": uses.get(k, 0), "own": s["own"],
+                                           "fresh": G.is_fresh(s, uses.get(k, 0), now),
+                                           "topics": [x for _, x in sorted(tops, key=lambda p: p[0])]}))
+        color = {s["n"]: s["c"] for s in vocab}
+        sug = [{"a": {"sec": a[0], "topic": a[1]}, "b": {"sec": b[0], "topic": b[1]}, "c": color[a[0]]}
+               for a, b in G.tidy_pairs((self.store.get("tags.tidy." + pkey) or {}).get("raw"), vocab, kept, hidden)]
+        self.tidy_soon(pkey, vocab)
+        return {"pkey": pkey, "name": self.project_label(pkey), "secs": [x for _, x in sorted(secs, key=lambda p: p[0])],
+                "hidden": gone, "sug": sug, "tidy": pkey in self.tidying, "model": self.prefs()["brief"]}
+
+    async def api_tags_edit(self, pkey, op, sec, topic=None, name=None, c=None, to_sec=None, to_topic=None):
+        """The owner tidies the project's tags: rename a section or a topic, colour a section, merge one into another
+        (a topic — into a topic of any section), hide or show again, keep a tag Claude has just made, keep apart two
+        that Claude offered to merge. Names as the list has them (any case); the changes are final — the model sees
+        the new list, and an old name it or a hashtag brings lands on the new tag (pult_tags.resolve). → the screen
+        anew; with {"exists": {sec, topic}} instead when the new name is another tag's — the app offers to merge."""
+        self.tags_pkey(pkey)
+        vocab = self.store.tag_vocab(pkey)
+
+        def at(s_, t_):
+            s = next((x for x in vocab if G.key(x["n"]) == G.key(s_)), None) if isinstance(s_, str) else None
+            t = next((x for x in s["topics"] if G.key(x["n"]) == G.key(t_)), None) if s and isinstance(t_, str) and t_.strip() else None
+            if not s or (isinstance(t_, str) and t_.strip() and not t):
+                raise ValueError(self.t("tags.e.gone", n=I.q(str(t_ or s_ or "")[:40])))
+            return s, t, (s["n"], t["n"] if t else None)
+        s, t, me = at(sec, topic)
+        label, said = self.project_label(pkey), me[0] + (" / " + me[1] if me[1] else "")
+        if op == "rename":
+            new = G.norm(name, G.TOPIC_LEN if t else G.SEC_LEN)
+            if not new:
+                raise ValueError(self.t("tags.e.name"))
+            other = next((x for x in (s["topics"] if t else vocab) if G.key(x["n"]) == G.key(new) and x is not (t or s)), None)
+            if other:
+                return dict(await self.api_tags(pkey), exists={"sec": s["n"] if t else other["n"], "topic": other["n"] if t else None})
+            if new != (t or s)["n"]:
+                self.store.tag_rename(pkey, me[0], me[1], new)
+                log("tags %s: %s renamed to %s" % (label, said, new))
+        elif op == "color":
+            if t or not isinstance(c, int) or isinstance(c, bool) or not 0 <= c < G.COLORS:
+                raise ValueError("bad colour")
+            self.store.tag_color(pkey, me[0], c)
+        elif op in ("merge", "apart"):
+            s2, t2, them = at(to_sec, to_topic)
+            if them == me or (t is None) != (t2 is None):
+                raise ValueError(self.t("tags.e.merge"))
+            if op == "apart":
+                self.store.tag_keep(pkey, me, them)
+            else:
+                self.store.tag_merge(pkey, me[0], me[1], them[0], them[1])
+                log("tags %s: %s merged into %s" % (label, said, them[0] + (" / " + them[1] if them[1] else "")))
+        elif op in ("hide", "show"):
+            self.store.tag_hide(pkey, me[0], me[1], op == "hide")
+        elif op == "keep":
+            self.store.tag_own(pkey, me[0], me[1])
+        else:
+            raise ValueError(self.t("err.no_request", op=op))
+        self.store.tag_prune(pkey)
+        self.changed()
+        return await self.api_tags(pkey)
+
+    def tidy_soon(self, pkey, vocab):
+        """Claude looks the project's list over for two tags that name the same thing — in the background, with the
+        model switched on, when the owner opens the tags screen and the names have changed since its last look."""
+        if not self.prefs()["brief"] or pkey in self.tidying or sum(1 + len(s["topics"]) for s in vocab) < 3:
+            return
+        sig, failed = G.sig(vocab), self.tidy_failed.get(pkey)
+        if (self.store.get("tags.tidy." + pkey) or {}).get("sig") == sig or \
+                failed and failed[0] == sig and time.time() - failed[1] < TIDY_RETRY:
+            return
+        self.tidying.add(pkey)
+        asyncio.create_task(self.tidy_task(pkey, sig))
+
+    async def tidy_task(self, pkey, sig):
+        try:
+            async with self.brief_sem:
+                vocab = self.store.tag_vocab(pkey)
+                text = G.tidy_request(self.project_label(pkey), vocab, self.store.tag_uses(pkey), self.store.tag_kept(pkey))
+                self.D.BRIEF_DIR.mkdir(parents=True, exist_ok=True)
+                d = await G.tidy(text, self.lang(), self.D.BRIEF_DIR)
+            if d is None:
+                self.tidy_failed[pkey] = (sig, time.time())
+                log("tags %s: no answer from the model on the list" % self.project_label(pkey))
+                return
+            self.store.put("tags.tidy." + pkey, {"sig": G.sig(vocab), "raw": d, "ts": time.time()})
+            n = len(G.tidy_pairs(d, vocab, self.store.tag_kept(pkey), self.store.tag_hidden(pkey)))
+            log("tags %s: the list looked over — %d to merge" % (self.project_label(pkey), n))
+        finally:
+            self.tidying.discard(pkey)
+            self.changed()
 
     # ----- a session: reading, writing, answering, the model, stopping -----
 

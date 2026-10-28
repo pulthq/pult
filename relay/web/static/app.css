@@ -783,3 +783,51 @@ input[type=checkbox] { accent-color: var(--accent); }
 .tagnew { display: flex; gap: 6px; flex: 1 1 100%; }
 .tagnew input { flex: 1; min-width: 0; height: 36px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); padding: 0 10px; font: inherit; }
 .tagnew .btn { min-height: 36px; padding: 6px 12px; }
+
+/* stage T, T2: the project's tags — a section a row: its dot, name, how many tasks of the project, its topics (a tap —
+   what can be done with one); a tag Claude has just made dashed, with "Keep" and "Merge into…"; Claude's offers to
+   merge two on top; the hidden ones folded at the bottom. The bar's last button leads here */
+/* the way to the project's tags: a button beside the row of sections, which scrolls and fades out by it */
+.tagrow { display: flex; align-items: center; gap: 4px; margin: 12px -14px 0; padding-right: 14px; }
+.tagrow .tagbar { flex: 1; min-width: 0; margin: 0; padding: 0 12px 2px 14px;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 22px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 22px), transparent); }
+.tagf.edit { padding: 0 11px; color: var(--muted); }
+.card.tsug { box-shadow: inset 4px 0 0 var(--accent); }
+.card.tsug .q-t { display: flex; align-items: center; gap: 6px; }
+.card.tsug .stays { margin-top: 4px; }
+.card.tsug .foot { justify-content: flex-end; gap: 20px; margin-top: 10px; }
+.card.tsug .foot .link { padding: 0; }
+.tidy-run { display: flex; align-items: center; gap: 6px; margin: 10px 4px 0; }
+.trow { padding: 0; }
+.trow:active { opacity: 1; }                 /* a tap on a topic dims the topic, not the whole row */
+.trow-h:active, button.tagc:active { opacity: .7; }
+.trow-h { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 14px 4px; background: none; border: 0; text-align: left;
+  cursor: pointer; color: var(--ink); font: inherit; }
+.trow-h .tn { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.trow-h .tn b { font-weight: 600; }
+.trow .tdot, .opt.tsec .tdot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: hsl(var(--th) 62% 50%); }
+.trow-h .cnt-n, .opt.tsec .cnt-n { color: var(--muted); font-size: var(--fs-sec); font-variant-numeric: tabular-nums; }
+.trow-h .ic { flex: none; color: var(--muted); }
+.ttops { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 14px 12px 36px; }
+.ttops .tagc { margin: 0; padding: 3px 9px; font-size: var(--fs-sec); }
+button.tagc { border: 0; font-family: inherit; cursor: pointer; }
+.tagc b { font-weight: 600; opacity: .7; }
+.trow .tacts, .trow .tfresh { display: flex; flex-wrap: wrap; gap: 2px 18px; padding: 0 14px 12px 36px; font-size: var(--fs-sec); }
+.trow .tacts .link, .trow .tfresh .link { padding: 2px 0; }
+.trow .tfresh { color: var(--muted); align-items: baseline; margin-top: -2px; }
+.trow.hid .trow-h { padding-bottom: 12px; cursor: default; }
+.trow.hid .link { padding: 0; }
+.tfoot { margin: 14px 4px 0; }
+.tagsheet .pick-h > span { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tagsheet .pick-h .tagc { margin: 0; font-size: var(--fs-sec); }
+.tagsheet .opt { margin: 6px 0; }
+.tagsheet .pick-t { margin: 12px 2px 6px; }
+.opt.tsec { display: flex; align-items: center; gap: 10px; }
+.opt.tsec span { display: inline; }
+.opt.tsec .tn { flex: 1; font-size: var(--fs-body); }
+.swatches { display: grid; grid-template-columns: repeat(8, minmax(0, 40px)); justify-content: space-between; gap: 8px; margin: 14px 4px 10px; }
+.swatch { width: 100%; aspect-ratio: 1; height: auto; padding: 0; border-radius: 50%; border: 0; background: hsl(var(--th) 62% 50%); color: #fff;
+  display: flex; align-items: center; justify-content: center; cursor: pointer; }
+.swatch.on { box-shadow: 0 0 0 3px var(--card), 0 0 0 5px hsl(var(--th) 62% 50%); }
+.tprev { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 2px 4px; }
+.tprev .tagc { margin: 0; }

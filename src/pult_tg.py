@@ -5,11 +5,14 @@ limits), and the state database — topics, sessions, the group's messages, the 
 pultd imports the classes by name: pultd.Tg, pultd.Store and the rest stay what the tests and the stand use.
 """
 import asyncio
+import contextlib
 import json
 import sqlite3
 import time
 
 import httpx
+
+import pult_tags as G
 
 TURNS_KEPT = 50                 # turns with files kept per session (stage F4)
 
@@ -198,7 +201,15 @@ CREATE TABLE IF NOT EXISTS tag_topics(pkey TEXT, sec TEXT, name TEXT, own INTEGE
     PRIMARY KEY(pkey, sec, name));
 CREATE TABLE IF NOT EXISTS session_tags(sid TEXT PRIMARY KEY, pkey TEXT, sec TEXT, topic TEXT, own INTEGER DEFAULT 0,
     ts REAL);
+CREATE TABLE IF NOT EXISTS tag_hide(pkey TEXT, sec TEXT, topic TEXT, ts REAL, PRIMARY KEY(pkey, sec, topic));
+CREATE TABLE IF NOT EXISTS tag_keep(pkey TEXT, a_sec TEXT, a_topic TEXT, b_sec TEXT, b_topic TEXT, ts REAL,
+    PRIMARY KEY(pkey, a_sec, a_topic, b_sec, b_topic));
+CREATE TABLE IF NOT EXISTS tag_alias(pkey TEXT, old TEXT, old_topic TEXT, sec TEXT, topic TEXT, ts REAL,
+    PRIMARY KEY(pkey, old, old_topic));
 """
+# stage T, T2: what the owner did to a project's list lives in tables of its own — the hidden tags (topic "" for a
+# whole section), the pairs kept apart, the names a tag had before a rename or a merge (by pult_tags.key) — so the
+# tables of 0.17 stay as they were and an older daemon still writes to them after a rollback
 
 
 class Store:
@@ -256,8 +267,9 @@ class Store:
         if self.db.execute("SELECT 1 FROM tag_secs WHERE pkey=? AND name=?", (pkey, sec)).fetchone():
             if own:
                 self.db.execute("UPDATE tag_secs SET own=1 WHERE pkey=? AND name=?", (pkey, sec))
-        else:
-            c = self.db.execute("SELECT coalesce(max(color) + 1, 0) FROM tag_secs WHERE pkey=?", (pkey,)).fetchone()[0]
+        else:                                    # its colour: the first one no section wears (merged and gone ones free theirs)
+            worn = [r[0] for r in self.db.execute("SELECT color FROM tag_secs WHERE pkey=?", (pkey,))]
+            c = next((i for i in range(G.COLORS) if i not in {w % G.COLORS for w in worn}), max(worn, default=-1) + 1)
             self.db.execute("INSERT INTO tag_secs VALUES(?,?,?,?,?)", (pkey, sec, c, int(own), ts))
         if not topic:
             return
@@ -274,15 +286,141 @@ class Store:
         self.db.execute("INSERT OR REPLACE INTO session_tags VALUES(?,?,?,?,?,?)",
                         (sid, pkey, sec, topic, int(bool(own)), time.time()))
 
-    def tag_uses(self, pkey):
-        """How many sessions have each section and each topic: {(sec, None): n, (sec, topic): n}."""
+    def tag_uses(self, pkey, since=None):
+        """How many sessions have each section and each topic: {(sec, None): n, (sec, topic): n}; since — only the
+        sessions active since then (their last request or result; one Pult never saw — since it was tagged)."""
         out = {}
-        for r in self.db.execute("SELECT sec, topic, count(*) n FROM session_tags WHERE pkey=? AND sec IS NOT NULL "
-                                 "GROUP BY sec, topic", (pkey,)):
+        for r in self.db.execute("SELECT t.sec, t.topic, count(*) n FROM session_tags t LEFT JOIN sessions s ON s.sid=t.sid "
+                                 "WHERE t.pkey=? AND t.sec IS NOT NULL AND coalesce(s.last_seen, t.ts, 0) >= ? "
+                                 "GROUP BY t.sec, t.topic", (pkey, since or 0)):
             out[(r["sec"], None)] = out.get((r["sec"], None), 0) + r["n"]
             if r["topic"]:
                 out[(r["sec"], r["topic"])] = r["n"]
         return out
+
+    # ----- the owner tidies a project's tags (stage T, T2): hides, keeps apart, renames, merges, colours -----
+
+    @contextlib.contextmanager
+    def tx(self):
+        """Several statements as one: all or none."""
+        self.db.execute("BEGIN")
+        try:
+            yield
+        except BaseException:
+            self.db.execute("ROLLBACK")
+            raise
+        self.db.execute("COMMIT")
+
+    def tag_hidden(self, pkey):
+        """What the owner hid in a project's list: {(sec, None)} for a section, {(sec, topic)} for a topic."""
+        return {(r["sec"], r["topic"] or None) for r in self.db.execute("SELECT sec, topic FROM tag_hide WHERE pkey=?", (pkey,))}
+
+    def tag_hide(self, pkey, sec, topic, on):
+        if on:
+            self.db.execute("INSERT OR REPLACE INTO tag_hide VALUES(?,?,?,?)", (pkey, sec, topic or "", time.time()))
+        else:
+            self.db.execute("DELETE FROM tag_hide WHERE pkey=? AND sec=? AND topic=?", (pkey, sec, topic or ""))
+
+    def tag_kept(self, pkey):
+        """The pairs the owner keeps apart ("Keep both"): {frozenset({(sec, topic), (sec, topic)})}, topic None for a section."""
+        return {frozenset({(r["a_sec"], r["a_topic"] or None), (r["b_sec"], r["b_topic"] or None)})
+                for r in self.db.execute("SELECT * FROM tag_keep WHERE pkey=?", (pkey,))}
+
+    def tag_keep(self, pkey, a, b):
+        self.db.execute("INSERT OR REPLACE INTO tag_keep VALUES(?,?,?,?,?,?)",
+                        (pkey, a[0], a[1] or "", b[0], b[1] or "", time.time()))
+
+    def tag_aliases(self, pkey):
+        """The names a project's tags had before the owner renamed or merged them:
+        {(key(sec), key(topic) or ""): (sec, topic or None)} — what took each one's place (pult_tags.resolve)."""
+        return {(r["old"], r["old_topic"]): (r["sec"], r["topic"] or None)
+                for r in self.db.execute("SELECT * FROM tag_alias WHERE pkey=?", (pkey,))}
+
+    def tag_unalias(self, pkey, sec, topic=None):
+        """A name is a tag of the project again (the owner made it): no longer an old name of another."""
+        self.db.execute("DELETE FROM tag_alias WHERE pkey=? AND old=? AND old_topic=?",
+                        (pkey, G.key(sec), G.key(topic) if topic else ""))
+
+    def _alias(self, pkey, sec, topic, to_sec, to_topic):
+        old = (G.key(sec), G.key(topic) if topic else "")
+        if old != (G.key(to_sec), G.key(to_topic) if to_topic else ""):
+            self.db.execute("INSERT OR REPLACE INTO tag_alias VALUES(?,?,?,?,?,?)",
+                            (pkey, old[0], old[1], to_sec, to_topic or "", time.time()))
+        self.tag_unalias(pkey, to_sec, to_topic)
+
+    def tag_own(self, pkey, sec, topic=None):
+        """The owner keeps a tag Claude has made: it is never "new" again, and stays without tasks until hidden."""
+        if topic:
+            self.db.execute("UPDATE tag_topics SET own=1 WHERE pkey=? AND sec=? AND name=?", (pkey, sec, topic))
+        else:
+            self.db.execute("UPDATE tag_secs SET own=1 WHERE pkey=? AND name=?", (pkey, sec))
+
+    def tag_color(self, pkey, sec, c):
+        self.db.execute("UPDATE tag_secs SET color=?, own=1 WHERE pkey=? AND name=?", (int(c), pkey, sec))
+
+    def tag_rename(self, pkey, sec, topic, name):
+        """The owner renames a section (topic None) or a topic: its tasks, what was hidden and kept apart go with it,
+        and the old name stays as an alias — the model's or a hashtag's old word lands on the new one."""
+        with self.tx():
+            if topic is None:
+                for q in ("UPDATE tag_secs SET name=?, own=1 WHERE pkey=? AND name=?",
+                          "UPDATE tag_topics SET sec=? WHERE pkey=? AND sec=?",
+                          "UPDATE session_tags SET sec=? WHERE pkey=? AND sec=?",
+                          "UPDATE tag_hide SET sec=? WHERE pkey=? AND sec=?",
+                          "UPDATE tag_keep SET a_sec=? WHERE pkey=? AND a_sec=?",
+                          "UPDATE tag_keep SET b_sec=? WHERE pkey=? AND b_sec=?"):
+                    self.db.execute(q, (name, pkey, sec))
+                self._alias(pkey, sec, None, name, None)
+                return
+            for q in ("UPDATE tag_topics SET name=?, own=1 WHERE pkey=? AND sec=? AND name=?",
+                      "UPDATE session_tags SET topic=? WHERE pkey=? AND sec=? AND topic=?",
+                      "UPDATE tag_hide SET topic=? WHERE pkey=? AND sec=? AND topic=?",
+                      "UPDATE tag_keep SET a_topic=? WHERE pkey=? AND a_sec=? AND a_topic=?",
+                      "UPDATE tag_keep SET b_topic=? WHERE pkey=? AND b_sec=? AND b_topic=?"):
+                self.db.execute(q, (name, pkey, sec, topic))
+            self._alias(pkey, sec, topic, sec, name)
+
+    def tag_merge(self, pkey, sec, topic, to_sec, to_topic=None):
+        """The owner merges a section into another (topic and to_topic None) — its topics move along, one of the same
+        name becomes one — or a topic into another topic, in its section or any other. The tasks move, the merged tag
+        goes, its name stays as an alias; the one merged into is the owner's now."""
+        with self.tx():
+            if topic is None:
+                into = {G.key(r["name"]): r["name"] for r in
+                        self.db.execute("SELECT name FROM tag_topics WHERE pkey=? AND sec=?", (pkey, to_sec))}
+                for r in self.db.execute("SELECT name FROM tag_topics WHERE pkey=? AND sec=?", (pkey, sec)).fetchall():
+                    same = into.get(G.key(r["name"]))
+                    if same:
+                        self.db.execute("UPDATE session_tags SET sec=?, topic=? WHERE pkey=? AND sec=? AND topic=?",
+                                        (to_sec, same, pkey, sec, r["name"]))
+                        self.db.execute("DELETE FROM tag_topics WHERE pkey=? AND sec=? AND name=?", (pkey, sec, r["name"]))
+                        self.db.execute("DELETE FROM tag_hide WHERE pkey=? AND sec=? AND topic=?", (pkey, sec, r["name"]))
+                    else:
+                        self.db.execute("UPDATE tag_topics SET sec=? WHERE pkey=? AND sec=? AND name=?", (to_sec, pkey, sec, r["name"]))
+                        self.db.execute("UPDATE tag_hide SET sec=? WHERE pkey=? AND sec=? AND topic=?", (to_sec, pkey, sec, r["name"]))
+                self.db.execute("UPDATE session_tags SET sec=? WHERE pkey=? AND sec=?", (to_sec, pkey, sec))
+                self.db.execute("DELETE FROM tag_secs WHERE pkey=? AND name=?", (pkey, sec))
+                self.db.execute("DELETE FROM tag_hide WHERE pkey=? AND sec=?", (pkey, sec))
+                self.db.execute("DELETE FROM tag_keep WHERE pkey=? AND (a_sec=? OR b_sec=?)", (pkey, sec, sec))
+                self.tag_own(pkey, to_sec)
+                self._alias(pkey, sec, None, to_sec, None)
+                return
+            self.db.execute("UPDATE session_tags SET sec=?, topic=? WHERE pkey=? AND sec=? AND topic=?",
+                            (to_sec, to_topic, pkey, sec, topic))
+            self.db.execute("DELETE FROM tag_topics WHERE pkey=? AND sec=? AND name=?", (pkey, sec, topic))
+            self.db.execute("DELETE FROM tag_hide WHERE pkey=? AND sec=? AND topic=?", (pkey, sec, topic))
+            self.db.execute("DELETE FROM tag_keep WHERE pkey=? AND (a_sec=? AND a_topic=? OR b_sec=? AND b_topic=?)",
+                            (pkey, sec, topic, sec, topic))
+            self.tag_own(pkey, to_sec, to_topic)
+            self._alias(pkey, sec, topic, to_sec, to_topic)
+
+    def tag_prune(self, pkey):
+        """Tags Claude made that no task has any more go by themselves; the owner's stay until hidden."""
+        self.db.execute("DELETE FROM tag_topics WHERE pkey=? AND own=0 AND NOT EXISTS (SELECT 1 FROM session_tags s "
+                        "WHERE s.pkey=tag_topics.pkey AND s.sec=tag_topics.sec AND s.topic=tag_topics.name)", (pkey,))
+        self.db.execute("DELETE FROM tag_secs WHERE pkey=? AND own=0 AND NOT EXISTS (SELECT 1 FROM session_tags s "
+                        "WHERE s.pkey=tag_secs.pkey AND s.sec=tag_secs.name) AND NOT EXISTS (SELECT 1 FROM tag_topics t "
+                        "WHERE t.pkey=tag_secs.pkey AND t.sec=tag_secs.name)", (pkey,))
 
     def map_msg(self, msg, sid, kind):
         self.db.execute("INSERT OR REPLACE INTO msgs VALUES(?,?,?,?)", (msg, sid, kind, time.time()))

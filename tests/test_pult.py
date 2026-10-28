@@ -1286,6 +1286,53 @@ class TagsTest(unittest.TestCase):
                          ("Прошивка", "Т3", False, False))
         self.assertEqual(G.place(crowded, {"sec": "Прошивка", "topic": "Ещё"}), ("Прошивка", None, False, False))
 
+    def test_resolve(self):
+        # T2: an old name — renamed or merged by the owner — lands on the tag that took its place, along a chain; a
+        # name in the list is itself; the model's and a hashtag's words go through it
+        v = self.VOCAB
+        alias = {("сеть", ""): ("Связь", None), ("связь", ""): ("Прошивка", None),          # Сеть → Связь → Прошивка
+                 ("прошивка", "обновление по сети"): ("Прошивка", "Wi-Fi"),
+                 ("корпус", "рама"): ("Корпус", "Прочность")}
+        self.assertEqual(G.resolve(v, alias, "Сеть", "калибровка"), ("Прошивка", "калибровка"))
+        self.assertEqual(G.resolve(v, alias, "Прошивка", "Обновление по сети"), ("Прошивка", "Wi-Fi"))
+        self.assertEqual(G.resolve(v, alias, "сеть", "Обновление по сети"), ("Прошивка", "Wi-Fi"))
+        self.assertEqual(G.resolve(v, alias, "Корпус", "Крепления"), ("Корпус", "Крепления"))      # no alias: as it is
+        self.assertEqual(G.resolve(v, None, "Сеть", None), ("Сеть", None))
+        self.assertEqual(G.place(v, {"sec": "Сеть", "topic": "Обновление по сети"}, alias=alias), ("Прошивка", "Wi-Fi", False, False))
+        self.assertEqual(G.place(v, {"sec": "Корпус", "topic": "рама"}, alias=alias), ("Корпус", "Прочность", False, False))
+        self.assertEqual(G.find(v, "обновление_по_сети", alias)[2]["n"], "Wi-Fi")
+        self.assertEqual(G.find(v, "Сеть", alias)[1]["n"], "Прошивка")
+        self.assertIsNone(G.find(v, "Маркетинг", alias))
+        # a live name never follows an alias, even a stale one
+        self.assertEqual(G.resolve(v, {("прошивка", ""): ("Корпус", None)}, "Прошивка", None), ("Прошивка", None))
+
+    def test_tidy(self):
+        # T2: the model's offers to merge two tags — as the list has them, both of one kind, never kept apart or hidden
+        v = [{"n": "Прошивка", "c": 0, "topics": [{"n": "Wi-Fi"}, {"n": "Обновление по сети"}, {"n": "Калибровка"}]},
+             {"n": "Корпус", "c": 1, "topics": [{"n": "Прочность"}]}, {"n": "Рама", "c": 2, "topics": []}]
+        uses = {("Прошивка", None): 3, ("Прошивка", "Wi-Fi"): 1, ("Прошивка", "Обновление по сети"): 2, ("Корпус", None): 1}
+        req = G.tidy_request("Принтер", v, uses, {frozenset({("Корпус", None), ("Рама", None)})})
+        for part in ("- Прошивка (3): Wi-Fi (1), Обновление по сети (2), Калибровка (0)", "- Рама (0): —", "- Корпус — Рама"):
+            self.assertIn(part, req)
+        p = lambda a, b: {"a": {"sec": a[0], "topic": a[1]}, "keep": {"sec": b[0], "topic": b[1]}}
+        d = {"pairs": [p(("прошивка", "wi-fi"), ("Прошивка", "обновление по сети")),     # the list's spelling
+                       p(("Корпус", ""), ("Рама", "")),                                  # kept apart
+                       p(("Прошивка", "Калибровка"), ("Прошивка", "Калибровка")),        # one tag twice
+                       p(("Прошивка", ""), ("Корпус", "Прочность")),                     # a section and a topic
+                       p(("Прошивка", "Нет такой"), ("Прошивка", "Калибровка")),         # not in the list
+                       p(("Прошивка", "Калибровка"), ("Прошивка", "Wi-Fi"))]}            # Wi-Fi is in a pair already
+        kept = {frozenset({("Корпус", None), ("Рама", None)})}
+        self.assertEqual(G.tidy_pairs(d, v, kept), [[("Прошивка", "Wi-Fi"), ("Прошивка", "Обновление по сети")]])
+        self.assertEqual(G.tidy_pairs(d, v, kept, {("Прошивка", None)}), [])            # its section hidden
+        self.assertEqual(G.tidy_pairs(d, v), [[("Прошивка", "Wi-Fi"), ("Прошивка", "Обновление по сети")], [("Корпус", None), ("Рама", None)]])
+        for bad in (None, "x", {}, {"pairs": "x"}, {"pairs": [1, None]}):
+            self.assertEqual(G.tidy_pairs(bad, v), [], bad)
+        self.assertNotEqual(G.sig(v), G.sig(v[:2]))
+        self.assertEqual(G.sig(v), G.sig(list(reversed(v))))
+        o = G.options("ru", TMP, G.TIDY_SYSTEM, G.TIDY_SCHEMA)
+        self.assertIn("never a section and a topic", o.system_prompt)
+        self.assertEqual(o.output_format["schema"]["required"], ["pairs"])
+
     def test_fresh_and_parse(self):
         now = time.time()
         self.assertTrue(G.is_fresh({"own": False, "ts": now - 60}, 1, now))
@@ -3076,7 +3123,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         Path(TP).parent.mkdir(parents=True, exist_ok=True)
         Path(TP).write_text(tline("user", "Почини калибровку") + "\n")
         self.store.tag_add(PKEY, "Прошивка", "Калибровка", ts=time.time() - 3 * 86400)
-        self.store.tag_add(PKEY, "Корпус", None, ts=time.time() - 3 * 86400)
+        self.store.tag_add(PKEY, "Корпус", None, own=True, ts=time.time() - 3 * 86400)     # the owner's: stays without tasks
         # without the model: no request for tags; an owner's hashtag still works — from the list, or a section of its own
         await run_hook(ev("UserPromptSubmit", prompt="Почини стол #калибровка"))
         await until(lambda: self.store.session_tag(SID) is not None)
@@ -3142,6 +3189,116 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         fresh = {g["n"]: g["fresh"] for g in info["tags"]}
         # the topic the model made a moment ago, one task has it: new; the section the owner once picked: never again
         self.assertEqual(fresh, {"Голос": False, "Распознавание": True})
+
+    async def test_tags_screen(self):
+        # T2: the project's tags screen — counts over the whole project, the busiest of the last 30 days first; the
+        # owner keeps, renames, colours, hides, merges; Claude's old words land on the new names; what no task has
+        # goes by itself; Claude's offers to merge, and the pairs kept apart
+        st, now = self.store, time.time()
+        S = ["%08x-0000-4000-8000-%012x" % (0x30000000 + i, i) for i in range(11)]
+        tags = [("Прошивка", "Калибровка"), ("Прошивка", "Wi-Fi"), ("Прошивка", "Обновление по сети"),
+                ("Корпус", "Прочность"), ("Корпус", "Прочность"), ("Корпус", None), ("Маркетинг", "Выставка"),
+                ("Механика", "Прочность"), ("Механика", "Ремни"), ("Слайсер", "Профили")]
+        for sid, (s, t) in zip(S, tags):
+            st.tag_add(PKEY, s, t, ts=None if s == "Маркетинг" else now - 3 * 86400)
+            st.set_session_tag(sid, PKEY, s, t, False)
+        st.db.execute("UPDATE session_tags SET ts=? WHERE sid IN (?,?,?,?,?,?)", (now - 40 * 86400, *S[3:6], *S[7:10]))
+        d = await self.p.api_tags(PKEY)
+        self.assertEqual([(s["n"], s["cnt"]) for s in d["secs"]],
+                         [("Прошивка", 3), ("Маркетинг", 1), ("Корпус", 3), ("Механика", 2), ("Слайсер", 1)])
+        self.assertEqual([(t["n"], t["cnt"]) for t in d["secs"][2]["topics"]], [("Прочность", 2)])
+        fresh = {t["n"]: t["fresh"] for s in d["secs"] for t in s["topics"]}
+        self.assertEqual((fresh["Выставка"], fresh["Калибровка"]), (True, False))      # Claude made it a moment ago
+        self.assertEqual((d["name"], d["hidden"], d["sug"], d["tidy"]), ("proj", [], [], False))
+        edit = self.p.api_tags_edit
+        d = await edit(PKEY, "keep", "маркетинг", "выставка")                         # any case: the list's names
+        self.assertFalse(d["secs"][1]["topics"][0]["fresh"])
+        # rename: the tasks follow; a name another tag has — offered to merge, nothing changed
+        await edit(PKEY, "rename", "Корпус", name="  рама ")
+        self.assertEqual([st.session_tag(s)["sec"] for s in S[3:6]], ["Рама"] * 3)
+        d = await edit(PKEY, "rename", "Рама", name="механика")
+        self.assertEqual(d["exists"], {"sec": "Механика", "topic": None})
+        d = await edit(PKEY, "rename", "Прошивка", "Калибровка", name="калибровка стола")
+        self.assertEqual(st.session_tag(S[0])["topic"], "Калибровка стола")
+        self.assertEqual(await edit(PKEY, "rename", "Прошивка", "Wi-Fi", name="обновление по сети"),
+                         dict(await self.p.api_tags(PKEY), exists={"sec": "Прошивка", "topic": "Обновление по сети"}))
+        # colour: a section's, one of eight
+        await edit(PKEY, "color", "Рама", c=5)
+        self.assertEqual(next(s["c"] for s in st.tag_vocab(PKEY) if s["n"] == "Рама"), 5)
+        for bad in (dict(c=8), dict(c="1"), dict(c=True), dict(topic="Прочность", c=1)):
+            with self.assertRaises(ValueError):
+                await edit(PKEY, "color", "Рама", **bad)
+        # hide: the tag stays on the task, but not in its rows, the project's bar, the hashtags; back — the same way
+        d = await edit(PKEY, "hide", "Маркетинг")
+        self.assertEqual(d["hidden"], [{"sec": "Маркетинг", "topic": None, "c": 2, "cnt": 1}])
+        self.assertEqual((self.p.tags_of(S[6]), self.p.hashtag_line(S[6]), st.session_tag(S[6])["sec"]), ([], "", "Маркетинг"))
+        self.assertNotIn("Маркетинг", [g["n"] for g in self.p.tag_list(PKEY)])
+        await edit(PKEY, "show", "Маркетинг")
+        self.assertEqual(self.p.hashtag_line(S[6]), "#маркетинг #выставка")
+        await edit(PKEY, "hide", "Прошивка", "Wi-Fi")
+        self.assertEqual([g["n"] for g in self.p.tags_of(S[1])], ["Прошивка"])         # a hidden topic: the section alone
+        self.assertNotIn("Wi-Fi", [t["n"] for g in self.p.tag_list(PKEY) for t in g["topics"]])
+        # merge: a topic into a topic, a section into a section (a topic of the same name becomes one)
+        await edit(PKEY, "merge", "Прошивка", "Wi-Fi", to_sec="Прошивка", to_topic="Обновление по сети")
+        self.assertEqual((st.session_tag(S[1])["topic"], st.tag_hidden(PKEY)), ("Обновление по сети", set()))
+        d = await edit(PKEY, "merge", "Рама", to_sec="Механика")
+        self.assertEqual([(st.session_tag(s)["sec"], st.session_tag(s)["topic"]) for s in S[3:6]],
+                         [("Механика", "Прочность"), ("Механика", "Прочность"), ("Механика", None)])
+        self.assertEqual([(s["n"], s["cnt"], [t["n"] for t in s["topics"]]) for s in d["secs"] if s["n"] == "Механика"],
+                         [("Механика", 5, ["Прочность", "Ремни"])])
+        self.assertNotIn("Рама", [s["n"] for s in st.tag_vocab(PKEY)])
+        for bad in (dict(op="merge", sec="Механика", to_sec="Прошивка", to_topic="Обновление по сети"),   # two kinds
+                    dict(op="merge", sec="Механика", to_sec="Механика"), dict(op="merge", sec="Корпус", to_sec="Механика"),
+                    dict(op="rename", sec="Механика", name=" / "), dict(op="what", sec="Механика")):
+            with self.assertRaises(ValueError, msg=bad):
+                await edit(PKEY, **bad)
+        # Claude's old words — and a hashtag's — land on the new names, along the chain Корпус → Рама → Механика
+        lv = self.p.stub(S[10], PKEY)
+        self.assertTrue(self.p.tags_set(lv, {"sec": "Корпус", "topic": "Прочность"}))
+        self.assertEqual((st.session_tag(S[10])["sec"], st.session_tag(S[10])["topic"]), ("Механика", "Прочность"))
+        self.p.tags_set(lv, {"sec": "прошивка", "topic": "wi-fi"})
+        self.assertEqual(st.session_tag(S[10])["topic"], "Обновление по сети")
+        self.assertTrue(self.p.tag_by_owner(lv, ["калибровка"]))
+        self.assertEqual((st.session_tag(S[10])["topic"], st.session_tag(S[10])["own"]), ("Калибровка стола", 1))
+        # what no task has goes: Claude's own tags by themselves, the owner's stay
+        st.set_session_tag(S[9], PKEY, "Механика", "Ремни", False)
+        d = await self.p.api_tags(PKEY)
+        self.assertNotIn("Слайсер", [s["n"] for s in d["secs"]])
+        self.assertIn("Прошивка", [s["n"] for s in st.tag_vocab(PKEY)])
+        # the owner picks a hidden tag for a task in its sheet: it is seen again
+        await edit(PKEY, "hide", "Маркетинг")
+        st.touch_session(S[6], PKEY)
+        await self.p.api_tag(S[6], sec="маркетинг", topic="Выставка")
+        self.assertEqual(st.tag_hidden(PKEY), set())
+        # Claude's offers to merge: looked for with the model on, once per change of the names; a pair kept apart
+        # never comes back
+        await self.p.api_prefs(brief=True)
+        asked = []
+
+        async def model(text, lang, cwd):
+            asked.append(text)
+            return {"pairs": [{"a": {"sec": "Прошивка", "topic": "Калибровка стола"}, "keep": {"sec": "Прошивка", "topic": "Обновление по сети"}},
+                              {"a": {"sec": "Нет", "topic": ""}, "keep": {"sec": "Механика", "topic": ""}}]}
+        with mock.patch.object(pultd.G, "tidy", model):
+            d = await self.p.api_tags(PKEY)
+            self.assertTrue(d["tidy"])
+            await until(lambda: not self.p.tidying)
+            d = await self.p.api_tags(PKEY)
+            self.assertEqual(d["sug"], [{"a": {"sec": "Прошивка", "topic": "Калибровка стола"},
+                                         "b": {"sec": "Прошивка", "topic": "Обновление по сети"}, "c": 0}])
+            self.assertIn("- Механика (6): Прочность (3), Ремни (2)", asked[0])
+            self.assertEqual((len(asked), d["tidy"]), (1, False))                           # the same names: not asked again
+            d = await edit(PKEY, "apart", "Прошивка", "Калибровка стола", to_sec="Прошивка", to_topic="Обновление по сети")
+            self.assertEqual(d["sug"], [])
+            self.assertEqual(st.tag_kept(PKEY), {frozenset({("Прошивка", "Калибровка стола"), ("Прошивка", "Обновление по сети")})})
+            await edit(PKEY, "rename", "Прошивка", "Калибровка стола", name="Калибровка")    # the pair follows a rename
+            self.assertEqual(st.tag_kept(PKEY), {frozenset({("Прошивка", "Калибровка"), ("Прошивка", "Обновление по сети")})})
+            await until(lambda: len(asked) == 2 and not self.p.tidying)                      # the names changed: once more
+        self.assertIn("- Прошивка / Калибровка — Прошивка / Обновление по сети", asked[1])
+        # the project's screen knows the project has a list, for the way to it
+        self.assertEqual((await self.p.api_project(PKEY))["tags_n"], len(st.tag_vocab(PKEY)))
+        with self.assertRaises(ValueError):
+            await self.p.api_tags("-nowhere-at-all")
 
     async def test_project_and_outcome(self):
         # the project's screen: what waits for the owner, what runs, today's outcomes; the session shows its outcome
