@@ -52,7 +52,9 @@ you're neither in the app nor at the computer. Reminders on long turns; warnings
   the switch on, Claude sorts its earlier tasks that have no tags (the latest 200, twenty at a time, in the background;
   "Claude is sorting the earlier tasks: 40 of 120" under its sections) — once a project. **Sort them again** at the
   bottom of its tags asks first, then makes the list anew from the README, CLAUDE.md, the latest tasks and your own
-  tags, and sorts every task you didn't tag yourself into it — about a minute.
+  tags, and sorts every task you didn't tag yourself into it — about a minute. Every tag you pick yourself — in a task's
+  sheet, by a `#tag`, by a merge — is an example for Claude: it sees your latest six in the project and tags tasks like
+  them the same way; **Claude picks them** in the sheet takes the example back.
 - **Resources**: Limits — the curve of each limit against the even pace, the forecast (on pace, under: how many hours
   of a session's work would go unused, over: when it runs out), who spent it; Computer — the processor, the memory
   and each Claude session's commands.

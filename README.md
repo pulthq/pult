@@ -82,7 +82,8 @@ Every task gets a section of the project and a topic in it, from the same small 
 nothing to set up. Tap a section to see only its tasks; tap the tags to correct them. In Telegram they end each result
 as hashtags — a tap shows the topic's other tasks. The tag button beside the sections opens the project's list: rename,
 recolour, merge two into one, hide — and Claude offers to merge two tags that name the same thing. A project's earlier
-tasks get their tags too, once, the first time you open it; **Sort them again** makes the list anew.
+tasks get their tags too, once, the first time you open it; **Sort them again** makes the list anew. Your corrections
+teach Claude: it tags tasks like them the same way.
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="media/f-tags.en.dark.png"><img src="media/f-tags.en.png" width="330" alt="A project in the app: its sections on top with how many tasks in each, a task that waits for you with its tags and ready replies, the tasks running"></picture></p>
 

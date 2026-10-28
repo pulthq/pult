@@ -82,8 +82,8 @@ def request(prompt, reply, bg=(), tags=None):
 
 
 TAGS_PART = """
-- "sec" and "topic": the task's tags in its project — the <project_tags>, <current_tags>, <task_title> and <files>
-  parts of the input are for these only — by the rules that follow.
+- "sec" and "topic": the task's tags in its project — the <project_tags>, <owner_examples>, <current_tags>,
+  <task_title> and <files> parts of the input are for these only — by the rules that follow.
 
 """
 

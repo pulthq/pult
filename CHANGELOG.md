@@ -4,6 +4,14 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.17 — 2026-10-28
+
+- **Your corrections teach Claude.** When you pick a task's tags yourself — in its sheet, with a `#tag` in a request,
+  or by merging two tags on the project's tags screen — that choice becomes an example: Claude sees your latest six
+  in the project whenever it tags a task, sorts the earlier ones or makes a new list, and tags tasks like them the
+  same way, even where it would have chosen otherwise. Giving a task back to Claude takes its example back; the
+  examples follow your renames and merges, and a project keeps the latest fifty.
+
 ## 0.18.16 — 2026-10-28
 
 - **A project's earlier tasks get their tags too.** The first time you open a project in the app with the result

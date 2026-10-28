@@ -51,6 +51,7 @@ CTX_OUT_CAP = 20000
 TAGS_RECENT = 30 * 86400   # s: the tags screen puts first the tags of the tasks of these last days (stage T, T2)
 TIDY_RETRY = 600           # s: the model gave nothing on a project's list — not asked about the same names before this
 TAG_NOTE = 120             # s: the tags screen tells this long that a "Sort them again" changed nothing
+MERGE_EXAMPLES = 2         # the latest tasks of a tag the owner merged into another: examples of where such tasks go
 
 
 def log(*a):
@@ -445,6 +446,7 @@ class Api:
             if cur and cur["own"]:
                 self.store.set_session_tag(sid, lv.pkey, cur["sec"], cur["topic"], False)
                 log("tags %s: back to Claude" % sid[:8])
+            self.store.tag_unexample(lv.pkey, sid)              # no longer the owner's choice: not their example
             if self.prefs()["brief"]:
                 rec = self.attn.rec.get(sid) or {}
                 asyncio.create_task(self.tag_task(lv, lv.title or "", reply=rec.get("line")))
@@ -467,6 +469,7 @@ class Api:
             self.store.tag_add(lv.pkey, name, tp, own=True)
             self.store.set_session_tag(sid, lv.pkey, name, tp, True)
             self.tags_prune(lv.pkey)
+            self.tag_example_soon(lv.pkey, sid)                 # the model sees it when it tags the project's next tasks
             log("tags %s: %s%s (the owner's)" % (sid[:8], name, " / " + tp if tp else ""))
         self.changed(sid)
         return {"tags": self.tags_of(sid), "tagset": self.tag_list(lv.pkey), "auto": bool(auto)}
@@ -560,7 +563,12 @@ class Api:
             if op == "apart":
                 self.store.tag_keep(pkey, me, them)
             else:
+                moved = [r["sid"] for r in self.store.db.execute(       # its latest tasks: examples of where such go now
+                    "SELECT sid FROM session_tags WHERE pkey=? AND sec=? AND (? IS NULL OR topic=?) ORDER BY ts DESC LIMIT ?",
+                    (pkey, me[0], me[1], me[1], MERGE_EXAMPLES))]
                 self.store.tag_merge(pkey, me[0], me[1], them[0], them[1])
+                for sid in moved:
+                    self.tag_example_soon(pkey, sid)
                 log("tags %s: %s merged into %s" % (label, said, them[0] + (" / " + them[1] if them[1] else "")))
         elif op in ("hide", "show"):
             self.store.tag_hide(pkey, me[0], me[1], op == "hide")
@@ -695,7 +703,8 @@ class Api:
                 dirs = await asyncio.to_thread(G.hints, path)
                 titles = [t for t in (x.custom_title or x.summary or getattr(x, "first_prompt", None) for x in items) if t]
                 async with self.brief_sem:
-                    d = await G.make_list(G.list_request(label, readme, claude_md, titles, own, dirs), self.lang(), self.D.BRIEF_DIR)
+                    d = await G.make_list(G.list_request(label, readme, claude_md, titles, own, dirs, self.tag_examples_for(pkey)),
+                                          self.lang(), self.D.BRIEF_DIR)
                 fresh = G.new_list(d)
                 if not fresh:
                     self.tag_note[pkey] = (time.time(), self.t("tags.e.list"))
@@ -725,7 +734,8 @@ class Api:
                 async with self.brief_sem:
                     vocab = self.store.tag_vocab(pkey)
                     dirs = await asyncio.to_thread(G.hints, path) if len(vocab) < G.HINT_UNDER else []
-                    d = await G.batch(G.batch_request(label, vocab, tasks, dirs), self.lang(), self.D.BRIEF_DIR)
+                    d = await G.batch(G.batch_request(label, vocab, tasks, dirs, self.tag_examples_for(pkey)), self.lang(),
+                                      self.D.BRIEF_DIR)
                 if d is None:
                     self.tag_failed[pkey], cut = time.time(), True
                     log("tags %s: no answer from the model on a batch — %d of %d tasks sorted, the rest later"
