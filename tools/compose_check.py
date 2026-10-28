@@ -5,7 +5,7 @@ gone. And a session read from its end keeps the project, the session and its sta
 to the header, the bar goes. A session has no tab bar: Home is in its header and in the bar, and a session started from
 the form replaces the form in the history — Back leads where the form was opened from. On Android a picker that
 doesn't open (Telegram there loses the gallery's answer now and then, and the window opens none after it) gets the
-app's word in three seconds — Close keeps the screen and the words for the next start — and the journal has it.
+app's word on the next tap — Close keeps the screen and the words for the next start — and the journal has each end.
   STAND_LANG=ru HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out &
   ~/.local/share/pult/venv/bin/python tools/compose_check.py /tmp/stand.out [out_dir]
 Chrome is not Telegram: whether a phone's gallery or file manager comes back with the file is seen only on the phone.
@@ -212,11 +212,12 @@ async def main():
                     await until("location.hash === %s && !document.querySelector('.form')" % json.dumps(proj)), await js("location.hash"))
 
             # Android: Telegram there now and then loses the gallery's answer, and the window opens no picker after it
-            # (2026-10-28). A tap that leaves the page as it was — here the picker is intercepted and never answered,
-            # and the page keeps its focus — gets the app's word in three seconds; Close keeps the screen and the words
-            # for the next start, which comes back to them. A picker that takes the page's focus is left alone
+            # (2026-10-28). The page sees no picker open — on the owner's phone it is a sheet over Telegram, no blur —
+            # only each one end: a file ("change") or closed empty ("cancel"). So a tap is left alone while its picker may
+            # be open; a second tap while the first one's never ended (here: intercepted, never answered — as a locked
+            # queue) gets the app's word at once, and so does a "cancel" sooner than a person could close a picker.
+            # Close keeps the screen and the words for the next start, which comes back to them
             journal = lambda: open(sys.argv[1], encoding="utf-8", errors="replace").read()
-            await cmd("Emulation.setFocusEmulationEnabled", enabled=True)
             await cmd("Page.navigate", url="about:blank")
             await cmd("Page.navigate", url=URLS["SESS"])
             verdict("Android (the stand's links say so): the session's composer", await until("!!document.querySelector('.composer .attach button.clip')", 150))
@@ -226,13 +227,18 @@ async def main():
             await tap(".composer .attach button.clip")
             await until("document.querySelectorAll('.attach-menu .opt').length === 2")
             await tap(".attach-menu .opt", 0)
-            verdict("a picker that didn't open: the app says so in three seconds", await until("window.__popups.length === 1", 60))
+            await asyncio.sleep(2)
+            verdict("a tap whose picker may be open: no word, however long", await js("window.__popups.length") == 0)
+            await tap(".composer .attach button.clip")
+            await until("document.querySelectorAll('.attach-menu .opt').length === 2")
+            await tap(".attach-menu .opt", 0)
+            verdict("a second tap while the first one's picker never came back: the app says so", await until("window.__popups.length === 1", 20))
             pop = await js("window.__popups[0]") or {}
             verdict("... Telegram's popup: what happened, Close and Cancel",
                     pop.get("title") == "Telegram не открыл выбор файла" and "открой снова" in (pop.get("message") or "")
                     and [b.get("text") or b.get("type") for b in pop.get("buttons") or []] == ["Закрыть Пульт", "cancel"]
                     and len(pop.get("message") or "") <= 256, pop)
-            verdict("... the journal has it", await until_py(lambda: "app: file picker did not open — nothing happened (picture" in journal()))
+            verdict("... the journal has it", await until_py(lambda: "app: file picker did not open — the last tap's picker never came back" in journal()))
             await js("window.__pcb('close')")
             kept = await js("JSON.parse(localStorage.getItem('pult.reopen') || 'null')") or {}
             verdict("Close keeps the screen and the words, and closes the window",
@@ -247,21 +253,30 @@ async def main():
                     await until("(document.querySelector('.toast') || {}).textContent === 'Окно новое — выбери файл ещё раз'", 40))
             verdict("... once", await js("localStorage.getItem('pult.reopen') === null"))
             await shot("8-reopened.png")
+            # a picker closed empty, as a person closes it: no word, and the next tap opens a picker again
             await js(SPY)
             await tap(".composer .attach button.clip")
             await until("document.querySelectorAll('.attach-menu .opt').length === 2")
             await tap(".attach-menu .opt", 1)
-            await js("window.dispatchEvent(new Event('blur'))")
-            await asyncio.sleep(3.5)
-            verdict("a picker that took the page's focus: no word", await js("window.__popups.length") == 0)
-            verdict("... the journal has it opened", await until_py(lambda: "app: file picker opened (file" in journal()))
+            await asyncio.sleep(0.3)
+            await js("document.querySelectorAll('.composer .attach input')[1].dispatchEvent(new Event('cancel'))")
+            verdict("a picker closed empty: no word", await js("window.__popups.length") == 0)
+            verdict("... the journal has it", await until_py(lambda: "app: file picker came back empty (file" in journal()))
+            # Telegram refusing: "cancel" at once
+            await js("(() => { const el = document.querySelectorAll('.composer .attach input')[0]; el.click();"
+                     " setTimeout(() => el.dispatchEvent(new Event('cancel')), 50); })()")
+            verdict("a picker cancelled at once — Telegram refused: the app says so", await until("window.__popups.length === 1", 20))
+            verdict("... the journal has it", await until_py(lambda: "app: file picker did not open — Telegram refused it (picture" in journal()))
             # the new task form's buttons (labels round the inputs) are watched the same way
             await cmd("Page.navigate", url="about:blank")
             await cmd("Page.navigate", url=URLS["NEW"])
             await until("document.querySelectorAll('.attach-row label.clip').length === 2", 150)
             await js(SPY)
             await tap(".attach-row label.clip", 0)
-            verdict("the new task form's Picture: the same word", await until("window.__popups.length === 1", 60))
+            await asyncio.sleep(1.2)
+            verdict("the new task form: one tap — no word", await js("window.__popups.length") == 0)
+            await tap(".attach-row label.clip", 0)
+            verdict("... a second tap while the first never came back — the same word", await until("window.__popups.length === 1", 20))
             verdict("no script errors", not errors, errors)
     finally:
         p.kill()

@@ -86,35 +86,46 @@ const PICKERS = [["pic", "image/*", "image"], ["file", undefined, "file"]];
 // Telegram on Android now and then loses the gallery's answer. The page's file chooser then waits for it for good, and
 // the webview opens no other till the window closes: Chromium opens choosers one by one, the next after the last one
 // ended (ChromeClientImpl::OpenFileChooser). The owner's window was 3 h old and opened nothing, a reopened one picked at
-// once (2026-10-28); a reload keeps the webview, and the wait with it. So a tap that leaves the page as it was — no
-// blur, still on the screen, no file — means nothing opened: the app says so and offers to close the window, keeping
-// the screen and the words typed for the next start (core/nav.js). Only on Android: elsewhere a picker that opens and
-// leaves the page focused would be taken for one that didn't
-const WATCH_MS = 3000;
+// once (2026-10-28); a reload keeps the webview, and the wait with it. The page sees no picker open — the owner's
+// gallery is a sheet over Telegram: no blur, nothing leaves the screen (the first rule, "no sign in 3 s — none
+// opened", took every open picker for none, 0.18.18). It sees each one end: a file ("change") or closed empty
+// ("cancel"). So the rule is Chromium's own: a tap while the last tap's picker never ended finds the queue locked —
+// the app says so and offers to close the window, keeping the screen and the words typed for the next start
+// (core/nav.js); and a "cancel" sooner than anyone could close a picker is Telegram refusing to open one. Only on
+// Android, where Telegram loses the answers
+const RETRY_MS = 1500;          // a second tap sooner than this is a double tap: the first one's picker is on its way
+const REFUSED_MS = 500;         // no one closes a picker this fast
 const onAndroid = () => !!(tg && /^android/.test(tg.platform || ""));
+let lastPick = null;            // the last tap on a picker: {t0, done}
+function pickerNote(kind, why, ms) {
+  const since = tg.initDataUnsafe && tg.initDataUnsafe.auth_date;
+  const cv = /Chrome\/(\d+)/.exec(navigator.userAgent || "");
+  api("picker", { kind, opened: why === "picked" || why === "closed", ms, why,
+    age: since ? Math.max(0, Math.round(Date.now() / 1000 - since)) : null, tgv: tg.version || "", cv: cv ? cv[1] : "" }).catch(() => {});
+}
+// → true: this tap must not ask Chromium for one more picker (it would only join the queue)
 function watchPicker(el, kind, keep) {
-  if (!onAndroid()) return;
-  const t0 = Date.now();
-  let left = 0, cancel = false;
-  const away = (e) => { if (!left && (e.type !== "blur" || e.target === window)) left = Date.now() - t0; };
-  const hid = (e) => { if (document.visibilityState === "hidden") away(e); };
-  const no = () => { cancel = true; };
-  addEventListener("blur", away);
-  document.addEventListener("visibilitychange", hid);
-  el.addEventListener("change", away);
-  el.addEventListener("cancel", no);
-  setTimeout(() => {
-    removeEventListener("blur", away);
-    document.removeEventListener("visibilitychange", hid);
-    el.removeEventListener("change", away);
-    el.removeEventListener("cancel", no);
-    const opened = !!left || document.visibilityState === "hidden" || !document.hasFocus();
-    const since = tg.initDataUnsafe && tg.initDataUnsafe.auth_date;
-    const cv = /Chrome\/(\d+)/.exec(navigator.userAgent || "");
-    api("picker", { kind, opened, ms: left, why: opened ? "" : cancel ? "cancel" : "silent",
-      age: since ? Math.max(0, Math.round(Date.now() / 1000 - since)) : null, tgv: tg.version || "", cv: cv ? cv[1] : "" }).catch(() => {});
-    if (!opened) stuck(keep);
-  }, WATCH_MS);
+  if (!onAndroid()) return false;
+  const now = Date.now();
+  if (lastPick && !lastPick.done) {
+    if (now - lastPick.t0 < RETRY_MS) return true;
+    lastPick.done = true;                        // said once: the next tap asks Chromium again
+    pickerNote(kind, "stuck", now - lastPick.t0);
+    stuck(keep);
+    return true;
+  }
+  const me = lastPick = { t0: now, done: false };
+  const end = (e) => {
+    el.removeEventListener("change", end);
+    el.removeEventListener("cancel", end);
+    if (me.done) return;
+    me.done = true;
+    const ms = Date.now() - me.t0;
+    if (e.type === "cancel" && ms < REFUSED_MS) { pickerNote(kind, "refused", ms); stuck(keep); } else pickerNote(kind, e.type === "change" ? "picked" : "closed", ms);
+  };
+  el.addEventListener("change", end);
+  el.addEventListener("cancel", end);
+  return false;
 }
 function stuck(keep) {
   const close = () => {
@@ -134,7 +145,7 @@ function Attach({ a, disabled, wide, keep }) {
   const [show, hide] = useOverlay(open, setOpen);
   const inputs = useRef({});
   // a label's tap and the menu's el.click() both come to the input as a click
-  const watch = (k) => (e) => watchPicker(e.currentTarget, k, keep);
+  const watch = (k) => (e) => { if (watchPicker(e.currentTarget, k, keep)) e.preventDefault(); };
   if (wide) return html`<div class="attach-row">${PICKERS.map(([k, accept, icon]) => html`<label key=${k} class=${"clip wide" + (off ? " off" : "")}>
     ${k === "pic" ? ic(icon, 20) : CLIP}<span>${t("attach." + k)}</span>
     <input type="file" accept=${accept} multiple disabled=${off} onClick=${watch(k)} onChange=${a.pick}/></label>`)}</div>`;
