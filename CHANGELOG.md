@@ -4,6 +4,18 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.13 — 2026-10-28
+
+- **A chat opens at its very end.** The session screen scrolled to its end before the room under the last message
+  was made for the message field — an observer set it a frame later — so now and then a chat opened a little above
+  its end, the last lines behind the field. The room is made first now.
+- **A background task that ends mid-turn leaves the session's list at once.** Its end reaches the running turn as a
+  note of its own, which Pult took for a message and passed by: the app's "in the background" and `pult busy` kept
+  the task until the turn was over. Now it goes when Claude Code tells of it — at once in a session Pult runs, at the
+  turn's next step in a VS Code tab (`tests/probe_bgmid.py`).
+- **The log says what the app's files were checked against** — the release, when the server takes releases
+  itself; it said "the deploy" either way.
+
 ## 0.18.12 — 2026-10-28
 
 - **For contributors: the app is modules all the way.** Its screens (`relay/web/static/screens/`: home, session,

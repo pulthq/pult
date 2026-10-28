@@ -700,11 +700,16 @@ class Web:
             return man.get("tag") or "?", man.get("mode") == "warn"
         return None, False
 
+    def expected(self):
+        """What the check holds the server's files against, in the log's words: a release, or a deploy's record."""
+        tag, _ = self.release_of()
+        return "release " + tag if tag else "the deploy"
+
     async def guard_once(self, http):
         bad = await self.check_files(http)
         if bad == [] and not self.checked:
             self.checked = True
-            log("app files on the server match the deploy")
+            log("app files on the server match %s" % self.expected())
         if bad == []:
             self.warned = None
         if bad and not self.locked:
@@ -719,12 +724,11 @@ class Web:
                     await self.p.files_alert(again, tag=tag, warn=True)
             elif again:
                 self.locked = ", ".join(again)
-                log("app files on the server differ from %s: %s — the app is closed"
-                    % ("release " + tag if tag else "the deploy", self.locked))
+                log("app files on the server differ from %s: %s — the app is closed" % (self.expected(), self.locked))
                 await self.kick_all("locked")
                 await self.p.files_alert(again, tag=tag)
         elif bad == [] and self.locked:
-            log("app files on the server match the deploy again — the app is open")
+            log("app files on the server match %s again — the app is open" % self.expected())
             self.locked = None
             await self.p.files_alert([])
 

@@ -82,7 +82,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.12"
+VERSION = "0.18.13"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -1045,6 +1045,11 @@ class Pult(Api, Parts):
             # "working 28 s" 19 min into a turn). The turn's result answers the latest message from Telegram
             lv.turn.reply_to = self.expect.get(sid) or lv.turn.reply_to
             lv.turn.last = time.time()
+            # a background task that ended meanwhile hands its note in the same way, at the turn's next step
+            # (tests/probe_bgmid.py, 2.1.300): it runs no more — it stayed listed till the turn's end (2026-10-28)
+            ended = {n["id"] for n in R.task_notes(ev.get("prompt"))}
+            if ended:
+                lv.bg = [b for b in lv.bg if b.get("id") not in ended]
             self.changed(sid)      # the app re-reads the session now: the message is in the transcript, read by Claude
             self.out_set(sid, "read", ev.get("prompt"))
         elif name == "UserPromptSubmit":

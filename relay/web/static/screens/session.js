@@ -294,9 +294,17 @@ function Session({ sid }) {
   const ref = useRef(s);
   ref.current = s;
   const bottom = useRef(null);
+  // the room under the last message for the composer over it: its height and a margin
+  const room = () => {
+    const el = comp.current, main = document.querySelector("main");
+    if (!el || !main) return;
+    main.style.paddingBottom = (el.offsetHeight + 12) + "px";
+    document.documentElement.style.setProperty("--composer-h", el.offsetHeight + "px");
+  };
   // the very bottom of the page, past the padding that keeps the last message above the composer (the end marker
-  // sits before that padding, so scrollIntoView stopped short)
-  const toBottom = () => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" });
+  // sits before that padding, so scrollIntoView stopped short) — that room made first: set a frame later by its
+  // observer, it came after the scroll now and then, and the chat opened a little above its end (ticks_check, 2026-10-28)
+  const toBottom = () => { room(); window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" }); };
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   // what this screen has just sent, until the computer's outbox has it (Q56): the clock at once, ✓ on the answer
@@ -343,10 +351,7 @@ function Session({ sid }) {
   useEffect(() => {
     const el = comp.current, main = document.querySelector("main");
     if (!el || !main || !window.ResizeObserver) return;
-    const ro = new ResizeObserver(() => {
-      main.style.paddingBottom = (el.offsetHeight + 12) + "px";
-      document.documentElement.style.setProperty("--composer-h", el.offsetHeight + "px");
-    });
+    const ro = new ResizeObserver(room);
     ro.observe(el);
     return () => { ro.disconnect(); main.style.paddingBottom = ""; };
   }, [!!s.info]);
