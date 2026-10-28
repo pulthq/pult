@@ -695,6 +695,25 @@ class UpdaterTest(unittest.TestCase):
         self.assertEqual((self.status()["state"], self.status()["why"]), ("fail", "network"))
         self.assertFalse((M.HOME / "failed.json").exists())
 
+    def test_its_report_follows_its_own_files(self):
+        # install.sh put in another updater or services, and the report still named the old ones: Settings kept asking
+        # for install.sh after it ran, until the next release (a live server, 2026-10-28). The next run names those that
+        # run now — the rest of the report as it was, its time too: the computer tells each report once, by its time
+        M = self.M
+        self.updater().run()                                          # no word from the computer yet: no report
+        self.assertFalse((M.HOME / "status.json").exists())
+        old = {"state": "done", "tag": "v0.18.0", "commit": self.shas["v0.18.0"], "have": "v0.18.0", "ts": 7,
+               "self": dict.fromkeys(M.OWN, "0" * 40)}
+        M.write(M.HOME / "status.json", old)
+        self.want("v0.18.0")
+        self.updater().run()
+        st = self.status()
+        self.assertEqual(st["self"], M.own_files())
+        self.assertEqual(dict(st, self=None), dict(old, self=None))
+        text = (M.HOME / "status.json").read_text()
+        self.updater().run()                                          # nothing changed since: the report stays
+        self.assertEqual((M.HOME / "status.json").read_text(), text)
+
     def test_it_enters_the_relays_socket(self):
         # on a socket the relay's /run/pult-relay lets in only the relay's group, and the updater asks there whether the
         # relay is up and the computer connected: outside the group it never heard, and refused every release with "the

@@ -4,6 +4,13 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.10 — 2026-10-28
+
+- **Settings stop asking for `install.sh` once it has run.** The server's updater names its own files in each
+  report, but wrote a report only when it took a release — so after `sudo bash deploy/relay/install.sh` put in a newer
+  updater, the relay's row kept asking for it until the next release. Now the updater's next look names the files that
+  run, the rest of the report as it was, and `install.sh` has it look when it ends.
+
 ## 0.18.9 — 2026-10-28
 
 - **A server on a socket takes releases by itself.** Its updater couldn't enter the relay's socket folder — only the

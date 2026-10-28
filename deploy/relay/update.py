@@ -420,6 +420,13 @@ class Updater:
                         say("the lock stayed taken for %d min — want.json is looked at when it changes" % (LOCK_WAIT // 60))
                         return 0
                     self.sleep(1)
+            last, own = read(HOME / "status.json", {}) or {}, own_files()
+            if last and last.get("self") != own:
+                # install.sh put in another updater or services, and the report still named the old ones: Settings
+                # kept asking for install.sh after it ran, until the next release (a live server, 2026-10-28). The
+                # same report otherwise, its time too — the computer tells each report once, by its time
+                write(HOME / "status.json", dict(last, self=own))
+                say("status: the updater's own files changed — the report says which run now")
             seen = None
             for _ in range(ROUNDS):
                 now = read(WANT, {}) or {}
