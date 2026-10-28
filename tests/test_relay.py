@@ -578,14 +578,33 @@ class UpdaterTest(unittest.TestCase):
             shutil.rmtree(Path(sock).parent, ignore_errors=True)
         with mock.patch.object(M, "HEALTH", "http://127.0.0.1:%d/pult/healthz" % srv.server_address[1]):
             self.assertIsNone(u.health())                                  # nobody there
-        # a second run while one runs: it leaves at once, the running one looks at want.json again when it ends
+        # a second run while the lock is taken — another run, or install.sh to its end: it waits its turn, then looks
+        # (it left at once, and a want.json the relay wrote meanwhile went unread — a live server, 2026-10-28)
         import fcntl
-        seen = []
+        seen, naps = [], []
         u.once = lambda: seen.append("once") or {}
+        held = open(M.HOME / "lock", "w")
+        fcntl.flock(held, fcntl.LOCK_EX)
+
+        def nap(s):
+            naps.append(s)
+            if len(naps) == 3:
+                held.close()                         # the other one is done
+        u.sleep = nap
+        self.assertEqual(u.run(), 0)
+        self.assertEqual(len(naps), 3)
+        self.assertIn("once", seen)
+        del u.sleep
+        # taken for good: it gives up after LOCK_WAIT (on a clock of its own here) and leaves want.json for its next change
+        seen.clear()
+        clock = [0.0]
+        u.now, u.sleep = (lambda: clock[0]), (lambda s: clock.__setitem__(0, clock[0] + s))
         with open(M.HOME / "lock", "w") as held:
             fcntl.flock(held, fcntl.LOCK_EX)
             self.assertEqual(u.run(), 0)
             self.assertEqual(seen, [])
+            self.assertGreaterEqual(clock[0], M.LOCK_WAIT)
+        del u.now, u.sleep
         # want.json changed while it ran: one more look; it keeps changing — at most ROUNDS
         self.want("v0.18.1")
 
