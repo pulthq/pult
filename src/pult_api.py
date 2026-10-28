@@ -224,9 +224,11 @@ class Api:
         return {"ok": True}
 
     async def api_picker(self, kind="pic", opened=True, ms=0, why="", age=None, tgv="", cv=""):
-        """A tap on Picture or File in the app on Android, three seconds on: did Telegram open the phone's picker. A
-        window Telegram kept for hours can lose the gallery's answer and open none after it (relay/web/static/ui/
-        pics.js); the journal tells how often, and whether only old windows. Every field is checked: it goes to the log."""
+        """How a tap on Picture or File in the app on Android ended: the picker came back with a file or empty, or it
+        never opened — the last tap's picker never came back, and Chromium opens the next only after it, or Telegram
+        refused at once. A window Telegram kept for hours can lose the gallery's answer and open none after it
+        (relay/web/static/ui/pics.js); the journal tells how often, and whether only old windows. Every field is
+        checked: it goes to the log. An app before 0.18.19 sends opened and why "", "cancel" or "silent"."""
         def whole(x, top):
             try:
                 return min(top, max(0, int(x)))
@@ -235,16 +237,20 @@ class Api:
 
         def took(sec):
             return "%d s" % sec if sec < 60 else "%d min" % (sec // 60) if sec < 3600 else "%.1f h" % (sec / 3600)
+        if why not in ("picked", "closed", "stuck", "refused"):
+            why = "picked" if opened else "refused" if why == "cancel" else "stuck"
         what = "picture" if kind == "pic" else "file"
+        secs = (whole(ms, 86400000) or 0) / 1000
         age = whole(age, 90 * 86400)
         old = "window %s old" % took(age) if age is not None else "window's age unknown"
-        if opened:
-            log("app: file picker opened (%s, %.1f s; %s)" % (what, (whole(ms, 60000) or 0) / 1000, old))
+        if why in ("picked", "closed"):
+            log("app: file picker came back %s (%s, %.1f s; %s)" % ("with a file" if why == "picked" else "empty", what, secs, old))
         else:
             tgv = tgv if re.fullmatch(r"\d{1,2}(\.\d{1,2}){0,2}", str(tgv or "")) else "?"
             cv = cv if re.fullmatch(r"\d{2,3}", str(cv or "")) else "?"
             log("app: file picker did not open — %s (%s; %s; Telegram API %s, Chrome %s)" % (
-                "Telegram refused it" if why == "cancel" else "nothing happened", what, old, tgv, cv))
+                "Telegram refused it" if why == "refused" else "the last tap's picker never came back (%s ago)" % took(int(secs)),
+                what, old, tgv, cv))
         return {"ok": True}
 
     async def api_catchup_off(self):

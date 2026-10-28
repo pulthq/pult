@@ -3159,17 +3159,21 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.p.app_vis)
 
     async def test_picker_note(self):
-        # the app on Android tells whether Telegram opened the phone's picker after a tap: a line in the journal, how
-        # old the window was — a window kept for hours stops opening it (2026-10-28). Whatever the phone sends is
-        # checked before it goes there
+        # the app on Android tells how a tap on a picker ended: a line in the journal, how old the window was — a window
+        # kept for hours stops opening it (2026-10-28). Whatever the phone sends is checked before it goes there; the
+        # app of 0.18.18 sends its own words
         with mock.patch.object(pult_api, "log") as lg:
-            await self.p.api_picker(kind="pic", opened=True, ms=420, age=700)
-            await self.p.api_picker(kind="file", opened=False, why="silent", age=12300, tgv="8.0", cv="141")
-            await self.p.api_picker(kind="pic", opened=False, why="cancel", age="x", tgv="8.0\nfake", cv="999999")
+            await self.p.api_picker(kind="pic", opened=True, ms=4200, why="picked", age=700)
+            await self.p.api_picker(kind="pic", opened=True, ms=1800, why="closed", age=30)
+            await self.p.api_picker(kind="file", opened=False, ms=12000, why="stuck", age=12300, tgv="9.6", cv="156")
+            await self.p.api_picker(kind="pic", opened=False, ms=40, why="refused", age="x", tgv="8.0\nfake", cv="999999")
+            await self.p.api_picker(kind="pic", opened=False, ms=0, why="silent", age=60)
         self.assertEqual([c.args[0] for c in lg.call_args_list], [
-            "app: file picker opened (picture, 0.4 s; window 11 min old)",
-            "app: file picker did not open — nothing happened (file; window 3.4 h old; Telegram API 8.0, Chrome 141)",
-            "app: file picker did not open — Telegram refused it (picture; window's age unknown; Telegram API ?, Chrome ?)"])
+            "app: file picker came back with a file (picture, 4.2 s; window 11 min old)",
+            "app: file picker came back empty (picture, 1.8 s; window 30 s old)",
+            "app: file picker did not open — the last tap's picker never came back (12 s ago) (file; window 3.4 h old; Telegram API 9.6, Chrome 156)",
+            "app: file picker did not open — Telegram refused it (picture; window's age unknown; Telegram API ?, Chrome ?)",
+            "app: file picker did not open — the last tap's picker never came back (0 s ago) (picture; window 1 min old; Telegram API ?, Chrome ?)"])
 
     async def test_result_hashtags(self):
         # T3 (Q65, Q94): a result in the project's topic ends with the task's tags as hashtags — after the text however

@@ -4,6 +4,14 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.19 — 2026-10-28
+
+- **No false alarm when the file picker opens.** 0.18.18 said "Telegram didn't open the file picker" every time on
+  phones whose gallery opens as a sheet over Telegram: the page gets no sign that a picker opened. Now the app goes by
+  how pickers end — a file chosen or the picker closed — and speaks only when you tap Picture or File again while the
+  last picker never came back, which is exactly when the window can't open another one, or when Telegram refuses at
+  once. Pult's journal notes how each tap ended.
+
 ## 0.18.18 — 2026-10-28
 
 - **A file picker that won't open says so.** Telegram on Android now and then loses the gallery's answer, and after
