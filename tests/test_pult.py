@@ -1191,6 +1191,17 @@ class AttnTest(unittest.TestCase):
         a.resume["s1"] = 2000
         a.finished("s1", "-p", 5, "", "Дальше.", waits=True, now=1020)               # a new outcome: the old plan is moot
         self.assertNotIn("s1", a.resume)
+        # which ready reply the owner sent, or their own words — once per outcome: the app's message and the
+        # session's prompt hook both bring the same answer
+        r = a.finished("s1", "-p", 5, "", "Два пути.", waits=True, now=1030)
+        a.briefed("s1", r["ts"], {"line": "Два пути", "you": True, "need": "", "replies": ["Да, выпускай", "Б — позже"]}, True)
+        self.assertEqual(a.judge("s1", "  Б —  позже "), "tapped 2 of 2")
+        self.assertIsNone(a.judge("s1", "Б — позже"))
+        self.assertTrue(A.Attn(a.store).rec["s1"]["judged"])                          # kept over a restart
+        self.assertIsNone(a.judge("s2", "да"))                                        # it offered none
+        r = a.finished("s1", "-p", 5, "", "Ещё.", waits=True, now=1040)
+        a.briefed("s1", r["ts"], {"line": "Ещё", "you": True, "need": "", "replies": ["Да", "Нет"]}, True)
+        self.assertEqual(a.judge("s1", "да, но в новой сессии"), "own words, 2 offered")
 
     def test_order(self):
         rows = [{"state": "idle", "ts": 5}, {"state": "work", "since": 9}, {"state": "you", "since": 7},
@@ -3147,6 +3158,19 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await self.p.presence_check()
         self.assertFalse(self.p.app_vis)
 
+    async def test_picker_note(self):
+        # the app on Android tells whether Telegram opened the phone's picker after a tap: a line in the journal, how
+        # old the window was — a window kept for hours stops opening it (2026-10-28). Whatever the phone sends is
+        # checked before it goes there
+        with mock.patch.object(pult_api, "log") as lg:
+            await self.p.api_picker(kind="pic", opened=True, ms=420, age=700)
+            await self.p.api_picker(kind="file", opened=False, why="silent", age=12300, tgv="8.0", cv="141")
+            await self.p.api_picker(kind="pic", opened=False, why="cancel", age="x", tgv="8.0\nfake", cv="999999")
+        self.assertEqual([c.args[0] for c in lg.call_args_list], [
+            "app: file picker opened (picture, 0.4 s; window 11 min old)",
+            "app: file picker did not open — nothing happened (file; window 3.4 h old; Telegram API 8.0, Chrome 141)",
+            "app: file picker did not open — Telegram refused it (picture; window's age unknown; Telegram API ?, Chrome ?)"])
+
     async def test_result_hashtags(self):
         # T3 (Q65, Q94): a result in the project's topic ends with the task's tags as hashtags — after the text however
         # it folds; off in Settings — none; a task without tags — none
@@ -3698,10 +3722,11 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         async def fake_send(sid, text, fork=False, files=None):
             sent.append((sid, text))
             return {"ok": True, "how": "tab"}
-        with mock.patch.object(self.p, "api_send", fake_send):
+        with mock.patch.object(self.p, "api_send", fake_send), mock.patch.object(pultd, "log", wraps=pultd.log) as lg:
             await self.p.on_callback({"id": "c1", "from": {"id": OWNER}, "data": "r:%s:1" % SID})
+            await until(lambda: any("→ «Б — SQLite»" in t for t in self.texts("editMessageText")))
         self.assertEqual(sent, [(SID, "Б — SQLite")])
-        await until(lambda: any("→ «Б — SQLite»" in t for t in self.texts("editMessageText")))
+        self.assertIn(mock.call("ready replies %s: tapped 2 of 2" % SID[:8]), lg.call_args_list)   # did the buttons fit
         # the next outcome: seen in the app before the pager runs — no call; at the computer — no call either
         await run_hook(ev("UserPromptSubmit", prompt="Дальше"))
         await run_hook(ev("Stop", last_assistant_message="Готово, жду решения.", background_tasks=[]))

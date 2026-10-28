@@ -83,18 +83,65 @@ const CLIP = html`<svg viewBox="0 0 24 24" width="20" height="20" fill="none" st
 // second), while pictures alone had worked for days. A form shows both buttons; the composer's paperclip opens a menu
 // of the two
 const PICKERS = [["pic", "image/*", "image"], ["file", undefined, "file"]];
-function Attach({ a, disabled, wide }) {
+// Telegram on Android now and then loses the gallery's answer. The page's file chooser then waits for it for good, and
+// the webview opens no other till the window closes: Chromium opens choosers one by one, the next after the last one
+// ended (ChromeClientImpl::OpenFileChooser). The owner's window was 3 h old and opened nothing, a reopened one picked at
+// once (2026-10-28); a reload keeps the webview, and the wait with it. So a tap that leaves the page as it was — no
+// blur, still on the screen, no file — means nothing opened: the app says so and offers to close the window, keeping
+// the screen and the words typed for the next start (core/nav.js). Only on Android: elsewhere a picker that opens and
+// leaves the page focused would be taken for one that didn't
+const WATCH_MS = 3000;
+const onAndroid = () => !!(tg && /^android/.test(tg.platform || ""));
+function watchPicker(el, kind, keep) {
+  if (!onAndroid()) return;
+  const t0 = Date.now();
+  let left = 0, cancel = false;
+  const away = (e) => { if (!left && (e.type !== "blur" || e.target === window)) left = Date.now() - t0; };
+  const hid = (e) => { if (document.visibilityState === "hidden") away(e); };
+  const no = () => { cancel = true; };
+  addEventListener("blur", away);
+  document.addEventListener("visibilitychange", hid);
+  el.addEventListener("change", away);
+  el.addEventListener("cancel", no);
+  setTimeout(() => {
+    removeEventListener("blur", away);
+    document.removeEventListener("visibilitychange", hid);
+    el.removeEventListener("change", away);
+    el.removeEventListener("cancel", no);
+    const opened = !!left || document.visibilityState === "hidden" || !document.hasFocus();
+    const since = tg.initDataUnsafe && tg.initDataUnsafe.auth_date;
+    const cv = /Chrome\/(\d+)/.exec(navigator.userAgent || "");
+    api("picker", { kind, opened, ms: left, why: opened ? "" : cancel ? "cancel" : "silent",
+      age: since ? Math.max(0, Math.round(Date.now() / 1000 - since)) : null, tgv: tg.version || "", cv: cv ? cv[1] : "" }).catch(() => {});
+    if (!opened) stuck(keep);
+  }, WATCH_MS);
+}
+function stuck(keep) {
+  const close = () => {
+    try { localStorage.setItem("pult.reopen", JSON.stringify({ h: location.hash, at: Date.now(), k: keep && keep.k, text: (keep && keep.text) || "" })); } catch (e) {}
+    tg.close();
+  };
+  if (!tg.showPopup || !(tg.isVersionAtLeast && tg.isVersionAtLeast("6.2"))) return alertBox(t("pick.stuck"));
+  try {
+    tg.showPopup({ title: t("pick.stuck.t"), message: t("pick.stuck"), buttons: [{ id: "close", type: "default", text: t("pick.close") }, { type: "cancel" }] },
+      (id) => { if (id === "close") close(); });
+  } catch (e) { /* Telegram's popup is open already: one is enough */ }
+}
+// keep — where the words typed live: {k: their draft's key, text}
+function Attach({ a, disabled, wide, keep }) {
   const off = disabled || a.files.length >= MAX_PICS;
   const [open, setOpen] = useState(false);
   const [show, hide] = useOverlay(open, setOpen);
   const inputs = useRef({});
+  // a label's tap and the menu's el.click() both come to the input as a click
+  const watch = (k) => (e) => watchPicker(e.currentTarget, k, keep);
   if (wide) return html`<div class="attach-row">${PICKERS.map(([k, accept, icon]) => html`<label key=${k} class=${"clip wide" + (off ? " off" : "")}>
     ${k === "pic" ? ic(icon, 20) : CLIP}<span>${t("attach." + k)}</span>
-    <input type="file" accept=${accept} multiple disabled=${off} onChange=${a.pick}/></label>`)}</div>`;
+    <input type="file" accept=${accept} multiple disabled=${off} onClick=${watch(k)} onChange=${a.pick}/></label>`)}</div>`;
   // the inputs stay out of the menu: it closes as the picker opens, and the files come back to an input still there
   const choose = (k) => { const el = inputs.current[k]; hide(); if (el) el.click(); };
   return html`<span class="attach">
-    ${PICKERS.map(([k, accept]) => html`<input key=${k} ref=${(el) => { inputs.current[k] = el; }} type="file" accept=${accept} multiple disabled=${off} onChange=${a.pick}/>`)}
+    ${PICKERS.map(([k, accept]) => html`<input key=${k} ref=${(el) => { inputs.current[k] = el; }} type="file" accept=${accept} multiple disabled=${off} onClick=${watch(k)} onChange=${a.pick}/>`)}
     <button type="button" class=${"clip" + (off ? " off" : "")} aria-label=${t("attach")} disabled=${off} onClick=${open ? hide : show}>${CLIP}</button>
     ${open && html`<div class="backdrop" onClick=${hide}></div><div class="card attach-menu">
       ${PICKERS.map(([k, , icon]) => html`<button key=${k} class="opt" onClick=${() => choose(k)}>${ic(icon, 18)}<span>${t("attach." + k)}</span></button>`)}</div>`}</span>`;

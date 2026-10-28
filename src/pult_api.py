@@ -223,6 +223,30 @@ class Api:
                 self.store.put("catch_from", None)
         return {"ok": True}
 
+    async def api_picker(self, kind="pic", opened=True, ms=0, why="", age=None, tgv="", cv=""):
+        """A tap on Picture or File in the app on Android, three seconds on: did Telegram open the phone's picker. A
+        window Telegram kept for hours can lose the gallery's answer and open none after it (relay/web/static/ui/
+        pics.js); the journal tells how often, and whether only old windows. Every field is checked: it goes to the log."""
+        def whole(x, top):
+            try:
+                return min(top, max(0, int(x)))
+            except (TypeError, ValueError):
+                return None
+
+        def took(sec):
+            return "%d s" % sec if sec < 60 else "%d min" % (sec // 60) if sec < 3600 else "%.1f h" % (sec / 3600)
+        what = "picture" if kind == "pic" else "file"
+        age = whole(age, 90 * 86400)
+        old = "window %s old" % took(age) if age is not None else "window's age unknown"
+        if opened:
+            log("app: file picker opened (%s, %.1f s; %s)" % (what, (whole(ms, 60000) or 0) / 1000, old))
+        else:
+            tgv = tgv if re.fullmatch(r"\d{1,2}(\.\d{1,2}){0,2}", str(tgv or "")) else "?"
+            cv = cv if re.fullmatch(r"\d{2,3}", str(cv or "")) else "?"
+            log("app: file picker did not open — %s (%s; %s; Telegram API %s, Chrome %s)" % (
+                "Telegram refused it" if why == "cancel" else "nothing happened", what, old, tgv, cv))
+        return {"ok": True}
+
     async def api_catchup_off(self):
         self.catch_from = None
         self.store.put("catch_from", None)

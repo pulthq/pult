@@ -1,12 +1,12 @@
 // Pult app — the cards that wait for you: a question, a permission request, a plan; the receipt of an answer.
 // Moved from app.js as it was (review 2026-10-27, 6.4).
 import { api } from "../core/conn.js";
-import { useHold } from "../core/nav.js";
+import { go, useHold } from "../core/nav.js";
 import { alertBox, haptic } from "../core/tg.js";
 import { t } from "../i18n.js";
 import { md } from "../md.js";
 import { html, useEffect, useRef, useState } from "../vendor/htm-preact-3.1.1.js";
-import { avatar, dur, ic, nb } from "./kit.js";
+import { avatar, dur, ic, keyTap, nb } from "./kit.js";
 
 
 // ---------- cards: question, permission request, plan ----------
@@ -65,7 +65,13 @@ function Req({ r, onDone, showWhere = true, showProject = true }) {
   };
   // how long it waits, as a session's card says: "your move" puts them all in one line by time
   const waits = r.since && !done ? html`<span class="c-wait">${t("mine.waits", { dur: nb(dur(Date.now() / 1000 - r.since)) })}</span>` : "";
-  const where = showWhere && html`<div class="card-h">${showProject && r.project || waits ? html`<div class="c-proj">${showProject && r.project ? html`${avatar(r.project, 18)}<span>${r.project}</span>` : ""}${waits}</div>` : ""}${r.project !== r.title || !showProject ? html`<b class="c-title">${r.title}</b>` : ""}</div>`;
+  // the header opens the session, as a session's card on Home does: Claude's whole message before the question is
+  // there (the owner, 2026-10-28: a question on Home led nowhere — nothing to read before answering)
+  const open = r.sid ? () => go("#/s/" + r.sid) : null;
+  const chev = open ? html`<span class="c-go">${ic("chev", 16)}</span>` : "";
+  const titled = r.project !== r.title || !showProject;
+  const where = showWhere && html`<div class=${"card-h" + (open ? " tap" : "")} role=${open ? "button" : undefined} tabindex=${open ? "0" : undefined}
+    onClick=${open || undefined} onKeyDown=${open ? keyTap(open) : undefined}>${showProject && r.project || waits ? html`<div class="c-proj">${showProject && r.project ? html`${avatar(r.project, 18)}<span>${r.project}</span>` : ""}${waits}${titled ? "" : chev}</div>` : ""}${titled ? html`<b class="c-title">${r.title}${chev}</b>` : ""}</div>`;
   if (done) {
     const no = done === "rcpt.deny" || done === "rcpt.plan.n" ? " no" : "";
     return html`<div class="card rcpt" role="status">${where}<div class=${"rcpt-l" + no}>${t(done)}</div>

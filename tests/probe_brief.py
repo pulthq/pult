@@ -24,7 +24,7 @@ SAMPLES = [
      "Жду повтор A и ревью T-0048.", ["Review T-0048 far-wall rescue"], None),     # Claude continues: "you" unused
     ("сделай кэш для списка проектов",
      "Сделал два варианта: А — кэш в памяти, Б — в SQLite. А быстрее, Б переживает перезапуск демона. Какой берём?",
-     [], True),
+     [], True, "some"),
     ("выложи 0.9.16",
      "Готово: v0.9.16 на GitHub, проверки в чистом окружении 75+31+14+5 зелёные, Actions зелёные на macOS и Ubuntu.",
      [], False),
@@ -32,7 +32,18 @@ SAMPLES = [
      "I couldn't write the key to ~/.config/pult/env — the auto-mode classifier blocks writes to secret stores. "
      "Run this in Terminal (the key is not printed): `pult stt`. The daemon picks it up by itself.", [], True),
     ("выложи 0.9.17",                                       # a yes/no question: ready replies expected
-     "Собрал выпуск 0.9.17, проверки в чистом окружении зелёные. Выкладывать на GitHub? Нужно твоё «да».", [], True),
+     "Собрал выпуск 0.9.17, проверки в чистом окружении зелёные. Выкладывать на GitHub? Нужно твоё «да».", [], True, "some"),
+    # ready replies are answers, not how the owner will answer (2026-10-28: «Опишу текстом» / «Пришлю скриншоты»
+    # under "which two? describe them or send screenshots" — no tap answered anything): when the answer is the owner's
+    # own words or a photo, none
+    ("есть две проблемы",
+     "Слушаю — какие две? Опиши словами или пришли скриншоты скрепкой из приложения, они дойдут сюда. Со своей "
+     "стороны я пока ничего не нашёл: Пульт работает, в журнале демона ошибок нет.", [], True, "none"),
+    ("проверь посадку датчика",
+     "Сначала посадка. Сними стакан и пришли фото микросхемы через окно — по нему скажу, сдвигать ли плату.", [], True, "none"),
+    ("что дальше?",                                         # Claude's advice goes first
+     "Два пути. А — чинить сейчас, в этой сессии: контекст свежий, рекомендую. Б — записать передачу и начать "
+     "новую сессию. Как делаем?", [], True, "first:А"),
 ]
 
 
@@ -69,14 +80,18 @@ async def one(prompt, reply, bg):
 async def main():
     before = set(PROJECTS.glob("*/*.jsonl"))
     tot_in = tot_out = 0
-    for prompt, reply, bg, want in SAMPLES:
+    for prompt, reply, bg, want, *rep in SAMPLES:
         res, secs, peak = await one(prompt, reply, bg)
         brief = B.parse(res)
+        rep = rep[0] if rep else None              # the ready replies wanted: "none", "some", "first:<its start>"
         u = res.usage or {}
         tin = (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0)
         tout = u.get("output_tokens") or 0
         tot_in, tot_out = tot_in + tin, tot_out + tout
-        ok = brief is not None and (want is None or brief["you"] == want)
+        got = (brief or {}).get("replies") or []
+        ok = brief is not None and (want is None or brief["you"] == want) and (
+            rep is None or (rep == "none" and not got) or (rep == "some" and got)
+            or (rep.startswith("first:") and got and got[0].startswith(rep[6:])))
         print("%s %.1f s · peak %d MB · in %d (cache read %d) · out %d · $%.4f" % (
             "OK  " if ok else "MISS", secs, peak // 2**20, tin, u.get("cache_read_input_tokens") or 0, tout,
             res.total_cost_usd or 0), flush=True)

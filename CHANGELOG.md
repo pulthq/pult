@@ -4,6 +4,25 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.18 — 2026-10-28
+
+- **A file picker that won't open says so.** Telegram on Android now and then loses the gallery's answer, and after
+  that the app's window opens no file picker until it is closed: Picture and File did nothing, in the new task form
+  and in a session. Now, when the picker doesn't show up within three seconds, the app says what happened and offers
+  to close the window. Open the app again within a quarter of an hour (the bot's menu button, or any link without a
+  screen of its own) and you are back on the same screen, with the words you had typed. Pult's journal notes every
+  tap on Picture or File: whether the picker opened, and how old the window was.
+- **A question on Home opens its session.** The header of a question, a permission request or a plan — on Home and
+  on a project's screen — opens the session, where Claude's whole message before the question is. An arrow in the
+  header says so, on the cards of sessions waiting for you as well.
+- **Ready replies are answers.** The buttons under a session that waits for you no longer say how you might answer
+  ("I'll describe it", "I'll send screenshots"). Each one is a decision Claude can act on, the one Claude recommends
+  first; when the answer has to be your own words, a file or a photo, there are no buttons, only the field. Pult's
+  journal notes whether you tapped one or wrote your own.
+- **Claude's questions offer "yes, but…".** The paragraph Pult gives each session at its start asks Claude to make
+  every option an answer you can tap as it is, to offer "yes, but…" (later, in a new session, after a check) as an
+  option of its own where that is a natural answer, and to ask in plain text when the answer needs your own words.
+
 ## 0.18.17 — 2026-10-28
 
 - **Your corrections teach Claude.** When you pick a task's tags yourself — in its sheet, with a `#tag` in a request,
