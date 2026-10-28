@@ -43,7 +43,12 @@ you're neither in the app nor at the computer. Reminders on long turns; warnings
   is nothing else to set up. Tap a section on top of a project's screen to see only its tasks (and its topics); tap the
   tags under a task's title to correct them — your choice stays. `#topic` in a request sets it at once, even with the
   switch off. In Telegram each result ends with them as hashtags — `#firmware #filament_sensor`: a tap shows every
-  message with one (Settings → Hashtags in Telegram).
+  message with one (Settings → Hashtags in Telegram). The tag button beside a project's sections opens all its tags,
+  the busiest first, each with how many tasks have it: rename a section or a topic, give a section its colour, merge
+  two into one, hide one (the tasks keep it; rows, the filter and Telegram don't show it — bring it back at the bottom
+  of the screen). A tag Claude has just made is dashed until you keep it or merge it into another. Claude looks the
+  list over too and offers to merge two tags that name the same thing; **Keep both**, and it won't offer them again.
+  Claude goes on with your names: an old name it brings lands on the new tag.
 - **Resources**: Limits — the curve of each limit against the even pace, the forecast (on pace, under: how many hours
   of a session's work would go unused, over: when it runs out), who spent it; Computer — the processor, the memory
   and each Claude session's commands.

@@ -30,14 +30,16 @@ function Projects() {
 // a project's screen — its board, large: what waits for you (answer right here), what runs, today's outcomes, then
 // the earlier sessions folded; a new task at the bottom, under the thumb. A red mark anywhere leads here or deeper
 // the project's sections with how many of the screen's tasks each has (stage T); a tap narrows every list on the
-// screen to that section and shows its topics in a second row; a second tap or "All" brings everything back
-function TagBar({ set, sel, top, all, onSel, onTop }) {
+// screen to that section and shows its topics in a second row; a second tap or "All" brings everything back. The
+// button at its right opens the project's tags (T2): beside the row, not in it — at the row's end it went out of
+// sight with many sections
+function TagBar({ set, sel, top, all, onSel, onTop, pkey }) {
   const sec = sel && set.find((g) => g.n === sel);
-  return html`<div class="tagbar" role="toolbar">
+  return html`<div class="tagrow"><div class="tagbar" role="toolbar">
     <button class=${"tagf" + (sel ? "" : " on")} onClick=${() => onSel(null)}>${t("tags.all")}<span>${all}</span></button>
     ${set.map((g) => html`<button key=${g.n} class=${"tagf" + (sel === g.n ? " on" : "")} style=${tagSt(g.c)}
       onClick=${() => onSel(sel === g.n ? null : g.n)}><i></i>${g.n}<span>${g.cnt}</span></button>`)}
-  </div>
+  </div><button class="tagf edit" aria-label=${t("tags.edit")} title=${t("tags.edit")} onClick=${() => go("#/tags/" + encodeURIComponent(pkey))}>${ic("tag", 16)}</button></div>
   ${sec && sec.topics.length > 1 && html`<div class="tagbar sub" style=${tagSt(sec.c)}>
     <button class=${"tagf" + (top ? "" : " on")} onClick=${() => onTop(null)}>${t("tags.topics.all")}<span>${sec.cnt}</span></button>
     ${sec.topics.map((x) => html`<button key=${x.n} class=${"tagf" + (top === x.n ? " on" : "")} onClick=${() => onTop(top === x.n ? null : x.n)}>${x.n}<span>${x.cnt}</span></button>`)}
@@ -65,7 +67,7 @@ function Project({ pkey, tag, topic }) {
   const sum = d.turns ? t("sum.today", { n: d.turns, turns: plural(d.turns, "turn"), dur: dur(d.secs) }) : t("proj.quiet");
   return html`<div class="project">
     <div class="ph">${avatar(d.name, 44)}<div><h2>${d.name}</h2><div class="sum dim">${sum}</div></div></div>
-    ${d.tagset && d.tagset.length > 0 && html`<${TagBar} set=${d.tagset} sel=${sel} top=${top} all=${tagsOf.size} onSel=${setSel} onTop=${setTop}/>`}
+    ${d.tagset && (d.tagset.length > 0 || d.tags_n > 0) && html`<${TagBar} set=${d.tagset} sel=${sel} top=${top} all=${tagsOf.size} onSel=${setSel} onTop=${setTop} pkey=${pkey}/>`}
     ${(waits > 0 || mineF.length > 0) && html`<h3>${t("proj.waits", { n: waits })}</h3>
       ${mineF.map((e) => e.req ? html`<${Req} key=${e.key} r=${e.req} showProject=${false}/>`
         : html`<${Mine} key=${e.key} r=${Object.assign({ reset: d.reset }, e.mine)} now=${now} onGot=${gone} stt=${d.stt} showProject=${false}/>`)}`}

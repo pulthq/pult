@@ -4,6 +4,18 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.15 — 2026-10-28
+
+- **A project's tags on a screen of their own.** The tag button beside a project's sections opens its list: each
+  section with its topics and how many of the project's tasks have them, the busiest of the last 30 days first.
+  Rename a section or a topic, give a section one of eight colours, merge two into one (a topic into a topic of any
+  section), hide one — the tasks keep it, but rows, the filter and the hashtags in Telegram don't show it — and bring
+  it back from the bottom of the screen. A tag Claude has just made is dashed there, with **Keep** and **Merge
+  into…**. With the result line's model on, Claude looks the list over when the names have changed and offers to
+  merge two tags that name the same thing; **Keep both** — it won't offer that pair again. Claude goes on with the new
+  names: an old one it or a hashtag brings lands on the new tag, and a tag of Claude's that no task has any more goes
+  by itself. The button stays in sight however many sections the row has.
+
 ## 0.18.14 — 2026-10-28
 
 - **Hashtags under each result in Telegram.** A result in the project's topic ends with the task's section and topic

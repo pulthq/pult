@@ -82,7 +82,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.14"
+VERSION = "0.18.15"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -356,6 +356,8 @@ class Pult(Api, Parts):
             r.setdefault("paged", True)    # outcomes from before this start were announced then: no burst of calls now
         self.brief_sem = asyncio.Semaphore(1)        # the result-reading model: one request at a time
         self.reading = {}              # sid → {"ts", "viewed"}: an outcome the model still reads, opened meanwhile or not
+        self.tidying = set()           # projects whose tags the model looks over now (stage T, T2: offers to merge)
+        self.tidy_failed = {}          # pkey → (the list's names, when): the model gave nothing — not again at once
         self.app_on, self.app_vis = 0.0, False       # the app's last "on screen" and whether it is visible now
         self.app_seen = store.get("app_seen") or 0.0     # the app was last on the screen (kept across restarts)
         self.catch_from = store.get("catch_from")    # "While you were away" counts from here during this visit
@@ -1196,11 +1198,8 @@ class Pult(Api, Parts):
 
     def hashtag_line(self, sid):
         """The task's section and topic as hashtags for its result in the topic (stage T, T3; Q65, Q94) —
-        "#прошивка #датчик_филамента": a tap shows every message with it; "" without tags."""
-        r = self.store.session_tag(sid)
-        if not r or not r["sec"]:
-            return ""
-        return " ".join(h for h in (G.hashtag(r["sec"]), G.hashtag(r["topic"])) if h)
+        "#прошивка #датчик_филамента": a tap shows every message with it; "" without tags, and none the owner hid."""
+        return " ".join(h for h in (G.hashtag(g["n"]) for g in self.tags_of(sid)) if h)
 
     # ----- whose move (stage V): each session's last outcome, the model's line, the Home board -----
 
@@ -1425,7 +1424,7 @@ class Pult(Api, Parts):
         if got is None or (cur and cur["own"] and not own):
             return False
         was = {"sec": cur["sec"], "topic": cur["topic"]} if cur and cur["sec"] else None
-        at = G.place(self.store.tag_vocab(lv.pkey), got, was)
+        at = G.place(self.store.tag_vocab(lv.pkey), got, was, self.store.tag_aliases(lv.pkey))
         if at is None:
             return False
         sec, topic = at[0], at[1]
@@ -1433,6 +1432,7 @@ class Pult(Api, Parts):
             return False
         self.store.tag_add(lv.pkey, sec, topic, own=own)
         self.store.set_session_tag(lv.sid, lv.pkey, sec, topic, own)
+        self.store.tag_prune(lv.pkey)                # what the task had before goes, if no other task has it
         log("tags %s: %s%s%s" % (lv.sid[:8], sec, " / " + topic if topic else "", " (the owner's)" if own else ""))
         self.changed(lv.sid)
         return True
@@ -1453,10 +1453,11 @@ class Pult(Api, Parts):
 
     def tag_by_owner(self, lv, words):
         """The owner's hashtags → the task's tags, theirs: a section or a topic of the project's list, by name. A word
-        not in the list: with the model it is left to tag_task (False); without it, it becomes a section of its own."""
+        not in the list: with the model it is left to tag_task (False); without it, it becomes a section of its own.
+        An old name of a tag (renamed or merged by the owner) is the tag that took its place."""
         vocab = self.store.tag_vocab(lv.pkey)
         for w in words:
-            f = G.find(vocab, w)
+            f = G.find(vocab, w, self.store.tag_aliases(lv.pkey))
             if f and f[0] == "topic":
                 self.tags_set(lv, {"sec": f[1]["n"], "topic": f[2]["n"]}, own=True)
                 return True
@@ -1471,6 +1472,7 @@ class Pult(Api, Parts):
             return False
         self.store.tag_add(lv.pkey, sec, None, own=True)
         self.store.set_session_tag(lv.sid, lv.pkey, sec, None, True)
+        self.store.tag_prune(lv.pkey)
         self.changed(lv.sid)
         return True
 
@@ -1494,20 +1496,22 @@ class Pult(Api, Parts):
 
     def tags_of(self, sid, cache=None):
         """A session's tags for the app: its section and its topic — [{n, c, k: "sec"|"topic", fresh}], coloured by
-        the section's place in the project's list; [] without tags. cache — {pkey: (list, uses)} across one answer."""
+        the section's place in the project's list; [] without tags. What the owner hid is not shown: a hidden
+        section — no tags, a hidden topic — the section alone (stage T, T2). cache — {pkey: (list, uses, hidden)}
+        across one answer."""
         r = self.store.session_tag(sid)
         if not r or not r["sec"]:
             return []
         cache = {} if cache is None else cache
         if r["pkey"] not in cache:
-            cache[r["pkey"]] = (self.store.tag_vocab(r["pkey"]), self.store.tag_uses(r["pkey"]))
-        vocab, uses = cache[r["pkey"]]
+            cache[r["pkey"]] = (self.store.tag_vocab(r["pkey"]), self.store.tag_uses(r["pkey"]), self.store.tag_hidden(r["pkey"]))
+        vocab, uses, hidden = cache[r["pkey"]]
         s = next((x for x in vocab if x["n"] == r["sec"]), None)
-        if s is None:
+        if s is None or (s["n"], None) in hidden:
             return []
         now = time.time()
         out = [{"n": s["n"], "c": s["c"], "k": "sec", "fresh": G.is_fresh(s, uses.get((s["n"], None), 0), now)}]
-        t = next((x for x in s["topics"] if x["n"] == r["topic"]), None) if r["topic"] else None
+        t = next((x for x in s["topics"] if x["n"] == r["topic"]), None) if r["topic"] and (s["n"], r["topic"]) not in hidden else None
         if t:
             out.append({"n": t["n"], "c": s["c"], "k": "topic", "fresh": G.is_fresh(t, uses.get((s["n"], t["n"]), 0), now)})
         return out
