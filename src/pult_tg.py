@@ -260,9 +260,9 @@ class Store:
                 by[r["sec"]]["topics"].append({"n": r["name"], "own": bool(r["own"]), "ts": r["ts"]})
         return secs
 
-    def tag_add(self, pkey, sec, topic=None, own=False, ts=None):
+    def tag_add(self, pkey, sec, topic=None, own=False, ts=None, color=None):
         """A section, and a topic in it, into the project's list unless they are there; own — the owner picked or made
-        them: they are never "new" again."""
+        them: they are never "new" again; color — the one a new section had before ("Sort them again"), if free."""
         ts = ts or time.time()
         if self.db.execute("SELECT 1 FROM tag_secs WHERE pkey=? AND name=?", (pkey, sec)).fetchone():
             if own:
@@ -270,6 +270,8 @@ class Store:
         else:                                    # its colour: the first one no section wears (merged and gone ones free theirs)
             worn = [r[0] for r in self.db.execute("SELECT color FROM tag_secs WHERE pkey=?", (pkey,))]
             c = next((i for i in range(G.COLORS) if i not in {w % G.COLORS for w in worn}), max(worn, default=-1) + 1)
+            if color is not None and color not in worn:
+                c = color
             self.db.execute("INSERT INTO tag_secs VALUES(?,?,?,?,?)", (pkey, sec, c, int(own), ts))
         if not topic:
             return
@@ -282,9 +284,11 @@ class Store:
     def session_tag(self, sid):
         return self.db.execute("SELECT * FROM session_tags WHERE sid=?", (sid,)).fetchone()
 
-    def set_session_tag(self, sid, pkey, sec, topic, own):
+    def set_session_tag(self, sid, pkey, sec, topic, own, ts=None):
+        """ts — when the task was last at work, for one Pult never saw (its earlier tasks get tags in batches): the
+        tags screen puts first the tags of the tasks of the last 30 days."""
         self.db.execute("INSERT OR REPLACE INTO session_tags VALUES(?,?,?,?,?,?)",
-                        (sid, pkey, sec, topic, int(bool(own)), time.time()))
+                        (sid, pkey, sec, topic, int(bool(own)), ts or time.time()))
 
     def tag_uses(self, pkey, since=None):
         """How many sessions have each section and each topic: {(sec, None): n, (sec, topic): n}; since — only the
@@ -413,6 +417,16 @@ class Store:
                             (pkey, sec, topic, sec, topic))
             self.tag_own(pkey, to_sec, to_topic)
             self._alias(pkey, sec, topic, to_sec, to_topic)
+
+    def tag_reset(self, pkey):
+        """"Sort them again" (stage T, T2): Claude's own tags in the project go — every task's the owner didn't pick, and
+        each section and topic none of the owner's tags needs; the owner's stay as they are. → the colours the
+        sections had, {key(name): colour}: a section the new list names again keeps its own."""
+        colors = {G.key(r["name"]): r["color"] for r in self.db.execute("SELECT name, color FROM tag_secs WHERE pkey=?", (pkey,))}
+        with self.tx():
+            self.db.execute("DELETE FROM session_tags WHERE pkey=? AND own=0", (pkey,))
+            self.tag_prune(pkey)                 # a tag of Claude's that a task of the owner's has stays
+        return colors
 
     def tag_prune(self, pkey):
         """Tags Claude made that no task has any more go by themselves; the owner's stay until hidden."""

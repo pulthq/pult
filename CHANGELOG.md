@@ -4,6 +4,33 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.16 — 2026-10-28
+
+- **A project's earlier tasks get their tags too.** The first time you open a project in the app with the result
+  line's model on, Claude sorts its latest 200 tasks that have no tags yet — twenty at a time, from each one's
+  title, first request and the last thing Claude said in it, one request after another in the background — once a
+  project; "Claude is sorting the earlier tasks: 40 of 120" shows under its sections meanwhile, and the filter then
+  finds the whole history. A task keeps its own time, so the tags screen still puts first what was busy in the last
+  30 days. **Sort them again** at the bottom of the project's tags asks first, then Claude makes the list anew — from
+  the start of the README and CLAUDE.md, the latest tasks' titles and your own tags, which stay as they are — and
+  sorts every other task into it; a section it names again keeps its colour.
+- **A tag's name keeps a quote that closes one inside it** ("Pulsing «in the background» mark"): the closing quote
+  used to go with the end punctuation.
+- **Resources weighs a cache read at its model's API price.** Between two readings the curve follows the tokens in
+  the transcripts, a cache read at a tenth of an input token for every model until now; at the API's prices Opus 5.5
+  reads at 0.05 and Fable 5.1 at 0.025, Sonnet and Haiku at 0.1 as before. The percentages don't change; on a week of
+  real work the projects' shares moved by about a point and the week's forecast by one. "On Fable it costs about N×
+  as much" now compares the same work — Fable's tokens against their weight at Opus's read price — instead of
+  showing Fable's factor itself (7.6× instead of 8.7× on that week); the factor's default and its upper bound follow
+  the new weights.
+- **How many tokens a project took.** `tools/token_stats.py` counts them from this computer's Claude Code
+  transcripts: by kind (cache read and write, output, input), model, source — the project's sessions, their
+  background agents, Pult's tests and probes, a session that began in another folder (`--extra`) — and day, with
+  what the same tokens cost at the API's prices, how long the sessions worked and how many messages the owner wrote.
+  A reply counts once however many lines and session copies repeat it. A background agent's transcript keeps its
+  output count from the start of the stream (Claude Code 2.1.300 and 2.1.301): the report estimates that output from
+  what the agent wrote.
+
 ## 0.18.15 — 2026-10-28
 
 - **A project's tags on a screen of their own.** The tag button beside a project's sections opens its list: each

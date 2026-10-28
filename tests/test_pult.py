@@ -1253,6 +1253,7 @@ class TagsTest(unittest.TestCase):
         self.assertEqual(G.norm("  калибровка   стола "), "Калибровка стола")
         self.assertEqual(G.norm("#тёмная_тема"), "Тёмная тема")
         self.assertEqual(G.norm("«Выпуск»."), "Выпуск")
+        self.assertEqual(G.norm("Метка «в фоне»"), "Метка «в фоне»")         # a quote that closes one inside stays
         self.assertEqual(G.norm("Node.js"), "Node.js")                     # a name with a dot is a name
         self.assertEqual((G.norm("ASP.NET"), G.norm("GPT-4.1")), ("ASP.NET", "GPT-4.1"))
         for bad in ("", "  ", "src/app.js", "runout.c", "C:\\work", "#", "—", "README.md", "pult_tags.py", "`CHANGELOG.md`"):
@@ -1332,6 +1333,39 @@ class TagsTest(unittest.TestCase):
         o = G.options("ru", TMP, G.TIDY_SYSTEM, G.TIDY_SCHEMA)
         self.assertIn("never a section and a topic", o.system_prompt)
         self.assertEqual(o.output_format["schema"]["required"], ["pairs"])
+
+    def test_batch_and_list(self):
+        # T2: the project's earlier tasks in batches — the title, the first request (unless it is the title), the last
+        # thing Claude said; the answer only for the batch's own ids; a new list for "Sort them again"
+        tasks = [{"id": "1", "title": "Продолжение работы", "ask": "продолжаем", "said": "Готово: " + "датчик " * 80},
+                 {"id": "2", "title": "Калибровка стола", "ask": "Калибровка стола", "said": ""}]
+        req = G.batch_request("Принтер", self.VOCAB, tasks, ["firmware"])
+        for part in ('<task id="1">', "<title>Продолжение работы</title>", "<request>продолжаем</request>", "<claude>Готово: датчик",
+                     "<top_folders>firmware</top_folders>", "- Прошивка: Калибровка, Wi-Fi"):
+            self.assertIn(part, req)
+        self.assertEqual(req.count("<request>"), 1)                                   # the second asks what its title says
+        self.assertLessEqual(len(req.split("<claude>")[1].split("</claude>")[0]), G.SAID_LEN)
+        d = {"tasks": [{"id": "1", "sec": "прошивка", "topic": "датчики"}, {"id": "1", "sec": "Корпус", "topic": ""},
+                       {"id": "9", "sec": "Чужое", "topic": ""}, {"id": "2", "sec": "src/x.py", "topic": "x"}, "x"]}
+        self.assertEqual(G.batch_tags(d, {"1", "2"}), {"1": {"sec": "Прошивка", "topic": "Датчики"}})
+        for bad in (None, "x", {}, {"tasks": "x"}):
+            self.assertEqual(G.batch_tags(bad, {"1"}), {}, bad)
+        own = [{"n": "Голос", "topics": [{"n": "Порог"}]}]
+        req = G.list_request("Принтер", "# Принтер\n" + "я" * 5000, "", ["Задача %d" % i for i in range(60)], own, ["firmware"])
+        self.assertIn("- Задача 39", req)
+        self.assertNotIn("- Задача 40", req)                                          # the latest 40 titles
+        self.assertNotIn("<claude_md>", req)
+        self.assertIn("- Голос: Порог", req)
+        self.assertLess(len(req), G.DOC_LEN + 2000)
+        got = G.new_list({"secs": [{"n": "прошивка", "topics": ["калибровка", "Прошивка", "калибровка", "Wi-Fi"]},
+                                   {"n": "Прошивка", "topics": ["Другое"]}, {"n": "src/app.js", "topics": []},
+                                   {"n": "Корпус", "topics": "x"}] + [{"n": "Р%d" % i, "topics": []} for i in range(20)]})
+        self.assertEqual(got[:2], [("Прошивка", ["Калибровка", "Wi-Fi"]), ("Корпус", [])])
+        self.assertEqual(len(got), G.SEC_MAX)
+        self.assertEqual(G.new_list(None), [])
+        o = G.options("ru", TMP, G.BATCH_SYSTEM.format(lang="Russian", sec_max=G.SEC_MAX), G.BATCH_SCHEMA)
+        self.assertIn("every task of the batch, once", o.system_prompt)
+        self.assertNotIn("{", o.system_prompt.split("Answer with JSON only:")[0])        # every placeholder filled
 
     def test_fresh_and_parse(self):
         now = time.time()
@@ -3299,6 +3333,173 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.p.api_project(PKEY))["tags_n"], len(st.tag_vocab(PKEY)))
         with self.assertRaises(ValueError):
             await self.p.api_tags("-nowhere-at-all")
+
+    def fake_sessions(self, n, ago=40 * 86400, base=0x50000000):
+        """A project's earlier sessions as the SDK lists them, the latest first — and a transcript for the first one.
+        The model's offers to merge (tidy) answer nothing here: with the model on, the tags screen would ask it."""
+        async def tidy(text, lang, cwd):
+            return {"pairs": []}
+        patch = mock.patch.object(pultd.G, "tidy", tidy)
+        patch.start()
+        self.addCleanup(patch.stop)
+        S = ["%08x-0000-4000-8000-%012x" % (base + i, i) for i in range(n)]
+        items = [types.SimpleNamespace(session_id=s, custom_title="Задача %d" % i, summary="Задача %d" % i,
+                                       first_prompt="запрос %d" % i, last_modified=(time.time() - ago - i * 60) * 1000)
+                 for i, s in enumerate(S)]
+        folder = Path(pultd.CLAUDE_PROJECTS) / PKEY
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / (S[0] + ".jsonl")).write_text(tline("user", "запрос 0") + "\n" + tline("assistant", "Готово: датчик двери ставит паузу") + "\n")
+        return S, items
+
+    async def test_tags_old(self):
+        # T2 (Q93): the project's earlier tasks without tags get them once, by themselves, when the owner opens the
+        # project with the model on — in batches, one request at a time; the owner's tags and the tagged stay; "N of M"
+        # meanwhile; a task's time is its own; a model that gives nothing stops it — later it goes on
+        st = self.store
+        S, items = self.fake_sessions(25)
+        st.tag_add(PKEY, "Голос", "Порог", own=True)
+        st.set_session_tag(S[1], PKEY, "Голос", "Порог", True)
+        st.tag_add(PKEY, "Корпус", "Рама")
+        st.set_session_tag(S[2], PKEY, "Корпус", "Рама", False)
+        asked, hold = [], asyncio.Event()
+
+        async def model(text, lang, cwd):
+            asked.append(text)
+            await hold.wait()
+            ids = re.findall(r'<task id="(\d+)">', text)
+            return {"tasks": [{"id": i, "sec": "прошивка" if int(i) % 2 else "Корпус", "topic": "Датчики" if int(i) % 2 else "Рама"} for i in ids]}
+        import claude_agent_sdk
+        with mock.patch.object(claude_agent_sdk, "list_sessions", lambda path, limit=None, *a, **k: items[:limit]), \
+                mock.patch.object(pultd.G, "batch", model):
+            await self.p.api_project(PKEY)
+            self.assertEqual(self.p.tag_jobs, {})                              # the model is off: nothing
+            await self.p.api_prefs(brief=True)
+            d = await self.p.api_project(PKEY)
+            self.assertEqual(d["tag_job"]["kind"], "old")
+            await until(lambda: asked)
+            self.assertEqual(self.p.tag_jobs[PKEY], {"kind": "old", "done": 0, "total": 23})
+            self.assertIn("<claude>Готово: датчик двери ставит паузу</claude>", asked[0])   # how it ended, from the transcript
+            self.assertIn("<request>запрос 0</request>", asked[0])
+            self.assertEqual(asked[0].count("<task id="), G.BATCH)
+            self.assertEqual((await self.p.api_tags(PKEY))["job"]["total"], 23)
+            hold.set()
+            await until(lambda: not self.p.tag_jobs)
+            self.assertEqual(len(asked), 2)                                    # 23 tasks: two batches
+            self.assertEqual((st.session_tag(S[0])["sec"], st.session_tag(S[0])["topic"], st.session_tag(S[0])["own"]), ("Прошивка", "Датчики", 0))
+            self.assertEqual((st.session_tag(S[1])["sec"], st.session_tag(S[1])["own"]), ("Голос", 1))      # the owner's
+            self.assertEqual(sum(1 for s in S if st.session_tag(s) and st.session_tag(s)["sec"]), 25)
+            self.assertAlmostEqual(st.session_tag(S[3])["ts"], items[3].last_modified / 1000, delta=1)   # its own time
+            self.assertEqual(st.tag_uses(PKEY, time.time() - 30 * 86400), {("Голос", None): 1, ("Голос", "Порог"): 1,
+                                                                           ("Корпус", None): 1, ("Корпус", "Рама"): 1})   # 40 days old: not of the 30
+            self.assertFalse(any(t["fresh"] for g in (await self.p.api_tags(PKEY))["secs"] for t in g["topics"]))
+            self.assertTrue(st.get("tags.old." + PKEY))
+            await self.p.api_project(PKEY)                                     # once: not again
+            self.assertEqual((self.p.tag_jobs, len(asked)), ({}, 2))
+        # a model that gives nothing: the job stops, what is left goes on later — not at once
+        PK2 = "-Users-x-proj2"
+        st.set_topic(PK2, "/Users/x/proj2", "proj2", None)
+        S2, items2 = self.fake_sessions(3, base=0x60000000)
+        calls = []
+
+        async def silent(text, lang, cwd):
+            calls.append(text)
+            return None
+        with mock.patch.object(claude_agent_sdk, "list_sessions", lambda path, limit=None, *a, **k: items2[:limit]), \
+                mock.patch.object(pultd.G, "batch", silent):
+            self.p.tags_sort_soon(PK2)
+            await until(lambda: not self.p.tag_jobs)
+            self.p.tags_sort_soon(PK2)
+            self.assertEqual((len(calls), self.p.tag_jobs, st.get("tags.old." + PK2)), (1, {}, None))
+            self.p.tag_failed[PK2] -= 3600
+            with mock.patch.object(pultd.G, "batch", model):
+                self.p.tags_sort_soon(PK2)
+                await until(lambda: not self.p.tag_jobs)
+        self.assertTrue(st.get("tags.old." + PK2))
+
+    async def test_tags_resort(self):
+        # T2: "Sort them again" — the model off: no; a new list from the README, the latest titles and the owner's tags;
+        # Claude's old tags go, the owner's stay, a section named again keeps its colour, one of the owner's is never
+        # doubled; every other task sorted anew; a list the model didn't give changes nothing; a restart mid-way goes on
+        st = self.store
+        S, items = self.fake_sessions(6, ago=86400)
+        st.tag_add(PKEY, "Голос", "Порог", own=True)                             # colour 0, the owner's
+        st.set_session_tag(S[0], PKEY, "Голос", "Порог", True)
+        for sec in ("Прошивка", "Электроника", "Слайсер"):                        # colours 1, 2, 3 — Claude's
+            st.tag_add(PKEY, sec, "Тема")
+        for s, sec in zip(S[1:4], ("Прошивка", "Электроника", "Слайсер")):
+            st.set_session_tag(s, PKEY, sec, "Тема", False)
+        with self.assertRaises(ValueError):
+            await self.p.api_tags_resort(PKEY)                                   # the model is off
+        await self.p.api_prefs(brief=True)
+        lists, batches, hold, mid = [], [], asyncio.Event(), asyncio.Event()
+
+        async def make_list(text, lang, cwd):
+            lists.append(text)
+            await hold.wait()
+            return {"secs": [{"n": "слайсер", "topics": ["Профили"]}, {"n": "голос", "topics": ["Шум"]}, {"n": "Механика", "topics": ["Рама"]}]}
+
+        async def batch(text, lang, cwd):
+            batches.append(text)
+            await mid.wait()
+            ids = re.findall(r'<task id="(\d+)">', text)
+            return {"tasks": [{"id": i, "sec": "Механика" if int(i) % 2 else "Слайсер", "topic": "Рама" if int(i) % 2 else "Профили"} for i in ids]}
+        import claude_agent_sdk
+        st.put("tags.old." + PKEY, {"ts": time.time()})                          # its earlier tasks were sorted once
+        with mock.patch.object(claude_agent_sdk, "list_sessions", lambda path, limit=None, *a, **k: items[:limit]), \
+                mock.patch.object(pultd.G, "make_list", make_list), mock.patch.object(pultd.G, "batch", batch):
+            d = await self.p.api_tags_resort(PKEY)
+            self.assertEqual(d["job"], {"kind": "resort", "done": 0, "total": 0, "list": True})
+            with self.assertRaises(ValueError):
+                await self.p.api_tags_resort(PKEY)                               # one job a project
+            await until(lambda: lists)
+            self.assertIn("- Голос: Порог", lists[0])                            # the owner's tags, to keep
+            self.assertIn("- Задача 0", lists[0])
+            hold.set()
+            await until(lambda: batches)
+            # the screen looks in mid-way: the new list, empty yet, stays — its look took it all away once (the stand)
+            names = [g["n"] for g in (await self.p.api_tags(PKEY))["secs"]]
+            self.assertTrue({"Слайсер", "Механика", "Голос"} <= set(names), names)
+            self.assertIn("- Механика: Рама", batches[0])
+            mid.set()
+            await until(lambda: not self.p.tag_jobs)
+        vocab = {s["n"]: (s["c"], [t["n"] for t in s["topics"]]) for s in st.tag_vocab(PKEY)}
+        self.assertEqual(vocab["Голос"], (0, ["Порог"]))                       # "Шум": no task got it — gone by itself
+        self.assertEqual(vocab["Слайсер"][0], 3)                                  # named again: its own colour
+        self.assertNotIn("Прошивка", vocab)
+        self.assertNotIn("голос", vocab)
+        self.assertEqual((st.session_tag(S[0])["sec"], st.session_tag(S[0])["own"]), ("Голос", 1))
+        self.assertEqual({st.session_tag(s)["sec"] for s in S[1:]}, {"Механика", "Слайсер"})
+        self.assertEqual((st.get("tags.resort." + PKEY), len(batches)), (None, 1))
+        # no list from the model: nothing changes, the screen says so
+        before = st.tag_vocab(PKEY)
+
+        async def no_list(text, lang, cwd):
+            return None
+        with mock.patch.object(claude_agent_sdk, "list_sessions", lambda path, limit=None, *a, **k: items[:limit]), \
+                mock.patch.object(pultd.G, "make_list", no_list):
+            await self.p.api_tags_resort(PKEY)
+            await until(lambda: not self.p.tag_jobs)
+        self.assertEqual(st.tag_vocab(PKEY), before)
+        self.assertIn("ничего не изменилось", (await self.p.api_tags(PKEY))["note"])
+        # cut short after the new list (a batch without an answer, as after a restart): the next open goes on, no new list
+        lists.clear()
+
+        async def silent(text, lang, cwd):
+            return None
+        with mock.patch.object(claude_agent_sdk, "list_sessions", lambda path, limit=None, *a, **k: items[:limit]), \
+                mock.patch.object(pultd.G, "make_list", make_list), mock.patch.object(pultd.G, "batch", silent):
+            await self.p.api_tags_resort(PKEY)
+            await until(lambda: not self.p.tag_jobs)
+        self.assertTrue(st.get("tags.resort." + PKEY))
+        self.assertIsNone(st.session_tag(S[1]))
+        self.p.tag_failed.clear()
+        with mock.patch.object(claude_agent_sdk, "list_sessions", lambda path, limit=None, *a, **k: items[:limit]), \
+                mock.patch.object(pultd.G, "make_list", make_list), mock.patch.object(pultd.G, "batch", batch):
+            d = await self.p.api_project(PKEY)
+            self.assertEqual(d["tag_job"]["kind"], "resort")
+            await until(lambda: not self.p.tag_jobs)
+        self.assertEqual((len(lists), st.get("tags.resort." + PKEY)), (1, None))
+        self.assertTrue(st.session_tag(S[1])["sec"])
 
     async def test_project_and_outcome(self):
         # the project's screen: what waits for the owner, what runs, today's outcomes; the session shows its outcome

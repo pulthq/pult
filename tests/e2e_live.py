@@ -13,7 +13,8 @@ A message from the app mid-turn reaches Claude in that turn, the app shows it as
 Stop from the app closes the interrupted turn, though Claude Code sends no Stop hook for it.
 A new project "with a description" (stage S): git, its topic by the title, a first turn that writes CLAUDE.md.
 A file made in a session goes to the project's topic with `pult send`, and the turn's outcome lists it (stage F).
-With the model on, a new task gets its section and topic as soon as its request is in, and again with the result (stage T).
+With the model on, a new task gets its section and topic as soon as its request is in, and again with the result (stage T);
+the first open of the project sorts its earlier tasks without tags, in a batch (T2).
 """
 import asyncio, json, os, shutil, sys, tempfile, time, urllib.parse
 from pathlib import Path
@@ -291,6 +292,17 @@ async def main():
     log("теги после хода:", r10["sec"], "/", r10["topic"], "· строка:", p.attn.rec[sid10]["line"],
         "· раздел в списке:", [s["n"] for s in p.store.tag_vocab(r10["pkey"])])
     assert r10["sec"] and not r10["own"] and not any(c in r10["sec"] for c in "/\\"), "no tags from the model"
+    # the project's earlier tasks (stage T, T2; Q93): the ones from before the model was on have no tags — the first
+    # open of the project sorts them by itself, the real model in a batch, from the SDK's list of the folder's sessions
+    from claude_agent_sdk import list_sessions
+    pk10 = r10["pkey"]
+    bare = [s.session_id for s in list_sessions(str(PROJ), 200) if not (p.store.session_tag(s.session_id) or {"sec": None})["sec"]]
+    await p.api_project(pk10)
+    await until(lambda: pk10 not in p.tag_jobs, what="прежние задачи с тегами")
+    got = [(p.store.session_tag(s) or {"sec": None})["sec"] for s in bare]
+    log("прежние задачи:", len(bare), "без тегов → с тегами", sum(1 for g in got if g), "·",
+        [(p.store.session_tag(s)["sec"], p.store.session_tag(s)["topic"]) for s in bare if p.store.session_tag(s)][:4])
+    assert bare and all(got) and p.store.get("tags.old." + pk10), "the earlier tasks weren't sorted"
     log("тем создано:", len([1 for m, _ in calls if m == "createForumTopic"]), "· вызовов Telegram:", len(calls))
     for d in list(p.driven.values()):
         d.task.cancel()

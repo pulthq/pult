@@ -384,7 +384,8 @@ class SpendTest(unittest.TestCase):
         work = sorted(k - i for k, x in sp.slots.items() if x.work)
         self.assertEqual(work, [0, 1, 2, 3, 4, 24])          # the command counts as work, the 2 hours after the turn don't
         self.assertEqual([k - i for k, x in sp.slots.items() if x.agents], [1])
-        self.assertEqual(sp.slots[i].per["-Users-x-a"][:2], [10 + 100 + 500 + 125 + 200, 0.0])    # one reply, once
+        self.assertEqual(sp.slots[i].per["-Users-x-a"][:2], [10 + 50 + 500 + 125 + 200, 0.0])     # one reply, once;
+        self.assertEqual(sp.slots[i].reads[:2], [1000, 0])                                         # Opus reads at 0.05
         self.assertEqual(sp.slots[i + 4].weight(S.FACTOR), 250 * S.FACTOR["fable"])
         self.assertEqual(sp.today(now)["projects"], [{"pkey": "-Users-x-a", "req": 4, "out": 164, "read": 1210}])
         with (root / "-Users-x-a" / "s1.jsonl").open("a") as f:         # only what is appended is read again
@@ -456,10 +457,23 @@ class SpendTest(unittest.TestCase):
     def test_fable_factor(self):
         t0 = S.SLOT * 4_000_000
         slots = slots_of([300], t0, fable={0: 100})
-        u = {"limits": [{"kind": "weekly_all", "percent": 60, "resets_at": t0 + 7 * 86400}], "shares": [{"name": "Fable", "used": 30}]}
+        u = {"limits": [{"kind": "weekly_all", "name": "week", "percent": 60, "resets_at": t0 + 7 * 86400}],
+             "shares": [{"name": "Fable", "used": 30}]}
         self.assertEqual(S.fit_factor(slots, u, t0, t0 + 7 * 86400, t0 + 600)["fable"], 3.0)   # half the week from a quarter of the tokens
+        self.assertEqual(S.view(slots, u, [], t0 + 600, 90, {})["fable_x"], 3.0)      # no cache reads: the factor itself
         u["shares"][0]["used"] = 0
         self.assertEqual(S.fit_factor(slots, u, t0, t0 + 7 * 86400, t0 + 600)["fable"], S.FACTOR["fable"])
+
+    def test_read_prices(self):
+        # a cache read weighs its model's API price against an input token (Q95): Opus 5.5 and Fable 5.1 read cheaper
+        u = {"input_tokens": 1, "cache_read_input_tokens": 1000, "output_tokens": 2}
+        self.assertEqual([S.weight_of(u, f) for f in S.FAMILIES], [1 + 50 + 10, 1 + 25 + 10, 1 + 100 + 10, 1 + 100 + 10, 1 + 100 + 10])
+        # the same work on Fable: its factor times what its tokens weigh against their weight at Opus's read price
+        t0 = S.SLOT * 4_000_000
+        slots = slots_of([0], t0, fable={0: 50})
+        slots[int(t0 // S.SLOT)].reads[1] = 1000              # 25 of the 50 are reads; at Opus's price they'd be 50
+        self.assertAlmostEqual(S.same_work(slots, dict(S.FACTOR, fable=9.0), t0, t0 + 600), 9.0 * 50 / 75)
+        self.assertEqual(S.same_work({}, S.FACTOR, t0, t0 + 600), S.FACTOR["fable"])   # no Fable work: the factor
 
     def test_shares(self):
         self.assertEqual(PW.simplify_usage(usage_reply(fable=64, share=32))["shares"], [{"name": "Fable", "used": 32, "allow": 50}])
@@ -691,6 +705,7 @@ class ChainTest(ChainBase):
         self.assertEqual([(x["name"], x["color"]) for x in week["projects"]], [("alpha", 0), ("beta", 1)])
         self.assertEqual(week["state"], "over")               # 95 % and a day of work at this pace
         self.assertEqual(v["shares"], [{"name": "Fable", "used": 32, "allow": 50}])
+        self.assertEqual(v["fable_x"], S.FACTOR["fable"])     # no Fable work here: the same work costs its factor
         self.assertEqual([o["name"] for o in v["others"]], ["Неделя · Fable"])
         self.assertEqual(self.store.usage_log(now - 60)[0][1:3], ("session", 20))
         self.assertEqual((await self.p.api_overview())["usage_top"], {"key": "week", "pct": 95.0, "state": "over"})
