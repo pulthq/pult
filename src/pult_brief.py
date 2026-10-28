@@ -42,10 +42,14 @@ Answer with JSON only:
   started). When unsure, answer true.
 - "need": when "you" is true — what exactly the developer has to do, plain {lang}, at most {need_max} characters;
   otherwise an empty string.
-- "replies": when "you" is true and Claude offers explicit alternatives or asks a yes/no question — up to {replies}
-  short replies the developer could send as they are, in the developer's voice, in {lang}, each at most
-  {reply_len} characters: the alternatives Claude named ("A — in memory"), "Yes, go ahead", "Explain the
-  difference". Never invent an alternative Claude did not offer. Otherwise an empty list."""
+- "replies": when "you" is true and Claude asks the developer to decide — explicit alternatives, a yes/no question,
+  an approval — up to {replies} short replies the developer could send as they are, in the developer's voice, in
+  {lang}, each at most {reply_len} characters. Each reply is itself the decision, one Claude can act on at once: the
+  alternatives Claude named ("A — in memory"), the one Claude recommends first, "Yes, go ahead", "Explain the
+  difference". Never invent an alternative Claude did not offer, and never a reply about how the developer is going
+  to answer ("I'll describe it", "I'll send screenshots", "I'll check"). When the answer has to come from the
+  developer — their own description or words, a file, a photo, what only they can see or do — an empty list: they
+  will write it themselves. Otherwise an empty list."""
 
 SCHEMA = {"type": "object", "additionalProperties": False, "required": ["line", "you", "need", "replies"],
           "properties": {"line": {"type": "string"}, "you": {"type": "boolean"}, "need": {"type": "string"},

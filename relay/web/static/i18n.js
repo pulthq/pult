@@ -632,6 +632,12 @@ const S = {
   "size.mb": { en: "{n} MB", ru: "{n} МБ" },
   "attach.remove": { en: "Remove", ru: "Убрать" },
   "attach.failed": { en: "Couldn't read the file", ru: "Не удалось прочитать файл" },
+  // Telegram's popup: a title up to 64 characters, the text up to 256
+  "pick.stuck.t": { en: "Telegram didn't open the file picker", ru: "Telegram не открыл выбор файла" },
+  "pick.stuck": { en: "This happens when Pult's window has been open a long time: Telegram loses the gallery's answer and opens no picker until the window closes. Close Pult and open it again — you'll be back here, with your text.",
+    ru: "Так бывает, когда окно Пульта открыто давно: Telegram теряет ответ галереи и до закрытия окна выбор не откроет. Закрой Пульт и открой снова — вернёшься сюда же, набранный текст сохранится." },
+  "pick.close": { en: "Close Pult", ru: "Закрыть Пульт" },
+  "pick.again": { en: "A new window — pick the file again", ru: "Окно новое — выбери файл ещё раз" },
   "view.open": { en: "Open the picture", ru: "Открыть картинку" },
   "view.title": { en: "Picture", ru: "Картинка" },
   "view.crop": { en: "Crop", ru: "Обрезать" },

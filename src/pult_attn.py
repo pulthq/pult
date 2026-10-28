@@ -69,6 +69,22 @@ class Attn:
         self.save()
         return r
 
+    def judge(self, sid, said):
+        """The owner answered an outcome that offered ready replies: which one they sent, or their own words — once per
+        outcome (the app's message and the session's own prompt hook both bring it). For the journal: whether the
+        buttons fit (the owner, 2026-10-28: "often there is no button for what I actually want")."""
+        r = self.rec.get(sid)
+        if not r or not r.get("replies") or r.get("judged"):
+            return None
+        r["judged"] = True
+        self.save()
+        said = " ".join(str(said or "").split())
+        n = len(r["replies"])
+        for i, x in enumerate(r["replies"]):
+            if " ".join(x.split()) == said:
+                return "tapped %d of %d" % (i + 1, n)
+        return "own words, %d offered" % n
+
     def seen(self, sid):
         """The owner saw the outcome: opened the session, answered it, dismissed it, closed the tab."""
         r = self.rec.get(sid)

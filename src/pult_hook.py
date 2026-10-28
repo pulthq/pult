@@ -34,10 +34,14 @@ FILES_NOTE = ("Pult, a Telegram remote for Claude Code, runs on this computer. W
               "from Telegram are saved in this project's inbox/<date>/ folder.")
 # Claude rarely sets multiSelect and glues combinations into single options instead ("only A" / "A and B"): 2 of 76
 # questions on the owner's computer had ticks, 2026-10-15…26 (tools/ask_stats.py) — the phone shows ticks and "Done"
-# only when the question asks for them
+# only when the question asks for them. And the owner taps: the 4 of 123 questions they answered in their own words,
+# 2026-10-15…28, each wanted "yes, but…" — in a new session, research first — and no option said it
 ASK_NOTE = ("The owner often answers your questions from the phone. In AskUserQuestion, when the options are not "
             "mutually exclusive (steps to take, places to deploy to, things to include), set multiSelect: true and make "
-            "each option one action, instead of options that combine them (\"A and B\", \"only A\").")
+            "each option one action, instead of options that combine them (\"A and B\", \"only A\"). Make each option "
+            "an answer they can tap as it is; when a natural answer is \"yes, but…\" (later, in a new session, after a "
+            "check), offer it as an option of its own. When the answer needs their own words, a file or what only they "
+            "can see, ask in plain text instead.")
 CONTEXT = FILES_NOTE + " " + ASK_NOTE
 
 

@@ -82,7 +82,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.17"
+VERSION = "0.18.18"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -1242,6 +1242,9 @@ class Pult(Api, Parts):
         about it in Telegram folds into "✔️ … · line" without buttons. said — their answer, from wherever it came:
         the call shows it too."""
         r = self.attn.rec.get(sid)
+        how = self.attn.judge(sid, said) if said else None
+        if how:
+            log("ready replies %s: %s" % (sid[:8], how))
         fresh = self.attn.seen(sid)
         said = R.short(R.prompt_text(said), 80) if said else ""
         if r and r.get("page") and (fresh or said):

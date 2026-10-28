@@ -1,5 +1,6 @@
 // Pult app — where you are: routes, our own history, layers over the screen, Back; links out and to files.
 // Moved from app.js as it was (review 2026-10-27, 6.4).
+import { t } from "../i18n.js";
 import { useEffect, useRef, useState } from "../vendor/htm-preact-3.1.1.js";
 import { emit } from "./conn.js";
 import { tg } from "./tg.js";
@@ -100,5 +101,17 @@ if ((!location.hash || tgHash(location.hash)) && start) {
     : /^f_[0-9a-f-]{36}_\d+$/.test(start) ? "#/f/" + start.slice(2, 38) + "?t=" + start.slice(39) : null;
   if (h) { history.replaceState(null, "", h); stack[0] = h; }
 }
+// the window closed to get the file picker back (ui/pics.js): the next start without a link of its own, within a
+// quarter of an hour, comes back to that screen with the words typed there
+const REOPEN_MS = 15 * 60000;
+try {
+  const re = JSON.parse(localStorage.getItem("pult.reopen") || "null");
+  localStorage.removeItem("pult.reopen");
+  if (re && !start && (!location.hash || tgHash(location.hash)) && Date.now() - re.at < REOPEN_MS && /^#\/[\w/?=&%.-]*$/.test(re.h || "")) {
+    if (re.k && re.text) drafts.put(re.k, re.text);
+    history.replaceState(null, "", re.h); stack[0] = re.h;
+    setTimeout(() => emit("toast", t("pick.again")), 1000);      // the toast listens once the app is on the screen
+  }
+} catch (e) { /* no storage: the start screen as always */ }
 
 export { back, drafts, go, holdBy, holds, layers, openLayer, parse, stack, useBackFor, useHold, useOverlay, useRoute };

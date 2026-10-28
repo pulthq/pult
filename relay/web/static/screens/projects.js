@@ -175,7 +175,7 @@ function NewTask({ pkey }) {
     <label class="lbl">${t("new.what")}</label>
     <textarea ref=${plainField} rows="6" placeholder=${t("new.placeholder")} value=${text} onKeyDown=${sendKey(() => { if (!busy && p && (text.trim() || a.files.length)) send(); }, setText)} onInput=${(e) => setText(e.target.value)}/>
     <${Thumbs} a=${a}/>
-    <${Attach} a=${a} disabled=${busy} wide=${true}/>
+    <${Attach} a=${a} disabled=${busy} wide=${true} keep=${{ k: "new", text }}/>
     ${d.stt ? html`<${Mic} v=${v} disabled=${busy} wide=${true}/>` : ""}
     <label class="lbl">${t("model.pick")}</label>
     <button class="field" onClick=${() => setSheet({ k: "model" })}>
@@ -295,7 +295,7 @@ function NewProject() {
       <textarea ref=${plainField} rows="5" placeholder=${t("np.about.ph")} value=${about} onInput=${(e) => setAbout(e.target.value)}/>`
     : html`<label class="lbl">${t("np.task")}</label>
       <textarea ref=${plainField} rows="4" placeholder=${t("new.placeholder")} value=${text} onInput=${(e) => setText(e.target.value)}/>
-      <${Thumbs} a=${a}/><${Attach} a=${a} disabled=${busy} wide=${true}/>`}
+      <${Thumbs} a=${a}/><${Attach} a=${a} disabled=${busy} wide=${true} keep=${{}}/>`}
     ${d && d.stt && html`<${Mic} v=${v} disabled=${busy} wide=${true}/>`}
     ${(how === "describe" || text.trim() || a.files.length > 0) && html`<label class="lbl">${t("model.pick")}</label>
       <button class="field" onClick=${() => setSheet("model")}>

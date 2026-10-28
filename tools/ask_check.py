@@ -2,7 +2,7 @@
 keeps the card, that part shows its answer and the next one waits; the screen opened again shows the same (the
 computer keeps the answers); the last part closes the card with "Answer sent", which stays 3 s with a bar running out,
 though the computer drops the request at once — on Home and in a session (a permission there). And "your move" is one
-line by time, questions and permissions among the sessions that wait: the freshest on top, the longest at the bottom.
+line by time, questions and permissions among the sessions that wait: the freshest on top, the longest at the bottom. Each card's header opens its session.
   STAND_ASK2=1 STAND_LANG=ru HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out &
   ~/.local/share/pult/venv/bin/python tools/ask_check.py /tmp/stand.out [out_dir]
 Screenshots go to out_dir (a temporary folder by default). Exit 1 on a failed check."""
@@ -116,6 +116,16 @@ async def main():
             verdict("your move in one line by time: the question, a session, the permission, a session",
                     kinds == ["ask", "mine", "perm", "mine"], cards)
             verdict("every card says how long it waits, the freshest on top", all(w for _, w in cards) and waits == sorted(waits), waits)
+            # a card's header opens its session, the arrow says so: Claude's whole message before the question is there
+            # (2026-10-28: a question on Home led nowhere — nothing to read before answering)
+            verdict("every card's header has the arrow to its session",
+                    await js("[...document.querySelectorAll('.card.ask, .card.perm, .card.mine')].every((c) => !!c.querySelector('.card-h.tap .c-go'))"))
+            await tap(".card.ask .card-h")
+            verdict("the question's header opens its session",
+                    await until("location.hash.startsWith('#/s/') && !!document.querySelector('.composer')", 150), await js("location.hash"))
+            await cmd("Page.navigate", url="about:blank")
+            await cmd("Page.navigate", url=URLS["HOME"])
+            await until("(%s || {}).open === 2" % state, 150)
             await tap(".card.ask .q:not(.done) .opt", 0)
             verdict("an answer to the first part keeps the card", await until("(%s || {}).done === 1" % state), await js(state))
             s = await js(state)

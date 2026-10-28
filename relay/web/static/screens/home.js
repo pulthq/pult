@@ -136,7 +136,7 @@ function Mine({ r, now, onGot, stt, showProject = true }) {
   const aboutCopy = (e) => { e.stopPropagation(); alertBox(t("ex.copy")); };
   return html`<div class=${"card mine" + (r.state === "fail" ? " fail" : "")}>
     <div class="card-h tap" role="button" tabindex="0" onClick=${open} onKeyDown=${keyTap(open)}><div class="c-proj"><span class="run-w">${showProject && r.project ? html`<span class="run-who">${avatar(r.project, 18)}<span class="run-p">${r.project}</span></span>` : ""}${tagChips(r.tags)}</span><span class="c-wait">${t("mine.waits", { dur: nb(dur(now - r.since)) })}</span></div>
-      <b class="c-title">${r.state === "fail" ? ic("alert", 16) : ""}${r.title}</b></div>
+      <b class="c-title">${r.state === "fail" ? ic("alert", 16) : ""}${r.title}<span class="c-go">${ic("chev", 16)}</span></b></div>
     ${r.need ? html`<div class="ln dim tap" onClick=${open}>${r.line}</div><div class="now tap" onClick=${open}>${r.need}</div>` : html`<div class="now tap" onClick=${open}>${r.line}</div>`}
     ${r.fail === "rate_limit" ? html`<${ResumeAt} sid=${r.sid} resume=${resume} reset=${r.reset} onSet=${setResume}/>` : html`<${Replies} sid=${r.sid} replies=${r.replies} onSent=${sent}/>`}
     <${QuickReply} sid=${r.sid} stt=${stt} onSent=${sent}/>

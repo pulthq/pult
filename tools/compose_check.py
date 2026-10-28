@@ -3,7 +3,9 @@ are two pickers — the new task form shows both buttons, the composer's papercl
 system's picker with its own filter (pictures only / any file), a picked picture lands as a thumbnail and the menu is
 gone. And a session read from its end keeps the project, the session and its state in a bar at the top; scrolled back
 to the header, the bar goes. A session has no tab bar: Home is in its header and in the bar, and a session started from
-the form replaces the form in the history — Back leads where the form was opened from.
+the form replaces the form in the history — Back leads where the form was opened from. On Android a picker that
+doesn't open (Telegram there loses the gallery's answer now and then, and the window opens none after it) gets the
+app's word in three seconds — Close keeps the screen and the words for the next start — and the journal has it.
   STAND_LANG=ru HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out &
   ~/.local/share/pult/venv/bin/python tools/compose_check.py /tmp/stand.out [out_dir]
 Chrome is not Telegram: whether a phone's gallery or file manager comes back with the file is seen only on the phone.
@@ -11,13 +13,19 @@ Screenshots go to out_dir (a temporary folder by default). Exit 1 on a failed ch
 import asyncio, base64, json, os, struct, subprocess, sys, tempfile, zlib
 import aiohttp
 
-URLS = dict(line.split(" ", 1) for line in open(sys.argv[1]).read().split("\n") if line[:4] in ("NEW ", "SESS"))
+URLS = dict(line.split(" ", 1) for line in open(sys.argv[1]).read().split("\n") if line.split(" ")[0] in ("NEW", "SESS", "PLAIN"))
 OUT = sys.argv[2] if len(sys.argv) > 2 else tempfile.mkdtemp(prefix="pult-compose-")
 os.makedirs(OUT, exist_ok=True)
 import _cdp  # noqa: E402  (tools/_cdp.py: where Chrome is, free ports, a profile that goes — review 2026-10-27, Т9)
 CHROME = _cdp.CHROME
 PORT = _cdp.free_port()
 failures = []
+SPY = """(() => { const w = window.Telegram.WebApp; window.__popups = []; window.__closed = 0;
+  w.showPopup = (p, cb) => { window.__popups.push(p); window.__pcb = cb; }; w.close = () => { window.__closed++; };
+  return w.platform; })()"""
+TYPE = ("(() => { const ta = document.querySelector('.composer textarea'); Object.getOwnPropertyDescriptor("
+        "HTMLTextAreaElement.prototype, 'value').set.call(ta, %s); ta.dispatchEvent(new Event('input', {bubbles: true})); })()")
+DRAFT = "half a thought before the window closed"
 
 
 def verdict(name, ok, *info):
@@ -78,6 +86,13 @@ async def main():
             async def until(expr, tries=100):
                 for _ in range(tries):
                     if await js(expr):
+                        return True
+                    await asyncio.sleep(0.1)
+                return False
+
+            async def until_py(fn, tries=50):
+                for _ in range(tries):
+                    if fn():
                         return True
                     await asyncio.sleep(0.1)
                 return False
@@ -195,6 +210,58 @@ async def main():
             await js("history.back()")
             verdict("Back from it leads to the project, not to the form",
                     await until("location.hash === %s && !document.querySelector('.form')" % json.dumps(proj)), await js("location.hash"))
+
+            # Android: Telegram there now and then loses the gallery's answer, and the window opens no picker after it
+            # (2026-10-28). A tap that leaves the page as it was — here the picker is intercepted and never answered,
+            # and the page keeps its focus — gets the app's word in three seconds; Close keeps the screen and the words
+            # for the next start, which comes back to them. A picker that takes the page's focus is left alone
+            journal = lambda: open(sys.argv[1], encoding="utf-8", errors="replace").read()
+            await cmd("Emulation.setFocusEmulationEnabled", enabled=True)
+            await cmd("Page.navigate", url="about:blank")
+            await cmd("Page.navigate", url=URLS["SESS"])
+            verdict("Android (the stand's links say so): the session's composer", await until("!!document.querySelector('.composer .attach button.clip')", 150))
+            verdict("... Telegram's script says android", await js(SPY) == "android")
+            sess = await js("location.hash")
+            await js(TYPE % json.dumps(DRAFT))
+            await tap(".composer .attach button.clip")
+            await until("document.querySelectorAll('.attach-menu .opt').length === 2")
+            await tap(".attach-menu .opt", 0)
+            verdict("a picker that didn't open: the app says so in three seconds", await until("window.__popups.length === 1", 60))
+            pop = await js("window.__popups[0]") or {}
+            verdict("... Telegram's popup: what happened, Close and Cancel",
+                    pop.get("title") == "Telegram не открыл выбор файла" and "открой снова" in (pop.get("message") or "")
+                    and [b.get("text") or b.get("type") for b in pop.get("buttons") or []] == ["Закрыть Пульт", "cancel"]
+                    and len(pop.get("message") or "") <= 256, pop)
+            verdict("... the journal has it", await until_py(lambda: "app: file picker did not open — nothing happened (picture" in journal()))
+            await js("window.__pcb('close')")
+            kept = await js("JSON.parse(localStorage.getItem('pult.reopen') || 'null')") or {}
+            verdict("Close keeps the screen and the words, and closes the window",
+                    kept.get("h") == sess and kept.get("text") == DRAFT and await js("window.__closed") == 1, kept)
+            # the next start without a link of its own — as the bot's menu button opens the app
+            await cmd("Page.navigate", url="about:blank")
+            await cmd("Page.navigate", url=URLS["PLAIN"])
+            verdict("the next start without a link comes back to the session",
+                    await until("location.hash === %s && !!document.querySelector('.composer textarea')" % json.dumps(sess), 150), await js("location.hash"))
+            verdict("... with the words typed", await until("document.querySelector('.composer textarea').value === %s" % json.dumps(DRAFT)))
+            verdict("... and says to pick the file again",
+                    await until("(document.querySelector('.toast') || {}).textContent === 'Окно новое — выбери файл ещё раз'", 40))
+            verdict("... once", await js("localStorage.getItem('pult.reopen') === null"))
+            await shot("8-reopened.png")
+            await js(SPY)
+            await tap(".composer .attach button.clip")
+            await until("document.querySelectorAll('.attach-menu .opt').length === 2")
+            await tap(".attach-menu .opt", 1)
+            await js("window.dispatchEvent(new Event('blur'))")
+            await asyncio.sleep(3.5)
+            verdict("a picker that took the page's focus: no word", await js("window.__popups.length") == 0)
+            verdict("... the journal has it opened", await until_py(lambda: "app: file picker opened (file" in journal()))
+            # the new task form's buttons (labels round the inputs) are watched the same way
+            await cmd("Page.navigate", url="about:blank")
+            await cmd("Page.navigate", url=URLS["NEW"])
+            await until("document.querySelectorAll('.attach-row label.clip').length === 2", 150)
+            await js(SPY)
+            await tap(".attach-row label.clip", 0)
+            verdict("the new task form's Picture: the same word", await until("window.__popups.length === 1", 60))
             verdict("no script errors", not errors, errors)
     finally:
         p.kill()

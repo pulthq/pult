@@ -940,6 +940,9 @@ async def main():
           (PORT, urllib.parse.quote(init("settings"))), flush=True)
     print("HOME http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
           (PORT, urllib.parse.quote(init("home"))), flush=True)
+    # opened as the bot's menu button and Pult's plain links open it: no start parameter
+    print("PLAIN http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
+          (PORT, urllib.parse.quote(init(""))), flush=True)
     print("USAGE http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
           (PORT, urllib.parse.quote(init("usage"))), flush=True)
     print("SESS http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
