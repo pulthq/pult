@@ -1240,6 +1240,15 @@ class TagsTest(unittest.TestCase):
     VOCAB = [{"n": "Прошивка", "c": 0, "topics": [{"n": "Калибровка"}, {"n": "Wi-Fi"}]},
              {"n": "Корпус", "c": 1, "topics": [{"n": "Прочность"}]}]
 
+    def test_hashtag(self):
+        # T3 (Q94): a tag under a result as Telegram writes a hashtag — lower case, words through "_", only letters,
+        # digits and "_"; the owner's own #tag parser reads it back; nothing without a letter
+        self.assertEqual(G.hashtag("Датчик филамента"), "#датчик_филамента")
+        self.assertEqual(G.hashtag("Обновление  по сети!"), "#обновление_по_сети")
+        self.assertEqual((G.hashtag("Wi-Fi"), G.hashtag("3D-печать")), ("#wi_fi", "#3d_печать"))
+        self.assertEqual((G.hashtag("2026"), G.hashtag(""), G.hashtag(None)), (None, None, None))
+        self.assertEqual(G.hashtags("снова " + G.hashtag("Датчик филамента")), ["датчик филамента"])
+
     def test_names(self):
         self.assertEqual(G.norm("  калибровка   стола "), "Калибровка стола")
         self.assertEqual(G.norm("#тёмная_тема"), "Тёмная тема")
@@ -1776,13 +1785,16 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_prefs(self):
         self.assertEqual(self.p.prefs(), {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": None, "pace": 90,
-                                          "model": None, "effort": None, "gh": True, "vcheck": True})
+                                          "model": None, "effort": None, "gh": True, "vcheck": True, "hashtags": True})
         self.p.env["PULT_FORCE_AWAY"] = "0"                                           # you are at the Mac
         self.assertFalse(await self.p.loud())
         self.assertTrue(await self.p.loud(driven=True))                     # auto: a session from Telegram — with sound
-        res = await self.p.api_prefs(mode="phone", vehi="да", lang="xx", brief="да", evil=True, pace="90", gh="off")  # garbage is rejected
+        res = await self.p.api_prefs(mode="phone", vehi="да", lang="xx", brief="да", evil=True, pace="90", gh="off",
+                                     hashtags="yes")                                # garbage is rejected
         self.assertEqual(res, {"vehi": True, "mode": "phone", "lang": None, "brief": False, "pager": None, "pace": 90,
-                               "model": None, "effort": None, "gh": True, "vcheck": True})
+                               "model": None, "effort": None, "gh": True, "vcheck": True, "hashtags": True})
+        self.assertFalse((await self.p.api_prefs(hashtags=False))["hashtags"])      # stage T, T3: no hashtags under results
+        await self.p.api_prefs(hashtags=True)
         self.assertFalse((await self.p.api_prefs(gh=False))["gh"])                  # stage U3: no looks at GitHub
         await self.p.api_prefs(gh=True)
         self.assertTrue((await self.p.api_prefs(brief=True))["brief"])
@@ -3036,6 +3048,26 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.p.app_on -= pultd.APP_ON + 1
         await self.p.presence_check()
         self.assertFalse(self.p.app_vis)
+
+    async def test_result_hashtags(self):
+        # T3 (Q65, Q94): a result in the project's topic ends with the task's tags as hashtags — after the text however
+        # it folds; off in Settings — none; a task without tags — none
+        self.store.tag_add(PKEY, "Прошивка", "Датчик филамента")
+        self.store.set_session_tag(SID, PKEY, "Прошивка", "Датчик филамента", 0)
+        await run_hook(ev("UserPromptSubmit", prompt="Почини датчик нити"))
+        await until(lambda: SID in self.p.live and self.p.live[SID].turn)
+        await run_hook(ev("Stop", last_assistant_message="Порог поднят, ложных срабатываний нет"))
+        await until(lambda: [t for t in self.texts() if t.startswith("✅")])
+        res = [t for t in self.texts() if t.startswith("✅")][-1]
+        self.assertTrue(res.endswith("\n#прошивка #датчик_филамента"), res)
+        self.assertIn("Порог поднят", res.split("#прошивка")[0])
+        await self.p.api_prefs(hashtags=False)
+        await run_hook(ev("UserPromptSubmit", prompt="Проверь ещё раз"))
+        await until(lambda: self.p.live[SID].turn)
+        await run_hook(ev("Stop", last_assistant_message="Всё на месте"))
+        await until(lambda: len([t for t in self.texts() if t.startswith("✅")]) == 2)
+        self.assertNotIn("#прошивка", [t for t in self.texts() if t.startswith("✅")][-1])
+        self.assertEqual(self.p.hashtag_line("00000000-0000-0000-0000-000000000000"), "")
 
     async def test_tags(self):
         # stage T: a task gets its tags from the model as soon as its request is in, and again with the result line;

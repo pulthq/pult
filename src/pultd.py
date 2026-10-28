@@ -82,7 +82,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.13"
+VERSION = "0.18.14"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -94,7 +94,7 @@ MENU_CHECK_EVERY = 1800  # s; the app button in the owner's chat is still ours (
 CONFLICT_WARN_EVERY = 6 * 3600   # s; "someone else reads this bot" at most this often
 WEB_MANIFEST = HOME / "web-manifest.json"   # what the last deploy put on the relay (written by the deploy script)
 PREFS = {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": None, "pace": S.PACE_LOW,
-         "model": None, "effort": None, "gh": True, "vcheck": True}   # owner prefs:
+         "model": None, "effort": None, "gh": True, "vcheck": True, "hashtags": True}   # owner prefs:
 # milestones, location (auto/mac/phone), language, a model's line for each result, Telegram as a pager (None — on where the
 # app is set up), the % at a limit's reset that is still "on pace" (stage R), the model and the effort for sessions Pult
 # starts when the session has no choice of its own (None — Claude Code's settings; VS Code tabs keep theirs), whether a
@@ -757,22 +757,24 @@ class Pult(Api, Parts):
                 raise
         self.out.edit(msg, go, prio)
 
-    async def send_long(self, pkey, header, md, *, notify, sid, reply_to=None, prio=3, kind="result", files_row=None):
+    async def send_long(self, pkey, header, md, *, notify, sid, reply_to=None, prio=3, kind="result", files_row=None,
+                        tail=""):
         """A long Claude reply. With the app connected: the beginning in the chat and "Read in full" (the whole
         text in the app). Without it: 3500-character chunks, up to six chunks without a file (~20k characters), since
-        a file is awkward to read on a phone; beyond that, the first five chunks and the whole text as a file."""
+        a file is awkward to read on a phone; beyond that, the first five chunks and the whole text as a file.
+        tail — HTML that ends the last message shown, after the text however it folds: the task's hashtags (stage T)."""
         chunks = R.split_md(md)
         ids = []
         if len(chunks) > 1 and sid and self.app_live():
             rest = len(md) - len(chunks[0])
             ids.append(await self.send(pkey, header + "\n" + R.folded_html(chunks[0]) +
-                                       self.t("long.more", n=rest), notify=notify, sid=sid, kind=kind,
+                                       self.t("long.more", n=rest) + tail, notify=notify, sid=sid, kind=kind,
                                        prio=prio, reply_to=reply_to, buttons=[self.app_row(sid, self.t("btn.read_all"))] +
                                        ([files_row] if files_row else [])))
             return ids
         if len(chunks) > 6:
             for i, ch in enumerate(chunks[:5]):
-                ids.append(await self.send(pkey, (header + "\n" if i == 0 else "") + R.folded_html(ch),
+                ids.append(await self.send(pkey, (header + "\n" if i == 0 else "") + R.folded_html(ch) + (tail if i == 4 else ""),
                                            notify=notify and i == 0, sid=sid, kind=kind, prio=prio,
                                            reply_to=reply_to if i == 0 else None))
             ids.append(await self.send_doc(pkey, md, "%s.md" % (sid or "text")[:8],
@@ -780,7 +782,7 @@ class Pult(Api, Parts):
             return ids
         for i, ch in enumerate(chunks):
             last = i == len(chunks) - 1
-            ids.append(await self.send(pkey, (header + "\n" if i == 0 else "") + R.folded_html(ch),
+            ids.append(await self.send(pkey, (header + "\n" if i == 0 else "") + R.folded_html(ch) + (tail if last else ""),
                                        notify=notify and i == 0, sid=sid, kind=kind, prio=prio,
                                        reply_to=reply_to if i == 0 else None,
                                        # the turn's files and Details side by side: both open the app
@@ -1186,10 +1188,19 @@ class Pult(Api, Parts):
         for mid in (t.vehi_ids if t else []):
             if mid:
                 asyncio.create_task(self.drop(mid))
+        tags = self.hashtag_line(lv.sid) if self.prefs()["hashtags"] else ""
         await self.send_long(lv.pkey, "%s %s%s\n%s%s" % ("⚠️" if fail else "✅", self.head(lv), when, you,
                                                           R.esc(bg) + "\n" if bg else ""), text,
                              notify=notify, sid=lv.sid, reply_to=reply_to,
-                             files_row=self.files_row(lv.sid, tf) if tf else None)
+                             files_row=self.files_row(lv.sid, tf) if tf else None, tail="\n" + tags if tags else "")
+
+    def hashtag_line(self, sid):
+        """The task's section and topic as hashtags for its result in the topic (stage T, T3; Q65, Q94) —
+        "#прошивка #датчик_филамента": a tap shows every message with it; "" without tags."""
+        r = self.store.session_tag(sid)
+        if not r or not r["sec"]:
+            return ""
+        return " ".join(h for h in (G.hashtag(r["sec"]), G.hashtag(r["topic"])) if h)
 
     # ----- whose move (stage V): each session's last outcome, the model's line, the Home board -----
 

@@ -235,7 +235,7 @@ function Settings() {
     <div class="dim small">${t("def.about")}</div>
     ${pick && html`<${ChoicePick} model=${d.prefs.model} effort=${d.prefs.effort} def=${d.cc} top=${t("pick.as.cc.short")}
       note=${t("def.cc.note")} onClose=${closePick} onPick=${setChoice}/>`}` : ""}
-    <h3>${t("notifications")}</h3><div class="list">${sw("pager", t("pager"), t("pager.short"), t("pager.about"))}${d.prefs.pager ? "" : sw("vehi", t("vehi"), t("vehi.about"))}${sw("brief", t("brief"), t("brief.short"), t("brief.about"))}</div>
+    <h3>${t("notifications")}</h3><div class="list">${sw("pager", t("pager"), t("pager.short"), t("pager.about"))}${d.prefs.pager ? "" : sw("vehi", t("vehi"), t("vehi.about"))}${sw("brief", t("brief"), t("brief.short"), t("brief.about"))}${"hashtags" in d.prefs ? sw("hashtags", t("hashtags"), t("hashtags.short"), t("hashtags.about")) : ""}</div>
     <h3>${t("where")}</h3>
     <${ModePick} mode=${d.prefs.mode} pager=${d.prefs.pager} onSet=${(m) => set(Object.assign({}, d, { prefs: Object.assign({}, d.prefs, { mode: m }) }))}/>
     ${d.prefs.pace ? html`<h3>${t("pace")}</h3>
