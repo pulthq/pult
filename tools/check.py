@@ -39,6 +39,7 @@ CHECKS = {
     "layers-home": ({"STAND_TAGS": "1", "STAND_LANG": "ru"}, "out", ["home"]),
     "layers-session": ({"STAND_LANG": "ru"}, "out", ["session"]),
     "clip": ({"STAND_LANG": "ru"}, "out", []),
+    "spend": ({"STAND_LANG": "ru"}, "USAGE", []),
     "parts": None,
     "update": None,
     "vcheck": None,

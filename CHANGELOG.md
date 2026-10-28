@@ -4,6 +4,13 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.20 — 2026-10-28
+
+- **Small colour marks on Resources again.** Since 0.18.15 the mark by each project in "what spent the limit", and
+  the marks in the chart's legend, were drawn as circles as wide as the name beside them: a long name looked like a
+  big share, though the size meant nothing. The tags' colour sheet had taken the same style name. They are small
+  squares in the project's colour again; a project's share is its number and its part of the bar.
+
 ## 0.18.19 — 2026-10-28
 
 - **No false alarm when the file picker opens.** 0.18.18 said "Telegram didn't open the file picker" every time on
