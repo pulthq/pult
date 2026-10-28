@@ -4,6 +4,15 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.12 — 2026-10-28
+
+- **For contributors: the app is modules all the way.** Its screens (`relay/web/static/screens/`: home, session,
+  settings, projects, resources) and the parts they share (`ui/`: small parts and icons, pictures, the cards that wait
+  for you, the computer's load, an update in words) moved out of `app.js` as they were, which now only routes to them —
+  68 lines instead of 3145; modules import downwards only (screens → ui → core), checked with
+  `tools/js_split_check.py`, and `tests/app_core.mjs` loads every module and links `app.js` — a name nobody exports
+  is caught before it reaches a phone. Nothing looks or works differently.
+
 ## 0.18.11 — 2026-10-28
 
 - **For contributors: the app's state machines are modules of their own, checked in node.** The connection

@@ -126,6 +126,18 @@ async function readyOn(w) {
 }
 const close = (w, code) => { w.readyState = 3; w.onclose({ code }); };
 
+// ---------- every module of the app loads: a name it imports that nobody exports is a white screen on the phone ----------
+await check("modules: each of ui/ and screens/ loads, with what it says it exports", async () => {
+  const { readdirSync } = await import("node:fs");
+  const mods = ["ui", "screens"].flatMap((d) => readdirSync(new URL(d + "/", base)).filter((f) => f.endsWith(".js")).map((f) => d + "/" + f));
+  assert.ok(mods.length >= 10, "found " + mods.length);
+  for (const m of mods) {
+    const x = await import(new URL(m, base));
+    assert.ok(Object.keys(x).length > 0, m + " exports nothing");
+    for (const [k, v] of Object.entries(x)) assert.notEqual(v, undefined, m + ": " + k + " is undefined");
+  }
+});
+
 // ---------- the connection ----------
 await check("connection: says hello with Telegram's data, and a ready login keeps its resume key", async () => {
   const w = ws();
@@ -441,6 +453,15 @@ await check("voice: a computer before 0.14.2 refuses the recording's figures —
   assert.equal(r3.args.notes, undefined);
   tell(w, { t: "res", id: r3.id, data: { text: "" } });
   await q;
+});
+
+// last: the entry itself — every name app.js imports exists (a missing one fails before anything runs); drawing the
+// app needs a DOM node doesn't have, so its render failing for that is fine here
+await check("modules: app.js links — every name it imports is there", async () => {
+  doc.getElementById = () => null;
+  try { await import(new URL("app.js", base)); } catch (e) {
+    assert.ok(!(e instanceof SyntaxError), "app.js doesn't link: " + e.message);
+  }
 });
 
 for (const r of results) console.log(r);
