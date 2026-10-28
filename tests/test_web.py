@@ -191,7 +191,7 @@ class InitTest(unittest.TestCase):
         # screens load at most every 0.4 s while events stream, one load at a time: before 0.18.6 a stream of events
         # faster than that kept the screen from updating until it paused (review 2026-10-27, П8)
         import re
-        src = (HERE.parent / "relay" / "web" / "static" / "app.js").read_text()
+        src = (HERE.parent / "relay" / "web" / "static" / "core" / "conn.js").read_text()
         fn = re.search(r"function pacer\(run, gap = 400\) \{.*?\n\}\n", src, re.S).group(0)
         js = fn + """
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -210,6 +210,14 @@ console.log(JSON.stringify({ runs, most, slow, n }));"""
         self.assertLess(r["runs"][0], 60)                     # the first at once
         self.assertGreaterEqual(len(r["runs"]), 3)            # and every 0.2 s while it streams (debounced: once, at the end)
         self.assertEqual((r["most"], r["slow"], r["n"]), (1, 2, 0))   # never two at once; asked meanwhile — once more; stopped — none
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_app_core(self):
+        # the app's four state machines — the connection, where you are, the copy following the server, voice — in a
+        # browser made up in node (tests/app_core.mjs): before 6.4 of the review they were checked only by hand
+        out = subprocess.run(["node", str(HERE / "app_core.mjs")], capture_output=True, text=True, timeout=120)
+        self.assertEqual(out.returncode, 0, out.stdout[-3000:] + out.stderr[-2000:])
+        self.assertRegex(out.stdout, r"\n\d+ checks ok\n")
 
 
 class TranscriptTest(unittest.TestCase):
@@ -857,7 +865,8 @@ class AppStringsTest(unittest.TestCase):
         self.assertEqual(len(entries), len(re.findall(r'^\s*"?[\w.]+"?:\s*\{', body, re.M)))   # none unparsed
         for k, (en, ru) in entries.items():
             self.assertEqual(sorted(re.findall(r"\{(\w+)\}", en)), sorted(re.findall(r"\{(\w+)\}", ru)), k)
-        app = (web / "app.js").read_text()
+        # the app is app.js and its modules (core/ since 6.4 of the review); not the dictionary itself, nor Preact
+        app = "\n".join(f.read_text() for f in sorted(web.rglob("*.js")) if f.name != "i18n.js" and "vendor" not in f.parts)
         used = {k for k in re.findall(r'\bt\("([\w.]+)"', app) if not k.endswith(".")}
         self.assertFalse(used - set(entries), "keys the app uses but the dictionary lacks")
         # and every key is named by the app — as it is, or under a prefix it builds ("upd.how." + how): 21 had no

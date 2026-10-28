@@ -4,6 +4,15 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.11 — 2026-10-28
+
+- **For contributors: the app's state machines are modules of their own, checked in node.** The connection
+  (`core/conn.js`), where you are and Back (`core/nav.js`), this phone's copy following the server (`core/update.js`)
+  and voice (`core/voice.js`) — Telegram's own bits in `core/tg.js` — moved out of `relay/web/static/app.js` as they
+  were (`tools/js_split_check.py` checks a split moved lines only); `tests/app_core.mjs` runs them in a browser made
+  up in node — 23 checks, the voice recorder among them — so their behaviour no longer waits for a phone to be
+  checked. Nothing looks or works differently.
+
 ## 0.18.10 — 2026-10-28
 
 - **Settings stop asking for `install.sh` once it has run.** The server's updater names its own files in each
