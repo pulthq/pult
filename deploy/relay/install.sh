@@ -144,6 +144,9 @@ else
   echo "Installed. Now put the three lines from \`pult app\` into $D/.env, then: systemctl restart pult-relay"
 fi
 [ -n "$web" ] && echo "Added to the group pult:$web — reload the web server, so that it reaches $sock."
+# the updater's report names the updater and services that run here: the ones just put in, at once — not at the next
+# release (it waits for the lock this script holds to its end)
+if [ $mode = on ]; then systemctl start --no-block pult-relay-update.service || true; fi
 if [ $mode = on ]; then
   echo "Pult $VER. From now on this server takes each release your computer installs, from GitHub (journalctl -u pult-relay-update)."
 else
