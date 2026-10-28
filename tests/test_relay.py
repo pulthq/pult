@@ -695,6 +695,17 @@ class UpdaterTest(unittest.TestCase):
         self.assertEqual((self.status()["state"], self.status()["why"]), ("fail", "network"))
         self.assertFalse((M.HOME / "failed.json").exists())
 
+    def test_it_enters_the_relays_socket(self):
+        # on a socket the relay's /run/pult-relay lets in only the relay's group, and the updater asks there whether the
+        # relay is up and the computer connected: outside the group it never heard, and refused every release with "the
+        # computer isn't connected" (a live server, 2026-10-28)
+        def unit(name):
+            text = (ROOT / "deploy" / "relay" / name).read_text(encoding="utf-8")
+            return dict(ln.split("=", 1) for ln in text.splitlines() if "=" in ln and not ln.startswith("#"))
+        relay_unit, upd = unit("pult-relay.service"), unit("pult-relay-update.service")
+        self.assertEqual((relay_unit["RuntimeDirectory"], relay_unit["RuntimeDirectoryMode"]), ("pult-relay", "0750"))
+        self.assertIn(relay_unit["Group"], upd.get("SupplementaryGroups", "").split())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

@@ -45,8 +45,8 @@ SystemCallFilter=@system-service
 # (install.sh --auto, pult-relay.service.d/update.conf) — it leaves the release the computer runs
 StateDirectory=pult-relay
 # where it listens since 0.18.7 (PULT_RELAY_SOCKET in a new install's .env): a socket in /run/pult-relay, which only the
-# relay and the web server — a member of the group pult — can enter; a free port can be taken by any program on the
-# server in the seconds the relay restarts (review 2026-10-27, Б11). An install from before keeps its port.
+# relay and the members of the group pult — the web server and the updater — can enter; a free port can be taken by any
+# program on the server in the seconds the relay restarts (review 2026-10-27, Б11). An install from before keeps its port.
 RuntimeDirectory=pult-relay
 RuntimeDirectoryMode=0750
 UMask=0007

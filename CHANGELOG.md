@@ -4,6 +4,13 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.9 — 2026-10-28
+
+- **A server on a socket takes releases by itself.** Its updater couldn't enter the relay's socket folder — only the
+  relay and the group `pult` may — so it never heard whether the relay was up and the computer connected, and refused
+  each release with "the computer isn't connected". The updater's service joins the group `pult` now. Takes effect
+  where `deploy/relay/install.sh` runs again.
+
 ## 0.18.8 — 2026-10-28
 
 - **The server's updater waits its turn.** A run that found the lock taken left at once, trusting the other run to

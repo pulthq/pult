@@ -8,6 +8,10 @@ Type=oneshot
 # an account of its own: it owns the relay's code (app/, venv/) and nothing else — not the secret, not the services
 User=pult-update
 Group=pult-update
+# and the group pult: on a socket, the relay's /run/pult-relay lets in only the relay and that group — without it the
+# updater never heard whether the relay was up and the computer connected, and refused each release with "the computer
+# isn't connected" (a live server, 2026-10-28)
+SupplementaryGroups=pult
 ExecStart=/usr/bin/env python3 -I /usr/local/lib/pult-relay/update.py run
 # where it asks whether the relay is up: install.sh writes the port or the socket from .env into
 # pult-relay-update.service.d/health.conf
