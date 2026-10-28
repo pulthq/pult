@@ -7,7 +7,7 @@ import { go, useOverlay } from "../core/nav.js";
 import { alertBox, confirmBox, haptic } from "../core/tg.js";
 import { q, t } from "../i18n.js";
 import { html, useState } from "../vendor/htm-preact-3.1.1.js";
-import { Loading, TAG_H, avatar, ic, keyTap, tagSt } from "../ui/kit.js";
+import { Loading, TAG_H, avatar, ic, keyTap, tagJob, tagSt } from "../ui/kit.js";
 
 // a tag in words: a topic of another section carries its section's name
 const named = (x, home) => (x.topic ? (x.sec === home ? x.topic : x.sec + " · " + x.topic) : x.sec);
@@ -103,6 +103,13 @@ function Tags({ pkey, open: open0 }) {
     setBusy(false);
     return false;
   };
+  // "Sort them again": Claude makes the list anew and sorts every task the owner didn't tag — after "Are you sure?"
+  const resort = async () => {
+    if (!(await confirmBox(t("tags.resort.ask")))) return;
+    setBusy(true);
+    try { set(await api("tags_resort", { pkey })); haptic("success"); } catch (e) { alertBox(e.message); }
+    setBusy(false);
+  };
   const act = async (a, done) => {                         // from a sheet: another sheet, or a change that closes it
     if (a.k) { setSheet(a); return; }
     if (await edit(a, done)) closeSheet();
@@ -111,7 +118,9 @@ function Tags({ pkey, open: open0 }) {
   const x = g && sheet.topic && g.topics.find((y) => y.n === sheet.topic);
   return html`<div class="project tagscr">
     <div class="ph">${avatar(d.name, 44)}<div><h2>${t("tags.title")}</h2><div class="sum dim">${d.name}</div></div></div>
-    ${d.tidy && html`<div class="dim small tidy-run">${ic("auto", 14)} ${t("tags.tidy.run")}</div>`}
+    ${d.job && html`<div class="dim small tidy-run">${ic("auto", 14)} ${tagJob(d.job)}</div>`}
+    ${d.note && html`<div class="pick-why">${d.note}</div>`}
+    ${d.tidy && !d.job && html`<div class="dim small tidy-run">${ic("auto", 14)} ${t("tags.tidy.run")}</div>`}
     ${d.sug.map((m) => {
       const kind = m.a.topic ? "topic" : "sec", home = m.a.sec === m.b.sec ? m.a.sec : null;
       const a = q(named(m.a, home)), b = q(named(m.b, home));
@@ -145,6 +154,8 @@ function Tags({ pkey, open: open0 }) {
         <div class="trow-h"><i class="tdot"></i><span class="tn">${h.topic ? html`<span class="dim">${h.sec} · </span>${h.topic}` : html`<b>${h.sec}</b>`}</span><span class="cnt-n">${h.cnt}</span>
           <button class="link" disabled=${busy} onClick=${() => edit({ op: "show", sec: h.sec, topic: h.topic })}>${t("tags.show")}</button></div></div>`)}</div>
         <div class="dim small">${t("tags.hidden.about")}</div>`}`}
+    ${(d.secs.length > 0 || d.hidden.length > 0) && html`<div class="tbtns"><button class="btn ghost" disabled=${busy || !!d.job || !d.model} onClick=${resort}>${ic("auto", 16)} ${t("tags.resort")}</button></div>
+      ${!d.model && html`<div class="dim small">${t("tags.resort.off")}</div>`}`}
     <div class="dim small tfoot">${t("tags.foot")}</div>
     ${sheet && sheet.k === "topic" && g && x && html`<${TopicSheet} pkey=${pkey} g=${g} x=${x} busy=${busy} onAct=${act} onClose=${closeSheet}/>`}
     ${sheet && sheet.k === "rename" && html`<${RenameSheet} key=${sheet.sec + "/" + (sheet.topic || "")} sec=${sheet.sec} topic=${sheet.topic} busy=${busy}

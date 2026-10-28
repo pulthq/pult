@@ -7,11 +7,13 @@ title whole, what was asked and what Claude says (0.17.3). The project's tags sc
 sections with their tasks, a new topic kept, a section renamed, recoloured, hidden and back, a topic merged.
   STAND_TAGS=1 STAND_LANG=ru STAND_PORT=18151 HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out &
   ~/.local/share/pult/venv/bin/python tools/tags_check.py /tmp/stand.out [out_dir]
-Screenshots go to out_dir (a temporary folder by default); TAGS_DARK=1 — in the phone's dark theme. Exit 1 on a failed check."""
+Screenshots go to out_dir (a temporary folder by default); TAGS_DARK=1 — in the phone's dark theme. A stand with
+STAND_TAGJOB=1 too (a made-up model) — only the part where Claude sorts the earlier tasks and "Sort them again".
+Exit 1 on a failed check."""
 import asyncio, base64, json, os, subprocess, sys, tempfile
 import aiohttp
 
-URLS = dict(line.split(" ", 1) for line in open(sys.argv[1]).read().split("\n") if line[:5] in ("PROJT", "SESST", "HOME "))
+URLS = dict(line.split(" ", 1) for line in open(sys.argv[1]).read().split("\n") if line[:5] in ("PROJT", "SESST", "HOME ", "TAGJO"))
 URLS = {k.strip(): v.strip() for k, v in URLS.items()}
 OUT = sys.argv[2] if len(sys.argv) > 2 else tempfile.mkdtemp(prefix="pult-tags-")
 os.makedirs(OUT, exist_ok=True)
@@ -104,6 +106,39 @@ async def main():
             bar = lambda sub: ("[...document.querySelectorAll('.tagbar%s .tagf')].map((b) => [b.firstChild && b.firstChild.nodeType === 3 ?"
                                " b.firstChild.textContent.trim() : b.textContent.replace(/\\d+$/, '').trim(), b.classList.contains('on')])" % (".sub" if sub else ":not(.sub)"))
 
+            async def job_part():
+                """STAND_TAGJOB=1 (T2, a made-up model): the project's first open — Claude sorts its earlier tasks by
+                itself, "N of M" under the bar, every one with its section after; "Sort them again" on its tags screen —
+                asked first, the list made anew, the tasks sorted again, the owner's own tags kept."""
+                await goto(URLS["PROJT"])
+                verdict("the first open: Claude sorts the earlier tasks, its line under the bar",
+                        await until("/\\d/.test((document.querySelector('.project .tidy-run') || {}).textContent || '')", 150))
+                ru = await js("document.documentElement.lang") == "ru"
+                await shot("12-job.png")
+                verdict("…the line goes when they are sorted", await until("!document.querySelector('.project .tidy-run')", 300))
+                await js("document.querySelector('.project h3.toggle').click()")
+                ok = await until("document.querySelectorAll('.project .item.brow.rest').length >= 20")
+                rows = await js("[...document.querySelectorAll('.project .item.brow.rest')].map((r) => r.querySelectorAll('.tagc').length)")
+                verdict("…every earlier task has its section", ok and all(n >= 1 for n in rows), rows)
+                await js("document.querySelector('.project h3.toggle').scrollIntoView({block: 'start'})")
+                await shot("13-sorted.png")
+                await js("window.__said = []; window.confirm = (s) => (window.__said.push(String(s)), true);"
+                         " const w = window.Telegram && window.Telegram.WebApp; if (w) w.showConfirm = (s, cb) => (window.__said.push(String(s)), cb(true));")
+                await tap_text(".tagrow .tagf.edit", "")
+                verdict("the tags screen: Sort them again, the model on", await until("!!document.querySelector('.tagscr .tbtns .btn:not([disabled])')", 100))
+                await js("document.querySelector('.tagscr .tbtns .btn').click()")
+                verdict("…asked first", await until("window.__said.length === 1"), await js("window.__said"))
+                verdict("…Claude makes the list anew", await until("/…/.test((document.querySelector('.tagscr .tidy-run') || {}).textContent || '')", 60))
+                await shot("14-resort.png")
+                verdict("…then sorts the tasks, N of M", await until("/\\d/.test((document.querySelector('.tagscr .tidy-run') || {}).textContent || '')", 100))
+                await shot("15-resorting.png")
+                verdict("…done", await until("!document.querySelector('.tagscr .tidy-run')", 300))
+                names = await js("[...document.querySelectorAll('.tagscr .list .trow:not(.hid) .tn')].map((n) => n.textContent.trim())")
+                new_docs, old_docs = ("Инструкции", "Документы") if ru else ("Manuals", "Docs")
+                verdict("…the new list's name, and the owner's own section kept", new_docs in names and old_docs in names, names)
+                await shot("16-resorted.png")
+                verdict("no errors in the page", not errors, errors)
+
             await cmd("Page.enable")
             await cmd("Runtime.enable")
             await cmd("Emulation.setDeviceMetricsOverride", width=412, height=860, deviceScaleFactor=2, mobile=True)
@@ -111,6 +146,9 @@ async def main():
             if os.environ.get("TAGS_DARK") == "1":           # the phone's dark theme: frames for the owner in both
                 await cmd("Emulation.setEmulatedMedia", features=[{"name": "prefers-color-scheme", "value": "dark"}])
 
+            if "TAGJOB" in URLS:
+                await job_part()
+                return
             # the project: every task with its two tags; the bar of sections, "All" on
             await goto(URLS["PROJT"])
             verdict("the project's tag bar", await until("!!document.querySelector('.tagbar .tagf')", 150))
@@ -293,8 +331,8 @@ async def main():
             verdict("no errors in the page", not errors, errors)
     finally:
         p.terminate()
-    print("screenshots:", OUT)
-    sys.exit(1 if failures else 0)
 
 
 asyncio.run(main())
+print("screenshots:", OUT)
+sys.exit(1 if failures else 0)

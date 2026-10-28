@@ -25,7 +25,8 @@ release row, no tab wrapper; STAND_UPD=ready) (tools/parts_check.py); STAND_PART
 with the server's updater (stage U3): the server took the computer's release; is taking it; didn't take it and went back
 STAND_TAGS=1 (stage T): a third project, a maker of 3D printers, fifteen tasks in every state, each with its section and
 topic in the store (PROJT — its screen, SESST — its task that waits for you; tools/tags_check.py); T2 — Claude's offer to
-merge two of its topics, on the project's tags screen.
+merge two of its topics, on the project's tags screen. STAND_TAGJOB=1 with it: twelve earlier tasks without tags and a
+made-up model — Claude sorts them on the first open, "Sort them again" makes the list anew (tags_check.py, its last part).
 STAND_PARTS=check_run|check_fail|check_here|check_err (stage A): Pult's own check of a Claude Code version VS Code has
 downloaded — running, failed at a step, passed, couldn't run; "Check again" passes in 3 s, no Claude (tools/vcheck_check.py).
 STAND_COPY=1: the session that waits for you is open in a VS Code tab on a Claude Code Pult isn't checked on — its card
@@ -213,7 +214,11 @@ def ev(name, sid, cwd=SHOP, **kw):
 TAGS_D = {
     "en": dict(
         name="Printer", secs=["Firmware", "Frame", "Electronics", "Marketing", "Slicer", "Extruder", "Docs"],
-        merge=["Wi-Fi", "Network updates"],
+        merge=["Wi-Fi", "Network updates"], docs=("Docs", "Manuals", "Manual"),
+        untagged=["Bed levelling after a spring swap", "Network updates: a rollback", "Strength of the frame at 2 kg",
+                  "Mounts for the end stops", "Power from 24 V", "Cooling the drivers", "Profiles for ABS",
+                  "Nozzles of hardened steel", "Sensors on the door: a pause", "Customers abroad: shipping",
+                  "Trade show in Berlin: the stand", "Assembly of the Z axis, chapter 4", "Manual for users, part 2"],
         shop=[("Checkout", "Errors"), ("Search", "Typos"), ("Images", "Thumbnails"), ("Admin", "Dark theme")],
         desk=[("Tickets", "Sorting"), ("Reports", "Weekly")],
         tasks=[
@@ -245,7 +250,11 @@ TAGS_D = {
             dict(st="old", ago=6 * 86400, tag=("Firmware", "Network updates"), title="Over-the-air firmware: the signature check")]),
     "ru": dict(
         name="Принтер", secs=["Прошивка", "Корпус", "Электроника", "Маркетинг", "Слайсер", "Экструдер", "Документы"],
-        merge=["Wi-Fi", "Обновление по сети"],
+        merge=["Wi-Fi", "Обновление по сети"], docs=("Документы", "Инструкции", "Руководство"),
+        untagged=["Калибровка стола после замены пружин", "Обновление прошивки: откат версии", "Прочность рамы при печати 2 кг",
+                  "Крепления концевиков", "Питание от 24 В", "Охлаждение драйверов", "Профили для ABS",
+                  "Сопла из закалённой стали", "Датчики двери: пауза", "Покупатели из Казахстана: доставка",
+                  "Выставка в Москве: стенд", "Сборка оси Z, глава 4", "Руководство пользователя, раздел 2"],
         shop=[("Оплата", "Ошибки"), ("Поиск", "Опечатки"), ("Картинки", "Превью"), ("Админка", "Тёмная тема")],
         desk=[("Заявки", "Разбор"), ("Отчёты", "Неделя")],
         tasks=[
@@ -336,8 +345,18 @@ async def stand_tags(p, store, projects):
     import claude_agent_sdk
     from types import SimpleNamespace
     real_list = claude_agent_sdk.list_sessions
-    olds = [SimpleNamespace(session_id=x["sid"], custom_title=None, summary=x["title"], last_modified=(time.time() - x["ago"]) * 1000)
-            for x in G["tasks"] if x["st"] == "old"]
+    # every task of the printer, the latest first, as the SDK lists a folder's sessions — the project's screen shows
+    # the ones it doesn't show elsewhere as the earlier ones; the batches of T2 take any without tags
+    olds = [SimpleNamespace(session_id=x["sid"], custom_title=None, summary=x["title"], first_prompt=x["title"],
+                            last_modified=(time.time() - x["ago"]) * 1000) for x in sorted(G["tasks"], key=lambda x: x["ago"])]
+    if os.environ.get("STAND_TAGJOB"):          # T2: earlier tasks Pult never tagged — Claude sorts them on the first open
+        for n, title in enumerate(G["untagged"]):
+            sid = "%08x-7777-4777-8777-%012x" % (0x71000000 + n, n)
+            (folder / (sid + ".jsonl")).write_text(line("user", title, ago=8 * 86400 + n * 3600) + "\n" +
+                                                   aline(title + ".", "u%d" % n, 600, ago=8 * 86400 + n * 3600 - 60) + "\n")
+            olds.append(SimpleNamespace(session_id=sid, custom_title=None, summary=title, first_prompt=title,
+                                        last_modified=(time.time() - 8 * 86400 - n * 3600) * 1000))
+        olds.sort(key=lambda x: -x.last_modified)
 
     def list_sessions(directory=None, limit=None, *a, **kw):
         if directory and os.path.realpath(directory) == os.path.realpath(path):
@@ -358,9 +377,53 @@ async def stand_tags(p, store, projects):
         store.set_session_tag(sid, pkey, s, tp, False)
     # T2: Claude's offer to merge two topics of the firmware that name the same thing — its answer as it would come
     # (the model never runs on the stand); the project's tags screen shows it on top
-    store.put("tags.tidy." + pk, {"sig": "", "ts": time.time(), "raw": {"pairs": [
-        {"a": {"sec": G["secs"][0], "topic": G["merge"][0]}, "keep": {"sec": G["secs"][0], "topic": G["merge"][1]}}]}})
+    tidy = {"pairs": [{"a": {"sec": G["secs"][0], "topic": G["merge"][0]}, "keep": {"sec": G["secs"][0], "topic": G["merge"][1]}}]}
+    store.put("tags.tidy." + pk, {"sig": "", "ts": time.time(), "raw": tidy})
+    if os.environ.get("STAND_TAGJOB"):
+        await stand_tagjob(p, store, pk, tidy, [x["sid"] for x in G["tasks"] if x["tag"][0] == G["docs"][0]])
     return pk, sids
+
+
+async def stand_tagjob(p, store, pk, tidy, docs_sids):
+    """STAND_TAGJOB=1 (T2): the model on — a made-up one, slow enough to see "N of M": a batch puts each task under the
+    first topic of the list whose first letters its title has; "Sort them again" makes the printer's list anew, its
+    docs section under a new name with a topic of its own; the docs task is the owner's — it keeps its tags."""
+    G = TAGS_D
+    for sid in docs_sids:                                   # the owner tagged it: "Sort them again" leaves it
+        r = store.session_tag(sid)
+        store.tag_add(pk, r["sec"], r["topic"], own=True)
+        store.set_session_tag(sid, pk, r["sec"], r["topic"], True)
+
+    def listed(text):
+        out = []
+        for ln in text.split("<project_tags>")[1].split("</project_tags>")[0].strip().split("\n"):
+            if ln.startswith("- "):
+                sec, _, tops = ln[2:].partition(": ")
+                out.append((sec, [t for t in tops.split(", ") if t]))
+        return out
+
+    async def batch(text, lang, cwd):
+        await asyncio.sleep(2.5)
+        vocab, got = listed(text), []
+        for i, title in __import__("re").findall(r'<task id="(\d+)">\n<title>(.*?)</title>', text):
+            low = title.lower()
+            hit = next(((s, t) for s, ts in vocab for t in ts if t.lower()[:5] in low), None)
+            got.append({"id": i, "sec": hit[0] if hit else vocab[0][0], "topic": hit[1] if hit else ""})
+        return {"tasks": got}
+
+    async def make_list(text, lang, cwd):
+        await asyncio.sleep(2)
+        old = {s["n"]: [t["n"] for t in s["topics"]] for s in store.tag_vocab(pk)}
+        return {"secs": [{"n": s, "topics": old.get(s, [])} if s != G["docs"][0] else {"n": G["docs"][1], "topics": [G["docs"][2]]}
+                         for s in G["secs"]]}
+
+    async def nothing(*a, **kw):
+        return None
+
+    async def tidy_answer(text, lang, cwd):
+        return tidy
+    pultd.G.batch, pultd.G.make_list, pultd.G.tidy, pultd.G.tag, pultd.B.brief = batch, make_list, tidy_answer, nothing, nothing
+    await p.api_prefs(brief=True)
 
 
 # STAND_FILES=1: the shop's own folder, made up, and the last reply's links into it — a page, a line of code, a project
@@ -869,6 +932,8 @@ async def main():
         print("SESST http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
               (PORT, urllib.parse.quote(init("s_" + tag_sids[0]))), flush=True)   # its task that waits for you
         print("TAGPK", tag_pk, flush=True)
+        if os.environ.get("STAND_TAGJOB"):
+            print("TAGJOB 1", flush=True)
     print("LOAD http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
           (PORT, urllib.parse.quote(init("load"))), flush=True)
     print("SETTINGS http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %

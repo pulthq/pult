@@ -261,6 +261,8 @@ const TAG_H = [212, 28, 150, 280, 340, 190, 45, 95];
 const tagSt = (c) => "--th:" + TAG_H[(c || 0) % TAG_H.length];
 const tagChip = (g) => html`<span key=${g.k + g.n} class=${"tagc" + (g.k === "topic" ? " topic" : "")} style=${tagSt(g.c)}>${g.n}</span>`;
 const tagChips = (tags) => (tags && tags.length ? tags.slice(0, 2).map(tagChip) : "");
+// Claude sorting a project's tasks in batches (stage T, T2): its earlier ones, once, or all anew — what it does, how far
+const tagJob = (j) => (j.list ? t("tags.job.list") : !j.total ? t("tags.job.start") : t("tags.job." + j.kind, { done: j.done, total: j.total }));
 // a session has no tab bar (the composer is there): its way straight home, the tab's own icon
 const home = (size) => html`<a class="home-l" href="#/" aria-label=${t("tab.home")}>${ic("home", size)}</a>`;
 const avatar = (name, size = 28) => html`<span class="av" aria-hidden="true" style=${"background:" + hue(name) + ";width:" + size + "px;height:" + size + "px;font-size:" + Math.round(size * .5) + "px"}>${String(name).replace(/[^\p{L}\p{N}]/gu, "").charAt(0).toUpperCase()}</span>`;
@@ -300,4 +302,4 @@ function Loading({ err }) {
   return html`<div class="empty">${err || (c.state === "nomac" ? t("loading.nomac") : c.state === "denied" ? "" : t("loading"))}</div>`;
 }
 
-export { About, ChoicePick, Dots, GEAR, GLYPH, Loading, MODES, ModePick, ModelPick, Sheet, TimeChip, ago, agoShort, avatar, bgChip, bytes, choiceText, dayLabel, dot, dotted, dur, durShort, effortName, hhmm, home, hue, ic, keyTap, kilo, level, modelName, nb, num, pct, plainField, queueChip, quiet, resetText, sendKey, TAG_H, tagChips, tagSt, toDate, useNow, workChip };
+export { About, ChoicePick, Dots, GEAR, GLYPH, Loading, MODES, ModePick, ModelPick, Sheet, TimeChip, ago, agoShort, avatar, bgChip, bytes, choiceText, dayLabel, dot, dotted, dur, durShort, effortName, hhmm, home, hue, ic, keyTap, kilo, level, modelName, nb, num, pct, plainField, queueChip, quiet, resetText, sendKey, TAG_H, tagChips, tagJob, tagSt, toDate, useNow, workChip };

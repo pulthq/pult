@@ -82,7 +82,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.15"
+VERSION = "0.18.16"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -358,6 +358,9 @@ class Pult(Api, Parts):
         self.reading = {}              # sid → {"ts", "viewed"}: an outcome the model still reads, opened meanwhile or not
         self.tidying = set()           # projects whose tags the model looks over now (stage T, T2: offers to merge)
         self.tidy_failed = {}          # pkey → (the list's names, when): the model gave nothing — not again at once
+        self.tag_jobs = {}             # pkey → {"kind": "old" | "resort", "done", "total", "list"}: tasks sorted in batches
+        self.tag_failed = {}           # pkey → when the model last gave nothing on a batch: not again at once
+        self.tag_note = {}             # pkey → (when, words): a "Sort them again" that changed nothing, for its screen
         self.app_on, self.app_vis = 0.0, False       # the app's last "on screen" and whether it is visible now
         self.app_seen = store.get("app_seen") or 0.0     # the app was last on the screen (kept across restarts)
         self.catch_from = store.get("catch_from")    # "While you were away" counts from here during this visit
@@ -1432,7 +1435,7 @@ class Pult(Api, Parts):
             return False
         self.store.tag_add(lv.pkey, sec, topic, own=own)
         self.store.set_session_tag(lv.sid, lv.pkey, sec, topic, own)
-        self.store.tag_prune(lv.pkey)                # what the task had before goes, if no other task has it
+        self.tags_prune(lv.pkey)                # what the task had before goes, if no other task has it
         log("tags %s: %s%s%s" % (lv.sid[:8], sec, " / " + topic if topic else "", " (the owner's)" if own else ""))
         self.changed(lv.sid)
         return True
@@ -1472,7 +1475,7 @@ class Pult(Api, Parts):
             return False
         self.store.tag_add(lv.pkey, sec, None, own=True)
         self.store.set_session_tag(lv.sid, lv.pkey, sec, None, True)
-        self.store.tag_prune(lv.pkey)
+        self.tags_prune(lv.pkey)
         self.changed(lv.sid)
         return True
 

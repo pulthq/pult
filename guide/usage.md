@@ -48,7 +48,11 @@ you're neither in the app nor at the computer. Reminders on long turns; warnings
   two into one, hide one (the tasks keep it; rows, the filter and Telegram don't show it — bring it back at the bottom
   of the screen). A tag Claude has just made is dashed until you keep it or merge it into another. Claude looks the
   list over too and offers to merge two tags that name the same thing; **Keep both**, and it won't offer them again.
-  Claude goes on with your names: an old name it brings lands on the new tag.
+  Claude goes on with your names: an old name it brings lands on the new tag. The first time you open a project with
+  the switch on, Claude sorts its earlier tasks that have no tags (the latest 200, twenty at a time, in the background;
+  "Claude is sorting the earlier tasks: 40 of 120" under its sections) — once a project. **Sort them again** at the
+  bottom of its tags asks first, then makes the list anew from the README, CLAUDE.md, the latest tasks and your own
+  tags, and sorts every task you didn't tag yourself into it — about a minute.
 - **Resources**: Limits — the curve of each limit against the even pace, the forecast (on pace, under: how many hours
   of a session's work would go unused, over: when it runs out), who spent it; Computer — the processor, the memory
   and each Claude session's commands.

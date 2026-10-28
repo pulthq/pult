@@ -8,7 +8,7 @@ import { plural, t } from "../i18n.js";
 import { html, useEffect, useRef, useState } from "../vendor/htm-preact-3.1.1.js";
 import { BoardRow, Mine, RunRow, moveKey, moves } from "./home.js";
 import { Req, useRcpt } from "../ui/cards.js";
-import { ChoicePick, Loading, agoShort, avatar, choiceText, dot, dotted, dur, ic, keyTap, plainField, sendKey, tagChips, tagSt, useNow } from "../ui/kit.js";
+import { ChoicePick, Loading, agoShort, avatar, choiceText, dot, dotted, dur, ic, keyTap, plainField, sendKey, tagChips, tagJob, tagSt, useNow } from "../ui/kit.js";
 import { BgSheet } from "../ui/load.js";
 import { Attach, Thumbs, useAttach } from "../ui/pics.js";
 
@@ -39,7 +39,7 @@ function TagBar({ set, sel, top, all, onSel, onTop, pkey }) {
     <button class=${"tagf" + (sel ? "" : " on")} onClick=${() => onSel(null)}>${t("tags.all")}<span>${all}</span></button>
     ${set.map((g) => html`<button key=${g.n} class=${"tagf" + (sel === g.n ? " on" : "")} style=${tagSt(g.c)}
       onClick=${() => onSel(sel === g.n ? null : g.n)}><i></i>${g.n}<span>${g.cnt}</span></button>`)}
-  </div><button class="tagf edit" aria-label=${t("tags.edit")} title=${t("tags.edit")} onClick=${() => go("#/tags/" + encodeURIComponent(pkey))}>${ic("tag", 16)}</button></div>
+  </div>${pkey && html`<button class="tagf edit" aria-label=${t("tags.edit")} title=${t("tags.edit")} onClick=${() => go("#/tags/" + encodeURIComponent(pkey))}>${ic("tag", 16)}</button>`}</div>
   ${sec && sec.topics.length > 1 && html`<div class="tagbar sub" style=${tagSt(sec.c)}>
     <button class=${"tagf" + (top ? "" : " on")} onClick=${() => onTop(null)}>${t("tags.topics.all")}<span>${sec.cnt}</span></button>
     ${sec.topics.map((x) => html`<button key=${x.n} class=${"tagf" + (top === x.n ? " on" : "")} onClick=${() => onTop(top === x.n ? null : x.n)}>${x.n}<span>${x.cnt}</span></button>`)}
@@ -67,7 +67,8 @@ function Project({ pkey, tag, topic }) {
   const sum = d.turns ? t("sum.today", { n: d.turns, turns: plural(d.turns, "turn"), dur: dur(d.secs) }) : t("proj.quiet");
   return html`<div class="project">
     <div class="ph">${avatar(d.name, 44)}<div><h2>${d.name}</h2><div class="sum dim">${sum}</div></div></div>
-    ${d.tagset && (d.tagset.length > 0 || d.tags_n > 0) && html`<${TagBar} set=${d.tagset} sel=${sel} top=${top} all=${tagsOf.size} onSel=${setSel} onTop=${setTop} pkey=${pkey}/>`}
+    ${d.tagset && (d.tagset.length > 0 || d.tags_n > 0) && html`<${TagBar} set=${d.tagset} sel=${sel} top=${top} all=${tagsOf.size} onSel=${setSel} onTop=${setTop} pkey=${d.tags_n != null ? pkey : null}/>`}
+    ${d.tag_job && html`<div class="dim small tidy-run">${ic("auto", 14)} ${tagJob(d.tag_job)}</div>`}
     ${(waits > 0 || mineF.length > 0) && html`<h3>${t("proj.waits", { n: waits })}</h3>
       ${mineF.map((e) => e.req ? html`<${Req} key=${e.key} r=${e.req} showProject=${false}/>`
         : html`<${Mine} key=${e.key} r=${Object.assign({ reset: d.reset }, e.mine)} now=${now} onGot=${gone} stt=${d.stt} showProject=${false}/>`)}`}

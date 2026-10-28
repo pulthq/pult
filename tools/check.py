@@ -29,6 +29,7 @@ CHECKS = {
     "viewer": ({}, "SESS", []),
     "files": ({"STAND_LANG": "ru"}, "SESS4", []),
     "tags": ({"STAND_TAGS": "1", "STAND_LANG": "ru"}, "out", []),
+    "tags-job": ({"STAND_TAGS": "1", "STAND_TAGJOB": "1", "STAND_LANG": "ru"}, "out", []),     # T2: a made-up model sorts
     "choice": ({"STAND_LANG": "ru"}, "out", []),
     "ticks": ({"STAND_TICKS": "4", "STAND_LANG": "ru"}, "out", []),
     "copy": ({"STAND_COPY": "1", "STAND_ASK2": "1", "STAND_LANG": "ru"}, "out", []),

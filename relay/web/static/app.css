@@ -818,6 +818,8 @@ button.tagc { border: 0; font-family: inherit; cursor: pointer; }
 .trow.hid .trow-h { padding-bottom: 12px; cursor: default; }
 .trow.hid .link { padding: 0; }
 .tfoot { margin: 14px 4px 0; }
+.tbtns { display: flex; gap: 8px; margin-top: 16px; }
+.tbtns .btn { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; }
 .tagsheet .pick-h > span { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .tagsheet .pick-h .tagc { margin: 0; font-size: var(--fs-sec); }
 .tagsheet .opt { margin: 6px 0; }

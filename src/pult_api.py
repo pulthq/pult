@@ -50,6 +50,7 @@ CTX_RESERVE = 13000        # VS Code's context gauge: used ÷ (window − min(ma
 CTX_OUT_CAP = 20000
 TAGS_RECENT = 30 * 86400   # s: the tags screen puts first the tags of the tasks of these last days (stage T, T2)
 TIDY_RETRY = 600           # s: the model gave nothing on a project's list — not asked about the same names before this
+TAG_NOTE = 120             # s: the tags screen tells this long that a "Sort them again" changed nothing
 
 
 def log(*a):
@@ -375,12 +376,14 @@ class Api:
                                 "last": x.last_modified / 1000, "line": r.get("line") or "", "open": bool(r.get("open")),
                                 "driven": x.session_id in self.driven, "tags": self.tags_of(x.session_id, tagged)})
         turns, secs = self.attn.day_of(pkey)
-        # tags_n: the project has a list at all — the way to its tags screen, even when nothing on this one has tags
+        # tags_n: the project has a list at all — the way to its tags screen, even when nothing on this one has tags;
+        # tag_job: Claude sorts its earlier tasks now — the first open of the project with the model on starts it (Q93)
+        self.tags_sort_soon(pkey)
         return {"pkey": pkey, "name": self.name_of(pkey, rows), "path": path, "pending": pending, "mine": mine,
                 "live": live, "today": today, "earlier": earlier, "turns": turns, "secs": secs,
                 "reset": self.limit_reset(), "stt": self.stt_state()["on"],
                 "tagset": self.tag_list(pkey, list(shown) + [x["sid"] for x in earlier]),
-                "tags_n": len(self.store.tag_vocab(pkey))}
+                "tags_n": len(self.store.tag_vocab(pkey)), "tag_job": self.tag_jobs.get(pkey)}
 
     async def api_sessions(self, pkey):
         path = self.project_path(pkey)
@@ -463,12 +466,18 @@ class Api:
                 self.store.tag_hide(lv.pkey, name, tp, False)
             self.store.tag_add(lv.pkey, name, tp, own=True)
             self.store.set_session_tag(sid, lv.pkey, name, tp, True)
-            self.store.tag_prune(lv.pkey)
+            self.tags_prune(lv.pkey)
             log("tags %s: %s%s (the owner's)" % (sid[:8], name, " / " + tp if tp else ""))
         self.changed(sid)
         return {"tags": self.tags_of(sid), "tagset": self.tag_list(lv.pkey), "auto": bool(auto)}
 
     # ----- the project's tags screen (stage T, T2): the owner tidies what Claude keeps -----
+
+    def tags_prune(self, pkey):
+        """Claude's tags that no task has go (Store.tag_prune) — but not while a job sorts the project's tasks: a new
+        list waits empty for its batches, and the screen's next look would take it all away (the stand, 2026-10-28)."""
+        if pkey not in self.tag_jobs:
+            self.store.tag_prune(pkey)
 
     def tags_pkey(self, pkey):
         if not isinstance(pkey, str) or not pkey or self.D.skip_pkey(pkey) or not (
@@ -481,7 +490,7 @@ class Api:
         them, the most used in the last 30 days first; what the owner hid, apart; Claude's offers to merge two tags
         that name the same thing (looked for in the background, when the names have changed: tidy_soon)."""
         self.tags_pkey(pkey)
-        self.store.tag_prune(pkey)
+        self.tags_prune(pkey)
         vocab, now = self.store.tag_vocab(pkey), time.time()
         uses, recent = self.store.tag_uses(pkey), self.store.tag_uses(pkey, now - TAGS_RECENT)
         hidden, kept = self.store.tag_hidden(pkey), self.store.tag_kept(pkey)
@@ -507,8 +516,11 @@ class Api:
         sug = [{"a": {"sec": a[0], "topic": a[1]}, "b": {"sec": b[0], "topic": b[1]}, "c": color[a[0]]}
                for a, b in G.tidy_pairs((self.store.get("tags.tidy." + pkey) or {}).get("raw"), vocab, kept, hidden)]
         self.tidy_soon(pkey, vocab)
+        self.tags_sort_soon(pkey)
+        note = self.tag_note.get(pkey)
         return {"pkey": pkey, "name": self.project_label(pkey), "secs": [x for _, x in sorted(secs, key=lambda p: p[0])],
-                "hidden": gone, "sug": sug, "tidy": pkey in self.tidying, "model": self.prefs()["brief"]}
+                "hidden": gone, "sug": sug, "tidy": pkey in self.tidying, "model": self.prefs()["brief"],
+                "job": self.tag_jobs.get(pkey), "note": note[1] if note and time.time() - note[0] < TAG_NOTE else None}
 
     async def api_tags_edit(self, pkey, op, sec, topic=None, name=None, c=None, to_sec=None, to_topic=None):
         """The owner tidies the project's tags: rename a section or a topic, colour a section, merge one into another
@@ -556,7 +568,7 @@ class Api:
             self.store.tag_own(pkey, me[0], me[1])
         else:
             raise ValueError(self.t("err.no_request", op=op))
-        self.store.tag_prune(pkey)
+        self.tags_prune(pkey)
         self.changed()
         return await self.api_tags(pkey)
 
@@ -588,6 +600,152 @@ class Api:
             log("tags %s: the list looked over — %d to merge" % (self.project_label(pkey), n))
         finally:
             self.tidying.discard(pkey)
+            self.changed()
+
+    # ----- the project's earlier tasks get their tags (stage T, T2; Q93), and "Sort them again" -----
+
+    def tags_sort_soon(self, pkey):
+        """The project's earlier tasks without tags get them once, by themselves, when the owner opens the project or
+        its tags with the model on (Q93: the filter sees the whole history); a "Sort them again" a restart cut short
+        goes on the same way. One job a project, in the background; a model that gave nothing — not again at once."""
+        if not self.prefs()["brief"] or pkey in self.tag_jobs or self.D.skip_pkey(pkey) or not self.project_path(pkey):
+            return
+        resort = self.store.get("tags.resort." + pkey)
+        if self.store.get("tags.old." + pkey) and not resort:
+            return
+        if time.time() - self.tag_failed.get(pkey, 0) < TIDY_RETRY:
+            return
+        self.tag_jobs[pkey] = {"kind": "resort" if resort else "old", "done": 0, "total": 0}
+        asyncio.create_task(self.tags_sort(pkey))
+
+    async def api_tags_resort(self, pkey):
+        """"Sort them again": Claude makes the project's list anew — from the start of its README and CLAUDE.md, its
+        latest tasks' titles and the owner's own tags, which stay as they are — then sorts into it every task the owner
+        didn't tag, in batches, "N of M" on the screen. The model off or a job running — an error. → the screen."""
+        self.tags_pkey(pkey)
+        if not self.prefs()["brief"]:
+            raise ValueError(self.t("tags.e.model"))
+        if pkey in self.tag_jobs:
+            raise ValueError(self.t("tags.e.busy"))
+        if not self.project_path(pkey):
+            raise ValueError(self.t("err.no_project"))
+        self.tag_note.pop(pkey, None)
+        self.tag_jobs[pkey] = {"kind": "resort", "done": 0, "total": 0, "list": True}
+        asyncio.create_task(self.tags_sort(pkey, new_list=True))
+        return await self.api_tags(pkey)
+
+    def tag_put(self, pkey, sid, got, ts=None):
+        """A batch's tags for a task that has none yet — one the owner tagged meanwhile, or a turn did, stays; a tag
+        the batch makes is not "new" (the owner asked for the history, not for each of its topics). → whether it took."""
+        cur = self.store.session_tag(sid)
+        if cur and cur["sec"]:
+            return False
+        at = G.place(self.store.tag_vocab(pkey), got, None, self.store.tag_aliases(pkey))
+        if at is None:
+            return False
+        self.store.tag_add(pkey, at[0], at[1], ts=time.time() - G.FRESH - 1)
+        self.store.set_session_tag(sid, pkey, at[0], at[1], False, ts=ts)
+        return True
+
+    def old_tasks(self, pkey, items, lines):
+        """A batch's tasks from the SDK's list of sessions: the title, the first request, and how it ended — the
+        result line Pult still keeps (lines), else the last thing Claude said, from the transcript's end. In a thread."""
+        out = []
+        for i, x in enumerate(items):
+            said = lines.get(x.session_id)
+            if not said:
+                for folder in (pkey, self.D.sanitize(getattr(x, "cwd", None) or "")):
+                    f = self.D.CLAUDE_PROJECTS / folder / (x.session_id + ".jsonl")
+                    if folder and f.is_file():
+                        said = self.D.last_reply(str(f), tail=G.SAID_TAIL)
+                        break
+            ask = getattr(x, "first_prompt", None) or ""
+            out.append({"id": str(i + 1), "sid": x.session_id, "title": x.custom_title or x.summary or ask, "ask": ask,
+                        "said": said or "", "ts": (x.last_modified or 0) / 1000 or None})
+        return out
+
+    def project_docs(self, path):
+        """The start of the project's README.md and CLAUDE.md, for a new list; "" for one it hasn't. In a thread."""
+        out = []
+        for name in ("README.md", "CLAUDE.md"):
+            try:
+                with open(os.path.join(path, name), encoding="utf-8", errors="replace") as f:
+                    out.append(f.read(G.DOC_LEN))
+            except OSError:
+                out.append("")
+        return out
+
+    async def tags_sort(self, pkey, new_list=False):
+        """The job of tags_sort_soon and api_tags_resort. new_list — first a new list: Claude's old tags go (the owner's
+        stay), the sections it names again keep their colours; a list the model didn't give changes nothing. Then the
+        project's latest tasks without tags, BATCH at a time, each batch one request after the result lines' (brief_sem).
+        Done — the project's earlier tasks are sorted (tags.old); a batch without an answer stops the job: what is left
+        goes on at a later open."""
+        from claude_agent_sdk import list_sessions
+        job, label, path = self.tag_jobs[pkey], self.project_label(pkey), self.project_path(pkey)
+        n, cut = 0, False
+        try:
+            self.D.BRIEF_DIR.mkdir(parents=True, exist_ok=True)
+            if new_list:
+                items = await asyncio.to_thread(list_sessions, path, G.LIST_TASKS)
+                readme, claude_md = await asyncio.to_thread(self.project_docs, path)
+                vocab = self.store.tag_vocab(pkey)
+                own = [{"n": s["n"], "topics": [t for t in s["topics"] if t["own"]]} for s in vocab
+                       if s["own"] or any(t["own"] for t in s["topics"])]
+                dirs = await asyncio.to_thread(G.hints, path)
+                titles = [t for t in (x.custom_title or x.summary or getattr(x, "first_prompt", None) for x in items) if t]
+                async with self.brief_sem:
+                    d = await G.make_list(G.list_request(label, readme, claude_md, titles, own, dirs), self.lang(), self.D.BRIEF_DIR)
+                fresh = G.new_list(d)
+                if not fresh:
+                    self.tag_note[pkey] = (time.time(), self.t("tags.e.list"))
+                    log("tags %s: no new list from the model — nothing changed" % label)
+                    return
+                colors = self.store.tag_reset(pkey)
+                self.store.put("tags.resort." + pkey, time.time())
+                vocab, old = self.store.tag_vocab(pkey), time.time() - G.FRESH - 1
+                for sec, tops in fresh:
+                    s = next((x for x in vocab if G.key(x["n"]) == G.key(sec)), None)
+                    name = s["n"] if s else sec
+                    self.store.tag_add(pkey, name, None, ts=old, color=colors.get(G.key(name)))
+                    for t in tops:
+                        same = next((x["n"] for x in (s["topics"] if s else []) if G.key(x["n"]) == G.key(t)), t)
+                        self.store.tag_add(pkey, name, same, ts=old)
+                log("tags %s: a new list — %s" % (label, ", ".join(sec for sec, _ in fresh)))
+                job.pop("list", None)
+                self.changed()
+            items = await asyncio.to_thread(list_sessions, path, G.OLD_MAX)
+            todo = [x for x in items if not ((self.store.session_tag(x.session_id) or {"sec": None})["sec"])]
+            job["total"] = len(todo)
+            self.changed()
+            for i in range(0, len(todo), G.BATCH):
+                chunk = todo[i:i + G.BATCH]
+                lines = {x.session_id: (self.attn.rec.get(x.session_id) or {}).get("line") for x in chunk}
+                tasks = await asyncio.to_thread(self.old_tasks, pkey, chunk, lines)
+                async with self.brief_sem:
+                    vocab = self.store.tag_vocab(pkey)
+                    dirs = await asyncio.to_thread(G.hints, path) if len(vocab) < G.HINT_UNDER else []
+                    d = await G.batch(G.batch_request(label, vocab, tasks, dirs), self.lang(), self.D.BRIEF_DIR)
+                if d is None:
+                    self.tag_failed[pkey], cut = time.time(), True
+                    log("tags %s: no answer from the model on a batch — %d of %d tasks sorted, the rest later"
+                        % (label, job["done"], job["total"]))
+                    return
+                got = G.batch_tags(d, {t["id"] for t in tasks})
+                n += sum(1 for t in tasks if t["id"] in got and self.tag_put(pkey, t["sid"], got[t["id"]], t["ts"]))
+                job["done"] += len(chunk)
+                self.changed()
+            self.store.put("tags.old." + pkey, {"ts": time.time(), "n": n})
+            self.store.put("tags.resort." + pkey, None)
+            log("tags %s: %d of %d earlier tasks sorted%s" % (label, n, len(todo), " anew" if job["kind"] == "resort" else ""))
+        except Exception as e:
+            self.tag_failed[pkey], cut = time.time(), True
+            log("tags %s: sorting the tasks stopped — %r" % (label, e))
+        finally:
+            self.store.tag_prune(pkey)
+            self.tag_jobs.pop(pkey, None)
+            if cut and n:
+                log("tags %s: %d sorted before it stopped" % (label, n))
             self.changed()
 
     # ----- a session: reading, writing, answering, the model, stopping -----
@@ -1255,9 +1413,9 @@ class Api:
         v["others"] = [{"name": x["name"], "percent": x["percent"], "resets_at": x["resets_at"]}
                        for x in u["limits"] if x["kind"] not in S.WINDOWS]
         v["shares"] = u.get("shares") or []
-        factor = v.pop("factor")
+        v.pop("factor")
         v.pop("per_sh_w")
-        v.update(plan=u.get("plan"), ts=u.get("ts"), extra=u.get("extra"), fable_x=round(factor.get("fable") or 0, 1))
+        v.update(plan=u.get("plan"), ts=u.get("ts"), extra=u.get("extra"), fable_x=round(v.pop("fable_x") or 0, 1))
         self._spend = (time.time(), v)
         return v
 

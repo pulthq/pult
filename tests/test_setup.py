@@ -1188,6 +1188,83 @@ class ConsistencyTest(unittest.TestCase):
         self.assertEqual(len(C.problems(self.tree("1.2.4", between, pins=two, relay=one))), 1)
         self.assertEqual(C.problems(SRC.parent), [])                                     # this very repository
 
+class TokenStatsTest(unittest.TestCase):
+    """tools/token_stats.py on transcripts made up here: a reply over two lines and in a session copy counts once, in
+    the oldest file; the sources, the API's price (Haiku's long prompt too), the owner's messages, hours of work and
+    the output an agent's transcript under-records (2026-10-28)."""
+
+    def test_token_stats(self):
+        import importlib.util
+        import time
+        spec = importlib.util.spec_from_file_location("pult_token_stats", SRC.parent / "tools" / "token_stats.py")
+        T = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(T)
+        root = Path(tempfile.mkdtemp(prefix="pult-tokens-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        t0 = 1_800_000_000
+
+        def at(s):
+            return time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(t0 + s))
+
+        def reply(mid, s, out, model="claude-opus-5-5", stop="end_turn", **u):
+            w1, w5 = u.get("w1", 0), u.get("w5", 0)
+            usage = {"input_tokens": u.get("inp", 0), "cache_read_input_tokens": u.get("read", 0), "output_tokens": out,
+                     "cache_creation_input_tokens": w1 + w5,
+                     "cache_creation": {"ephemeral_1h_input_tokens": w1, "ephemeral_5m_input_tokens": w5}}
+            text = "ж" * u.get("chars", 2 * out)                 # two characters a token, unless said otherwise
+            return {"type": "assistant", "timestamp": at(s), "message": {
+                "id": mid, "model": model, "stop_reason": stop, "usage": usage, "content": [{"type": "text", "text": text}]}}
+
+        def user(s, content, **kw):
+            return {"type": "user", "timestamp": at(s), "message": {"role": "user", "content": content}, **kw}
+
+        def write(path, age, *lines):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("".join(json.dumps(x, ensure_ascii=False) + "\n" for x in lines), encoding="utf-8")
+            os.utime(path, (t0 + age, t0 + age))
+
+        project = root / "my_proj.x"
+        self.assertTrue(T.folder(project).endswith("-my-proj-x"))
+        own = root / T.folder(project)
+        m1 = [reply("m1", 450, 500, stop=None, chars=500, inp=10, w1=1000, read=100_000),   # one reply, two lines
+              reply("m1", 450, 500, stop="tool_use", chars=500, inp=10, w1=1000, read=100_000)]
+        write(own / "a.jsonl", 100,
+              user(0, "do it", promptSource="sdk", turnOrigin="human"), *m1,
+              user(900, [{"type": "tool_result", "content": "ok"}]), reply("m2", 1350, 1000, read=200_000),
+              user(1800, "<task-notification>done</task-notification>", promptSource="system",
+                   turnOrigin="task_notification"),
+              user(9000, [{"type": "text", "text": "and this"}]),                    # before promptSource: by its text
+              user(9000, "This session is being continued from a previous conversation"))
+        write(own / "b.jsonl", 200, *m1, reply("m3", 9300, 100, model="claude-fable-5-1", w5=2000))   # a copy of a
+        write(own / "a" / "subagents" / "agent-x.jsonl", 150,
+              reply("m4", 600, 3, stop=None, chars=1000, w5=500, read=1000))         # output from the stream's start
+        write(root / "-tmp-pult-e2e-abc-proj" / "t.jsonl", 50,
+              reply("m5", 300, 100, model="claude-haiku-5-5", read=200_000))        # a test; Haiku over 100 K: five times
+        write(root / "-Users-x-other" / "o.jsonl", 60, reply("m6", 300, 100))       # another project
+        began = root / "-Users-x-garden" / "h.jsonl"                                 # where the project began
+        write(began, 10, user(100, "a remote for Claude?", promptSource="sdk", turnOrigin="sdk"), reply("m7", 200, 50))
+        write(began.with_suffix("") / "subagents" / "agent-y.jsonl", 20, reply("m8", 300, 20))
+
+        files = T.transcripts(project, [began], tests=True, root=root)
+        s = T.summary(*T.read(files))
+        self.assertEqual(s["replies"], 7)                                            # m1 once, m6 not at all
+        self.assertEqual(s["files"], {"sessions": 2, "agents": 1, "extra": 2, "tests": 1})
+        self.assertEqual(s["tokens"]["read"], 100_000 + 200_000 + 1000 + 200_000)
+        self.assertAlmostEqual(s["sources"]["sessions"]["cost"],
+                               10 * 4e-6 + 1000 * 8e-6 + 100_000 * 0.2e-6 + 500 * 20e-6       # m1: Opus, 1 h
+                               + 200_000 * 0.2e-6 + 1000 * 20e-6                              # m2
+                               + 2000 * 12.5e-6 + 100 * 50e-6)                                # m3: Fable, 5 min
+        self.assertAlmostEqual(s["sources"]["tests"]["cost"], 5 * (200_000 * 0.01e-6 + 100 * 0.5e-6))
+        self.assertEqual(s["messages"], 3)                     # not a tool's result, a notification or a compaction
+        self.assertEqual(s["hours"], 0.5)                      # pauses up to 10 min; the one of 2 h is not work
+        self.assertEqual(T.hours([(0, 1800), (100, 200), (3600, 5400)]), 1.0)
+        self.assertEqual(s["chars_per_token"], 2.0)
+        e = s["estimate"]                                      # m4: 1000 characters at 2 a token, 3 written
+        self.assertEqual((e["replies"], e["agents"], e["written"], e["estimate"]), (1, 1, 3, 500))
+        self.assertAlmostEqual(e["cost"], 497 * 20e-6)
+        self.assertEqual(T.summary(*T.read(files, since=t0 + 9000))["replies"], 1)   # m3 alone
+        self.assertEqual(T.summary(*T.read(T.transcripts(root / "nothing", root=root)))["replies"], 0)
+
 @unittest.skipIf(WIN, "install.sh is for macOS and Linux")
 class InstallShTest(unittest.TestCase):
     """install.sh itself, for real, in a sandbox: a stand-in HOME (the service file and the command land there), Pult's

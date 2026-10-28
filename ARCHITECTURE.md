@@ -137,9 +137,10 @@ flowchart LR
 - **The percent is the truth.** It comes from Claude Code's own `get_usage` request: about two seconds, no model
   request. Each reading is kept for 60 days.
 - **The shape between two readings comes from the transcripts.** A reply weighs
-  `input + 0.1·cache read + 1.25·cache write (2 for the 1-hour cache) + 5·output` — the API's price ratios — times its
-  model's factor. Fable's
-  factor is fitted to the share of the week that Fable used, which `get_usage` reports. The growth between two
+  `input + R·cache read + 1.25·cache write (2 for the 1-hour cache) + 5·output` — the API's price ratios, R being its
+  model's own: 0.05 for Opus 5.5, 0.025 for Fable 5.1, 0.1 for the rest — times its model's factor. Fable's
+  factor is fitted to the share of the week that Fable used, which `get_usage` reports; "On Fable it costs about N× as
+  much" compares the same work: Fable's tokens against what they would weigh at Opus's read price. The growth between two
   readings is spread over the slots in proportion to weight, so the curve passes through every reading even if the
   plan weighs tokens differently. Growth with no tokens on this computer shows as "not on this computer".
 - **A session is at work** from your message to the end of its turn (`end_turn`); inside a turn, a pause of up to

@@ -5,7 +5,7 @@ the daemon reads and counts, the app draws.
 The percent is the truth: Claude Code's get_usage (whole numbers), read every 15 min while there is work and when the
 app asks; every reading goes into the usage log. The transcripts on this computer give the rest — every model reply
 carries its tokens (2026-10-21: the Mac's transcripts held 8416 of the week's 8560 requests). A reply weighs its
-tokens at the API's price ratios times its model's factor. Between two readings the growth is spread over the
+tokens at its model's API price ratios times its model's factor. Between two readings the growth is spread over the
 5-minute slots in proportion to weight, so the curve passes through every reading whatever the plan's own weights
 are; growth with no tokens here is "elsewhere" — another computer, the chats. Whether the plan weighs tokens the same
 way is probe P1 of stage R (docs/project.html).
@@ -22,10 +22,13 @@ from pathlib import Path
 SLOT = 300                       # s: the finest grain of the curve and of "at once"
 HORIZON = 8 * 86400              # kept: the week and the day before it (the pace of the last day)
 GAP = 30 * 60                    # s: inside a turn, a pause up to this is work; a longer one is not
-WRITE_5M, WRITE_1H, READ, OUT = 1.25, 2.0, 0.1, 5.0       # the API's price ratios against an input token
+WRITE_5M, WRITE_1H, OUT = 1.25, 2.0, 5.0       # the API's price ratios against an input token, alike for every model,
+READ = {"opus": 0.05, "fable": 0.025, "sonnet": 0.1, "haiku": 0.1, "other": 0.1}   # but a cache read's is its model's
+# own: Opus 5.5 and Fable 5.1 read cheaper (the API's prices on 2026-10-28, Q95)
 FAMILIES = ("opus", "fable", "sonnet", "haiku", "other")
-FACTOR = {"opus": 1.0, "fable": 4.25, "sonnet": 0.6, "haiku": 0.2, "other": 1.0}   # per token, against Opus: Fable
-# fitted to its weekly share on 2026-10-21 and refitted at every reading (fit_factor); Sonnet and Haiku rough, their share is small
+FACTOR = {"opus": 1.0, "fable": 9.0, "sonnet": 0.6, "haiku": 0.2, "other": 1.0}   # per weight, against Opus: Fable
+# fitted to its weekly share on 2026-10-28 with these read prices (8.7 with 0.1 for every model; 4.25 on 2026-10-21) and
+# refitted at every reading (fit_factor); Sonnet and Haiku rough, their share is small
 WINDOWS = {"session": ("h5", 5 * 3600, 300), "five_hour": ("h5", 5 * 3600, 300),
            "weekly_all": ("week", 7 * 86400, 3600), "seven_day": ("week", 7 * 86400, 3600)}   # kind → key, span, bar step
 RECENT = {"h5": 3600, "week": 86400}   # the pace the forecast assumes: the last hour / the last day
@@ -51,21 +54,22 @@ def family(model):
     return next((f for f in FAMILIES[:-1] if f in m), "other")
 
 
-def weight_of(u):
-    """A reply's tokens at the API's price ratios, in input tokens."""
+def weight_of(u, fam):
+    """A reply's tokens at its model's API price ratios, in input tokens."""
     write = u.get("cache_creation_input_tokens") or 0
     w1h = min(write, (u.get("cache_creation") or {}).get("ephemeral_1h_input_tokens") or 0)
-    return ((u.get("input_tokens") or 0) + READ * (u.get("cache_read_input_tokens") or 0) + OUT * (u.get("output_tokens") or 0)
+    return ((u.get("input_tokens") or 0) + READ[fam] * (u.get("cache_read_input_tokens") or 0) + OUT * (u.get("output_tokens") or 0)
             + WRITE_5M * (write - w1h) + WRITE_1H * w1h)
 
 
 class Slot:
-    __slots__ = ("per", "work", "agents")
+    __slots__ = ("per", "work", "agents", "reads")
 
     def __init__(self):
         self.per = {}            # pkey → [weight per family…, requests, tokens written, tokens read]
         self.work = set()        # sessions working in this slot
         self.agents = set()      # agents working in this slot
+        self.reads = [0] * len(FAMILIES)   # cache-read tokens per family: what the same work would weigh on Opus
 
     def weight(self, factor, pkey=None):
         rows = self.per.values() if pkey is None else [self.per[pkey]]
@@ -153,8 +157,11 @@ class Spend:
         if not u or not mid or mid in self.seen:
             return
         self.seen[mid] = ts
-        row = self._slot(ts).per.setdefault(pkey, [0.0] * len(FAMILIES) + [0, 0, 0])
-        row[FAMILIES.index(family(m.get("model")))] += weight_of(u)
+        slot = self._slot(ts)
+        row = slot.per.setdefault(pkey, [0.0] * len(FAMILIES) + [0, 0, 0])
+        fam = family(m.get("model"))
+        row[FAMILIES.index(fam)] += weight_of(u, fam)
+        slot.reads[FAMILIES.index(fam)] += u.get("cache_read_input_tokens") or 0
         row[-3] += 1
         row[-2] += u.get("output_tokens") or 0
         row[-1] += (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0)
@@ -219,8 +226,22 @@ def fit_factor(slots, usage, t0, t1, now):
         wf = sum(s.per[p][FAMILIES.index(fam)] for i, s in slots.items() if t0 <= i * SLOT < now for p in s.per)
         wr = sum(s.weight(dict(factor, **{fam: 0.0})) for i, s in slots.items() if t0 <= i * SLOT < now)
         if wf > 0 and wr > 0 and 0.02 < used / max(total, 1) < 0.98:
-            factor[fam] = min(12.0, max(1.0, used / (total - used) * wr / wf))
+            # up to twice the old bound: Fable's reads weigh half Opus's now, so its factor per weight comes out higher
+            factor[fam] = min(24.0, max(1.0, used / (total - used) * wr / wf))
     return factor
+
+
+def same_work(slots, factor, t0, now, fam="fable"):
+    """How many times the same work costs on a family as on Opus, between t0 and now: its factor, times what its
+    tokens weigh against what they would weigh at Opus's read price — Fable reads cheaper per token, so its work costs
+    less than its factor (Q95). With no such work — the factor itself."""
+    i = FAMILIES.index(fam)
+    w = r = 0.0
+    for k, s in slots.items():
+        if t0 <= k * SLOT < now:
+            w += sum(row[i] for row in s.per.values())
+            r += s.reads[i]
+    return factor[fam] * w / (w + (READ["opus"] - READ[fam]) * r) if w > 0 else factor[fam]
 
 
 def anchors(t0, t1, now, used, log, kind):
@@ -286,7 +307,8 @@ def view(slots, usage, log, now, pace, known):
         if w and lim.get("resets_at") and lim["resets_at"] > now and w[0] not in lims:
             lims[w[0]] = (lim, w)
     week = lims.get("week")
-    factor = fit_factor(slots, usage, week[0]["resets_at"] - week[1][1], week[0]["resets_at"], now) if week else dict(FACTOR)
+    t0w = week[0]["resets_at"] - week[1][1] if week else now - 7 * 86400
+    factor = fit_factor(slots, usage, t0w, week[0]["resets_at"], now) if week else dict(FACTOR)
     # a session-hour's weight over the last 7 days: the unit of "how much is left"
     wk7 = sum(s.weight(factor) for i, s in slots.items() if now - 7 * 86400 <= i * SLOT < now)
     sh7 = session_hours(slots, now - 7 * 86400, now)
@@ -359,4 +381,5 @@ def view(slots, usage, log, now, pace, known):
     hits = [r for r in out.values() if r["hit"]]
     top = min(hits, key=lambda r: r["hit"]) if hits else max(out.values(), key=lambda r: r["used"], default=None)
     return {"limits": [out[k] for k in ("week", "h5") if k in out], "top": top["key"] if top else None,
-            "known": {"k": ks, "fable": factor.get("fable")}, "factor": factor, "per_sh_w": per_sh_w}
+            "known": {"k": ks, "fable": factor.get("fable")}, "factor": factor, "per_sh_w": per_sh_w,
+            "fable_x": same_work(slots, factor, t0w, now)}
