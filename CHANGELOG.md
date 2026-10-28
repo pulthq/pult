@@ -4,6 +4,13 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.14 — 2026-10-28
+
+- **Hashtags under each result in Telegram.** A result in the project's topic ends with the task's section and topic
+  as hashtags — `#firmware #filament_sensor`, lower case, words joined with `_` — after its text however it folds;
+  Telegram makes them links, and a tap shows every message with one. Settings → **Hashtags in Telegram** turns them
+  off; a hashtag copied back into a request sets that topic, as `#topic` always did.
+
 ## 0.18.13 — 2026-10-28
 
 - **A chat opens at its very end.** The session screen scrolled to its end before the room under the last message

@@ -120,6 +120,15 @@ def hashtags(text):
     return out[:2]
 
 
+def hashtag(name):
+    """A tag as a Telegram hashtag under a result (stage T, T3; Q94): lower case, its words joined with "_", nothing
+    but letters, digits and "_" — "Датчик филамента" → "#датчик_филамента", "Wi-Fi" → "#wi_fi"; hashtags() reads it
+    back. None when no letter is left: Telegram makes no link of "#2026"."""
+    w = re.sub(r"[\s\-–—/]+", "_", str(name or "").strip().lower())
+    w = re.sub(r"_+", "_", re.sub(r"[^\w]", "", w)).strip("_")
+    return "#" + w if re.search(r"[^\W\d_]", w) else None
+
+
 def find(vocab, name):
     """A name in the project's list → ("sec", section) or ("topic", section, topic), the first match; None."""
     k = key(name)

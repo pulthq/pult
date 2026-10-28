@@ -1169,7 +1169,7 @@ class Api:
     async def api_prefs(self, **kw):
         cur = self.prefs()
         for k, v in kw.items():
-            if k in ("vehi", "brief", "pager", "gh", "vcheck") and isinstance(v, bool) or k == "mode" and v in self.D.MODES or k == "lang" and v in I.LANGS \
+            if k in ("vehi", "brief", "pager", "gh", "vcheck", "hashtags") and isinstance(v, bool) or k == "mode" and v in self.D.MODES or k == "lang" and v in I.LANGS \
                     or k == "pace" and v in S.PACES:
                 cur[k] = v
             elif k in ("model", "effort") and (v is None or isinstance(v, str)):
