@@ -800,6 +800,16 @@ class SecurityTest(ChainBase):
                 self.assertIsNone(self.p.web.locked)
                 await T.until(lambda: [d for d in self.fake.of("sendMessage") if "снова совпадают" in d["text"]])
                 await self.phone()
+                # the log names what the files are held against — the release, when the check follows one (it said "the
+                # deploy" for a release too, 2026-10-28)
+                logs, rel = [], dict(man, mode="release", tag="v9.1.0")
+                with mock.patch.object(PW, "log", lambda *a: logs.append(" ".join(map(str, a)))):
+                    path.write_text(json.dumps(dict(rel, files=dict(man["files"], **{"md.js": "0" * 64}))))
+                    await self.p.web.guard_once(http)
+                    path.write_text(json.dumps(rel))
+                    await self.p.web.guard_once(http)
+                self.assertIn("app files on the server differ from release v9.1.0: md.js — the app is closed", logs)
+                self.assertIn("app files on the server match release v9.1.0 again — the app is open", logs)
             self.p.web.manifest = T.TMP / "none.json"
             async with aiohttp.ClientSession() as http:
                 self.assertIsNone(await self.p.web.check_files(http))                      # no deploy record — no check

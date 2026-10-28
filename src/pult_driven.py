@@ -305,6 +305,12 @@ class Driven:
                     self.model = m.data.get("model") or self.model
                 elif isinstance(m, SystemMessage) and m.subtype == "background_tasks_changed":
                     self.bg = {t.get("task_id") for t in m.data.get("tasks") or [] if isinstance(t, dict)}
+                    # the session's list of what runs in the background (from its last Stop) loses an ended task at
+                    # once: the hooks hear of its end only at the turn's next step (tests/probe_bgmid.py, 2.1.300)
+                    lv = self.d.live.get(self.sid)
+                    if lv and any(b.get("id") not in self.bg for b in lv.bg):
+                        lv.bg = [b for b in lv.bg if b.get("id") in self.bg]
+                        self.d.changed(self.sid)
         finally:
             self.result.set()                    # the process has ended, so the query doesn't wait forever
             self.q.put_nowait(None)

@@ -2849,6 +2849,26 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("agent-message", "".join(self.sent()))
         self.assertEqual((self.p.live[SID].bg, self.p.live[SID].run), ([], run1))
 
+    async def test_background_task_ends_mid_turn(self):
+        # a background task that ends while a turn runs: its note comes absorbed into that turn — its prompt_id — at the
+        # turn's next step (tests/probe_bgmid.py, 2.1.300); it stayed in the session's list till the turn's end (2026-10-28)
+        await run_hook(ev("UserPromptSubmit", prompt="Собери проект в фоне", prompt_id="p1"))
+        await until(lambda: SID in self.p.live and self.p.live[SID].turn)
+        await run_hook(ev("Stop", last_assistant_message="Запустил сборку", prompt_id="p1", background_tasks=[
+            {"id": "b7", "type": "shell", "status": "running", "description": "Сборка проекта"}]))
+        await until(lambda: self.p.live[SID].turn is None and self.p.live[SID].bg)
+        await run_hook(ev("UserPromptSubmit", prompt="Пока собирается, поправь README", prompt_id="p2"))
+        await until(lambda: self.p.live[SID].turn)
+        t = self.p.live[SID].turn
+        note = ("<task-notification>\n<task-id>b7</task-id>\n<status>completed</status>\n<summary>Background command "
+                "\"Сборка проекта\" completed (exit code 0)</summary>\n</task-notification>")
+        await run_hook(ev("UserPromptSubmit", prompt=note, prompt_id="p2"))
+        await until(lambda: self.p.live[SID].bg == [])
+        self.assertIs(self.p.live[SID].turn, t)                         # the owner's turn goes on
+        ov = await self.p.api_overview()
+        self.assertEqual([s["bg"] for s in ov["live"]], [[]])
+        self.assertEqual(self.p.busy_report(), [])                      # a tab's session: nothing of Pult's own runs
+
     async def test_absorbed_prompt(self):
         # a message absorbed into the running turn (another session's SendMessage, the owner's mid-turn message) comes
         # with a UserPromptSubmit of its own, but with the turn's prompt_id (probe_midturn.py, 2.1.300 and 2.1.301):
@@ -4067,8 +4087,15 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(closed, [])
             d.q.put_nowait(("дальше", None))
             await until(lambda: len(c.sent) == 2 and not d.asking)
+            # the session's list (from its last Stop) loses the task the moment the SDK says it ended — the hooks hear
+            # of it only at the turn's next step (tests/probe_bgmid.py); a task the SDK still runs stays
+            lv = self.p.live_of(SID, "proj")
+            lv.bg = [{"id": "b1", "description": "Сборка"}, {"id": "b2", "description": "Тесты"}]
+            c.out.put_nowait(bg(["b2"]))
+            await until(lambda: [b["id"] for b in lv.bg] == ["b2"])
             c.out.put_nowait(bg([]))
             await until(lambda: closed, timeout=3)     # no background tasks — the idle process is closed
+            self.assertEqual(lv.bg, [])
         finally:
             claude_agent_sdk.ClaudeSDKClient, pult_driven.DRIVEN_IDLE = old
 
