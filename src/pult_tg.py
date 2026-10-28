@@ -206,10 +206,13 @@ CREATE TABLE IF NOT EXISTS tag_keep(pkey TEXT, a_sec TEXT, a_topic TEXT, b_sec T
     PRIMARY KEY(pkey, a_sec, a_topic, b_sec, b_topic));
 CREATE TABLE IF NOT EXISTS tag_alias(pkey TEXT, old TEXT, old_topic TEXT, sec TEXT, topic TEXT, ts REAL,
     PRIMARY KEY(pkey, old, old_topic));
+CREATE TABLE IF NOT EXISTS tag_examples(pkey TEXT, sid TEXT, title TEXT, ask TEXT, sec TEXT, topic TEXT, ts REAL,
+    PRIMARY KEY(pkey, sid));
 """
 # stage T, T2: what the owner did to a project's list lives in tables of its own — the hidden tags (topic "" for a
-# whole section), the pairs kept apart, the names a tag had before a rename or a merge (by pult_tags.key) — so the
-# tables of 0.17 stay as they were and an older daemon still writes to them after a rollback
+# whole section), the pairs kept apart, the names a tag had before a rename or a merge (by pult_tags.key), the owner's
+# own choices for tasks (the model's examples) — so the tables of 0.17 stay as they were and an older daemon still
+# writes to them after a rollback
 
 
 class Store:
@@ -427,6 +430,23 @@ class Store:
             self.db.execute("DELETE FROM session_tags WHERE pkey=? AND own=0", (pkey,))
             self.tag_prune(pkey)                 # a tag of Claude's that a task of the owner's has stays
         return colors
+
+    def tag_example(self, pkey, sid, title, ask, sec, topic=None):
+        """The owner's own tags for a task — an example the model sees when it tags the project's next tasks (stage T,
+        T2): a task has one, its latest; a project keeps the latest EXAMPLES_KEPT."""
+        self.db.execute("INSERT OR REPLACE INTO tag_examples VALUES(?,?,?,?,?,?,?)",
+                        (pkey, sid, title or "", ask or "", sec, topic or "", time.time()))
+        self.db.execute("DELETE FROM tag_examples WHERE pkey=? AND sid NOT IN (SELECT sid FROM tag_examples WHERE pkey=? "
+                        "ORDER BY ts DESC LIMIT ?)", (pkey, pkey, G.EXAMPLES_KEPT))
+
+    def tag_unexample(self, pkey, sid):
+        """The owner gave the task's tags back to Claude: no longer their example."""
+        self.db.execute("DELETE FROM tag_examples WHERE pkey=? AND sid=?", (pkey, sid))
+
+    def tag_examples(self, pkey, n):
+        """The project's latest examples, the newest first: [{sid, title, ask, sec, topic}] — names as they were then."""
+        return [{"sid": r["sid"], "title": r["title"], "ask": r["ask"], "sec": r["sec"], "topic": r["topic"] or None}
+                for r in self.db.execute("SELECT * FROM tag_examples WHERE pkey=? ORDER BY ts DESC LIMIT ?", (pkey, n))]
 
     def tag_prune(self, pkey):
         """Tags Claude made that no task has any more go by themselves; the owner's stay until hidden."""

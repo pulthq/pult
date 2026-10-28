@@ -82,7 +82,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.16"
+VERSION = "0.18.17"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -1417,7 +1417,7 @@ class Pult(Api, Parts):
         row = self.store.session(lv.sid)
         return {"project": self.project_label(lv.pkey), "vocab": vocab, "paths": paths, "dirs": dirs,
                 "cur": {"sec": cur["sec"], "topic": cur["topic"]} if cur and cur["sec"] else None,
-                "title": lv.title or (row["title"] if row else None)}
+                "title": lv.title or (row["title"] if row else None), "examples": self.tag_examples_for(lv.pkey)}
 
     def tags_set(self, lv, got, own=False):
         """A task's tags — the model's, or (own) the owner's — placed in the project's list (pult_tags.place: the
@@ -1449,6 +1449,7 @@ class Pult(Api, Parts):
         text = R.prompt_text(prompt)
         words = G.hashtags(text)
         if words and self.tag_by_owner(lv, words):
+            self.tag_example_soon(lv.pkey, lv.sid, text)
             return
         cur = self.store.session_tag(lv.sid)
         if self.prefs()["brief"] and (words or not (cur and cur["sec"])):
@@ -1495,7 +1496,43 @@ class Pult(Api, Parts):
                 return
             if own and G.key(own) not in (G.key(got["sec"]), G.key(got.get("topic"))):
                 got["topic"] = G.norm(own, G.TOPIC_LEN)       # the owner's word stays, wherever the model put the task
-            self.tags_set(lv, got, own=bool(own))
+            if self.tags_set(lv, got, own=bool(own)) and own:
+                self.tag_example_soon(lv.pkey, lv.sid, prompt)
+
+    def tag_examples_for(self, pkey):
+        """The owner's latest choices in the project for the model (stage T, T2: their corrections teach it) — as the
+        list names them now, through renames and merges (pult_tags.resolve); one whose tags are gone is left out."""
+        vocab, alias, out = self.store.tag_vocab(pkey), self.store.tag_aliases(pkey), []
+        for e in self.store.tag_examples(pkey, G.EXAMPLES * 3):
+            sec, topic = G.resolve(vocab, alias, e["sec"], e["topic"])
+            s = next((x for x in vocab if G.key(x["n"]) == G.key(sec)), None)
+            t = next((x for x in s["topics"] if G.key(x["n"]) == G.key(topic)), None) if s and topic else None
+            if s and (t or not topic):
+                out.append(dict(e, sec=s["n"], topic=t["n"] if t else None))
+            if len(out) >= G.EXAMPLES:
+                break
+        return out
+
+    def tag_example_soon(self, pkey, sid, ask=None):
+        """The owner set a task's tags themselves — in its sheet, by a hashtag, by a merge: their example for the
+        model's next tasks in the project (stage T, T2), with the task's title and request (ask, else its first one)."""
+        r = self.store.session_tag(sid)
+        if r and r["sec"] and not skip_pkey(pkey):
+            asyncio.create_task(self.tag_example(pkey, sid, r["sec"], r["topic"], ask))
+
+    async def tag_example(self, pkey, sid, sec, topic, ask=None):
+        title = first = None
+        try:
+            from claude_agent_sdk import get_session_info
+            info = await asyncio.to_thread(get_session_info, sid, self.project_path(pkey))
+            if info:
+                title, first = info.custom_title or info.summary, info.first_prompt
+        except Exception as e:
+            log("tags %s: the task's title not read — %r" % (sid[:8], e))
+        lv, row = self.live.get(sid), self.store.session(sid)
+        title = title or (lv.title if lv else None) or (row["title"] if row else None) or first or ask
+        if title:
+            self.store.tag_example(pkey, sid, G.clip(title, 120), G.clip(ask or first or "", G.ASK_LEN), sec, topic)
 
     def tags_of(self, sid, cache=None):
         """A session's tags for the app: its section and its topic — [{n, c, k: "sec"|"topic", fresh}], coloured by

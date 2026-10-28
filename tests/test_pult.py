@@ -1367,6 +1367,23 @@ class TagsTest(unittest.TestCase):
         self.assertIn("every task of the batch, once", o.system_prompt)
         self.assertNotIn("{", o.system_prompt.split("Answer with JSON only:")[0])        # every placeholder filled
 
+    def test_examples(self):
+        # T2, the last step: the owner's choices go to the model as examples — a task a line, its request when it says
+        # more than the title; in the request of a task's tags, of a batch, of a new list, and of the result line's call
+        ex = [{"title": "Датчик двери: пауза", "ask": "сделай паузу по датчику двери", "sec": "Электроника", "topic": "Датчики"},
+              {"title": "Калибровка стола", "ask": "Калибровка стола", "sec": "Прошивка", "topic": None}]
+        self.assertEqual(G.examples_text(ex), '- "Датчик двери: пауза" (сделай паузу по датчику двери) → Электроника / Датчики\n'
+                                              '- "Калибровка стола" → Прошивка')
+        block = "<owner_examples>\n" + G.examples_text(ex) + "\n</owner_examples>"
+        self.assertIn(block, G.request("Принтер", self.VOCAB, prompt="x", examples=ex))
+        self.assertNotIn("<owner_examples>", G.request("Принтер", self.VOCAB, prompt="x"))
+        self.assertIn(block, G.batch_request("Принтер", self.VOCAB, [{"id": "1", "title": "t"}], examples=ex))
+        self.assertIn(block, G.list_request("Принтер", "", "", ["t"], [], examples=ex))
+        ctx = {"project": "Принтер", "vocab": self.VOCAB, "paths": [], "cur": None, "dirs": [], "examples": ex}
+        self.assertIn(block, B.request("сделай", "готово", [], ctx))
+        self.assertIn("The owner's examples", G.RULES)
+        self.assertIn("<owner_examples>", B.options("ru", TMP, tags=True).system_prompt)
+
     def test_fresh_and_parse(self):
         now = time.time()
         self.assertTrue(G.is_fresh({"own": False, "ts": now - 60}, 1, now))
@@ -3500,6 +3517,59 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             await until(lambda: not self.p.tag_jobs)
         self.assertEqual((len(lists), st.get("tags.resort." + PKEY)), (1, None))
         self.assertTrue(st.session_tag(S[1])["sec"])
+
+    async def test_tag_examples(self):
+        # T2, the last step: what the owner picks for a task — in its sheet, by a hashtag, by a merge — is their example
+        # for the model's next tasks in the project; "Claude picks them" takes it back; the names follow renames; the
+        # model's request carries the project's latest six, never another project's; a project keeps fifty
+        st = self.store
+        st.tag_add(PKEY, "Электроника", "Питание", own=True, ts=time.time() - 3 * 86400)       # the owner's: no task needed
+        st.tag_add(PKEY, "Экструдер", "Датчики", ts=time.time() - 3 * 86400)
+        A, B2, C, D = ("%08x-0000-4000-8000-%012x" % (0x40000000 + i, i) for i in range(4))
+        for sid, title in ((A, "Датчик двери: пауза"), (B2, "Датчик филамента"), (C, "Датчик стола"), (D, "Датчик крышки")):
+            st.touch_session(sid, PKEY, title=title)
+            st.set_session_tag(sid, PKEY, "Экструдер", "Датчики", False)
+        import claude_agent_sdk
+        info = lambda sid, d=None: types.SimpleNamespace(custom_title="Датчик двери: пауза", summary="x",
+                                                         first_prompt="сделай паузу по датчику двери") if sid == A else None
+        with mock.patch.object(claude_agent_sdk, "get_session_info", info):
+            await self.p.api_tag(A, sec="электроника", topic="Датчики")
+            await until(lambda: st.tag_examples(PKEY, 9))
+        self.assertEqual(st.tag_examples(PKEY, 9), [{"sid": A, "title": "Датчик двери: пауза", "ask": "сделай паузу по датчику двери",
+                                                     "sec": "Электроника", "topic": "Датчики"}])
+        await self.p.api_tag(A, auto=True)                                       # back to Claude: not the owner's any more
+        self.assertEqual(st.tag_examples(PKEY, 9), [])
+        # a hashtag in a request: their choice too, the request with it
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        Path(TP).write_text(tline("user", "Почини питание #питание") + "\n")
+        await run_hook(ev("UserPromptSubmit", prompt="Почини питание #питание"))
+        await until(lambda: any(e["sid"] == SID for e in st.tag_examples(PKEY, 9)))
+        e = next(e for e in st.tag_examples(PKEY, 9) if e["sid"] == SID)
+        self.assertEqual((e["sec"], e["topic"], e["ask"]), ("Электроника", "Питание", "Почини питание #питание"))
+        # a merge: its latest two tasks show where such tasks go now
+        st.db.execute("UPDATE session_tags SET ts=? WHERE sid=?", (time.time() - 3600, D))
+        await self.p.api_tags_edit(PKEY, "merge", "Экструдер", "Датчики", to_sec="Электроника", to_topic="Питание")
+        await until(lambda: len(st.tag_examples(PKEY, 9)) == 3)
+        self.assertEqual({e["sid"] for e in st.tag_examples(PKEY, 9)}, {SID, B2, C})          # D is the oldest of three
+        # renamed: the examples speak the list's new names; another project's are never this one's
+        await self.p.api_tags_edit(PKEY, "rename", "Электроника", name="Плата")
+        self.assertEqual({(e["sec"], e["topic"]) for e in self.p.tag_examples_for(PKEY)}, {("Плата", "Питание")})
+        st.tag_example("-Users-x-other", "x", "Чужое", "", "Сеть", None)
+        self.assertEqual(len(self.p.tag_examples_for(PKEY)), 3)
+        # the model sees the latest six when it tags the project's next task
+        for i in range(8):
+            st.tag_example(PKEY, "e%d" % i, "Пример %d" % i, "", "Плата", "Питание")
+        await self.p.api_prefs(brief=True)
+        sid2 = "22222222-3333-4444-5555-666666666666"
+        await run_hook(dict(ev("UserPromptSubmit", prompt="Вентилятор гудит"), session_id=sid2))
+        await until(lambda: self.tagged)
+        got = self.tagged[-1].split("<owner_examples>")[1].split("</owner_examples>")[0].strip().splitlines()
+        self.assertEqual(len(got), G.EXAMPLES)
+        self.assertTrue(got[0].startswith('- "Пример 7" → Плата / Питание'), got)
+        self.assertNotIn("Чужое", self.tagged[-1])
+        for i in range(G.EXAMPLES_KEPT + 5):
+            st.tag_example(PKEY, "k%d" % i, "К %d" % i, "", "Плата", None)
+        self.assertEqual(len(st.tag_examples(PKEY, 999)), G.EXAMPLES_KEPT)
 
     async def test_project_and_outcome(self):
         # the project's screen: what waits for the owner, what runs, today's outcomes; the session shows its outcome
