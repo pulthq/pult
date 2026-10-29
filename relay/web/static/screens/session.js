@@ -8,7 +8,7 @@ import { locale, plural, t } from "../i18n.js";
 import { md } from "../md.js";
 import { html, useEffect, useMemo, useRef, useState } from "../vendor/htm-preact-3.1.1.js";
 import { Replies, ResumeAt, copyWhy, forkAsk } from "./home.js";
-import { TagPick } from "./projects.js";
+import { TagPick } from "../ui/cards.js";
 import { Req, useRcpt } from "../ui/cards.js";
 import { Dots, Loading, ModelPick, Sheet, avatar, bgChip, dayLabel, dot, dotted, dur, effortName, hhmm, home, ic, kilo, modelName, num, plainField, queueChip, sendKey, tagChips, toDate, useNow, workChip } from "../ui/kit.js";
 import { BgSheet, bgLine } from "../ui/load.js";

@@ -165,10 +165,10 @@ class Api:
                              "mine": sum(1 for r in rs if r["state"] in A.MINE), "turns": turns, "secs": secs})
         mine = A.sort_rows([dict(r, project=p["name"]) for p in projects for r in p["rows_all"] if r["state"] in ("you", "fail")])
         projects = A.sort_projects(projects)
-        pins = self.store.pins()
+        pins, hides = self.store.pins(), self.store.hides()
         projects.sort(key=lambda p: -pins.get(p["pkey"], 0))      # the pinned first, the newest pin on top; the rest keep their order (stage Zh)
-        for p in projects:
-            p["pinned"] = bool(pins.get(p["pkey"]))
+        for p in projects:                                           # a hidden one stays: its running rows feed "Running now"; the app skips its block
+            p["pinned"], p["hidden"] = bool(pins.get(p["pkey"])), bool(hides.get(p["pkey"]))
             del p["rows_all"]
         return {"board": projects, "mine": mine, "brief": self.prefs()["brief"], "reset": self.limit_reset(),
                 "usage_pct": self.limit_pct(), "usage_top": await self.spend_top(), "catchup": self.catchup(),
@@ -356,7 +356,7 @@ class Api:
     async def api_projects(self):
         known = {r["pkey"]: r["path"] for r in self.store.db.execute("SELECT pkey, path FROM topics") if r["path"]}
         counts = await self.project_counts()
-        pins = self.store.pins()
+        pins, hides = self.store.pins(), self.store.hides()
         by = {}
         for r in self.session_rows(await self.agents()):
             by.setdefault(r["pkey"], []).append(r)
@@ -368,40 +368,68 @@ class Api:
             out.append({"pkey": pkey, "name": self.project_label(pkey) if pkey in known else self.project_name(pkey, path),
                         "path": path, "last": mtime, "open": c.get("open", 0), "work": c.get("work", 0), "ask": c.get("ask", 0),
                         "mine": sum(1 for r in rs if r["state"] in A.MINE), "line": last["line"] if last else "",
-                        "turns": self.attn.day_of(pkey)[0], "pinned": pins.get(pkey, 0)})
+                        "turns": self.attn.day_of(pkey)[0], "pinned": pins.get(pkey, 0), "hidden": hides.get(pkey, 0)})
         # the pinned first, the newest pin on top (stage Zh, Q98); then what needs you, then what works, then what
-        # is open, then by recency
-        out.sort(key=lambda r: (-r["pinned"], -(r["mine"] > 0), -(r["work"] + r["ask"] > 0), -(r["open"] > 0), -r["last"]))
+        # is open, then by recency; the hidden last — the app folds them (Q101)
+        out.sort(key=lambda r: (-r["pinned"], r["hidden"] > 0, -(r["mine"] > 0), -(r["work"] + r["ask"] > 0), -(r["open"] > 0), -r["last"]))
         # stt: the app shows the microphone only with a key; create: this daemon makes new projects (stage S);
         # choice: the default model and effort from Settings, what a new task starts with when nothing is picked
         p = self.prefs()
         return {"projects": out, "stt": self.stt_state()["on"], "create": True,
                 "choice": {"model": p["model"], "effort": p["effort"]}}
 
+    async def known_project(self, pkey):
+        """A project the computer knows — with a topic, or with transcripts: the only ones the app's lists show."""
+        known = {r["pkey"]: r["path"] for r in self.store.db.execute("SELECT pkey, path FROM topics") if r["path"]}
+        return isinstance(pkey, str) and (pkey in known or any(
+            k == pkey for _, k, _ in await asyncio.to_thread(self.list_projects, known)))
+
     async def api_pin(self, pkey, on=True, via="button"):
         """Pin a project (stage Zh, Q98): on top of Projects, of Home's board and of the new task's list, the newest
-        pin first — or unpin it. Only a project the computer knows: with a topic or with transcripts. via — how the
-        owner did it, a slide on the row or the button in the project's header: the journal counts both, so whether
-        the gesture earns its place shows there (runbook: a rule about the phone goes out silent, to the journal)."""
-        known = {r["pkey"]: r["path"] for r in self.store.db.execute("SELECT pkey, path FROM topics") if r["path"]}
-        if not isinstance(pkey, str) or not (pkey in known or any(
-                k == pkey for _, k, _ in await asyncio.to_thread(self.list_projects, known))):
+        pin first — or unpin it; a pin brings a hidden project back. via — how the owner did it, a slide on the row or
+        the button in the project's header: the journal counts both, so whether the gesture earns its place shows
+        there (runbook: a rule about the phone goes out silent, to the journal)."""
+        if not await self.known_project(pkey):
             raise ValueError(self.t("err.no_project"))
         self.store.set_pin(pkey, bool(on))
+        if on:
+            self.store.set_hide(pkey, False)
         log("app: project %s via the %s" % ("pinned" if on else "unpinned", "swipe" if via == "swipe" else "button"))
         return {"pinned": bool(on)}
 
-    async def api_swipe(self, end="back", ms=0, dx=0):
-        """How a slide on a project's row ended (stage Zh): open on its action, sprung back, or cancelled — the browser
-        or Telegram's window took the finger (pointercancel). The app says nothing of it; the journal tells whether the
-        gesture works inside Telegram on the phone at all. Every field is checked: it goes to the log."""
+    async def api_hide(self, pkey, on=True, via="swipe"):
+        """Hide a project (stage Zh, step 2 — Q101): into the fold at the bottom of Projects, off Home's board and the
+        new task's list — what runs in it and what waits for the owner still show; hiding unpins. Or show it again."""
+        if not await self.known_project(pkey):
+            raise ValueError(self.t("err.no_project"))
+        self.store.set_hide(pkey, bool(on))
+        if on:
+            self.store.set_pin(pkey, False)
+        log("app: project %s via the %s" % ("hidden" if on else "shown again", "swipe" if via == "swipe" else "button"))
+        return {"hidden": bool(on)}
+
+    async def api_swipe(self, end="back", ms=0, dx=0, what="project"):
+        """How a slide on a row ended (stage Zh): open on its actions, sprung back, or cancelled — the browser or
+        Telegram's window took the finger (pointercancel); what — a project's row, a task's row or a card of "Your move"
+        (step 2). The app says nothing of it; the journal tells whether the gesture works inside Telegram on the phone
+        at all. Every field is checked: it goes to the log."""
         ends = {"open": "opened on its action", "back": "sprang back", "cancel": "cancelled — the window took the finger"}
+        rows = {"project": "a project's row", "task": "a task's row", "card": "a card"}
         try:
             ms, dx = min(60000, max(0, int(ms))), min(1000, max(0, int(dx)))
         except (TypeError, ValueError):
             ms, dx = 0, 0
-        log("app: swipe on a project's row %s (%d ms, %d px)" % (ends.get(end, ends["back"]), ms, dx))
+        log("app: swipe on %s %s (%d ms, %d px)" % (rows.get(what, rows["project"]), ends.get(end, ends["back"]), ms, dx))
         return {"ok": True}
+
+    async def api_taginfo(self, sid):
+        """A task's tags for the sheet opened from its row (stage Zh, step 2 — Q102): the same three fields the
+        session's screen has — its tags, the project's list, whether Claude still picks them."""
+        if not re.fullmatch(r"[0-9a-fA-F-]{36}", str(sid or "")):
+            raise ValueError(self.t("err.bad_sid"))
+        lv = self.live.get(sid) or self.stub(sid)
+        own = self.store.session_tag(sid)
+        return {"tags": self.tags_of(sid), "tagset": self.tag_list(lv.pkey), "tag_auto": not (own and own["own"])}
 
     async def api_project(self, pkey):
         """A project's screen — its board, large: what waits for the owner (requests to answer here, sessions that
@@ -445,7 +473,7 @@ class Api:
                 "reset": self.limit_reset(), "stt": self.stt_state()["on"],
                 "tagset": self.tag_list(pkey, list(shown) + [x["sid"] for x in earlier]),
                 "tags_n": len(self.store.tag_vocab(pkey)), "tag_job": self.tag_jobs.get(pkey),
-                "pinned": bool(self.store.pins().get(pkey))}
+                "pinned": bool(self.store.pins().get(pkey)), "hidden": bool(self.store.hides().get(pkey))}
 
     async def api_sessions(self, pkey):
         path = self.project_path(pkey)

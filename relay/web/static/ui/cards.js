@@ -6,7 +6,7 @@ import { alertBox, haptic } from "../core/tg.js";
 import { t } from "../i18n.js";
 import { md } from "../md.js";
 import { html, useEffect, useRef, useState } from "../vendor/htm-preact-3.1.1.js";
-import { avatar, dur, ic, keyTap, nb } from "./kit.js";
+import { avatar, dur, ic, keyTap, nb, tagSt } from "./kit.js";
 
 
 // ---------- cards: question, permission request, plan ----------
@@ -111,4 +111,45 @@ function Req({ r, onDone, showWhere = true, showProject = true }) {
   </div>`;
 }
 
-export { Req, useRcpt };
+// a task's tags (stage T; from its row's slide too — stage Zh, step 2): its section, then a topic in it. "Claude picks them" leaves both to Claude; a tap on another
+// section or on a topic makes the choice the owner's, and Claude never changes it again. Each tap is saved at once,
+// as in the model menu; a new section or topic by name, right here
+function TagPick({ sid, info, onDone, onClose }) {
+  const [tags, setTags] = useState(info.tags || []);
+  const [set, setSet] = useState(info.tagset || []);
+  const [auto, setAuto] = useState(info.tag_auto !== false);
+  const [busy, setBusy] = useState(false);
+  const [adding, setAdding] = useState(null);          // "sec" | "topic": the field for a new name is open
+  const [name, setName] = useState("");
+  const sec = tags[0] ? tags[0].n : null, top = tags[1] ? tags[1].n : null;
+  const cur = set.find((g) => g.n === sec);
+  const pick = async (args) => {
+    setBusy(true);
+    try { const r = await api("tag", Object.assign({ sid }, args)); haptic("success"); setTags(r.tags || []); setSet(r.tagset || []); setAuto(!!r.auto); onDone(); }
+    catch (e) { alertBox(e.message); }
+    setBusy(false);
+  };
+  const add = (e) => {
+    e.preventDefault();
+    const v = name.trim();
+    if (!v) return;
+    const kind = adding;
+    setAdding(null); setName("");
+    pick(kind === "sec" ? { sec: v } : { sec, topic: v });
+  };
+  const field = (kind) => (adding === kind ? html`<form class="tagnew" onSubmit=${add}><input value=${name} placeholder=${t("tags.name")} maxlength="32"
+      autocomplete="off" onInput=${(e) => setName(e.target.value)} ref=${(el) => el && !el.dataset.on && ((el.dataset.on = "1"), el.focus())}/>
+      <button class="btn" disabled=${busy || !name.trim()}>${t("tags.add")}</button></form>`
+    : html`<button class="tagf add" disabled=${busy} onClick=${() => { setAdding(kind); setName(""); }}>${ic("plus", 14)} ${t(kind === "sec" ? "tags.sec.new" : "tags.topic.new")}</button>`);
+  return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick tall tagpick"><div class="q-t pick-h">${t("tags.task")}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
+    <button class=${"opt auto" + (auto ? " on" : "")} disabled=${busy} onClick=${() => { if (!auto) pick({ auto: true }); }}>${ic("auto", 16)}<span class="tn">${t("tags.auto")}</span>${auto ? ic("check", 16) : ""}<span class="dim">${t("tags.auto.about")}</span></button>
+    <div class="pick-t">${t("tags.sec")}</div>
+    <div class="pills">${set.map((g) => html`<button key=${g.n} class=${"tagf" + (sec === g.n ? " on" : "") + (g.fresh ? " fresh" : "")} style=${tagSt(g.c)} disabled=${busy}
+      onClick=${() => { if (sec !== g.n) pick({ sec: g.n }); }}><i></i>${g.n}</button>`)}${field("sec")}</div>
+    ${sec && html`<div class="pick-t">${t("tags.topic")}</div>
+    <div class="pills" style=${cur ? tagSt(cur.c) : ""}>${(cur ? cur.topics : []).map((x) => html`<button key=${x.n} class=${"tagf topic" + (top === x.n ? " on" : "") + (x.fresh ? " fresh" : "")} disabled=${busy}
+      onClick=${() => pick({ sec, topic: top === x.n ? "" : x.n })}>${x.n}</button>`)}${field("topic")}</div>`}
+    <div class="dim small">${t("tags.mine")}</div></div>`;
+}
+
+export { Req, TagPick, useRcpt };
