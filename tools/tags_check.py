@@ -290,10 +290,10 @@ async def main():
             verdict("renamed, the sheet closed", await until("!document.querySelector('.tagsheet') && (%s).some((r) => r[0] === %s)" % (rows_js, json.dumps(new))))
             await open_row(new)
             await js("document.querySelector('.trow.open .tacts .link:nth-child(2)').click()")       # Colour
-            verdict("the colour sheet: eight", await until("document.querySelectorAll('.tagsheet .swatch').length === 8"))
+            verdict("the colour sheet: eight", await until("document.querySelectorAll('.tagsheet .tsw').length === 8"))
             await calm()
             await shot("8-colour.png")
-            await js("document.querySelectorAll('.tagsheet .swatch')[5].click()")
+            await js("document.querySelectorAll('.tagsheet .tsw')[5].click()")
             verdict("…a new colour", await until("(%s).find((r) => r[0] === %s)[3] === '190'" % (rows_js, json.dumps(new))))
             # hidden: gone from the list and the project's bar, in its own group; back from there
             await open_row(new)

@@ -830,8 +830,8 @@ button.tagc { border: 0; font-family: inherit; cursor: pointer; }
 .opt.tsec span { display: inline; }
 .opt.tsec .tn { flex: 1; font-size: var(--fs-body); }
 .swatches { display: grid; grid-template-columns: repeat(8, minmax(0, 40px)); justify-content: space-between; gap: 8px; margin: 14px 4px 10px; }
-.swatch { width: 100%; aspect-ratio: 1; height: auto; padding: 0; border-radius: 50%; border: 0; background: hsl(var(--th) 62% 50%); color: #fff;
+.tsw { width: 100%; aspect-ratio: 1; height: auto; padding: 0; border-radius: 50%; border: 0; background: hsl(var(--th) 62% 50%); color: #fff;
   display: flex; align-items: center; justify-content: center; cursor: pointer; }
-.swatch.on { box-shadow: 0 0 0 3px var(--card), 0 0 0 5px hsl(var(--th) 62% 50%); }
+.tsw.on { box-shadow: 0 0 0 3px var(--card), 0 0 0 5px hsl(var(--th) 62% 50%); }
 .tprev { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 2px 4px; }
 .tprev .tagc { margin: 0; }

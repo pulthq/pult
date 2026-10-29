@@ -47,7 +47,7 @@ function ColorSheet({ g, busy, onPick, onClose }) {
   const cur = (g.c || 0) % TAG_H.length;
   return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick fixed tagsheet">
     <${Head} title=${t("tags.color.title", { n: q(g.n) })} onClose=${onClose}/>
-    <div class="swatches">${TAG_H.map((h, i) => html`<button key=${i} class=${"swatch" + (i === cur ? " on" : "")} style=${"--th:" + h}
+    <div class="swatches">${TAG_H.map((h, i) => html`<button key=${i} class=${"tsw" + (i === cur ? " on" : "")} style=${"--th:" + h}
       aria-label=${t("tags.color.n", { n: i + 1 })} aria-pressed=${i === cur} disabled=${busy} onClick=${() => (i === cur ? onClose() : onPick(i))}>${i === cur ? ic("check", 18) : ""}</button>`)}</div>
     <div class="tprev" style=${tagSt(cur)}><span class="tagc">${g.n}</span>${g.topics.slice(0, 3).map((x) => html`<span key=${x.n} class="tagc topic">${x.n}</span>`)}</div></div>`;
 }
