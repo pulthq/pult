@@ -4,6 +4,14 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.21 — 2026-10-29
+
+- **Pin the projects you keep coming back to.** Slide a project's row to the left on the Projects screen and tap
+  Pin, or tap the pin in a project's header. Pinned projects stay on top of Projects, of Home's board and of the
+  new task's list, the newest pin first, with a small pin by the name; the rest are ordered as before, by who
+  needs you. The pin lives on the computer: the same on every phone. Pult's journal notes how each slide ended
+  and whether a pin came from the slide or the button.
+
 ## 0.18.20 — 2026-10-28
 
 - **Small colour marks on Resources again.** Since 0.18.15 the mark by each project in "what spent the limit", and

@@ -33,6 +33,9 @@ you're neither in the app nor at the computer. Reminders on long turns; warnings
 - **Home** is built around whose move it is: what runs right now (each task with what you asked and what Claude says
   so far), then what waits for you — permission requests to answer right there, sessions that ended and need you,
   with ready replies taken from Claude's own message — then every project with its colour.
+- **Pinned projects**: slide a project's row to the left on the Projects screen and tap Pin, or tap the pin in a
+  project's header. Pinned projects stay on top of Projects, of Home and of the new task's list, the newest pin
+  first; the rest are ordered by who needs you. The pin is kept on the computer, so every phone sees the same.
 - **A session** shows the whole conversation, live, with the model, the effort and the context gauge by the message
   field. Pick the model (Fable, Opus, Sonnet, Haiku) and how hard Claude thinks for that session; a running one
   switches at once. Settings → Model and effort sets what sessions from the app and Telegram start with; VS Code tabs

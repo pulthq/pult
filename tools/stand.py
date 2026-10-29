@@ -29,6 +29,8 @@ merge two of its topics, on the project's tags screen. STAND_TAGJOB=1 with it: t
 made-up model — Claude sorts them on the first open, "Sort them again" makes the list anew (tags_check.py, its last part).
 STAND_PARTS=check_run|check_fail|check_here|check_err (stage A): Pult's own check of a Claude Code version VS Code has
 downloaded — running, failed at a step, passed, couldn't run; "Check again" passes in 3 s, no Claude (tools/vcheck_check.py).
+STAND_HOMES=1 (stage Zh): the three made-up projects get real folders, so the Projects screen lists them (without it only the
+printer's has one); STAND_PINS=blog,shop — these pinned, in that order, the last one the newest (tools/pins_check.py).
 STAND_COPY=1: the session that waits for you is open in a VS Code tab on a Claude Code Pult isn't checked on — its card
 says "goes as a copy" before you type, and sending says why (tools/copy_check.py). VS Code's settings and the tab
 switch are made up on every stand: the app never reads this computer's."""
@@ -465,6 +467,16 @@ async def main():
     store.put("lang_tg", LANG)                                   # the language of the bot and the app
     store.set_topic(T.PKEY, SHOP, "acme-shop", 77)
     store.set_topic(PKEY2, DESK, "support-desk", 78)
+    if os.environ.get("STAND_HOMES") == "1":                 # stage Zh: real folders — the Projects screen lists only those
+        for pk, name in ((T.PKEY, "acme-shop"), (PKEY2, "support-desk"), ("-Users-x-blog", "blog")):
+            home = Path(os.environ["PULT_HOME"]).parent / name
+            home.mkdir(parents=True, exist_ok=True)
+            store.set_topic(pk, str(home), name, {T.PKEY: 77, PKEY2: 78}.get(pk, 79))
+    for i, n in enumerate([x for x in os.environ.get("STAND_PINS", "").split(",") if x]):   # stage Zh: pinned, the last the newest
+        pk = {"shop": T.PKEY, "desk": PKEY2, "blog": "-Users-x-blog"}.get(n)
+        if pk:
+            store.set_pin(pk, True)
+            store.db.execute("UPDATE pins SET ts=? WHERE pkey=?", (1e9 + i, pk))
     if os.environ.get("STAND_FILES") == "1":                 # stage F5: links in Claude's words open the project's files
         store.set_topic(T.PKEY, str(shop_files()), "acme-shop", 77)
     p = pultd.Pult({"PULT_ALLOWED_USER_IDS": str(T.OWNER), "PULT_FORCE_AWAY": "1"}, tg, store)
