@@ -1,7 +1,7 @@
 // Pult app — small parts every screen uses: times and sizes, icons, project colours, chips, sheets, pickers.
 // Moved from app.js as it was (review 2026-10-27, 6.4).
 import { api, emit, useConn } from "../core/conn.js";
-import { alertBox, haptic, tg } from "../core/tg.js";
+import { alertBox, haptic, tg, tick } from "../core/tg.js";
 import { locale, t } from "../i18n.js";
 import { html, useEffect, useRef, useState } from "../vendor/htm-preact-3.1.1.js";
 
@@ -98,6 +98,37 @@ async function copyText(s) {
   const ok = document.execCommand("copy");
   ta.remove();
   if (!ok) throw new Error("copy");
+}
+// a whole message copied as it reads (stage Zh, step 3): its HTML, which a paste into Telegram, notes or mail keeps the
+// formatting from, and its plain text beside it for wherever formatting can't go → "copied"; "plain" — only the text
+// went (a webview whose clipboard takes no HTML); a rejection — nothing did. The first try starts at once, inside the
+// finger's gesture: only then may a page write to the clipboard
+function copyRich(html, text) {
+  let first;
+  try {
+    first = navigator.clipboard.write([new ClipboardItem({ "text/html": new Blob([html], { type: "text/html" }),
+                                                           "text/plain": new Blob([text], { type: "text/plain" }) })]);
+  } catch (e) { first = Promise.reject(e); }        // no clipboard API, or no ClipboardItem in it
+  return first.then(() => "copied", () => (copyBoth(html, text) ? "copied" : copyText(text).then(() => "plain")));
+}
+// the old way to both kinds: the copy command, its event filled by hand — the command runs only with something
+// selected, so a hidden field holds the text, as in copyText
+function copyBoth(html, text) {
+  let filled = false;
+  const fill = (e) => { e.clipboardData.setData("text/html", html); e.clipboardData.setData("text/plain", text); e.preventDefault(); filled = true; };
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  document.addEventListener("copy", fill, true);
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) { /* no copy command either */ }
+  document.removeEventListener("copy", fill, true);
+  ta.remove();
+  return ok && filled;
 }
 document.addEventListener("click", (ev) => {
   const pre = ev.target && ev.target.closest ? ev.target.closest(COPY_BLOCKS) : null;
@@ -256,55 +287,93 @@ const IC = {
 // button does it, a tap anywhere else closes; the tap that ends a slide opens nothing. Only to the left, starting
 // anywhere inside the row but a field: from the phone's left edge comes the system's own Back. One row open at a
 // time, as chats in Telegram. How each slide ended goes to the computer's journal, silently: whether the gesture
-// works inside Telegram's window at all is known from there, not from words on the screen (runbook, the lesson of Q97)
+// works inside Telegram's window at all is known from there, not from words on the screen (runbook, the lesson of Q97).
+// Claude's message in a session (step 3) is `quick`: one action, done right as the finger lets go past the mark — its
+// copy — and the message springs back; it stays open on the action's round button only when that didn't work (a lift
+// of the finger may not count as a tap for the clipboard in some webview — the button's tap does). Its sign comes out
+// at the finger's height, past the mark it lights up with a tick. Only a finger slides a message: a mouse selects its
+// words. A block of code or a table keeps its own drag, as a field does (they scroll in themselves), and a finger that
+// rests half a second first is selecting words, not sliding — by the touches' own times (timeStamp): a page busy
+// redrawing gets to a touch late, and by the clock of its handling a quick slide looked like a rest (msgcopy_check)
 let openRow = null;                                   // the row open now: a ref to its close
-function SwipeRow({ acts, what = "project", cls = "", children }) {
-  const w = acts.length > 1 ? 80 : 92, full = w * acts.length;
+const QUICK = 72, PRESS = 450;                        // a message's mark, px; a long press, ms
+function SwipeRow({ acts, what = "project", cls = "", quick = false, children }) {
+  const w = quick ? QUICK : acts.length > 1 ? 80 : 92, full = w * acts.length;
   const [dx, setDx] = useState(0);
   const [drag, setDrag] = useState(false);
+  const [armed, setArmed] = useState(false);        // quick: past the mark — letting go now does it
+  const [at, setAt] = useState(0);                  // quick: the finger's height in the row, where the sign comes out
   const g = useRef(null);
   const swiped = useRef(false);
   const me = useRef(null);
   me.current = () => setDx(0);
   useEffect(() => () => { if (openRow === me) openRow = null; }, []);
   const shut = () => { me.current(); if (openRow === me) openRow = null; };
-  const tell = (how, s) => api("swipe", { end: how, ms: Math.round(performance.now() - s.t0), dx: Math.round(-s.last), what }).catch(() => {});
+  const opened = () => { if (openRow && openRow !== me) openRow.current(); openRow = me; };
+  const tell = (how, s) => api("swipe", { end: how, ms: Math.round(s.t1 - s.t0), dx: Math.round(-s.last), what }).catch(() => {});
   const down = (e) => {
-    if ((e.pointerType === "mouse" && e.button !== 0) || e.target.closest("input, textarea")) return;   // a field keeps its own drag
-    g.current = { x: e.clientX, y: e.clientY, x0: dx, last: dx, on: false, t0: performance.now() };
+    if ((e.pointerType === "mouse" && (quick || e.button !== 0)) || e.target.closest("input, textarea, pre, .tbl")) return;
+    g.current = { x: e.clientX, y: e.clientY, x0: dx, last: dx, on: false, armed: false, t0: e.timeStamp };
   };
   const move = (e) => {
     const s = g.current;
     if (!s) return;
     const mx = e.clientX - s.x, my = e.clientY - s.y;
     if (!s.on) {
+      if (quick && e.timeStamp - s.t0 > PRESS) { g.current = null; return; }
       if (Math.abs(mx) < 8 || Math.abs(mx) < Math.abs(my) * 1.5) return;
       s.on = true;
       setDrag(true);
+      if (quick) setAt(Math.round(s.y - e.currentTarget.getBoundingClientRect().top));
       try { e.currentTarget.setPointerCapture(e.pointerId); } catch (x) { /* no capture: the moves still come while the finger is on the row */ }
     }
-    s.last = Math.max(-full - 10, Math.min(0, s.x0 + mx));
+    const to = Math.min(0, s.x0 + mx);
+    // past its mark a message follows the finger at a third of the pace: the sign has lit up, it may let go
+    s.last = quick ? Math.max(-full - 40, to < -full ? -full + (to + full) / 3 : to) : Math.max(-full - 10, to);
     setDx(s.last);
+    if (quick && (s.last <= -full) !== s.armed) {
+      s.armed = s.last <= -full;
+      setArmed(s.armed);
+      if (s.armed) tick();
+    }
   };
   const up = (e) => {
     const s = g.current;
     g.current = null;
     if (!s || !s.on) return;
+    s.t1 = e.timeStamp;
     swiped.current = true;
     setTimeout(() => { swiped.current = false; }, 400);       // a tap right after the slide opens nothing; the next one is a tap again
     setDrag(false);
-    const open = e.type !== "pointercancel" && s.last < -full / 3;
+    const cancel = e.type === "pointercancel";
+    if (quick) {
+      setArmed(false);
+      if (cancel || !s.armed) { shut(); return tell(cancel ? "cancel" : "back", s); }
+      // now, while the lift still counts as the finger's gesture — the clipboard takes nothing later. The message
+      // waits on its mark for the answer: a word for the journal — it springs back; nothing — its button stays out
+      setDx(-full);
+      Promise.resolve(acts[0].on("slide")).then((how) => {
+        if (how) shut(); else opened();
+        tell(how || "nocopy", s);
+      });
+      return;
+    }
+    const open = !cancel && s.last < -full / 3;
     setDx(open ? -full : 0);
-    if (open) { if (openRow && openRow !== me) openRow.current(); openRow = me; } else if (openRow === me) openRow = null;
-    tell(e.type === "pointercancel" ? "cancel" : open ? "open" : "back", s);
+    if (open) opened(); else if (openRow === me) openRow = null;
+    tell(cancel ? "cancel" : open ? "open" : "back", s);
   };
   const click = (e) => {
     if (e.target.closest(".swr-act")) return;
     if (swiped.current || dx) { swiped.current = false; e.stopPropagation(); e.preventDefault(); shut(); }
   };
-  return html`<div class=${"swr" + (drag ? " drag" : "") + (cls ? " " + cls : "")} onPointerDown=${down} onPointerMove=${move} onPointerUp=${up} onPointerCancel=${up} onClickCapture=${click}>
-    <div class="swr-acts" style=${"width:" + full + "px"}>${acts.map((a) => html`<button key=${a.label} class="swr-act" style=${"width:" + w + "px"} tabindex="-1"
-      onClick=${(e) => { e.stopPropagation(); shut(); a.on(); }}>${ic(a.ic, 20)}<span>${a.label}</span></button>`)}</div>
+  // a message's sign: out as far as the message has slid, at the finger's height
+  const style = quick ? "--p:" + Math.min(1, -dx / full).toFixed(2) + ";--at:" + at + "px" : undefined;
+  return html`<div class=${"swr" + (drag ? " drag" : "") + (quick ? " quick" : "") + (armed ? " armed" : "") + (cls ? " " + cls : "")} style=${style}
+    onPointerDown=${down} onPointerMove=${move} onPointerUp=${up} onPointerCancel=${up} onClickCapture=${click}>
+    <div class="swr-acts" style=${quick ? undefined : "width:" + full + "px"}>${acts.map((a) => html`<button key=${a.label} class="swr-act"
+      style=${quick ? undefined : "width:" + w + "px"} tabindex="-1" aria-label=${quick ? a.label : undefined}
+      onClick=${(e) => { e.stopPropagation(); shut(); a.on(); }}>${ic(a.ic, 20)}${quick ? "" : html`<span>${a.label}</span>`}</button>`)}</div>
     <div class="swr-in" style=${"transform:translateX(" + dx + "px)"}>${children}</div></div>`;
 }
 
@@ -365,4 +434,4 @@ function Loading({ err }) {
   return html`<div class="empty">${err || (c.state === "nomac" ? t("loading.nomac") : c.state === "denied" ? "" : t("loading"))}</div>`;
 }
 
-export { About, ChoicePick, Dots, GEAR, GLYPH, Loading, MODES, ModePick, ModelPick, Sheet, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, bytes, choiceText, dayLabel, dot, dotted, dur, durShort, effortName, hhmm, home, hue, ic, keyTap, kilo, level, modelName, nb, num, pct, plainField, queueChip, quiet, resetText, sendKey, TAG_H, tagChips, tagJob, tagSt, toDate, useNow, workChip };
+export { About, ChoicePick, Dots, GEAR, GLYPH, Loading, MODES, ModePick, ModelPick, Sheet, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, bytes, choiceText, copyRich, dayLabel, dot, dotted, dur, durShort, effortName, hhmm, home, hue, ic, keyTap, kilo, level, modelName, nb, num, pct, plainField, queueChip, quiet, resetText, sendKey, TAG_H, tagChips, tagJob, tagSt, toDate, useNow, workChip };

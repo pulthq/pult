@@ -187,6 +187,32 @@ class InitTest(unittest.TestCase):
         self.assertFalse([x for x in lines if "\u0000" in x or "undefined" in x])
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_clip_in_the_app(self):
+        # stage Zh, step 3: Claude's words for the clipboard — HTML as Telegram for Android itself copies a message
+        # (CustomHtml.toHtml: <br> for a line break, &nbsp; for a run of spaces), with only the tags its paste turns back
+        # into formatting (CopyUtilities.fromHTML); headings, lists and tables as Pult writes them in the topic
+        md = (HERE.parent / "relay" / "web" / "static" / "md.js").as_uri()
+        cases = ["## Итог\n\nВсе **27 тестов** — *зелёные*.", "- раз\n  - два\n1. три", "| a | b |\n|---|---|\n| 1 | 2 |",
+                 "Смотри:\n```bash\nmake  deploy\n  x\n```\nдальше", "> цитата\n> вторая",
+                 "[стенд](https://example.com/a) и [pult_api.py:411](src/pult_api.py#L411), [docs/](docs/)",
+                 "<script>alert(1)</script> & `a  <b>`", "\r\n\r\nтекст\n\n", "[x](https://e.example/\\\"onmouseover=1)",
+                 "[j](javascript:alert(1))"]
+        js = "import {clip} from %s; for (const s of %s) console.log(JSON.stringify(clip(s)));" % (json.dumps(md), json.dumps(cases))
+        out = subprocess.run(["node", "--input-type=module", "-e", js], capture_output=True, text=True, timeout=30)
+        lines = [json.loads(x) for x in out.stdout.splitlines()]
+        self.assertEqual(lines[:8], [
+            "<b>Итог</b><br><br>Все <b>27 тестов</b> — <i>зелёные</i>.",
+            "• раз<br>&nbsp; • два<br>1. три",
+            "<pre>| a | b |<br>|---|---|<br>| 1 | 2 |</pre>",
+            'Смотри:<br><pre lang="bash">make&nbsp; deploy<br>&nbsp; x</pre><br>дальше',
+            "<blockquote>цитата<br>вторая</blockquote>",
+            '<a href="https://example.com/a">стенд</a> и pult_api.py:411 (<code>src/pult_api.py#L411</code>), <code>docs/</code>',
+            "&lt;script&gt;alert(1)&lt;/script&gt; &amp; <code>a&nbsp; &lt;b&gt;</code>",
+            "текст"], out.stderr)
+        self.assertNotIn('"onmouseover', lines[8])                         # the address stays inside its quotes
+        self.assertNotIn("href", lines[9])                                 # only a web page becomes a link
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_pacer_in_the_app(self):
         # screens load at most every 0.4 s while events stream, one load at a time: before 0.18.6 a stream of events
         # faster than that kept the screen from updating until it paused (review 2026-10-27, П8)

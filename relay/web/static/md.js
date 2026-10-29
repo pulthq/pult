@@ -17,17 +17,32 @@ function link(t, u) {
   return !h || hostOf(s.includes("://") ? s : "http://" + s) === h ? a : a + ' <span class="host">(' + esc(h) + ")</span>";
 }
 
-function inline(s) {
+// a link in the app: a web page opens through Telegram; a link to a project file [name](path), as Claude writes them
+// (stage F5), is a tap that opens it in the app. Any other scheme (mailto:, vscode:…) or a bare #anchor can't be
+// opened on the phone: the name, and the target as code
+const APP = {
+  web: link,
+  other: (t, u) => (!/^[a-z][\w+.-]+:(?!\/\/\/)/i.test(u) && !u.startsWith("#")
+    ? '<a class="flink" role="link" tabindex="0" data-file="' + esc(u) + '">' + esc(t) + "</a>"
+    : t === u || u.endsWith("/" + t) ? "<code>" + esc(u) + "</code>" : esc(t) + " <code>" + esc(u) + "</code>"),
+};
+// a link on the clipboard (stage Zh, step 3): a web page as a plain link; anything else opens nowhere it is pasted —
+// its name and where it points, as Pult writes it in the topic (pult_render._inline)
+const CLIP = {
+  web: (t, u) => '<a href="' + esc(u) + '">' + esc(t) + "</a>",
+  other: (t, u) => (t === u || u.endsWith("/" + t) ? "<code>" + esc(u) + "</code>" : esc(t) + " (<code>" + esc(u) + "</code>)"),
+};
+
+// one line's words: code, links, bold and italics; `links` says what a link becomes. The app's own is inline() — one
+// argument, since blocks() hands it to map(), which passes the index second
+const inline = (s) => spans(s, APP);
+function spans(s, links) {
   const keep = [];
   const hold = (h) => "\u0000" + (keep.push(h) - 1) + "\u0000";
   s = s.replace(/\u0000/g, "");        // the placeholders' own mark never comes from the words (it showed "undefined")
   s = s.replace(/`([^`\n]+)`/g, (_, c) => hold("<code>" + esc(c) + "</code>"));
-  s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, t, u) => hold(link(t, u)));
-  // a link to a project file [name](path), as Claude writes them (stage F5): a tap opens it in the app. Any other
-  // scheme (mailto:, vscode:…) or a bare #anchor can't be opened on the phone: the name, and the target as code
-  s = s.replace(/\[([^\]\n]+)\]\(([^\s)]+)\)/g, (_, t, u) => hold(!/^[a-z][\w+.-]+:(?!\/\/\/)/i.test(u) && !u.startsWith("#")
-    ? '<a class="flink" role="link" tabindex="0" data-file="' + esc(u) + '">' + esc(t) + "</a>"
-    : t === u || u.endsWith("/" + t) ? "<code>" + esc(u) + "</code>" : esc(t) + " <code>" + esc(u) + "</code>"));
+  s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, t, u) => hold(links.web(t, u)));
+  s = s.replace(/\[([^\]\n]+)\]\(([^\s)]+)\)/g, (_, t, u) => hold(links.other(t, u)));
   s = esc(s);
   s = s.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
   s = s.replace(/(^|[^\w*])\*(?!\s)([^*\n]+?)\*(?![\w*])/g, "$1<i>$2</i>");
@@ -102,5 +117,58 @@ export function md(src) {
   } catch (e) {
     // whatever the words, the screen goes on: md() runs inside a render, and an error there stopped the whole screen
     return "<p>" + esc(src).replace(/\n/g, "<br>") + "</p>";
+  }
+}
+
+// ---------- Claude's words for the clipboard (stage Zh, step 3) ----------
+
+// HTML the way Telegram itself puts a message on the clipboard (CustomHtml.toHtml in Telegram for Android): a <br> for
+// every line break, runs of spaces kept with &nbsp;, only <b> <i> <code> <a> <pre> <blockquote> — what its paste turns
+// back into formatting (CopyUtilities.fromHTML; <code> stays plain words there). Notes, mail and documents read the
+// same. Telegram has no headings, lists or tables: a heading goes bold, a list keeps its marks as words, a table goes
+// as a block of monospace — as Pult writes Claude's words in the topic (pult_render.md_to_html)
+const spaced = (h) => h.replace(/ {2,}/g, (m) => "&nbsp;".repeat(m.length - 1) + " ");
+const isRow = (l) => /^\s*\|/.test(l);
+const isQuote = (l) => /^\s*>\s?/.test(l);
+
+function clipLines(text) {
+  const lines = text.split("\n");
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (isRow(l) && isRow(lines[i + 1] || "")) {
+      const rows = [];
+      while (i < lines.length && isRow(lines[i])) rows.push(spaced(esc(lines[i++])));
+      i--;
+      out.push("<pre>" + rows.join("<br>") + "</pre>");
+    } else if (isQuote(l)) {
+      const q = [];
+      while (i < lines.length && isQuote(lines[i])) q.push(spaced(spans(lines[i++].replace(/^\s*>\s?/, ""), CLIP)));
+      i--;
+      out.push("<blockquote>" + q.join("<br>") + "</blockquote>");
+    } else if (/^\s{0,3}#{1,6}\s+/.test(l)) {
+      out.push("<b>" + spaced(spans(l.replace(/^\s*#+\s+/, "").replace(/\s*#+\s*$/, ""), CLIP)) + "</b>");
+    } else {
+      const m = /^(\s*)([-*•]|\d+[.)])\s+/.exec(l);       // a numbered item keeps its number, a dash becomes a bullet
+      out.push(spaced(m ? m[1] + (/\d/.test(m[2]) ? m[2] : "•") + " " + spans(l.slice(m[0].length), CLIP) : spans(l, CLIP)));
+    }
+  }
+  return out.join("<br>");
+}
+
+export function clip(src) {
+  const text = String(src ?? "").replace(/\r\n?/g, "\n").replace(/^\n+|\s+$/g, "");
+  try {
+    return text.split(/(```[\s\S]*?```)/g).map((p) => {
+      if (p.startsWith("```") && p.endsWith("```") && p.length >= 6) {
+        const inner = p.slice(3, -3), m = /^([\w+.-]*)\n/.exec(inner);
+        const body = (m ? inner.slice(m[0].length) : inner).replace(/\n$/, "");
+        // the language goes with the block: Telegram names it over the code
+        return "<pre" + (m && m[1] ? ' lang="' + esc(m[1]) + '"' : "") + ">" + spaced(esc(body)).replace(/\n/g, "<br>") + "</pre>";
+      }
+      return clipLines(p);
+    }).join("");
+  } catch (e) {
+    return spaced(esc(text)).replace(/\n/g, "<br>");
   }
 }

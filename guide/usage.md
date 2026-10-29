@@ -40,6 +40,10 @@ you're neither in the app nor at the computer. Reminders on long turns; warnings
   leaves Home's board and the new task's list (what runs in it and what waits for you still show; a slide in the
   fold brings it back) — and **New task**, which opens the form with that project. A task's row slides to **Tags**,
   a card of "Your move" slides to **Got it**; questions and permissions don't slide.
+- **Copy a message of Claude's**: in a session, slide it to the left until its copy sign lights up and let go. The
+  whole message goes to the clipboard formatted as Telegram copies a message — a paste into Telegram, notes or mail
+  keeps the bold, the links, the code and the quotes — and as Claude's markdown for plain-text places. A tap on a
+  grey block of code still copies just that block.
 - **A session** shows the whole conversation, live, with the model, the effort and the context gauge by the message
   field. Pick the model (Fable, Opus, Sonnet, Haiku) and how hard Claude thinks for that session; a running one
   switches at once. Settings → Model and effort sets what sessions from the app and Telegram start with; VS Code tabs

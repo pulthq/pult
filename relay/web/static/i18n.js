@@ -399,6 +399,8 @@ const S = {
   "out.line": { en: "Outcome:", ru: "Итог:" },
   "out.need": { en: "Needed:", ru: "Нужно:" },
   "msg.more": { en: "Show all", ru: "Развернуть" },
+  "msg.copy": { en: "Copy", ru: "Копировать" },
+  "msg.copy.tap": { en: "Tap the sign to copy", ru: "Нажми на значок, чтобы скопировать" },
   "msg.less": { en: "Fold", ru: "Свернуть" },
   "proj.waits": { en: "Waits for you · {n}", ru: "Ждёт тебя · {n}" },
   "proj.live": { en: "Running · {n}", ru: "Идёт · {n}" },

@@ -41,6 +41,7 @@ CHECKS = {
     "clip": ({"STAND_LANG": "ru"}, "out", []),
     "spend": ({"STAND_LANG": "ru"}, "USAGE", []),
     "pins": ({"STAND_TAGS": "1", "STAND_HOMES": "1", "STAND_PINS": "blog,shop", "STAND_HIDES": "desk", "STAND_LANG": "ru"}, "out", []),   # stage Zh
+    "msgcopy": ({"STAND_LANG": "ru"}, "out", []),                  # stage Zh, step 3: a slide copies Claude's message
     "parts": None,
     "update": None,
     "vcheck": None,
