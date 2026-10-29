@@ -6,8 +6,8 @@ import { alertBox, confirmBox, haptic } from "../core/tg.js";
 import { Mic, useRecorder } from "../core/voice.js";
 import { plural, t } from "../i18n.js";
 import { html, useEffect, useRef, useState } from "../vendor/htm-preact-3.1.1.js";
-import { Req, useRcpt } from "../ui/cards.js";
-import { GEAR, GLYPH, Loading, MODES, ModePick, TimeChip, ago, agoShort, avatar, bgChip, dot, dur, durShort, hhmm, ic, keyTap, nb, pct, plainField, queueChip, quiet, tagChips, toDate, useNow, workChip } from "../ui/kit.js";
+import { Req, TagPick, useRcpt } from "../ui/cards.js";
+import { GEAR, GLYPH, Loading, MODES, ModePick, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, dot, dur, durShort, hhmm, ic, keyTap, nb, pct, plainField, queueChip, quiet, tagChips, toDate, useNow, workChip } from "../ui/kit.js";
 import { BgSheet, bgLine, memPct } from "../ui/load.js";
 import { UpdRow } from "../ui/upd.js";
 
@@ -134,14 +134,14 @@ function Mine({ r, now, onGot, stt, showProject = true }) {
   // under the session's own field (a friend learned it only after writing a whole answer, 2026-10-26)
   const copy = r.open && !r.tab && !r.driven;
   const aboutCopy = (e) => { e.stopPropagation(); alertBox(t("ex.copy")); };
-  return html`<div class=${"card mine" + (r.state === "fail" ? " fail" : "")}>
+  return html`<${SwipeRow} what="card" cls="card-sw" acts=${[{ ic: "check", label: t("mine.got"), on: got }]}><div class=${"card mine" + (r.state === "fail" ? " fail" : "")}>
     <div class="card-h tap" role="button" tabindex="0" onClick=${open} onKeyDown=${keyTap(open)}><div class="c-proj"><span class="run-w">${showProject && r.project ? html`<span class="run-who">${avatar(r.project, 18)}<span class="run-p">${r.project}</span></span>` : ""}${tagChips(r.tags)}</span><span class="c-wait">${t("mine.waits", { dur: nb(dur(now - r.since)) })}</span></div>
       <b class="c-title">${r.state === "fail" ? ic("alert", 16) : ""}${r.title}<span class="c-go">${ic("chev", 16)}</span></b></div>
     ${r.need ? html`<div class="ln dim tap" onClick=${open}>${r.line}</div><div class="now tap" onClick=${open}>${r.need}</div>` : html`<div class="now tap" onClick=${open}>${r.line}</div>`}
     ${r.fail === "rate_limit" ? html`<${ResumeAt} sid=${r.sid} resume=${resume} reset=${r.reset} onSet=${setResume}/>` : html`<${Replies} sid=${r.sid} replies=${r.replies} onSent=${sent}/>`}
     <${QuickReply} sid=${r.sid} stt=${stt} onSent=${sent}/>
     <div class="foot quiet">${copy ? html`<button class="link copy" onClick=${aboutCopy}>${ic("copy", 15)} ${t("dest.copy")}</button>` : html`<span></span>`}<button class="link" disabled=${busy} onClick=${got}>${ic("check", 15)} ${t("mine.got")}</button></div>
-  </div>`;
+  </div></${SwipeRow}>`;
 }
 
 // "While you were away": what happened since you last had the app open (an hour or more ago) — turns, what is done,
@@ -159,8 +159,11 @@ const rowIcon = (r) => (r.state === "work" ? html`<span class="st st-work"></spa
   : r.state === "done" ? html`<span class="st-ic ok">${ic("check", 15)}</span>` : r.driven ? html`<span class="st-ic">${ic("phone", 15)}</span>` : "");
 const ctxWarn = (r) => (r.ctx != null && r.ctx >= 90 ? html`<span class="pct bad">${ic("alert", 13)} ${r.ctx} %</span>` : "");
 
+// a row slides to a task's tags when the screen gives it onTags (stage Zh, step 2 — Q102): the sheet of the session's screen
+const tagsAct = (r, onTags) => [{ ic: "tag", label: t("row.tags"), on: () => onTags(r.sid) }];
+
 // one session on the board: what it does now or how its last turn ended, in a line or two
-function BoardRow({ r, now, onBg }) {
+function BoardRow({ r, now, onBg, onTags }) {
   const bgTap = (e) => { e.stopPropagation(); onBg(r); };
   const right = r.state === "work" ? workChip(r.since, now)
     : r.state === "queue" ? queueChip(r.since, now)
@@ -168,11 +171,12 @@ function BoardRow({ r, now, onBg }) {
     : html`<span class="dim nowrap">${agoShort(r.ts)}</span>`;
   const open = () => go("#/s/" + r.sid);
   // a row, not a <button>: its background task is a tap of its own, and a button can't hold one
-  return html`<div role="button" tabindex="0" class=${"item brow" + (r.state === "idle" ? " rest" : "") + (r.state === "done" ? " fresh" : "")} onClick=${open} onKeyDown=${keyTap(open)}>
+  const body = html`<div role="button" tabindex="0" class=${"item brow" + (r.state === "idle" ? " rest" : "") + (r.state === "done" ? " fresh" : "")} onClick=${open} onKeyDown=${keyTap(open)}>
     <div class="item-h"><b class="one">${rowIcon(r)}${r.title}</b><span class="meta">${ctxWarn(r)}${right}</span></div>
     ${(r.line || (r.tags && r.tags.length > 0)) && html`<div class="ln">${tagChips(r.tags)}${r.line}</div>`}
     ${r.bg && r.bg.length > 0 && html`<div class="bg tap" role="button" tabindex="0" onClick=${bgTap} onKeyDown=${keyTap(bgTap)}>${bgLine(r.bg)} ${ic("chev", 14)}</div>`}
   </div>`;
+  return onTags ? html`<${SwipeRow} what="task" acts=${tagsAct(r, onTags)}>${body}</${SwipeRow}>` : body;
 }
 
 // the request and the title say the same in a task's first turn (the title is its first request, cut)
@@ -182,7 +186,7 @@ const sameStart = (a, b) => { const x = String(a || "").replace(/…$/, ""), y =
 // task's tags, a tag that doesn't fit left out whole; the title whole, two lines at most, with its time beside it;
 // then what you asked in this turn and what Claude says so far — or, while its background task runs, how the turn
 // ended. The owner, 2026-10-26: a title cut after three words over a line of tags cut the same way said nothing
-function RunRow({ r, now, onBg, showProject = true }) {
+function RunRow({ r, now, onBg, onTags, showProject = true }) {
   const bgTap = (e) => { e.stopPropagation(); onBg(r); };
   const chip = r.state === "work" ? workChip(r.since, now) : r.state === "queue" ? queueChip(r.since, now) : bgChip(r.since, now, bgTap);
   // a computer before 0.17.3 gives a turn one line: Claude's words, else the request when it was typed there
@@ -190,25 +194,26 @@ function RunRow({ r, now, onBg, showProject = true }) {
   const asked = r.state === "queue" ? r.line : r.state === "work" ? r.ask : "";
   const ask = asked && !sameStart(asked, r.title) ? asked : "";
   const open = () => go("#/s/" + r.sid);
-  return html`<div role="button" tabindex="0" class="item run" onClick=${open} onKeyDown=${keyTap(open)}>
+  const body = html`<div role="button" tabindex="0" class="item run" onClick=${open} onKeyDown=${keyTap(open)}>
     ${(showProject && r.project) || (r.tags && r.tags.length > 0) ? html`<div class="run-w">${showProject && r.project ? html`<span class="run-who">${avatar(r.project, 16)}<span class="run-p">${r.project}</span></span>` : ""}${tagChips(r.tags)}</div>` : ""}
     <div class="run-h"><div class="run-t">${rowIcon(r)}${r.title}</div><span class="meta">${ctxWarn(r)}${chip}</span></div>
     ${ask && html`<div class=${"run-ask" + (said ? "" : " solo")}>${t("run.you", { text: ask })}</div>`}
     ${said && html`<div class="run-now">${said}</div>`}
     ${r.state === "bg" && r.bg && r.bg.length > 0 && html`<div class="bg tap" role="button" tabindex="0" onClick=${bgTap} onKeyDown=${keyTap(bgTap)}>${bgLine(r.bg)} ${ic("chev", 14)}</div>`}
   </div>`;
+  return onTags ? html`<${SwipeRow} what="task" acts=${tagsAct(r, onTags)}>${body}</${SwipeRow}>` : body;
 }
 
 // a project on the board: who works and who waits for you, today's turns; its live sessions; the resting folded;
 // the pinned (stage Zh) carry their mark and come first — the computer orders them
-function ProjectBlock({ p, now, onBg }) {
+function ProjectBlock({ p, now, onBg, onTags }) {
   const open = () => go("#/p/" + encodeURIComponent(p.pkey));
   const meta = [p.work ? html`<span class="cnt">${dot("work")}${p.work}</span>` : "", p.mine ? html`<span class="cnt">${dot("attn")}${p.mine}</span>` : "",
     p.turns ? t("proj.turns", { n: p.turns, turns: plural(p.turns, "turn") }) : "",
     !p.rows.length && p.resting ? t("proj.resting", { n: p.resting }) : ""].filter(Boolean);
   return html`<div class="list proj">
     <button class="item proj-h" onClick=${open}><span class="pname">${avatar(p.name, 34)}<span class="pn"><b>${p.name}</b><span class="dim pmeta">${meta.length ? meta.map((m, i) => html`${i ? html`<span class="sep">·</span>` : ""}${m}`) : t("proj.quiet")}</span></span><span class="ptail">${p.pinned ? ic("pin", 15) : ""}${ic("chev", 16)}</span></span></button>
-    ${p.rows.map((r) => html`<${BoardRow} key=${r.sid} r=${r} now=${now} onBg=${onBg}/>`)}
+    ${p.rows.map((r) => html`<${BoardRow} key=${r.sid} r=${r} now=${now} onBg=${onBg} onTags=${onTags}/>`)}
     ${p.rows.length > 0 && p.resting > 0 && html`<button class="item more dim" onClick=${open}>${t("row.resting", { n: p.resting, rest: plural(p.resting, "rest") })}</button>`}
   </div>`;
 }
@@ -222,12 +227,16 @@ function Home() {
   const [d, err, set] = useLive(() => api("overview"), []);
   const [bgFor, setBgFor] = useState(null);
   const [openBg, closeBg] = useOverlay(!!bgFor, (v) => { if (!v) setBgFor(null); });
+  const [tagFor, setTagFor] = useState(null);           // a task's tags from its row's slide (stage Zh, step 2): {sid, info}
+  const [openTag, closeTag] = useOverlay(!!tagFor, (v) => { if (!v) setTagFor(null); });
   const seenN = useRef(-1);
   const yours = useRcpt(d ? moves(d.pending, d.mine || []) : [], moveKey);
   if (!d) return html`<${Loading} err=${err}/>`;
   if (seenN.current < 0) seenN.current = (d.pending || []).length + (d.mine || []).length;     // no buzz on opening
   useLang(d.lang);
   const onBg = (s) => { setBgFor(s.sid); openBg(); };
+  const onTags = (sid) => api("taginfo", { sid }).then((info) => { setTagFor({ sid, info }); openTag(); }).catch((e) => alertBox(e.message));
+  const reload = () => api("overview").then(set).catch(() => {});
   const mine = d.mine || [], board = d.board || [];
   const n = d.pending.length + mine.length;
   if (n > seenN.current) haptic("warning");             // a new "your move" while you look at Home — a buzz
@@ -243,21 +252,22 @@ function Home() {
   const jobs = d.jobs || [];
   const jobsOn = jobs.filter((j) => j.ended == null).sort((a, b) => a.started - b.started), jobsDone = jobs.filter((j) => j.ended != null);
   const nRun = running.length + jobsOn.length;
-  const rest = board.map((p) => Object.assign({}, p, { rows: p.rows.filter((r) => !runs(r)) }));
+  const rest = board.filter((p) => !p.hidden).map((p) => Object.assign({}, p, { rows: p.rows.filter((r) => !runs(r)) }));   // a hidden project's block stays off the board (Q101)
   return html`<div>
     <${Top} mac=${d.mac} load=${d.load} usagePct=${d.usage_pct} usageTop=${d.usage_top} pager=${d.pager} onSet=${(m) => set(Object.assign({}, d, { mac: Object.assign({}, d.mac, { mode: m }) }))}/>
     <${UpdRow} u=${d.update}/>
     ${nRun > 0 && html`<h3>${t("home.running", { n: nRun - nQueue })}${nQueue ? " · " + t("home.queued", { n: nQueue }) : ""}</h3><div class="list">
-      ${running.map((r) => html`<${RunRow} key=${r.sid} r=${r} now=${now} onBg=${onBg}/>`)}
+      ${running.map((r) => html`<${RunRow} key=${r.sid} r=${r} now=${now} onBg=${onBg} onTags=${onTags}/>`)}
       ${jobsOn.map((j) => html`<${Job} key=${j.id} j=${j} now=${now} row=${true}/>`)}</div>`}
     ${d.catchup && html`<${Catchup} c=${d.catchup} onClose=${() => { api("catchup_off").catch(() => {}); set(Object.assign({}, d, { catchup: null })); }}/>`}
     ${(n > 0 || yours.length > 0) && html`<h3>${t("home.mine", { n })}</h3>
       ${yours.map((e) => e.req ? html`<${Req} key=${e.key} r=${e.req}/>`
         : html`<${Mine} key=${e.key} r=${Object.assign({ reset: d.reset }, e.mine)} now=${now} onGot=${gone} stt=${d.stt}/>`)}`}
-    ${rest.length > 0 && html`<h3>${t("home.projects")}</h3>${rest.map((p) => html`<${ProjectBlock} key=${p.pkey} p=${p} now=${now} onBg=${onBg}/>`)}`}
+    ${rest.length > 0 && html`<h3>${t("home.projects")}</h3>${rest.map((p) => html`<${ProjectBlock} key=${p.pkey} p=${p} now=${now} onBg=${onBg} onTags=${onTags}/>`)}`}
     ${!n && !board.length && !nRun && html`<div class="empty">${t("home.quiet")}</div>`}
     ${jobsDone.length > 0 && html`<h3>${t("home.jobs")}</h3><div class="list">${jobsDone.map((j) => html`<${Job} key=${j.id} j=${j} now=${now}/>`)}</div>`}
     ${bgFor && html`<${BgSheet} sid=${bgFor} fixed=${true} onClose=${closeBg}/>`}
+    ${tagFor && html`<${TagPick} sid=${tagFor.sid} info=${tagFor.info} onDone=${reload} onClose=${closeTag}/>`}
   </div>`;
 }
 

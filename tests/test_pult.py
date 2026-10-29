@@ -2695,6 +2695,37 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await self.p.api_pin("-Users-x-other", False), {"pinned": False})
             self.assertEqual(await order(), [("-Users-x-third", True), (PKEY, False), ("-Users-x-other", False)])
             self.assertEqual(set(self.store.pins()), {"-Users-x-third"})
+            # hidden (step 2, Q101): hiding unpins, a pin shows again; the hidden last — the app folds them; Home's board
+            # keeps a hidden project with the flag (its running and waiting rows feed the top of Home); the slide's
+            # journal names the row's kind; a task's tags for the sheet from its row (Q102)
+            with mock.patch.object(pult_api, "log") as lg:
+                self.assertEqual(await self.p.api_hide("-Users-x-third", True, via="swipe"), {"hidden": True})
+                self.assertEqual(await self.p.api_hide(PKEY, True, via="button"), {"hidden": True})
+                self.assertEqual(await self.p.api_pin(PKEY, True), {"pinned": True})
+                with self.assertRaises(ValueError):
+                    await self.p.api_hide("-Users-x-nope", True)
+                await self.p.api_swipe("open", 300, 80, what="task")
+                await self.p.api_swipe("back", 100, 10, what="nope")
+                await self.p.api_swipe("cancel", 50, 5, what="card")
+            self.assertEqual([c.args[0] for c in lg.call_args_list], [
+                "app: project hidden via the swipe", "app: project hidden via the button", "app: project pinned via the button",
+                "app: swipe on a task's row opened on its action (300 ms, 80 px)",
+                "app: swipe on a project's row sprang back (100 ms, 10 px)",
+                "app: swipe on a card cancelled — the window took the finger (50 ms, 5 px)"])
+            rows = (await self.p.api_projects())["projects"]
+            self.assertEqual([(r["pkey"], bool(r["pinned"]), bool(r["hidden"])) for r in rows],
+                             [(PKEY, True, False), ("-Users-x-other", False, False), ("-Users-x-third", False, True)])
+            self.assertEqual((set(self.store.pins()), set(self.store.hides())), ({PKEY}, {"-Users-x-third"}))
+            self.assertTrue((await self.p.api_project("-Users-x-third"))["hidden"])
+            self.assertFalse((await self.p.api_project(PKEY))["hidden"])
+            await self.p.api_hide("-Users-x-other", True)
+            board = (await self.p.api_overview())["board"]
+            self.assertEqual([(p["pkey"], p["pinned"], p["hidden"]) for p in board], [(PKEY, True, False), ("-Users-x-other", False, True)])
+            info = await self.p.api_taginfo(SID)
+            self.assertEqual(sorted(info), ["tag_auto", "tags", "tagset"])
+            self.assertTrue(info["tag_auto"])
+            with self.assertRaises(ValueError):
+                await self.p.api_taginfo("nope")
         finally:
             pultd.CLAUDE_PROJECTS = old
 

@@ -4,6 +4,14 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.22 — 2026-10-29
+
+- **More under the slide.** A project's row now slides to three buttons: Pin, Hide and New task. A hidden project
+  goes into a folded "Hidden" section at the bottom of Projects and leaves Home's board and the new task's list;
+  what runs in it and what waits for you still show, and a slide in the fold brings it back. A task's row, on Home
+  and in a project, slides to Tags — the same sheet as in the session; a card of "Your move" slides to Got it.
+  Questions and permissions don't slide.
+
 ## 0.18.21 — 2026-10-29
 
 - **Pin the projects you keep coming back to.** Slide a project's row to the left on the Projects screen and tap

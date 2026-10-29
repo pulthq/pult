@@ -188,6 +188,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS topics(pkey TEXT PRIMARY KEY, path TEXT, name TEXT, thread INTEGER);
 CREATE TABLE IF NOT EXISTS pins(pkey TEXT PRIMARY KEY, ts REAL);
+CREATE TABLE IF NOT EXISTS hides(pkey TEXT PRIMARY KEY, ts REAL);
 CREATE TABLE IF NOT EXISTS sessions(sid TEXT PRIMARY KEY, pkey TEXT, path TEXT, title TEXT,
     driven INTEGER DEFAULT 0, last_seen REAL);
 CREATE TABLE IF NOT EXISTS msgs(msg INTEGER PRIMARY KEY, sid TEXT, kind TEXT, ts REAL);
@@ -249,6 +250,17 @@ class Store:
             self.db.execute("INSERT OR REPLACE INTO pins VALUES(?,?)", (pkey, time.time()))
         else:
             self.db.execute("DELETE FROM pins WHERE pkey=?", (pkey,))
+
+    # hidden projects (stage Zh, step 2): in a fold at the bottom of Projects, off Home's board and the new task's list
+
+    def hides(self):
+        return {r["pkey"]: r["ts"] for r in self.db.execute("SELECT pkey, ts FROM hides")}
+
+    def set_hide(self, pkey, on):
+        if on:
+            self.db.execute("INSERT OR REPLACE INTO hides VALUES(?,?)", (pkey, time.time()))
+        else:
+            self.db.execute("DELETE FROM hides WHERE pkey=?", (pkey,))
 
     def session(self, sid):
         return self.db.execute("SELECT * FROM sessions WHERE sid=?", (sid,)).fetchone()

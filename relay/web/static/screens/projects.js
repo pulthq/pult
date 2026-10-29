@@ -7,87 +7,47 @@ import { Mic, useRecorder } from "../core/voice.js";
 import { plural, t } from "../i18n.js";
 import { html, useEffect, useRef, useState } from "../vendor/htm-preact-3.1.1.js";
 import { BoardRow, Mine, RunRow, moveKey, moves } from "./home.js";
-import { Req, useRcpt } from "../ui/cards.js";
-import { ChoicePick, Loading, agoShort, avatar, choiceText, dot, dotted, dur, ic, keyTap, plainField, sendKey, tagChips, tagJob, tagSt, useNow } from "../ui/kit.js";
+import { Req, TagPick, useRcpt } from "../ui/cards.js";
+import { ChoicePick, Loading, SwipeRow, agoShort, avatar, choiceText, dot, dotted, dur, ic, keyTap, plainField, sendKey, tagChips, tagJob, tagSt, useNow } from "../ui/kit.js";
 import { BgSheet } from "../ui/load.js";
 import { Attach, Thumbs, useAttach } from "../ui/pics.js";
 
 
-// stage Zh: a row that slides left under the finger to show one action — "Pin" or "Unpin" on a project's row. A
-// vertical move stays a scroll (touch-action: pan-y); a short slide springs back, past a third of the action it stays
-// open; a tap on the action does it, a tap anywhere else closes; the tap that ends a slide opens nothing. Only to the
-// left, starting anywhere inside the row: from the phone's left edge comes the system's own Back. One row open at a
-// time, as chats in Telegram. How each slide ended goes to the computer's journal, silently: whether the gesture
-// works inside Telegram's window at all is known from there, not from words on the screen (runbook, the lesson of Q97)
-const SW_W = 92;
-let openRow = null;                                   // the row open now: a ref to its close
-function SwipeRow({ act, onAct, children }) {
-  const [dx, setDx] = useState(0);
-  const [drag, setDrag] = useState(false);
-  const g = useRef(null);
-  const swiped = useRef(false);
-  const me = useRef(null);
-  me.current = () => setDx(0);
-  useEffect(() => () => { if (openRow === me) openRow = null; }, []);
-  const shut = () => { me.current(); if (openRow === me) openRow = null; };
-  const tell = (how, s) => api("swipe", { end: how, ms: Math.round(performance.now() - s.t0), dx: Math.round(-s.last) }).catch(() => {});
-  const down = (e) => { if (e.pointerType === "mouse" && e.button !== 0) return; g.current = { x: e.clientX, y: e.clientY, x0: dx, last: dx, on: false, t0: performance.now() }; };
-  const move = (e) => {
-    const s = g.current;
-    if (!s) return;
-    const mx = e.clientX - s.x, my = e.clientY - s.y;
-    if (!s.on) {
-      if (Math.abs(mx) < 8 || Math.abs(mx) < Math.abs(my) * 1.5) return;
-      s.on = true;
-      setDrag(true);
-      try { e.currentTarget.setPointerCapture(e.pointerId); } catch (x) { /* no capture: the moves still come while the finger is on the row */ }
-    }
-    s.last = Math.max(-SW_W - 10, Math.min(0, s.x0 + mx));
-    setDx(s.last);
-  };
-  const up = (e) => {
-    const s = g.current;
-    g.current = null;
-    if (!s || !s.on) return;
-    swiped.current = true;
-    setTimeout(() => { swiped.current = false; }, 400);       // a tap right after the slide opens nothing; the next one is a tap again
-    setDrag(false);
-    const open = e.type !== "pointercancel" && s.last < -SW_W / 3;
-    setDx(open ? -SW_W : 0);
-    if (open) { if (openRow && openRow !== me) openRow.current(); openRow = me; } else if (openRow === me) openRow = null;
-    tell(e.type === "pointercancel" ? "cancel" : open ? "open" : "back", s);
-  };
-  const click = (e) => {
-    if (e.target.closest(".swr-act")) return;
-    if (swiped.current || dx) { swiped.current = false; e.stopPropagation(); e.preventDefault(); shut(); }
-  };
-  return html`<div class=${"swr" + (drag ? " drag" : "")} onPointerDown=${down} onPointerMove=${move} onPointerUp=${up} onPointerCancel=${up} onClickCapture=${click}>
-    <button class="swr-act" tabindex="-1" onClick=${(e) => { e.stopPropagation(); shut(); onAct(); }}>${act}</button>
-    <div class="swr-in" style=${"transform:translateX(" + dx + "px)"}>${children}</div></div>`;
-}
-
 // every project in one list, in the same grammar as the board: who waits, who works, the latest outcome; quiet ones last;
-// the pinned on top (stage Zh) — a slide left on a row pins or unpins it, and the list takes the computer's order at once
+// the pinned on top (stage Zh) — a slide left on a row pins, hides or starts a task (Q101); the hidden wait in a fold
+// at the bottom, their rows slide to "Show"; the list takes the computer's order at once
 function Projects() {
   const [d, err, set] = useLive(() => api("projects"), []);          // live: the counts change with every turn
+  const [more, setMore] = useState(false);                          // the hidden ones unfolded
   if (!d) return html`<${Loading} err=${err}/>`;
-  const pin = async (p) => {
-    try {
-      const r = await api("pin", { pkey: p.pkey, on: !p.pinned, via: "swipe" });
-      haptic("success");
-      const rows = d.projects.map((x) => (x.pkey === p.pkey ? Object.assign({}, x, { pinned: r.pinned ? Date.now() / 1000 : 0 }) : x));
-      set(Object.assign({}, d, { projects: rows.sort((a, b) => (b.pinned || 0) - (a.pinned || 0)) }));
-    } catch (e) { alertBox(e.message); }
-  };
   const add = d.create && html`<div class="stick"><button class="btn wide" onClick=${() => go("#/newproject")}>${t("np.create")}</button></div>`;
   if (!d.projects.length) return html`<div><h2>${t("projects")}</h2><div class="empty">${t("projects.none")}</div>${add}</div>`;
-  return html`<div><h2>${t("projects")}</h2><div class="list">${d.projects.map((p) => html`
-    <${SwipeRow} key=${p.pkey} act=${html`${ic(p.pinned ? "pinoff" : "pin", 20)}<span>${t(p.pinned ? "unpin" : "pin")}</span>`} onAct=${() => pin(p)}>
+  const order = (rows) => rows.sort((a, b) => (b.pinned || 0) - (a.pinned || 0) || (a.hidden ? 1 : 0) - (b.hidden ? 1 : 0));
+  const flag = async (p, op, on) => {
+    try {
+      const r = await api(op, { pkey: p.pkey, on, via: "swipe" });
+      haptic("success");
+      const now = Date.now() / 1000;                                 // a pin shows a hidden project, hiding unpins — as the computer does
+      const rows = d.projects.map((x) => (x.pkey !== p.pkey ? x : op === "pin"
+        ? Object.assign({}, x, { pinned: r.pinned ? now : 0, hidden: r.pinned ? 0 : x.hidden })
+        : Object.assign({}, x, { hidden: r.hidden ? now : 0, pinned: r.hidden ? 0 : x.pinned })));
+      set(Object.assign({}, d, { projects: order(rows) }));
+    } catch (e) { alertBox(e.message); }
+  };
+  const acts = (p) => (p.hidden ? [{ ic: "eye", label: t("unhide"), on: () => flag(p, "hide", false) }]
+    : [{ ic: p.pinned ? "pinoff" : "pin", label: t(p.pinned ? "unpin" : "pin"), on: () => flag(p, "pin", !p.pinned) },
+      { ic: "eyeoff", label: t("hide"), on: () => flag(p, "hide", true) },
+      { ic: "plus", label: t("row.new"), on: () => go("#/new?pkey=" + encodeURIComponent(p.pkey)) }]);
+  const row = (p) => html`<${SwipeRow} key=${p.pkey} acts=${acts(p)}>
     <button class=${"item proj-h" + (p.mine || p.work || p.open ? "" : " rest")} onClick=${() => go("#/p/" + encodeURIComponent(p.pkey))}>
       <span class="pname">${avatar(p.name, 34)}<span class="pn"><b>${p.name}</b><span class="dim pmeta">${dotted([
         p.work ? html`<span class="cnt">${dot("work")}${p.work}</span>` : "", p.mine ? html`<span class="cnt">${dot("attn")}${p.mine}</span>` : "",
         p.turns ? t("proj.turns", { n: p.turns, turns: plural(p.turns, "turn") }) : agoShort(p.last)])}</span>
-        <span class="ln pline">${p.line || html`<span class="path">${p.path}</span>`}</span></span><span class="ptail">${p.pinned ? ic("pin", 15) : ""}${ic("chev", 16)}</span></span></button></${SwipeRow}>`)}</div>${add}</div>`;
+        <span class="ln pline">${p.line || html`<span class="path">${p.path}</span>`}</span></span><span class="ptail">${p.pinned ? ic("pin", 15) : ""}${ic("chev", 16)}</span></span></button></${SwipeRow}>`;
+  const vis = d.projects.filter((p) => !p.hidden), hid = d.projects.filter((p) => p.hidden);
+  return html`<div><h2>${t("projects")}</h2><div class="list">${vis.map(row)}</div>
+    ${hid.length > 0 && html`<h3 class="toggle" role="button" tabindex="0" aria-expanded=${more} onClick=${() => setMore(!more)} onKeyDown=${keyTap(() => setMore(!more))}>${t("projects.hidden", { n: hid.length })} <span class=${"chev" + (more ? " open" : "")}>${ic("chev", 14)}</span></h3>
+      ${more && html`<div class="list">${hid.map(row)}</div>`}`}${add}</div>`;
 }
 
 // a project's screen — its board, large: what waits for you (answer right here), what runs, today's outcomes, then
@@ -118,9 +78,13 @@ function Project({ pkey, tag, topic }) {
   const setSel = (v) => { setSel0(v); setTop(null); };
   const [bgFor, setBgFor] = useState(null);
   const [openBg, closeBg] = useOverlay(!!bgFor, (v) => { if (!v) setBgFor(null); });
+  const [tagFor, setTagFor] = useState(null);           // a task's tags from its row's slide (stage Zh, step 2): {sid, info}
+  const [openTag, closeTag] = useOverlay(!!tagFor, (v) => { if (!v) setTagFor(null); });
   const yours = useRcpt(d ? moves(d.pending, d.mine) : [], moveKey);           // as on Home: one line by time
   if (!d) return html`<${Loading} err=${err}/>`;
   const onBg = (s) => { setBgFor(s.sid); openBg(); };
+  const onTags = (sid) => api("taginfo", { sid }).then((info) => { setTagFor({ sid, info }); openTag(); }).catch((e) => alertBox(e.message));
+  const reload = () => api("project", { pkey }).then(set).catch(() => {});
   const gone = (sid) => set(Object.assign({}, d, { mine: d.mine.filter((r) => r.sid !== sid) }));
   const tagsOf = new Map([...d.mine, ...d.live, ...d.today, ...d.earlier].map((r) => [r.sid, r.tags || []]));
   const has = (sid) => { const g = tagsOf.get(sid) || []; return !sel || (g[0] && g[0].n === sel && (!top || (g[1] && g[1].n === top))); };
@@ -140,57 +104,17 @@ function Project({ pkey, tag, topic }) {
     ${(waits > 0 || mineF.length > 0) && html`<h3>${t("proj.waits", { n: waits })}</h3>
       ${mineF.map((e) => e.req ? html`<${Req} key=${e.key} r=${e.req} showProject=${false}/>`
         : html`<${Mine} key=${e.key} r=${Object.assign({ reset: d.reset }, e.mine)} now=${now} onGot=${gone} stt=${d.stt} showProject=${false}/>`)}`}
-    ${liveF.length > 0 && html`<h3>${t("proj.live", { n: liveF.length })}</h3><div class="list">${liveF.map((r) => html`<${RunRow} key=${r.sid} r=${r} now=${now} onBg=${onBg} showProject=${false}/>`)}</div>`}
-    ${todayF.length > 0 && html`<h3>${t("proj.today")}</h3><div class="list">${todayF.map((r) => html`<${BoardRow} key=${r.sid} r=${r} now=${now} onBg=${onBg}/>`)}</div>`}
+    ${liveF.length > 0 && html`<h3>${t("proj.live", { n: liveF.length })}</h3><div class="list">${liveF.map((r) => html`<${RunRow} key=${r.sid} r=${r} now=${now} onBg=${onBg} onTags=${onTags} showProject=${false}/>`)}</div>`}
+    ${todayF.length > 0 && html`<h3>${t("proj.today")}</h3><div class="list">${todayF.map((r) => html`<${BoardRow} key=${r.sid} r=${r} now=${now} onBg=${onBg} onTags=${onTags}/>`)}</div>`}
     ${!waits && !mineF.length && !liveF.length && !todayF.length && !(sel && earlierF.length) && html`<div class="empty small">${t("proj.nothing")}</div>`}
     ${earlierF.length > 0 && html`<h3 class="toggle" role="button" tabindex="0" aria-expanded=${more} onClick=${() => setMore(!more)} onKeyDown=${keyTap(() => setMore(!more))}>${t("proj.earlier", { n: earlierF.length })} <span class=${"chev" + (more || sel ? " open" : "")}>${ic("chev", 14)}</span></h3>
-      ${(more || sel) && html`<div class="list">${earlierF.map((x) => html`<button class="item brow rest" key=${x.sid} onClick=${() => go("#/s/" + x.sid)}>
+      ${(more || sel) && html`<div class="list">${earlierF.map((x) => html`<${SwipeRow} key=${x.sid} what="task" acts=${[{ ic: "tag", label: t("row.tags"), on: () => onTags(x.sid) }]}><button class="item brow rest" onClick=${() => go("#/s/" + x.sid)}>
         <div class="item-h"><b>${x.driven ? html`<span class="st-ic">${ic("phone", 14)}</span>` : ""}${x.title}</b><span class="meta"><span class="dim nowrap">${agoShort(x.last)}</span></span></div>
-        ${x.line || x.open || (x.tags && x.tags.length > 0) ? html`<div class="ln">${tagChips(x.tags)}${x.line || (x.open ? t("open.mac") : "")}</div>` : ""}</button>`)}</div>`}`}
+        ${x.line || x.open || (x.tags && x.tags.length > 0) ? html`<div class="ln">${tagChips(x.tags)}${x.line || (x.open ? t("open.mac") : "")}</div>` : ""}</button></${SwipeRow}>`)}</div>`}`}
     <div class="stick"><button class="btn wide" onClick=${() => go("#/new?pkey=" + encodeURIComponent(pkey))}>${t("project.new")}</button></div>
     ${bgFor && html`<${BgSheet} sid=${bgFor} fixed=${true} onClose=${closeBg}/>`}
+    ${tagFor && html`<${TagPick} sid=${tagFor.sid} info=${tagFor.info} onDone=${reload} onClose=${closeTag}/>`}
   </div>`;
-}
-
-// a task's tags (stage T): its section, then a topic in it. "Claude picks them" leaves both to Claude; a tap on another
-// section or on a topic makes the choice the owner's, and Claude never changes it again. Each tap is saved at once,
-// as in the model menu; a new section or topic by name, right here
-function TagPick({ sid, info, onDone, onClose }) {
-  const [tags, setTags] = useState(info.tags || []);
-  const [set, setSet] = useState(info.tagset || []);
-  const [auto, setAuto] = useState(info.tag_auto !== false);
-  const [busy, setBusy] = useState(false);
-  const [adding, setAdding] = useState(null);          // "sec" | "topic": the field for a new name is open
-  const [name, setName] = useState("");
-  const sec = tags[0] ? tags[0].n : null, top = tags[1] ? tags[1].n : null;
-  const cur = set.find((g) => g.n === sec);
-  const pick = async (args) => {
-    setBusy(true);
-    try { const r = await api("tag", Object.assign({ sid }, args)); haptic("success"); setTags(r.tags || []); setSet(r.tagset || []); setAuto(!!r.auto); onDone(); }
-    catch (e) { alertBox(e.message); }
-    setBusy(false);
-  };
-  const add = (e) => {
-    e.preventDefault();
-    const v = name.trim();
-    if (!v) return;
-    const kind = adding;
-    setAdding(null); setName("");
-    pick(kind === "sec" ? { sec: v } : { sec, topic: v });
-  };
-  const field = (kind) => (adding === kind ? html`<form class="tagnew" onSubmit=${add}><input value=${name} placeholder=${t("tags.name")} maxlength="32"
-      autocomplete="off" onInput=${(e) => setName(e.target.value)} ref=${(el) => el && !el.dataset.on && ((el.dataset.on = "1"), el.focus())}/>
-      <button class="btn" disabled=${busy || !name.trim()}>${t("tags.add")}</button></form>`
-    : html`<button class="tagf add" disabled=${busy} onClick=${() => { setAdding(kind); setName(""); }}>${ic("plus", 14)} ${t(kind === "sec" ? "tags.sec.new" : "tags.topic.new")}</button>`);
-  return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick tall tagpick"><div class="q-t pick-h">${t("tags.task")}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
-    <button class=${"opt auto" + (auto ? " on" : "")} disabled=${busy} onClick=${() => { if (!auto) pick({ auto: true }); }}>${ic("auto", 16)}<span class="tn">${t("tags.auto")}</span>${auto ? ic("check", 16) : ""}<span class="dim">${t("tags.auto.about")}</span></button>
-    <div class="pick-t">${t("tags.sec")}</div>
-    <div class="pills">${set.map((g) => html`<button key=${g.n} class=${"tagf" + (sec === g.n ? " on" : "") + (g.fresh ? " fresh" : "")} style=${tagSt(g.c)} disabled=${busy}
-      onClick=${() => { if (sec !== g.n) pick({ sec: g.n }); }}><i></i>${g.n}</button>`)}${field("sec")}</div>
-    ${sec && html`<div class="pick-t">${t("tags.topic")}</div>
-    <div class="pills" style=${cur ? tagSt(cur.c) : ""}>${(cur ? cur.topics : []).map((x) => html`<button key=${x.n} class=${"tagf topic" + (top === x.n ? " on" : "") + (x.fresh ? " fresh" : "")} disabled=${busy}
-      onClick=${() => pick({ sec, topic: top === x.n ? "" : x.n })}>${x.n}</button>`)}${field("topic")}</div>`}
-    <div class="dim small">${t("tags.mine")}</div></div>`;
 }
 
 // the new-task form picks with the app's own lists, not native <select>s: in Telegram on Android the project list
@@ -238,7 +162,7 @@ function NewTask({ pkey }) {
   const close = () => setSheet(null);
   return html`<div class="form"><h2>${t("new.title")}</h2>
     <label class="lbl">${t("new.project")}</label>
-    <button class=${"field" + (p ? "" : " empty")} onClick=${() => setSheet({ k: "project", list: d.projects })}>
+    <button class=${"field" + (p ? "" : " empty")} onClick=${() => setSheet({ k: "project", list: d.projects.filter((x) => !x.hidden) })}>
       <span>${p ? (cur ? cur.name : p) : t("new.pick")}</span><span class="dim">${ic("down", 18)}</span></button>
     <label class="lbl">${t("new.what")}</label>
     <textarea ref=${plainField} rows="6" placeholder=${t("new.placeholder")} value=${text} onKeyDown=${sendKey(() => { if (!busy && p && (text.trim() || a.files.length)) send(); }, setText)} onInput=${(e) => setText(e.target.value)}/>
@@ -376,4 +300,4 @@ function NewProject() {
   </div>`;
 }
 
-export { NewProject, NewTask, Project, Projects, TagPick };
+export { NewProject, NewTask, Project, Projects };

@@ -3,7 +3,7 @@
 import { api, emit, useConn } from "../core/conn.js";
 import { alertBox, haptic, tg } from "../core/tg.js";
 import { locale, t } from "../i18n.js";
-import { html, useEffect, useState } from "../vendor/htm-preact-3.1.1.js";
+import { html, useEffect, useRef, useState } from "../vendor/htm-preact-3.1.1.js";
 
 
 
@@ -246,7 +246,68 @@ const IC = {
   lock: '<rect x="4.5" y="10.5" width="15" height="11" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>',
   pin: '<path d="M8.5 2.5h7"/><path d="M9.5 2.5v6.3L6.5 12v2h11v-2l-3-3.2V2.5"/><path d="M12 14v7.5"/>',
   pinoff: '<path d="M8.5 2.5h7"/><path d="M9.5 2.5v6.3L6.5 12v2h11v-2l-3-3.2V2.5"/><path d="M12 14v7.5"/><path d="m4 4 16 16"/>',
+  eye: '<path d="M2.5 12c1.2-2.6 5-7 9.5-7s8.3 4.4 9.5 7c-1.2 2.6-5 7-9.5 7s-8.3-4.4-9.5-7z"/><circle cx="12" cy="12" r="3"/>',
+  eyeoff: '<path d="m3 3 18 18"/><path d="M10.6 10.6a2 2 0 0 0 2.8 2.8"/><path d="M9.9 5.2A9.6 9.6 0 0 1 12 5c4.5 0 8.3 4.4 9.5 7-.4.9-1.2 2.1-2.4 3.3"/><path d="M6.7 6.7C4.5 8.3 3.1 10.5 2.5 12c1.2 2.6 5 7 9.5 7 1.4 0 2.7-.4 3.9-1"/>',
 };
+
+// stage Zh: a row that slides left under the finger to show its actions — one to three buttons under it: pin, hide
+// and a new task on a project's row, tags on a task's, "got it" on a card of "Your move". A vertical move stays a
+// scroll (touch-action: pan-y); a short slide springs back, past a third of the buttons it stays open; a tap on a
+// button does it, a tap anywhere else closes; the tap that ends a slide opens nothing. Only to the left, starting
+// anywhere inside the row but a field: from the phone's left edge comes the system's own Back. One row open at a
+// time, as chats in Telegram. How each slide ended goes to the computer's journal, silently: whether the gesture
+// works inside Telegram's window at all is known from there, not from words on the screen (runbook, the lesson of Q97)
+let openRow = null;                                   // the row open now: a ref to its close
+function SwipeRow({ acts, what = "project", cls = "", children }) {
+  const w = acts.length > 1 ? 80 : 92, full = w * acts.length;
+  const [dx, setDx] = useState(0);
+  const [drag, setDrag] = useState(false);
+  const g = useRef(null);
+  const swiped = useRef(false);
+  const me = useRef(null);
+  me.current = () => setDx(0);
+  useEffect(() => () => { if (openRow === me) openRow = null; }, []);
+  const shut = () => { me.current(); if (openRow === me) openRow = null; };
+  const tell = (how, s) => api("swipe", { end: how, ms: Math.round(performance.now() - s.t0), dx: Math.round(-s.last), what }).catch(() => {});
+  const down = (e) => {
+    if ((e.pointerType === "mouse" && e.button !== 0) || e.target.closest("input, textarea")) return;   // a field keeps its own drag
+    g.current = { x: e.clientX, y: e.clientY, x0: dx, last: dx, on: false, t0: performance.now() };
+  };
+  const move = (e) => {
+    const s = g.current;
+    if (!s) return;
+    const mx = e.clientX - s.x, my = e.clientY - s.y;
+    if (!s.on) {
+      if (Math.abs(mx) < 8 || Math.abs(mx) < Math.abs(my) * 1.5) return;
+      s.on = true;
+      setDrag(true);
+      try { e.currentTarget.setPointerCapture(e.pointerId); } catch (x) { /* no capture: the moves still come while the finger is on the row */ }
+    }
+    s.last = Math.max(-full - 10, Math.min(0, s.x0 + mx));
+    setDx(s.last);
+  };
+  const up = (e) => {
+    const s = g.current;
+    g.current = null;
+    if (!s || !s.on) return;
+    swiped.current = true;
+    setTimeout(() => { swiped.current = false; }, 400);       // a tap right after the slide opens nothing; the next one is a tap again
+    setDrag(false);
+    const open = e.type !== "pointercancel" && s.last < -full / 3;
+    setDx(open ? -full : 0);
+    if (open) { if (openRow && openRow !== me) openRow.current(); openRow = me; } else if (openRow === me) openRow = null;
+    tell(e.type === "pointercancel" ? "cancel" : open ? "open" : "back", s);
+  };
+  const click = (e) => {
+    if (e.target.closest(".swr-act")) return;
+    if (swiped.current || dx) { swiped.current = false; e.stopPropagation(); e.preventDefault(); shut(); }
+  };
+  return html`<div class=${"swr" + (drag ? " drag" : "") + (cls ? " " + cls : "")} onPointerDown=${down} onPointerMove=${move} onPointerUp=${up} onPointerCancel=${up} onClickCapture=${click}>
+    <div class="swr-acts" style=${"width:" + full + "px"}>${acts.map((a) => html`<button key=${a.label} class="swr-act" style=${"width:" + w + "px"} tabindex="-1"
+      onClick=${(e) => { e.stopPropagation(); shut(); a.on(); }}>${ic(a.ic, 20)}<span>${a.label}</span></button>`)}</div>
+    <div class="swr-in" style=${"transform:translateX(" + dx + "px)"}>${children}</div></div>`;
+}
+
 const ic = (n, s = 18) => html`<svg class=${"ic ic-" + n} viewBox="0 0 24 24" width=${s} height=${s} fill="none" stroke="currentColor"
   stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" dangerouslySetInnerHTML=${{ __html: IC[n] }}></svg>`;
 const dot = (k) => html`<i class=${"dot " + k}></i>`;
@@ -304,4 +365,4 @@ function Loading({ err }) {
   return html`<div class="empty">${err || (c.state === "nomac" ? t("loading.nomac") : c.state === "denied" ? "" : t("loading"))}</div>`;
 }
 
-export { About, ChoicePick, Dots, GEAR, GLYPH, Loading, MODES, ModePick, ModelPick, Sheet, TimeChip, ago, agoShort, avatar, bgChip, bytes, choiceText, dayLabel, dot, dotted, dur, durShort, effortName, hhmm, home, hue, ic, keyTap, kilo, level, modelName, nb, num, pct, plainField, queueChip, quiet, resetText, sendKey, TAG_H, tagChips, tagJob, tagSt, toDate, useNow, workChip };
+export { About, ChoicePick, Dots, GEAR, GLYPH, Loading, MODES, ModePick, ModelPick, Sheet, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, bytes, choiceText, dayLabel, dot, dotted, dur, durShort, effortName, hhmm, home, hue, ic, keyTap, kilo, level, modelName, nb, num, pct, plainField, queueChip, quiet, resetText, sendKey, TAG_H, tagChips, tagJob, tagSt, toDate, useNow, workChip };

@@ -632,12 +632,18 @@ b.one { display: block; min-width: 0; white-space: nowrap; overflow: hidden; tex
 .item .pmeta.dim { font-size: var(--fs-cap); }
 .pline { font-size: var(--fs-sec); color: var(--muted); -webkit-line-clamp: 1; }
 .item.rest .pn b { color: var(--muted); }
-/* stage Zh: a project's row slides left to show one action; the action waits under it, the row's card slides off it */
-.swr { position: relative; overflow: hidden; }
-.swr + .swr { border-top: 1px solid var(--line); }
+/* stage Zh: a row slides left to show its actions (one to three); they wait under it, the row's card slides off them */
+.swr { position: relative; overflow: hidden; touch-action: pan-y; }   /* the whole row, its buttons too: a slide that starts over them is ours, not the browser's */
+.swr + .swr, .swr + .item { border-top: 1px solid var(--line); }
 .swr .item { border-bottom: 0; }
-.swr-act { position: absolute; top: 0; right: 0; bottom: 0; width: 92px; display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 4px; border: 0; background: var(--accent); color: var(--accent-ink); font: inherit; font-size: var(--fs-cap); font-weight: 600; cursor: pointer; }
+.swr-acts { position: absolute; top: 0; right: 0; bottom: 0; display: flex; }
+.swr-act { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 0 2px; border: 0; background: var(--accent);
+  color: var(--accent-ink); font: inherit; font-size: var(--fs-cap); font-weight: 600; line-height: 1.1; text-align: center; cursor: pointer; }
+.swr-act + .swr-act { border-left: 1px solid rgba(255, 255, 255, .28); }
+/* a card of "Your move" slides to "Got it": the slide keeps the card's corners and its place in the column */
+.swr.card-sw { border-radius: var(--r); margin: 10px 0; }
+.swr.card-sw + .swr.card-sw { border-top: 0; }
+.swr.card-sw .card { margin: 0; }
 .swr-in { position: relative; background: var(--card); transition: transform .18s ease-out; touch-action: pan-y; }
 .swr.drag .swr-in { transition: none; }
 /* the pin's mark before the chevron, in a project's row and in the new task's list; the pin button in a project's header */

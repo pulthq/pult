@@ -36,6 +36,10 @@ you're neither in the app nor at the computer. Reminders on long turns; warnings
 - **Pinned projects**: slide a project's row to the left on the Projects screen and tap Pin, or tap the pin in a
   project's header. Pinned projects stay on top of Projects, of Home and of the new task's list, the newest pin
   first; the rest are ordered by who needs you. The pin is kept on the computer, so every phone sees the same.
+  The same slide offers **Hide** — the project goes into a folded "Hidden" section at the bottom of Projects and
+  leaves Home's board and the new task's list (what runs in it and what waits for you still show; a slide in the
+  fold brings it back) — and **New task**, which opens the form with that project. A task's row slides to **Tags**,
+  a card of "Your move" slides to **Got it**; questions and permissions don't slide.
 - **A session** shows the whole conversation, live, with the model, the effort and the context gauge by the message
   field. Pick the model (Fable, Opus, Sonnet, Haiku) and how hard Claude thinks for that session; a running one
   switches at once. Settings → Model and effort sets what sessions from the app and Telegram start with; VS Code tabs
