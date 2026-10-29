@@ -40,6 +40,7 @@ CHECKS = {
     "layers-session": ({"STAND_LANG": "ru"}, "out", ["session"]),
     "clip": ({"STAND_LANG": "ru"}, "out", []),
     "spend": ({"STAND_LANG": "ru"}, "USAGE", []),
+    "pins": ({"STAND_TAGS": "1", "STAND_HOMES": "1", "STAND_PINS": "blog,shop", "STAND_LANG": "ru"}, "out", []),   # stage Zh
     "parts": None,
     "update": None,
     "vcheck": None,

@@ -2650,6 +2650,54 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([(r["pkey"], r["open"], r["work"], r["ask"]) for r in rows],
                          [(PKEY, 2, 1, 1), ("-Users-x-other", 0, 0, 0)])            # active first, despite recency
 
+    async def test_pins(self):
+        # pinned projects (stage Zh, Q98): on top of the app's lists, the newest pin first, the rest in their order;
+        # a pin from the row or from the project's header, only of a project the computer knows; the journal counts
+        # both, and how each slide on a row ended — silently for the app (runbook, the lesson of Q97)
+        base = TMP / "claude-projects-pins"
+        fs = TMP / "fs-pins"
+        now = time.time()
+        for pkey, name, at in ((PKEY, "proj", 50), ("-Users-x-other", "other", 10), ("-Users-x-third", "third", 100)):
+            (base / pkey).mkdir(parents=True, exist_ok=True)
+            (base / pkey / "a.jsonl").write_text("{}")
+            os.utime(base / pkey / "a.jsonl", (now + at, now + at))
+            (fs / name).mkdir(parents=True, exist_ok=True)
+            self.store.set_topic(pkey, str(fs / name), name, None)
+        SID2 = "22222222-3333-4444-5555-666666666666"
+        self.p._agents = (time.monotonic() + 1e6, [{"sessionId": SID, "cwd": "/Users/x/proj", "status": "idle"},
+                                                   {"sessionId": SID2, "cwd": "/Users/x/other", "status": "idle"}])
+        old = pultd.CLAUDE_PROJECTS
+        pultd.CLAUDE_PROJECTS = base
+        try:
+            async def order():
+                return [(r["pkey"], bool(r["pinned"])) for r in (await self.p.api_projects())["projects"]]
+            self.assertEqual(await order(), [(PKEY, False), ("-Users-x-other", False), ("-Users-x-third", False)])   # open first, then by recency
+            with mock.patch.object(pult_api, "log") as lg:
+                self.assertEqual(await self.p.api_pin("-Users-x-third", True, via="swipe"), {"pinned": True})
+                self.assertEqual(await self.p.api_pin("-Users-x-other", True), {"pinned": True})
+                for bad in ("-Users-x-nope", ["x"], ""):                   # nothing the computer knows
+                    with self.assertRaises(ValueError):
+                        await self.p.api_pin(bad, True)
+                await self.p.api_swipe("open", 310, 92)
+                await self.p.api_swipe("cancel", "x", -5)
+                await self.p.api_swipe("nope", 10, 20)
+            self.assertEqual([c.args[0] for c in lg.call_args_list], [
+                "app: project pinned via the swipe", "app: project pinned via the button",
+                "app: swipe on a project's row opened on its action (310 ms, 92 px)",
+                "app: swipe on a project's row cancelled — the window took the finger (0 ms, 0 px)",
+                "app: swipe on a project's row sprang back (10 ms, 20 px)"])
+            # the newest pin first, then the rest in their order; the project's screen and Home's board know the pin
+            self.assertEqual(await order(), [("-Users-x-other", True), ("-Users-x-third", True), (PKEY, False)])
+            self.assertTrue((await self.p.api_project("-Users-x-third"))["pinned"])
+            self.assertFalse((await self.p.api_project(PKEY))["pinned"])
+            board = (await self.p.api_overview())["board"]
+            self.assertEqual([(p["pkey"], p["pinned"]) for p in board], [("-Users-x-other", True), (PKEY, False)])
+            self.assertEqual(await self.p.api_pin("-Users-x-other", False), {"pinned": False})
+            self.assertEqual(await order(), [("-Users-x-third", True), (PKEY, False), ("-Users-x-other", False)])
+            self.assertEqual(set(self.store.pins()), {"-Users-x-third"})
+        finally:
+            pultd.CLAUDE_PROJECTS = old
+
     async def test_voice_message(self):
         # a voice message in a project topic: downloaded, recognized, and on it goes as typed text would — with the
         # voice marker for Claude; nothing heard, no key, too big — one line back and nothing starts

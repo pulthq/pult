@@ -199,14 +199,15 @@ function RunRow({ r, now, onBg, showProject = true }) {
   </div>`;
 }
 
-// a project on the board: who works and who waits for you, today's turns; its live sessions; the resting folded
+// a project on the board: who works and who waits for you, today's turns; its live sessions; the resting folded;
+// the pinned (stage Zh) carry their mark and come first — the computer orders them
 function ProjectBlock({ p, now, onBg }) {
   const open = () => go("#/p/" + encodeURIComponent(p.pkey));
   const meta = [p.work ? html`<span class="cnt">${dot("work")}${p.work}</span>` : "", p.mine ? html`<span class="cnt">${dot("attn")}${p.mine}</span>` : "",
     p.turns ? t("proj.turns", { n: p.turns, turns: plural(p.turns, "turn") }) : "",
     !p.rows.length && p.resting ? t("proj.resting", { n: p.resting }) : ""].filter(Boolean);
   return html`<div class="list proj">
-    <button class="item proj-h" onClick=${open}><span class="pname">${avatar(p.name, 34)}<span class="pn"><b>${p.name}</b><span class="dim pmeta">${meta.length ? meta.map((m, i) => html`${i ? html`<span class="sep">·</span>` : ""}${m}`) : t("proj.quiet")}</span></span>${ic("chev", 16)}</span></button>
+    <button class="item proj-h" onClick=${open}><span class="pname">${avatar(p.name, 34)}<span class="pn"><b>${p.name}</b><span class="dim pmeta">${meta.length ? meta.map((m, i) => html`${i ? html`<span class="sep">·</span>` : ""}${m}`) : t("proj.quiet")}</span></span><span class="ptail">${p.pinned ? ic("pin", 15) : ""}${ic("chev", 16)}</span></span></button>
     ${p.rows.map((r) => html`<${BoardRow} key=${r.sid} r=${r} now=${now} onBg=${onBg}/>`)}
     ${p.rows.length > 0 && p.resting > 0 && html`<button class="item more dim" onClick=${open}>${t("row.resting", { n: p.resting, rest: plural(p.resting, "rest") })}</button>`}
   </div>`;

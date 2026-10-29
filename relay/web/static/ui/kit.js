@@ -244,6 +244,8 @@ const IC = {
   spark: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8"/>',
   tag: '<path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><path d="M7.5 7.5h.01"/>',
   lock: '<rect x="4.5" y="10.5" width="15" height="11" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>',
+  pin: '<path d="M8.5 2.5h7"/><path d="M9.5 2.5v6.3L6.5 12v2h11v-2l-3-3.2V2.5"/><path d="M12 14v7.5"/>',
+  pinoff: '<path d="M8.5 2.5h7"/><path d="M9.5 2.5v6.3L6.5 12v2h11v-2l-3-3.2V2.5"/><path d="M12 14v7.5"/><path d="m4 4 16 16"/>',
 };
 const ic = (n, s = 18) => html`<svg class=${"ic ic-" + n} viewBox="0 0 24 24" width=${s} height=${s} fill="none" stroke="currentColor"
   stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" dangerouslySetInnerHTML=${{ __html: IC[n] }}></svg>`;

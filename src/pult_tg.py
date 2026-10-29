@@ -187,6 +187,7 @@ class Outbox:
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS topics(pkey TEXT PRIMARY KEY, path TEXT, name TEXT, thread INTEGER);
+CREATE TABLE IF NOT EXISTS pins(pkey TEXT PRIMARY KEY, ts REAL);
 CREATE TABLE IF NOT EXISTS sessions(sid TEXT PRIMARY KEY, pkey TEXT, path TEXT, title TEXT,
     driven INTEGER DEFAULT 0, last_seen REAL);
 CREATE TABLE IF NOT EXISTS msgs(msg INTEGER PRIMARY KEY, sid TEXT, kind TEXT, ts REAL);
@@ -236,6 +237,18 @@ class Store:
 
     def set_topic(self, pkey, path, name, thread):
         self.db.execute("INSERT OR REPLACE INTO topics VALUES(?,?,?,?)", (pkey, path, name, thread))
+
+    # ----- pinned projects (stage Zh): the owner's few on top of every list, the newest pin first (Q98) -----
+
+    def pins(self):
+        """pkey → when it was pinned."""
+        return {r["pkey"]: r["ts"] for r in self.db.execute("SELECT pkey, ts FROM pins")}
+
+    def set_pin(self, pkey, on):
+        if on:
+            self.db.execute("INSERT OR REPLACE INTO pins VALUES(?,?)", (pkey, time.time()))
+        else:
+            self.db.execute("DELETE FROM pins WHERE pkey=?", (pkey,))
 
     def session(self, sid):
         return self.db.execute("SELECT * FROM sessions WHERE sid=?", (sid,)).fetchone()

@@ -632,6 +632,21 @@ b.one { display: block; min-width: 0; white-space: nowrap; overflow: hidden; tex
 .item .pmeta.dim { font-size: var(--fs-cap); }
 .pline { font-size: var(--fs-sec); color: var(--muted); -webkit-line-clamp: 1; }
 .item.rest .pn b { color: var(--muted); }
+/* stage Zh: a project's row slides left to show one action; the action waits under it, the row's card slides off it */
+.swr { position: relative; overflow: hidden; }
+.swr + .swr { border-top: 1px solid var(--line); }
+.swr .item { border-bottom: 0; }
+.swr-act { position: absolute; top: 0; right: 0; bottom: 0; width: 92px; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 4px; border: 0; background: var(--accent); color: var(--accent-ink); font: inherit; font-size: var(--fs-cap); font-weight: 600; cursor: pointer; }
+.swr-in { position: relative; background: var(--card); transition: transform .18s ease-out; touch-action: pan-y; }
+.swr.drag .swr-in { transition: none; }
+/* the pin's mark before the chevron, in a project's row and in the new task's list; the pin button in a project's header */
+.ptail { margin-left: auto; flex: none; display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
+.ptail .ic-chev { opacity: .6; } .ptail .ic-pin { opacity: .85; }
+.ph .pinb { margin-left: auto; flex: none; width: 38px; height: 38px; border-radius: 11px; border: 1px solid var(--line); background: var(--card);
+  color: var(--muted); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.ph .pinb.on { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.opt .opt-pin { float: right; color: var(--muted); margin-top: 2px; }
 .cnts { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .cnt.ok { color: var(--ok); gap: 3px; }
 .card.catch .ln b { font-weight: 600; }

@@ -519,6 +519,8 @@ const S = {
   // projects and sessions
   projects: { en: "Projects", ru: "Проекты" },
   "project.new": { en: "New task in this project", ru: "Новая задача в этом проекте" },
+  "pin": { en: "Pin", ru: "Закрепить" },
+  "unpin": { en: "Unpin", ru: "Открепить" },
   "projects.none": { en: "No projects with Claude Code sessions yet. Open one in VS Code or a terminal and it will appear here.",
     ru: "Проектов с сессиями Claude Code пока нет. Открой любой в VS Code или терминале, и он появится здесь." },
   "open.mac": { en: "open on the computer", ru: "открыта на компьютере" },
