@@ -12,7 +12,9 @@ if (tg && tg.onEvent) tg.onEvent("themeChanged", scheme);
 // the language: Telegram's right away, then Pult's own setting (overview / settings carry it)
 setLang(String((tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.language_code) || "en").startsWith("ru") ? "ru" : "en");
 const haptic = (k) => tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred(k);
+// a light tick under the finger: a slide has gone past its mark (stage Zh, step 3)
+const tick = () => tg && tg.HapticFeedback && tg.HapticFeedback.selectionChanged();
 const alertBox = (s) => (tg && tg.showAlert ? tg.showAlert(s) : alert(s));
 const confirmBox = (s) => new Promise((ok) => (tg && tg.showConfirm ? tg.showConfirm(s, ok) : ok(confirm(s))));
 
-export { alertBox, confirmBox, haptic, tg };
+export { alertBox, confirmBox, haptic, tg, tick };

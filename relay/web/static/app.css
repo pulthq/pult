@@ -646,6 +646,19 @@ b.one { display: block; min-width: 0; white-space: nowrap; overflow: hidden; tex
 .swr.card-sw .card { margin: 0; }
 .swr-in { position: relative; background: var(--card); transition: transform .18s ease-out; touch-action: pan-y; }
 .swr.drag .swr-in { transition: none; }
+/* step 3: Claude's message slides to copy — the bubble itself, with no row's card under it and no line between two;
+   its round sign comes out on the right at the finger's height (--at), grows as far as the slide goes (--p) and lights
+   up past the mark; it stays lit as a button when the copy on the lift didn't go */
+.swr.quick, .swr + .swr.quick { border-top: 0; }
+.swr.quick > .swr-in { background: none; }
+.swr.quick .swr-acts { width: 64px; }
+.swr.quick .swr-act { position: absolute; right: 12px; top: clamp(28px, var(--at), calc(100% - 28px)); width: 40px; height: 40px; padding: 0;
+  border-radius: 50%; background: var(--code); color: var(--muted); opacity: var(--p); transform: translateY(-50%) scale(calc(.6 + .4 * var(--p)));
+  transition: background-color .12s, color .12s; }
+.swr.quick.armed .swr-act, .swr.quick:not(.drag) .swr-act { background: var(--accent); color: var(--accent-ink); }
+/* a message just copied: outlined for a moment, so it is clear which one went */
+.msg { transition: box-shadow .5s; }
+.msg.lit { box-shadow: inset 0 0 0 1.5px var(--ok); }
 /* the pin's mark before the chevron, in a project's row and in the new task's list; the pin button in a project's header */
 .ptail { margin-left: auto; flex: none; display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
 .ptail .ic-chev { opacity: .6; } .ptail .ic-pin { opacity: .85; }

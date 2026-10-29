@@ -2707,11 +2707,18 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
                 await self.p.api_swipe("open", 300, 80, what="task")
                 await self.p.api_swipe("back", 100, 10, what="nope")
                 await self.p.api_swipe("cancel", 50, 5, what="card")
+                # step 3: Claude's message copies on the slide — how the copy went
+                await self.p.api_swipe("copied", 420, 84, what="msg")
+                await self.p.api_swipe("plain", 380, 75, what="msg")
+                await self.p.api_swipe("nocopy", 400, 72, what="msg")
             self.assertEqual([c.args[0] for c in lg.call_args_list], [
                 "app: project hidden via the swipe", "app: project hidden via the button", "app: project pinned via the button",
                 "app: swipe on a task's row opened on its action (300 ms, 80 px)",
                 "app: swipe on a project's row sprang back (100 ms, 10 px)",
-                "app: swipe on a card cancelled — the window took the finger (50 ms, 5 px)"])
+                "app: swipe on a card cancelled — the window took the finger (50 ms, 5 px)",
+                "app: swipe on Claude's message copied it with its formatting (420 ms, 84 px)",
+                "app: swipe on Claude's message copied it as plain text only (380 ms, 75 px)",
+                "app: swipe on Claude's message didn't copy it — the copy waits on its button (400 ms, 72 px)"])
             rows = (await self.p.api_projects())["projects"]
             self.assertEqual([(r["pkey"], bool(r["pinned"]), bool(r["hidden"])) for r in rows],
                              [(PKEY, True, False), ("-Users-x-other", False, False), ("-Users-x-third", False, True)])

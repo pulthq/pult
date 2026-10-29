@@ -5,12 +5,12 @@ import { drafts, openLayer, useBackFor, useOverlay } from "../core/nav.js";
 import { alertBox, confirmBox, haptic } from "../core/tg.js";
 import { Mic, useRecorder } from "../core/voice.js";
 import { locale, plural, t } from "../i18n.js";
-import { md } from "../md.js";
+import { clip, md } from "../md.js";
 import { html, useEffect, useMemo, useRef, useState } from "../vendor/htm-preact-3.1.1.js";
 import { Replies, ResumeAt, copyWhy, forkAsk } from "./home.js";
 import { TagPick } from "../ui/cards.js";
 import { Req, useRcpt } from "../ui/cards.js";
-import { Dots, Loading, ModelPick, Sheet, avatar, bgChip, dayLabel, dot, dotted, dur, effortName, hhmm, home, ic, kilo, modelName, num, plainField, queueChip, sendKey, tagChips, toDate, useNow, workChip } from "../ui/kit.js";
+import { Dots, Loading, ModelPick, Sheet, SwipeRow, avatar, bgChip, copyRich, dayLabel, dot, dotted, dur, effortName, hhmm, home, ic, kilo, modelName, num, plainField, queueChip, sendKey, tagChips, toDate, useNow, workChip } from "../ui/kit.js";
 import { BgSheet, bgLine } from "../ui/load.js";
 import { Attach, Pic, Thumbs, Viewer, useAttach, useNoFold } from "../ui/pics.js";
 
@@ -90,15 +90,28 @@ function onTheWay(items, server, local) {
   });
 }
 
-// one of Claude's messages; a long one that is not the last is folded to a few lines — "Show all" opens it
+// one of Claude's messages; a long one that is not the last is folded to a few lines — "Show all" opens it. A slide to
+// the left copies it whole, folded or not (stage Zh, step 3; the owner, 2026-10-29): as it reads, for a paste that keeps
+// formatting (Telegram, notes, mail), and as the markdown Claude wrote, for one that takes only plain text
 const LONG = 900;
 function TextMsg({ i, fold }) {
   const [open, setOpen] = useState(false);
+  const [lit, setLit] = useState(false);              // just copied: outlined for a moment
   const folded = fold && !open;
   const h = useMemo(() => md(i.text), [i.text]);     // the screen redraws every second: the words only when they change
-  return html`<div class="msg"><div class=${"md" + (folded ? " fold" : "")} dangerouslySetInnerHTML=${{ __html: h }}/>
+  const words = (i.text || "").trim();
+  // the slide's own try stays quiet when it fails: its button stays out, and a tap on it is the sure way
+  const copy = (via) => copyRich(clip(words), words).then((how) => {
+    haptic("success");
+    emit("toast", t("copied"));
+    setLit(true);
+    setTimeout(() => setLit(false), 1200);
+    return how;
+  }, () => { emit("toast", t(via === "slide" ? "msg.copy.tap" : "copy.fail")); return ""; });
+  const body = html`<div class=${"msg" + (lit ? " lit" : "")}><div class=${"md" + (folded ? " fold" : "")} dangerouslySetInnerHTML=${{ __html: h }}/>
     ${fold ? html`<button class="link more2" onClick=${() => setOpen(!open)}>${t(open ? "msg.less" : "msg.more")}</button>` : ""}
     ${i.att && i.att.length ? html`<div class="atts shown">${i.att.map((a, k) => html`<${Pic} key=${k} a=${a} all=${i.att}/>`)}</div>` : ""}<${At} ts=${i.ts}/></div>`;
+  return words ? html`<${SwipeRow} quick what="msg" acts=${[{ ic: "copy", label: t("msg.copy"), on: copy }]}>${body}</${SwipeRow}>` : body;
 }
 
 // how the session's last turn ended, at the end of the chat right above the field: what came out, what is needed,

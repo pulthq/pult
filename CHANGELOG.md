@@ -4,6 +4,17 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.23 — 2026-10-29
+
+- **Copy Claude's message with a slide.** In a session, slide one of Claude's messages to the left: past the mark
+  its copy sign lights up, and letting go copies the whole message, even a folded one. The clipboard gets it twice:
+  formatted the way Telegram itself copies a message, so a paste into Telegram, notes or mail keeps the bold, the
+  links, the blocks of code and the quotes (a heading goes bold, a list keeps its bullets and numbers, a table goes
+  as a monospace block — Telegram has none of them), and as the markdown Claude wrote, for wherever only plain text
+  goes. Only a finger slides a message — a mouse still selects its words — and a slide doesn't start on a block of
+  code or a table, which keep their own tap. Should the webview not let the lift of the finger reach the clipboard,
+  the message stays open on its copy button: a tap on it copies. Pult's journal notes how each copy went.
+
 ## 0.18.22 — 2026-10-29
 
 - **More under the slide.** A project's row now slides to three buttons: Pin, Hide and New task. A hidden project
