@@ -1096,6 +1096,26 @@ S = {
     "second.why.timeout": {"en": "Codex took longer than 15 minutes", "ru": "Codex не уложился в 15 минут"},
     "second.why.start": {"en": "Codex didn't start or stopped answering", "ru": "Codex не запустился или перестал отвечать"},
     "second.why.failed": {"en": "Codex stopped with an error", "ru": "Codex остановился с ошибкой"},
+
+    # ----- other vendors' models inside Claude Code (stage M, step 2) -----
+    "vendor.err.allow": {"en": "{name}: this project doesn't go to other vendors yet — allow it in “Who does it”.",
+                         "ru": "{name}: этот проект пока не отдаётся другим производителям — разреши в «Кто делает»."},
+    "vendor.err.key": {"en": "{name}: no key yet — add it in Settings → Other vendors.",
+                       "ru": "{name}: ключа ещё нет — добавь в «Настройки → Другие производители»."},
+    "vendor.err.gone": {"en": "This session runs on {name}, and its key is gone — add it again in Settings to go on.",
+                        "ru": "Эта сессия идёт на {name}, а его ключа больше нет — добавь его снова в «Настройках», чтобы продолжить."},
+    "vendor.err.effort": {"en": "How hard it thinks is Claude's setting; another vendor's session keeps its vendor's own.",
+                          "ru": "Раздумья — настройка Claude; у сессии другого производителя — его собственные."},
+    "vendor.err.models": {"en": "Models: their names separated by commas, up to 8.",
+                          "ru": "Модели — имена через запятую, до 8."},
+    "vendor.key.key": {"en": "{name} didn't take the key: {why}", "ru": "{name} не принял ключ: {why}"},
+    "vendor.key.balance": {"en": "{name} took the key, but there's no money on it: {why}",
+                           "ru": "{name} принял ключ, но на счёте нет денег: {why}"},
+    "vendor.key.model": {"en": "{name} took the key, but not the model's name — check its list of models: {why}",
+                         "ru": "{name} принял ключ, но не имя модели — проверь список моделей: {why}"},
+    "vendor.key.net": {"en": "No way to {name} from this computer ({why}) — check the internet and try again.",
+                       "ru": "До {name} с этого компьютера не достучаться ({why}) — проверь интернет и попробуй ещё раз."},
+    "vendor.key.other": {"en": "{name} answered: {why}", "ru": "{name} ответил: {why}"},
 }
 
 COMMANDS = ("new", "stop", "status", "sessions", "projects", "app", "desk", "phone", "auto", "mode", "help", "feedback")

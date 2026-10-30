@@ -4,7 +4,7 @@ import { api, conn, on, useLive } from "../core/conn.js";
 import { drafts, go, useOverlay } from "../core/nav.js";
 import { alertBox, confirmBox, haptic } from "../core/tg.js";
 import { Mic, useRecorder } from "../core/voice.js";
-import { plural, t } from "../i18n.js";
+import { plural, q, t } from "../i18n.js";
 import { html, useEffect, useRef, useState } from "../vendor/htm-preact-3.1.1.js";
 import { BoardRow, Mine, RunRow, moveKey, moves } from "./home.js";
 import { Req, TagPick, useRcpt } from "../ui/cards.js";
@@ -139,13 +139,33 @@ function ProjectPick({ projects, cur, onPick, onClose, create }) {
     ${projects.map((x) => html`<button key=${x.pkey} class=${"opt" + (x.pkey === cur ? " on" : "")} onClick=${() => onPick(x.pkey)}>${x.name}${x.pinned ? html`<i class="opt-pin">${ic("pin", 14)}</i>` : ""}</button>`)}</div>`;
 }
 
+// who does a task (stage M, step 2): Claude, or another vendor's model inside Claude Code — only with a key, only in a
+// project allowed to go to other vendors (asked once, Q105), the project's default kept from here
+function VendorPick({ vendors, cur, proj, onPick, onDefault, onClose }) {
+  const def = (proj && proj.vendor) || "claude";
+  const row = (id, name, sub, off) => html`<button key=${id} class=${"opt" + (id === cur ? " on" : "") + (off ? " vo-off" : "")} onClick=${() => onPick(id)}>${name}<span class="dim">${sub}</span></button>`;
+  return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick tall fixed who">
+    <div class="q-t pick-h">${t("who.title")}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
+    ${row("claude", "Claude", t("who.claude"), false)}
+    ${vendors.map((v) => row(v.id, v.name, v.key ? t("who.inside", { m: v.models[0] }) : t("who.nokey"), !v.key))}
+    ${proj && (def === cur ? html`<div class="who-def dim">${ic("check", 15)} ${t("who.default", { p: q(proj.name) })}</div>`
+      : html`<button class="link who-def" onClick=${() => onDefault(cur)}>${t("who.default.make", { p: q(proj.name) })}</button>`)}
+    <div class="dim small">${t("who.about")}</div></div>`;
+}
+function VendorModels({ v, cur, onPick, onClose }) {
+  return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick tall fixed">
+    <div class="q-t pick-h">${t("vend.model.pick", { name: v.name })}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
+    ${v.models.map((m) => html`<button key=${m} class=${"opt" + (m === (cur || v.models[0]) ? " on" : "")} onClick=${() => onPick(m)}>${m}</button>`)}</div>`;
+}
+
 function NewTask({ pkey }) {
-  const [d, err] = useLive(() => api("projects"), [], () => false);
+  const [d, err, set] = useLive(() => api("projects"), [], () => false);
   const [p, setP] = useState(pkey || "");
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
+  const [who, setWho] = useState("");               // "" — the project's default; "claude" or a vendor's id once picked
   const [sheet, setSheet] = useState(null);         // {k: "project", list} — the list as it was when opened — or {k: "model"}
   const a = useAttach();
   const v = useRecorder((w) => setText((c) => (c ? c.replace(/\s+$/, "") + " " : "") + w), "new");
@@ -155,17 +175,40 @@ function NewTask({ pkey }) {
     if (d && !p && last && d.projects.some((x) => x.pkey === last)) setP(last);
   }, [d]);
   if (!d) return html`<${Loading} err=${err}/>`;
+  const cur = d.projects.find((x) => x.pkey === p);
+  const vendors = d.vendors || [];                  // a computer before stage M, step 2 sends none: Claude only
+  const byId = (id) => vendors.find((v) => v.id === id);
+  const dv = cur && cur.vendor && byId(cur.vendor);
+  const whoNow = who || (dv && dv.key && cur.vok ? dv.id : "claude");
+  const vend = whoNow === "claude" ? null : byId(whoNow);
   const send = async () => {
     setBusy(true);
     try {
-      const r = await api("new", { pkey: p, text, files: a.payload(), model, effort });
+      const args = { pkey: p, text, files: a.payload(), model, effort };
+      if (vendors.length) args.vendor = whoNow;
+      const r = await api("new", args);
       LAST_NEW.set(p); haptic("success"); go("#/s/" + r.sid, true);
     }
     catch (e) { alertBox(e.message); }
     setBusy(false);
   };
-  const cur = d.projects.find((x) => x.pkey === p);
   const close = () => setSheet(null);
+  const keep = (proj) => set(Object.assign({}, d, { projects: d.projects.map((x) => (x.pkey === proj.pkey ? proj : x)) }));
+  // a vendor without a key says where to add one; a project not yet allowed asks once (Q105)
+  const pickWho = async (id) => {
+    const v = byId(id);
+    if (v && !v.key) return alertBox(t("who.nokey.go", { name: v.name }));
+    if (v && cur && !cur.vok) {
+      if (!(await confirmBox(t("who.allow", { name: v.name, p: q(cur.name) })))) return;
+      try { await api("vendors_ok", { pkey: p, on: true }); keep(Object.assign({}, cur, { vok: true })); }
+      catch (e) { return alertBox(e.message); }
+    }
+    setWho(id); setModel(""); setEffort(""); haptic("success"); close();
+  };
+  const makeDefault = async (id) => {
+    try { const r = await api("vendor_default", { pkey: p, vendor: id === "claude" ? null : id }); keep(Object.assign({}, cur, { vendor: r.vendor })); haptic("success"); }
+    catch (e) { alertBox(e.message); }
+  };
   return html`<div class="form"><h2>${t("new.title")}</h2>
     <label class="lbl">${t("new.project")}</label>
     <button class=${"field" + (p ? "" : " empty")} onClick=${() => setSheet({ k: "project", list: d.projects.filter((x) => !x.hidden) })}>
@@ -175,14 +218,19 @@ function NewTask({ pkey }) {
     <${Thumbs} a=${a}/>
     <${Attach} a=${a} disabled=${busy} wide=${true} keep=${{ k: "new", text }}/>
     ${d.stt ? html`<${Mic} v=${v} disabled=${busy} wide=${true}/>` : ""}
-    <label class="lbl">${t("model.pick")}</label>
+    ${vendors.length > 0 && html`<label class="lbl">${t("who.title")}</label>
+    <button class="field" onClick=${() => setSheet({ k: "who" })}>
+      <span>${vend ? vend.name : "Claude"}<i class="dim vf-sub"> · ${vend ? t("who.inside.short") : t("who.claude")}</i></span><span class="dim">${ic("down", 18)}</span></button>`}
+    <label class="lbl">${vend ? t("vend.model.pick", { name: vend.name }) : t("model.pick")}</label>
     <button class="field" onClick=${() => setSheet({ k: "model" })}>
-      <span>${choiceText(model, effort, d.choice)}</span><span class="dim">${ic("down", 18)}</span></button>
+      <span>${vend ? model || vend.models[0] : choiceText(model, effort, d.choice)}</span><span class="dim">${ic("down", 18)}</span></button>
     <button class="btn wide" disabled=${busy || !p || (!text.trim() && !a.files.length)} onClick=${send}>${t("new.start")}</button>
-    <div class="dim small">${t("new.about")}</div>
-    ${sheet && sheet.k === "project" && html`<${ProjectPick} projects=${sheet.list} cur=${p} create=${d.create} onClose=${close} onPick=${(k) => { setP(k); haptic("success"); close(); }}/>`}
-    ${sheet && sheet.k === "model" && html`<${ChoicePick} model=${model} effort=${effort} def=${d.choice} onClose=${close}
-      onPick=${(c) => { if ("model" in c) setModel(c.model); if ("effort" in c) setEffort(c.effort); haptic("success"); }}/>`}
+    <div class="dim small">${vend ? t("new.about.vendor", { name: vend.name }) : t("new.about")}</div>
+    ${sheet && sheet.k === "who" && html`<${VendorPick} vendors=${vendors} cur=${whoNow} proj=${cur} onPick=${pickWho} onDefault=${makeDefault} onClose=${close}/>`}
+    ${sheet && sheet.k === "project" && html`<${ProjectPick} projects=${sheet.list} cur=${p} create=${d.create} onClose=${close} onPick=${(k) => { if (k !== p) { setWho(""); setModel(""); } setP(k); haptic("success"); close(); }}/>`}
+    ${sheet && sheet.k === "model" && (vend ? html`<${VendorModels} v=${vend} cur=${model} onClose=${close} onPick=${(m) => { setModel(m); haptic("success"); close(); }}/>`
+      : html`<${ChoicePick} model=${model} effort=${effort} def=${d.choice} onClose=${close}
+      onPick=${(c) => { if ("model" in c) setModel(c.model); if ("effort" in c) setEffort(c.effort); haptic("success"); }}/>`)}
   </div>`;
 }
 

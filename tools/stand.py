@@ -36,7 +36,10 @@ STAND_COPY=1: the session that waits for you is open in a VS Code tab on a Claud
 says "goes as a copy" before you type, and sending says why (tools/copy_check.py).
 STAND_SECOND=1 (stage M, step 1): the shop is a git repository whose search the task changed, and Codex is a stand-in
 (tests/fake_codex.py) that reads it for about five seconds and finds two things; the session that waits for you (SESS4)
-offers "Second opinion · Codex" under its outcome (tools/second_check.py). STAND_SECOND=allowed — the shop already allowed. VS Code's settings and the tab
+offers "Second opinion · Codex" under its outcome (tools/second_check.py). STAND_SECOND=allowed — the shop already allowed.
+STAND_VENDORS=1 (stage M, step 2): DeepSeek has a made-up key (GLM and Kimi none), a key's check passes "sk-…" without any
+network, and a session ran on DeepSeek's model (SESSV); "Who does it" in New task, Settings → Other vendors
+(tools/vendors_check.py). VS Code's settings and the tab
 switch are made up on every stand: the app never reads this computer's."""
 import asyncio, base64, hashlib, hmac, json, os, random, shutil, signal, sys, time, urllib.parse
 from pathlib import Path
@@ -70,6 +73,7 @@ LANG = os.environ.get("STAND_LANG", "en")
 SID2 = "22222222-2222-4222-8222-222222222222"
 SID3 = "33333333-3333-4333-8333-333333333333"
 SID4, SID5, SID6, SID7 = ("%s-4444-4444-8444-444444444444" % (c * 8) for c in "4567")
+SIDV = "99999999-4444-4444-8444-444444444444"      # STAND_VENDORS=1: a session on DeepSeek's model
 SHOP, DESK = "/Users/x/acme-shop", "/Users/x/support-desk"
 PKEY2 = "-Users-x-support-desk"
 
@@ -106,7 +110,9 @@ D = {
         s4_need="Pick the ranking: by popularity or by closeness", s4_r1="By popularity", s4_r2="By closeness",
         s4_r3="Explain the difference", s5_title="Weekly support report",
         s5_line="The weekly report is ready: 48 tickets, 2 overdue", s6_title="Images: WebP thumbnails",
-        s7_ask="Add a dark theme to the admin panel", s7_now="Colours are variables now; the tables and charts are next."),
+        s7_ask="Add a dark theme to the admin panel", s7_now="Colours are variables now; the tables and charts are next.",
+        v_ask="Rename the admin theme's CSS variables to the new scheme",
+        v_done="Renamed 14 variables in admin/theme.css; nothing else used the old names."),
     "ru": dict(
         title="Оформление заказа: понятные ошибки",
         ask="Сделай сообщения об ошибках при оплате понятнее, по примерам из макета",
@@ -138,7 +144,9 @@ D = {
         s4_need="Выбери сортировку: по популярности или по точности", s4_r1="По популярности", s4_r2="По точности",
         s4_r3="Объясни разницу", s5_title="Отчёт поддержки за неделю",
         s5_line="Отчёт за неделю готов: 48 заявок, 2 просрочены", s6_title="Картинки: превью WebP",
-        s7_ask="Сделай тёмную тему для админки", s7_now="Цвета вынесены в переменные; дальше — таблицы и графики."),
+        s7_ask="Сделай тёмную тему для админки", s7_now="Цвета вынесены в переменные; дальше — таблицы и графики.",
+        v_ask="Переименуй CSS-переменные темы админки по новой схеме",
+        v_done="Переименовал 14 переменных в admin/theme.css; старые имена больше нигде не используются."),
 }[LANG if LANG in ("en", "ru") else "en"]
 
 
@@ -923,10 +931,28 @@ async def main():
         return {"sent": paths, "zip": "acme-shop-2026-10-23-1240.zip" if zip or len(paths) > 10 else None, "refused": []}
     p.api_turn_files, p.api_send_files = stand_turn_files, stand_send
 
-    async def stand_new(pkey, text, files=None, model=None, effort=None):   # a new task never launches Claude here
-        print("NEWTASK", pkey, json.dumps(text, ensure_ascii=False), flush=True)
+    async def stand_new(pkey, text, files=None, model=None, effort=None, vendor=None):   # never launches Claude here
+        if vendor not in (None, "claude"):
+            p.vendor_for_new(pkey, vendor)            # the computer's own checks: the project allowed, the key there
+        print("NEWTASK", pkey, json.dumps(text, ensure_ascii=False), "vendor=%s model=%s" % (vendor, model), flush=True)
         return {"ok": True, "sid": T.SID}
     p.api_new = stand_new
+    if os.environ.get("STAND_VENDORS") == "1":         # stage M, step 2: a made-up key, and a session on DeepSeek's model
+        import pult_vendors as V
+        p.env[V.key_name("deepseek")] = "stand-made-up-key-0000000000"
+
+        async def stand_check(prof, key, proxy=None, transport=None):   # never a vendor's network here: "sk-…" passes
+            if key.startswith("sk-"):
+                return prof["models"][1].replace("[1m]", "") if len(prof["models"]) > 1 else prof["models"][0]
+            raise V.VendorError("key", "Authentication Fails (made up)")
+        V.check_key = stand_check
+        store.touch_session(SIDV, T.PKEY, path=SHOP, title=D["v_ask"])
+        store.set_vendor(SIDV, "deepseek")
+        vline = json.loads(aline(D["v_done"], "sv1", 420, ago=900))
+        vline["message"]["model"] = "deepseek-flash"
+        (d / (SIDV + ".jsonl")).write_text(line("user", D["v_ask"], ago=1200) + "\n" + json.dumps(vline) + "\n")
+        r = p.attn.finished(SIDV, T.PKEY, 300, D["v_done"], D["v_done"], waits=True, seen=True, now=time.time() - 900)
+        store.add_turn(SIDV, T.PKEY, r["ts"] - 300, 300, [{"p": "admin/theme.css", "size": 8200, "mt": r["ts"] - 60}], 1)
     store.touch_session(SID5, PKEY2, path=DESK, title=D["s5_title"])
     r = p.attn.finished(SID5, PKEY2, 300, D["s5_line"], D["s5_line"], waits=True, now=time.time() - 600)
     # STAND_ASK2=1: it waits for you as well — two in "your move", ten and twenty-five minutes (tools/ask_check.py)
@@ -1029,6 +1055,9 @@ async def main():
           (PORT, urllib.parse.quote(init("p_" + T.PKEY))), flush=True)       # a project topic's pinned card
     print("SESS4 http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
           (PORT, urllib.parse.quote(init("s_" + SID4))), flush=True)       # a session that waits for you: its outcome card
+    if os.environ.get("STAND_VENDORS") == "1":
+        print("SESSV http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
+              (PORT, urllib.parse.quote(init("s_" + SIDV))), flush=True)   # a session on DeepSeek's model
     print("PROJECTS http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
           (PORT, urllib.parse.quote(init("projects"))), flush=True)
     print("NEWPROJ http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %

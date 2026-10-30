@@ -54,6 +54,7 @@ How the parts fit together, with diagrams of each path: [ARCHITECTURE.md](ARCHIT
 | `src/pult_new.py` | a new project from the phone: the folder's name from any title, the name checks, the clone link; the daemon makes the folder |
 | `src/pult_files.py` | files to and from the phone: safe names, the project's inbox, what `pult send` may send, the files a turn made |
 | `src/pult_codex.py` | a second opinion from Codex (OpenAI's agent) on what a task changed: its `app-server` protocol, read-only; `tests/fake_codex.py` stands in for it in the tests and on the stand |
+| `src/pult_vendors.py` | DeepSeek, GLM, Kimi inside Claude Code: profiles and a session's environment (never without a key — `tests/probe_vendor.py` shows why) |
 | `src/pult_os.py` | what differs between systems: paths, the service (launchd, systemd, a logon task), idle, the system language |
 | `deploy/relay/` | running the relay on a Linux server |
 

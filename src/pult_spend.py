@@ -137,7 +137,10 @@ class Spend:
                         a0 = line.find(b'"', at + 12) + 1 if at >= 0 else 0
                         ts = ts_of(line[a0:line.find(b'"', a0)].decode()) if a0 else None
                         if ts and ts >= since:
-                            self._mark(f, ts, sid, agent)
+                            if f.get("who") is None:   # whose session — Claude's or another vendor's — the first
+                                f.setdefault("wait", []).append(ts)    # reply tells (stage M, step 2): marks wait for it
+                            else:
+                                self._mark(f, ts, sid, agent)
                             f["open"] = True       # the owner's message or a tool's result: the turn goes on
         except OSError:
             pass
@@ -151,6 +154,15 @@ class Spend:
         ts = ts_of(e.get("timestamp") or "")
         if e.get("type") != "assistant" or not ts or ts < since:
             return
+        model = str(m.get("model") or "").lower()
+        if model and "claude" not in model and not model.startswith("<"):
+            f["who"] = "other"       # another vendor's model (stage M, step 2): not the subscription's — kept out
+            f.pop("wait", None)
+            return
+        if f.get("who") is None and model and not model.startswith("<"):
+            f["who"] = "claude"
+            for w in f.pop("wait", []):          # the session's first lines were Claude's work after all
+                self._mark(f, w, sid, agent)
         self._mark(f, ts, sid, agent)
         f["open"] = m.get("stop_reason") not in END
         u, mid = m.get("usage"), m.get("id")
@@ -174,7 +186,10 @@ class Spend:
         return s
 
     def _mark(self, f, ts, sid, agent):
-        """The session (or agent) works at ts — and since its previous line, if that was inside a turn."""
+        """The session (or agent) works at ts — and since its previous line, if that was inside a turn. A session on
+        another vendor's model doesn't count: it spends none of the subscription."""
+        if f.get("who") == "other":
+            return
         last, f["last"] = f["last"], ts
         start = last if f["open"] and last and 0 <= ts - last <= GAP else ts
         for i in range(int(start // SLOT), int(ts // SLOT) + 1):

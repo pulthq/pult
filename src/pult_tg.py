@@ -210,6 +210,7 @@ CREATE TABLE IF NOT EXISTS tag_alias(pkey TEXT, old TEXT, old_topic TEXT, sec TE
     PRIMARY KEY(pkey, old, old_topic));
 CREATE TABLE IF NOT EXISTS tag_examples(pkey TEXT, sid TEXT, title TEXT, ask TEXT, sec TEXT, topic TEXT, ts REAL,
     PRIMARY KEY(pkey, sid));
+CREATE TABLE IF NOT EXISTS session_vendor(sid TEXT PRIMARY KEY, vendor TEXT, ts REAL);
 """
 # stage T, T2: what the owner did to a project's list lives in tables of its own — the hidden tags (topic "" for a
 # whole section), the pairs kept apart, the names a tag had before a rename or a merge (by pult_tags.key), the owner's
@@ -261,6 +262,18 @@ class Store:
             self.db.execute("INSERT OR REPLACE INTO hides VALUES(?,?)", (pkey, time.time()))
         else:
             self.db.execute("DELETE FROM hides WHERE pkey=?", (pkey,))
+
+    # stage M, step 2: a session Pult runs on another vendor's model — its continuations and copies go there too
+
+    def vendor_of(self, sid):
+        r = self.db.execute("SELECT vendor FROM session_vendor WHERE sid=?", (sid,)).fetchone()
+        return r["vendor"] if r else None
+
+    def set_vendor(self, sid, vendor):
+        if vendor:
+            self.db.execute("INSERT OR REPLACE INTO session_vendor VALUES(?,?,?)", (sid, vendor, time.time()))
+        else:
+            self.db.execute("DELETE FROM session_vendor WHERE sid=?", (sid,))
 
     def session(self, sid):
         return self.db.execute("SELECT * FROM sessions WHERE sid=?", (sid,)).fetchone()

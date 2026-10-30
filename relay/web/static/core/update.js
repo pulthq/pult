@@ -45,7 +45,10 @@ function idleHere() {
   if (mic && mic.getTracks().some((tr) => tr.enabled && tr.readyState === "live")) return false;
   const a = document.activeElement;
   if (a && /^(TEXTAREA|INPUT|SELECT)$/.test(a.tagName)) return false;
-  return ![...document.querySelectorAll("textarea, input")].some((el) => !/^(checkbox|radio|file|button|submit)$/.test(el.type) && el.value.trim());
+  // a field that shows what is saved — Settings' list of a vendor's models, the voice's own words — isn't words typed
+  // (with one of them on the screen the copy never followed the server, 2026-10-30): data-saved holds that value
+  return ![...document.querySelectorAll("textarea, input")].some((el) => !/^(checkbox|radio|file|button|submit)$/.test(el.type) && el.value.trim()
+    && !(el.dataset && el.dataset.saved !== undefined && el.value === el.dataset.saved));
 }
 let follow = 0;
 function followServer() {

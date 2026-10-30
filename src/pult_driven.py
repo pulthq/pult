@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pult_hook
 import pult_render as R
+import pult_vendors as V
 
 HOME = Path(os.environ.get("PULT_HOME") or "~/.local/share/pult").expanduser()   # as pultd, pult_setup, pult_update
 SOCK = os.environ.get("PULT_SOCK") or str(HOME / "pult.sock")                    # the daemon's: the hook's way back
@@ -274,6 +275,17 @@ class Driven:
                   env={"PULT_DRIVEN": "1", "PULT_SOCK": SOCK, "CLAUDE_CODE_ENTRYPOINT": "claude-vscode"},
                   max_buffer_size=SDK_LINE_MAX, stderr=lambda s: None)
         model, effort = self.d.wanted(getattr(self, "want_model", None), getattr(self, "want_effort", None))
+        vid = self.d.store.vendor_of(self.sid)
+        if vid:
+            # another vendor's model (stage M, step 2): its profile in the environment, the owner's key in both of
+            # Claude Code's places; never without the key — the subscription's own token would go there (pult_vendors)
+            p, key = self.d.vendor_profiles().get(vid), self.d.vendor_key(vid)
+            if not p or not key:
+                raise RuntimeError("no key for %s" % vid)
+            own = getattr(self, "want_model", None)
+            model = own if own and own not in ("fable", "opus", "sonnet", "haiku") else p["models"][0]
+            kw["env"] = dict(kw["env"], **V.session_env(p, key, model))
+            effort = None                        # the vendor's own advice sets it (CLAUDE_CODE_EFFORT_LEVEL)
         if model:
             kw["model"] = model
         if effort:
