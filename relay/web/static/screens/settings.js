@@ -185,6 +185,45 @@ function Parts() {
   </div>`;
 }
 
+// other vendors' models inside Claude Code (stage M, step 2): each vendor's key — checked by the computer with one tiny
+// request and kept there, never shown again — and its list of models, the main one first and the fast one second
+function Vendors({ list, onChange }) {
+  const [keys, setKeys] = useState({});
+  const [models, setModels] = useState({});
+  const [busy, setBusy] = useState("");
+  const saveKey = async (v, key) => {
+    setBusy(v.id);
+    try {
+      const r = await api("vendor_key", { vendor: v.id, key: key.trim() });
+      onChange(list.map((x) => (x.id === v.id ? Object.assign({}, x, { key: r.key }) : x)));
+      setKeys(Object.assign({}, keys, { [v.id]: "" })); haptic("success");
+      alertBox(r.warn || (r.key ? t("vend.key.saved", { name: v.name, m: r.model || v.models[0] }) : t("vend.key.removed", { name: v.name })));
+    } catch (e) { alertBox(e.message); }
+    setBusy("");
+  };
+  const saveModels = async (v) => {
+    setBusy(v.id);
+    try {
+      const r = await api("vendor_models", { vendor: v.id, models: models[v.id] });
+      onChange(list.map((x) => (x.id === v.id ? Object.assign({}, x, { models: r.models }) : x)));
+      setModels(Object.assign({}, models, { [v.id]: null })); haptic("success"); alertBox(t("vend.models.saved"));
+    } catch (e) { alertBox(e.message); }
+    setBusy("");
+  };
+  return html`<h3>${t("vend.title")}</h3><div class="list">${list.map((v) => {
+    const k = keys[v.id] || "", m = models[v.id] == null ? v.models.join(", ") : models[v.id];
+    return html`<div class="item static vend" key=${v.id}>
+      <div class="vend-h"><b>${v.name}</b><span class=${"vend-st" + (v.key ? " on" : "")}>${v.key ? t("vend.key.on") : t("vend.key.off")}</span></div>
+      <div class="keyrow"><input type="password" ref=${plainField} placeholder=${v.key ? t("vend.key.new") : t("vend.key.ph", { name: v.name })} value=${k} onInput=${(e) => setKeys(Object.assign({}, keys, { [v.id]: e.target.value }))}/>
+        <button class="btn" disabled=${!k.trim() || busy === v.id} onClick=${() => saveKey(v, k)}>${t("voice.save")}</button></div>
+      ${v.key ? html`<button class="link" disabled=${busy === v.id} onClick=${() => saveKey(v, "")}>${t("vend.key.remove")}</button>` : ""}
+      <div class="dim vend-m">${t("vend.models")}</div>
+      <div class="keyrow"><input ref=${plainField} value=${m} data-saved=${v.models.join(", ")} onInput=${(e) => setModels(Object.assign({}, models, { [v.id]: e.target.value }))}/>
+        <button class="btn" disabled=${models[v.id] == null || m.trim() === v.models.join(", ") || busy === v.id} onClick=${() => saveModels(v)}>${t("voice.save")}</button></div>
+    </div>`;
+  })}</div><div class="dim small">${t("vend.about")}</div>`;
+}
+
 function Settings() {
   const [d, err, set] = useLive(() => api("settings"), [], () => false);
   const [key, setKey] = useState("");
@@ -253,9 +292,10 @@ function Settings() {
     </div>
     ${d.stt && d.stt.on && typeof d.stt.words === "string" ? html`<div class="item static">
       <div>${t("voice.words")}</div><div class="dim">${t("voice.words.about")}</div>
-      <div class="keyrow"><input ref=${plainField} maxlength="280" placeholder=${t("voice.words.ph")} value=${words === null ? d.stt.words : words} onInput=${(e) => setWords(e.target.value)}/>
+      <div class="keyrow"><input ref=${plainField} maxlength="280" placeholder=${t("voice.words.ph")} value=${words === null ? d.stt.words : words} data-saved=${d.stt.words} onInput=${(e) => setWords(e.target.value)}/>
         <button class="btn" disabled=${words === null || words.trim() === d.stt.words || kbusy} onClick=${saveWords}>${t("voice.save")}</button></div>
     </div>` : ""}</div>
+    ${d.vendors && html`<${Vendors} list=${d.vendors} onChange=${(vs) => set(Object.assign({}, d, { vendors: vs }))}/>`}
     <${Logins}/>
     <h3>${t("status")}</h3><div class="list"><div class="item static">
       <div>${t("status.pult", { v: d.version, mac: d.mac.away ? t("mac.away", { dur: dur(d.mac.idle) }) : t("mac.here") })}</div>

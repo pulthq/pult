@@ -322,6 +322,9 @@ await check("update: not under a layer, a held recording or countdown, typed wor
     [() => { let c; N.openLayer(() => {}); c = () => N.layers.pop(); return c; }, "a layer"],
     [() => { N.holdBy(1); return () => N.holdBy(-1); }, "a hold"],
     [() => { doc.fields = [{ type: "text", value: "half a thought" }]; return () => { doc.fields = []; }; }, "typed words"],
+    // a field that shows what is saved (Settings' list of a vendor's models) is no words typed — until it is edited
+    [() => { doc.fields = [{ type: "text", value: "deepseek-flash, x-1", dataset: { saved: "deepseek-flash" } }];
+      return () => { doc.fields = [{ type: "text", value: "deepseek-flash", dataset: { saved: "deepseek-flash" } }]; }; }, "a saved field edited"],
     [() => { doc.activeElement = { tagName: "TEXTAREA" }; return () => { doc.activeElement = null; }; }, "a field in focus"],
     [() => { location.replace("#/s/" + SID); doc.body.scrollHeight = 5000; return () => { doc.body.scrollHeight = 600; }; }, "reading far from the end"],
     [() => { C.api("slow-call").catch(() => {}); return () => answerAll(ws()); }, "a call on its way"],
@@ -339,6 +342,7 @@ await check("update: not under a layer, a held recording or countdown, typed wor
     await later(5_100);
     assert.equal(location.reloads, n + 1, "no reload once " + what + " is gone");
   }
+  doc.fields = [];
   location.replace("#/");
 });
 await check("update: a copy still changing on the server (a deploy writes file by file) — 8 s more", async () => {

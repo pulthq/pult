@@ -122,6 +122,8 @@ And:
 - **Ticks** on your message — sent, read by Claude — and a pager that knows whether you're at the computer.
 - **A second opinion** — under an outcome, Codex (OpenAI's agent, on your ChatGPT subscription) reads what the task
   changed in a read-only sandbox; its findings go back to Claude with one tap. Per project, only once you allow it.
+- **Other vendors' models** — DeepSeek, GLM or Kimi do a task inside Claude Code with your key: the same cards and
+  outcome; per project, only once you allow it.
 - **`pult run`** for your own long commands, reported like a turn.
 
 **[All of it](guide/usage.md)**.

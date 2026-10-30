@@ -156,7 +156,7 @@ async def main():
             await until("document.querySelectorAll('.form .field').length >= 2", 150)
             got = await js("[...document.querySelectorAll('.form .field')].pop().textContent.trim()")
             verdict("a new task starts with it", got in want, repr(got))
-            await tap(".form .field", 1)
+            await tap(".form .field", await js("document.querySelectorAll('.form .field').length - 1"))   # the model's: the last
             verdict("its menu opens", await until("!!document.querySelector('.card.pick .pick-col')"))
             m0, e0 = await js(first(0)), await js(first(1))
             verdict("…“Default”, with the default in grey", m0[0] in ("По умолчанию", "Default") and m0[1] == "Opus" and e0[1] in ("Очень много", "Extra high"), m0, e0)

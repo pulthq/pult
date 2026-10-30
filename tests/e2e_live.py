@@ -15,6 +15,8 @@ A new project "with a description" (stage S): git, its topic by the title, a fir
 A file made in a session goes to the project's topic with `pult send`, and the turn's outcome lists it (stage F).
 With the model on, a new task gets its section and topic as soon as its request is in, and again with the result (stage T);
 the first open of the project sorts its earlier tasks without tags, in a batch (T2).
+A task on another vendor's model (stage M, step 2): a stand-in for DeepSeek on this computer gets the session's requests with
+Pult's key and never the subscription's token; the outcome comes; the transcript names the vendor's model.
 """
 import asyncio, json, os, shutil, sys, tempfile, time, urllib.parse
 from pathlib import Path
@@ -77,7 +79,8 @@ orig_options = pultd.Driven.options
 
 def options(self):
     o = orig_options(self)
-    o.model = "claude-haiku-5-5"
+    if "ANTHROPIC_BASE_URL" not in (o.env or {}):      # another vendor's session keeps its own model (stage M, step 2)
+        o.model = "claude-haiku-5-5"
     return o
 
 
@@ -303,6 +306,62 @@ async def main():
     log("прежние задачи:", len(bare), "без тегов → с тегами", sum(1 for g in got if g), "·",
         [(p.store.session_tag(s)["sec"], p.store.session_tag(s)["topic"]) for s in bare if p.store.session_tag(s)][:4])
     assert bare and all(got) and p.store.get("tags.old." + pk10), "the earlier tasks weren't sorted"
+    # another vendor's model inside Claude Code (stage M, step 2): a stand-in for DeepSeek on this computer — the
+    # session's real Claude Code asks it with the key Pult gave it, never the subscription's token; the outcome comes
+    # like Claude's, and the transcript names the vendor's model
+    import pult_vendors as V
+    from aiohttp import web
+    asked = []
+
+    async def stand_in(req):
+        body = await req.json() if req.method == "POST" else {}
+        sysp = body.get("system")
+        sysp = sysp if isinstance(sysp, str) else " ".join(b.get("text", "") for b in sysp or [] if isinstance(b, dict))
+        asked.append({"path": req.path, "x": req.headers.get("x-api-key"), "auth": req.headers.get("authorization") or "",
+                      "model": body.get("model"), "sys": sysp[:160], "max": body.get("max_tokens"),
+                      "tools": len(body.get("tools") or [])})
+        if not req.path.endswith("/messages"):
+            return web.json_response({"input_tokens": 9} if req.path.endswith("count_tokens") else {}, status=200)
+        resp = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(req)
+        model = body.get("model") or "?"
+        for ev, data in (("message_start", {"type": "message_start", "message": {"id": "msg_x", "type": "message", "role": "assistant",
+                                            "model": model, "content": [], "stop_reason": None, "stop_sequence": None,
+                                            "usage": {"input_tokens": 12, "output_tokens": 1}}}),
+                         ("content_block_start", {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+                         ("content_block_delta", {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "PONG"}}),
+                         ("content_block_stop", {"type": "content_block_stop", "index": 0}),
+                         ("message_delta", {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                                            "usage": {"output_tokens": 2}}),
+                         ("message_stop", {"type": "message_stop"})):
+            await resp.write(("event: %s\ndata: %s\n\n" % (ev, json.dumps(data))).encode())
+        await resp.write_eof()
+        return resp
+    app = web.Application()
+    app.router.add_route("*", "/{tail:.*}", stand_in)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    V.PRESETS["deepseek"]["url"] = "http://127.0.0.1:%d" % site._server.sockets[0].getsockname()[1]   # never DeepSeek here
+    key = "stand-in-key-0123456789abcdef"
+    p.env[V.key_name("deepseek")] = key
+    await p.api_vendors_ok(pkey5, True)
+    sid11 = (await p.api_new(pkey5, "Reply with one word: PONG.", vendor="deepseek"))["sid"]
+    await until(lambda: (p.attn.rec.get(sid11) or {}).get("ts"), what="итог сессии на модели DeepSeek")
+    models = sorted({a["model"] for a in asked if a["model"]})
+    tr = Path(p.transcript_of(sid11)[0]).read_text()
+    log("DeepSeek (подставной): запросов", len(asked), "· модели", models, "· ключ только наш:",
+        all(a["x"] == key for a in asked if a["path"].endswith("/messages")), "· итог:", p.attn.rec[sid11]["line"])
+    assert asked and all(a["x"] == key and "sk-ant" not in a["auth"] for a in asked if a["path"].endswith("/messages")), \
+        "another credential reached the vendor"
+    for a in asked:
+        log("   ", a["model"], "max", a["max"], "tools", a["tools"], "·", a["sys"][:120].replace("\n", " "))
+    log("   в транскрипте модели:", sorted({json.loads(x).get("message", {}).get("model") for x in tr.splitlines()
+                                            if '"assistant"' in x} - {None}))
+    assert "deepseek-flash" in models and '"model":"deepseek-flash"' in tr.replace(" ", ""), "the vendor's model isn't in the transcript"
+    assert p.store.vendor_of(sid11) == "deepseek"
+    await runner.cleanup()
     log("тем создано:", len([1 for m, _ in calls if m == "createForumTopic"]), "· вызовов Telegram:", len(calls))
     for d in list(p.driven.values()):
         d.task.cancel()

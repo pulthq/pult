@@ -901,3 +901,14 @@ button.tagc { border: 0; font-family: inherit; cursor: pointer; }
 .vline .ic { color: var(--vendor); flex: none; }
 .vline span { flex: 1; min-width: 0; }
 .vline .link { flex: none; font-size: var(--fs-sec); padding: 6px 0; }
+
+/* other vendors' models inside Claude Code (stage M, step 2): "Who does it" in New task, a vendor's key in Settings */
+.vf-sub { font-style: normal; }
+.opt.vo-off { opacity: .55; }
+.who .opt .dim { display: block; font-size: var(--fs-sec); font-weight: 400; }
+.who-def { display: flex; align-items: center; gap: 6px; margin: 10px 2px 2px; font-size: var(--fs-sec); }
+.who-def .ic { color: var(--ok); }
+.vend-h { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.vend-st { font-size: var(--fs-sec); color: var(--muted); }
+.vend-st.on { color: var(--ok); }
+.vend-m { font-size: var(--fs-sec); margin-top: 10px; }

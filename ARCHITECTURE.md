@@ -177,6 +177,7 @@ flowchart LR
 | `src/pult_tab.py`, `src/pult-tab.sh` | the tab wrapper and its launcher |
 | `src/pult_tabcheck.py` | checks a Claude Code version VS Code has downloaded, on your computer, before a window reloads onto it: the wrapper, a message from the phone, the model, the effort and the permission race on the new version's own `claude` (`pult tab check`) |
 | `src/pult_codex.py` | a second opinion from Codex: finds Codex and checks its version against its own protocol schema, gathers what the task was (your words, Claude's report, the files, the commit it began on), runs one read-only review over Codex's `app-server` protocol and reads its findings |
+| `src/pult_vendors.py` | other vendors' models inside Claude Code: each vendor's profile (address, models by role, compaction window, advice, price), a session's environment — never without the owner's key — and the key's check |
 | `src/pult_web.py` | the connection to the relay, login checks, transcripts for the app |
 | `src/pult_render.py`, `src/pult_i18n.py` | what messages look like; every visible string in English and Russian |
 | `src/pult_attn.py`, `src/pult_brief.py` | "whose move": each session's outcome; an optional one-line summary by a small model |

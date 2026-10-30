@@ -36,6 +36,7 @@ import httpx  # noqa: E402
 import pult_api  # noqa: E402
 import pult_attn as A  # noqa: E402
 import pult_codex as CX  # noqa: E402
+import pult_vendors as V  # noqa: E402
 import pult_brief as B  # noqa: E402
 import pult_driven  # noqa: E402
 import pult_hook  # noqa: E402
@@ -498,7 +499,8 @@ class HelpersTest(unittest.TestCase):
         with mock.patch.object(pult_driven, "HOOK_PY", "/x y/venv/bin/python"), \
                 mock.patch.object(pult_driven, "HOOK", "/x y/pult_hook.py"):
             me = types.SimpleNamespace(path="/x", sid=SID, resume=None, fork=False, _wait_hook=None,
-                                       d=types.SimpleNamespace(wanted=lambda m, e: (m, e)))
+                                       d=types.SimpleNamespace(wanted=lambda m, e: (m, e),
+                                                               store=types.SimpleNamespace(vendor_of=lambda sid: None)))
             opts = pultd.Driven.options(me)
         h = json.loads(opts.settings)["hooks"]["Stop"][0]["hooks"][0]
         if os.name == "nt":                          # exec form: no shell to read an environment prefix
@@ -2655,6 +2657,130 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([(r["pkey"], r["open"], r["work"], r["ask"]) for r in rows],
                          [(PKEY, 2, 1, 1), ("-Users-x-other", 0, 0, 0)])            # active first, despite recency
 
+    async def test_vendors(self):
+        # stage M, step 2: a session on another vendor's model inside Claude Code — only in an allowed project, only
+        # with the owner's key; its profile in the process's environment; its continuations and copies stay on it; the
+        # project's default; a session whose key is gone never starts (the subscription's token would go there)
+        import claude_agent_sdk
+        proj = TMP / ("proj-" + self._testMethodName)
+        proj.mkdir()
+        self.store.set_topic(PKEY, str(proj), "proj", 77)
+        started = []
+
+        class Fake:                       # Claude Code that only shows what it would be started with
+            def __init__(self, options):
+                started.append(options)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def query(self, text):
+                pass
+
+            async def interrupt(self):
+                pass
+
+            async def set_model(self, m):
+                pass
+
+            async def receive_messages(self):
+                await asyncio.Event().wait()
+                yield
+        key = "sk-" + "d" * 30
+        with mock.patch.object(claude_agent_sdk, "ClaudeSDKClient", Fake):
+            # nothing yet: the project isn't allowed, no key
+            with self.assertRaises(ValueError) as e:
+                await self.p.api_new(PKEY, "Почини тесты", vendor="deepseek")
+            self.assertIn("разреши", str(e.exception))
+            await self.p.api_vendors_ok(PKEY, True)
+            with self.assertRaises(ValueError) as e:
+                await self.p.api_new(PKEY, "Почини тесты", vendor="deepseek")
+            self.assertIn("ключа ещё нет", str(e.exception))
+            with self.assertRaises(ValueError):
+                await self.p.api_new(PKEY, "Почини тесты", vendor="nope")
+            # the key: checked with the vendor, kept in the settings file, never shown back
+            with mock.patch.object(V, "check_key", mock.AsyncMock(return_value="deepseek-flash")) as chk:
+                self.assertEqual(await self.p.api_vendor_key("deepseek", key), {"key": True, "model": "deepseek-flash", "warn": None})
+            self.assertEqual(chk.call_args.args[1], key)
+            self.assertIn("PULT_VENDOR_KEY_DEEPSEEK=" + key, Path(os.environ["PULT_ENV"]).read_text())
+            vs = (await self.p.api_projects())["vendors"]
+            self.assertEqual([(v["id"], v["key"]) for v in vs], [("deepseek", True), ("glm", False), ("kimi", False)])
+            self.assertNotIn(key, json.dumps(vs) + json.dumps((await self.p.api_settings())["vendors"]))
+            # a new task on DeepSeek: its session runs on the profile, the key in both places, hidden from VS Code
+            sid = (await self.p.api_new(PKEY, "Почини тесты", model="deepseek-v4-pro[1m]", effort="high", vendor="deepseek"))["sid"]
+            await until(lambda: started)
+            o = started[-1]
+            self.assertEqual(self.store.vendor_of(sid), "deepseek")
+            self.assertEqual((o.model, getattr(o, "effort", None), o.env["ANTHROPIC_BASE_URL"], o.env["ANTHROPIC_AUTH_TOKEN"],
+                              o.env["ANTHROPIC_API_KEY"], o.env["CLAUDE_CODE_ENTRYPOINT"], o.env["PULT_DRIVEN"]),
+                             ("deepseek-v4-pro[1m]", None, "https://api.deepseek.com/anthropic", key, key, "sdk-py", "1"))
+            view = (await self.p.api_session(sid))["vendor"]
+            self.assertEqual((view["id"], view["name"], view["models"][0]), ("deepseek", "DeepSeek", "deepseek-flash[1m]"))
+            with self.assertRaises(ValueError):
+                await self.p.api_model(sid, effort="high")              # how hard it thinks is the vendor's own
+            # a Claude task beside it stays Claude's
+            sid_c = (await self.p.api_new(PKEY, "А это — Claude", vendor="claude"))["sid"]
+            await until(lambda: len(started) == 2)
+            self.assertIsNone(self.store.vendor_of(sid_c))
+            self.assertNotIn("ANTHROPIC_BASE_URL", started[-1].env)
+            self.assertEqual(started[-1].env["CLAUDE_CODE_ENTRYPOINT"], "claude-vscode")
+            # the project's default: a task from Telegram (it doesn't say whose) goes to DeepSeek
+            self.assertEqual(await self.p.api_vendor_default(PKEY, "deepseek"), {"vendor": "deepseek"})
+            row = next(x for x in (await self.p.api_projects())["projects"] if x["pkey"] == PKEY) \
+                if (await self.p.api_projects())["projects"] else {"vendor": self.p.vendor_default(PKEY)}
+            self.assertEqual(row["vendor"], "deepseek")
+            sid_t = "77777777-2222-3333-4444-555555555555"
+            await self.p.drive(sid_t, str(proj), "из Telegram", None, pkey=PKEY)
+            self.assertEqual(self.store.vendor_of(sid_t), "deepseek")
+            # a copy of a DeepSeek session stays on DeepSeek
+            await self.p.drive(sid, str(proj), "копия", None, pkey=PKEY, fork=True)
+            await until(lambda: any(o.fork_session for o in started))
+            copy = next(o for o in started if o.fork_session)
+            self.assertEqual((self.store.vendor_of(copy.session_id), copy.env["ANTHROPIC_BASE_URL"]),
+                             ("deepseek", "https://api.deepseek.com/anthropic"))
+            # the key removed: no session of DeepSeek starts — from the app it says why, from Telegram too; new tasks
+            # go back to Claude by default
+            self.assertEqual((await self.p.api_vendor_key("deepseek", ""))["key"], False)
+            self.assertNotIn("PULT_VENDOR_KEY_DEEPSEEK", Path(os.environ["PULT_ENV"]).read_text())
+            for dr in list(self.p.driven.values()):
+                dr.task.cancel()
+            await asyncio.sleep(0.05)
+            self.p.driven.clear()
+            n = len(started)
+            with self.assertRaises(ValueError) as e:
+                await self.p.drive(sid, str(proj), "дальше", None, pkey=PKEY, resume=sid, app=True)
+            self.assertIn("ключа больше нет", str(e.exception))
+            self.assertFalse(await self.p.drive(sid, str(proj), "дальше", None, pkey=PKEY, resume=sid))
+            await until(lambda: any("ключа больше нет" in t for t in self.texts()))
+            await asyncio.sleep(0.1)
+            self.assertEqual(len(started), n)                            # nothing started without the key
+            self.assertIsNone(self.p.vendor_for_new(PKEY))
+            # the project taken back: its default goes too
+            await self.p.api_vendors_ok(PKEY, False)
+            self.assertIsNone(self.p.vendor_default(PKEY))
+            # the owner's own list of models; a bad one is refused
+            self.assertEqual(await self.p.api_vendor_models("deepseek", "deepseek-v4-pro[1m], deepseek-flash"),
+                             {"models": ["deepseek-v4-pro[1m]", "deepseek-flash"]})
+            with self.assertRaises(ValueError):
+                await self.p.api_vendor_models("deepseek", "no good!")
+            self.assertEqual((await self.p.api_vendor_models("deepseek", ""))["models"][0], "deepseek-flash[1m]")
+            # a key that is good with a model's name the vendor doesn't know is kept, with words about the name
+            err = V.VendorError("model", "Model Not Exist")
+            with mock.patch.object(V, "check_key", mock.AsyncMock(side_effect=err)):
+                r = await self.p.api_vendor_key("deepseek", key)
+            self.assertTrue(r["key"])
+            self.assertIn("не имя модели", r["warn"])
+            for code in ("key", "balance", "net"):
+                with mock.patch.object(V, "check_key", mock.AsyncMock(side_effect=V.VendorError(code, "x"))):
+                    with self.assertRaises(ValueError):
+                        await self.p.api_vendor_key("glm", key)
+            self.assertFalse(self.p.vendor_key("glm"))
+        for dr in list(self.p.driven.values()):
+            dr.task.cancel()
+
     def second_project(self, **conf):
         """A project in git whose task changed a file, its session with an outcome and a turn that wrote it, and a
         stand-in Codex with these settings (stage M): → (the folder, the commit the task began on, its settings file,
@@ -3022,8 +3148,10 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.p.stt_state(), {"on": False, "lang": "ru", "words": ""})
         # the app shows the microphone only when there is a key: the flag rides with the projects (and the session)
         with mock.patch.object(self.p, "list_projects", lambda known: []):
-            self.assertEqual(await self.p.api_projects(), {"projects": [], "stt": False, "create": True,
-                                                       "choice": {"model": None, "effort": None}})
+            got = await self.p.api_projects()
+            self.assertEqual({k: v for k, v in got.items() if k != "vendors"},
+                             {"projects": [], "stt": False, "create": True, "choice": {"model": None, "effort": None}})
+            self.assertEqual([v["id"] for v in got["vendors"]], ["deepseek", "glm", "kimi"])   # stage M, step 2
             self.p.stt = FakeStt()
             self.assertTrue((await self.p.api_projects())["stt"])
 
@@ -5968,6 +6096,83 @@ def codex_conf(folder, **c):
     conf = folder / "conf.json"
     conf.write_text(json.dumps(c))
     return fake_codex.launcher(str(folder), str(conf)), conf
+
+
+class VendorsTest(unittest.TestCase):
+    """Other vendors' models inside Claude Code (stage M, step 2): profiles, the session's environment, the key's check."""
+
+    def test_profiles_and_env(self):
+        ps = V.profiles({"deepseek": {"models": ["deepseek-v4-pro[1m]", "deepseek-flash", "bad name!"]},
+                         "glm": {"url": "http://plain.example"}})
+        self.assertEqual(list(ps), ["deepseek", "glm", "kimi"])
+        self.assertEqual(ps["deepseek"]["models"], ["deepseek-v4-pro[1m]", "deepseek-flash"])   # a bad name is dropped
+        self.assertEqual(ps["glm"]["url"], "https://api.z.ai/api/anthropic")        # only https is taken
+        self.assertEqual(V.clean_models("a-1, b-2\nc[1m]"), ["a-1", "b-2", "c[1m]"])
+        for bad in ("", "x y z w v u t s r", "no!"):
+            with self.assertRaises(ValueError):
+                V.clean_models(bad if bad != "x y z w v u t s r" else " ".join("m%d" % i for i in range(9)))
+        p = dict(V.profiles()["deepseek"], env={"ANTHROPIC_API_KEY": "theirs", "CLAUDE_CODE_EFFORT_LEVEL": "max"})
+        e = V.session_env(p, "k" * 20, "deepseek-v4-pro[1m]")
+        self.assertEqual((e["ANTHROPIC_AUTH_TOKEN"], e["ANTHROPIC_API_KEY"]), ("k" * 20, "k" * 20))   # never over these
+        self.assertEqual((e["ANTHROPIC_BASE_URL"], e["ANTHROPIC_DEFAULT_OPUS_MODEL"], e["ANTHROPIC_DEFAULT_HAIKU_MODEL"],
+                          e["CLAUDE_CODE_SUBAGENT_MODEL"], e["CLAUDE_CODE_ENTRYPOINT"], e["CLAUDE_CODE_AUTO_COMPACT_WINDOW"],
+                          e["CLAUDE_CODE_EFFORT_LEVEL"]),
+                         ("https://api.deepseek.com/anthropic", "deepseek-v4-pro[1m]", "deepseek-flash", "deepseek-flash",
+                          "sdk-py", "786432", "max"))
+        for key in ("", "   ", None):                 # with the address alone the subscription's token would go there
+            with self.assertRaises(ValueError):
+                V.session_env(p, key)
+        self.assertEqual([V.vendor_of_model(m) for m in ("deepseek-flash", "glm-4.7", "kimi-k3", "qwen3", "claude-opus-5-5",
+                                                         "<synthetic>", "")],
+                         ["deepseek", "glm", "kimi", "other", None, None, None])
+
+    def test_check_key(self):
+        p = V.profiles()["deepseek"]
+        asked = []
+
+        def answer(code, body):
+            def h(req):
+                asked.append((str(req.url), req.headers.get("x-api-key"), req.headers.get("authorization"), json.loads(req.content)))
+                return httpx.Response(code, json=body)
+            return httpx.MockTransport(h)
+        run = lambda t, key="k" * 24: asyncio.run(V.check_key(p, key, transport=t))       # noqa: E731
+        self.assertEqual(run(answer(200, {"model": "deepseek-flash"})), "deepseek-flash")
+        url, xkey, bearer, body = asked[-1]
+        self.assertEqual((url, xkey, bearer, body["model"], body["max_tokens"]),
+                         ("https://api.deepseek.com/anthropic/v1/messages", "k" * 24, "Bearer " + "k" * 24, "deepseek-flash", 1))
+        for code, body, kind in ((401, {"error": {"message": "Authentication Fails"}}, "key"),
+                                 (402, {"error": {"message": "Insufficient Balance"}}, "balance"),
+                                 (400, {"error": {"message": "Model Not Exist"}}, "model"),
+                                 (500, {"error": {"message": "boom"}}, "other")):
+            with self.assertRaises(V.VendorError) as e:
+                run(answer(code, body))
+            self.assertEqual(e.exception.kind, kind)
+        with self.assertRaises(V.VendorError) as e:
+            run(answer(200, {}), key="short")
+        self.assertEqual(e.exception.kind, "key")
+
+        def down(req):
+            raise httpx.ConnectError("no route")
+        with self.assertRaises(V.VendorError) as e:
+            run(httpx.MockTransport(down))
+        self.assertEqual(e.exception.kind, "net")
+
+    def test_spend_leaves_other_vendors_out(self):
+        # another vendor's replies spend none of the subscription: out of the curve and of "at once"
+        root = TMP / "spend-vendors"
+        now = time.time()
+        stamp = lambda ago: time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(now - ago))        # noqa: E731
+        for pkey, sid, model in ((PKEY, "a", "claude-opus-5-5"), ("-Users-x-cheap", "b", "deepseek-flash")):
+            (root / pkey).mkdir(parents=True, exist_ok=True)
+            (root / pkey / (sid + ".jsonl")).write_text("\n".join(json.dumps(x) for x in (
+                {"type": "user", "timestamp": stamp(120), "message": {"role": "user", "content": "go"}},
+                {"type": "assistant", "timestamp": stamp(60), "message": {"id": "m-" + sid, "model": model, "stop_reason": "end_turn",
+                                                                       "usage": {"input_tokens": 100, "output_tokens": 50}}})) + "\n")
+        sp = pultd.S.Spend(root, pultd.skip_pkey)
+        self.assertEqual([r["pkey"] for r in sp.today(now)["projects"]], [PKEY])
+        with sp.lock:
+            worked = set().union(*(sl.work for sl in sp.slots.values()))
+        self.assertEqual(worked, {"a"})                                 # the DeepSeek session isn't Claude's work
 
 
 class CodexTest(unittest.TestCase):

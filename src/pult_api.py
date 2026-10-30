@@ -37,6 +37,7 @@ import pult_spend as S
 import pult_stt as STT
 import pult_tags as G
 import pult_update as U
+import pult_vendors as V
 import pult_web as PW
 
 CATCH_GAP = 3600         # s: the app was closed this long — "While you were away" on the next open
@@ -371,15 +372,17 @@ class Api:
             out.append({"pkey": pkey, "name": self.project_label(pkey) if pkey in known else self.project_name(pkey, path),
                         "path": path, "last": mtime, "open": c.get("open", 0), "work": c.get("work", 0), "ask": c.get("ask", 0),
                         "mine": sum(1 for r in rs if r["state"] in A.MINE), "line": last["line"] if last else "",
-                        "turns": self.attn.day_of(pkey)[0], "pinned": pins.get(pkey, 0), "hidden": hides.get(pkey, 0)})
+                        "turns": self.attn.day_of(pkey)[0], "pinned": pins.get(pkey, 0), "hidden": hides.get(pkey, 0),
+                        "vendor": self.vendor_default(pkey), "vok": self.vendors_ok(pkey)})
         # the pinned first, the newest pin on top (stage Zh, Q98); then what needs you, then what works, then what
         # is open, then by recency; the hidden last — the app folds them (Q101)
         out.sort(key=lambda r: (-r["pinned"], r["hidden"] > 0, -(r["mine"] > 0), -(r["work"] + r["ask"] > 0), -(r["open"] > 0), -r["last"]))
         # stt: the app shows the microphone only with a key; create: this daemon makes new projects (stage S);
         # choice: the default model and effort from Settings, what a new task starts with when nothing is picked
         p = self.prefs()
+        # vendors: who else can do a task (stage M, step 2) — each with its key's state and models
         return {"projects": out, "stt": self.stt_state()["on"], "create": True,
-                "choice": {"model": p["model"], "effort": p["effort"]}}
+                "choice": {"model": p["model"], "effort": p["effort"]}, "vendors": self.vendors_list()}
 
     async def known_project(self, pkey):
         """A project the computer knows — with a topic, or with transcripts: the only ones the app's lists show."""
@@ -910,7 +913,7 @@ class Api:
                 "switch_effort": switch_effort, "default": dflt, "stt": self.stt_state()["on"],
                 "ctx": {"window": ctx[0], "max_out": ctx[1], "usable": ctx_usable(ctx[0], ctx[1])} if ctx else None,
                 "pending": [self.req_item(r) for r in lv.pending.values() if not r.fut.done()],
-                "out": self.out_view(sid), "second": await self.second_view(sid, rec, lv)}
+                "out": self.out_view(sid), "second": await self.second_view(sid, rec, lv), "vendor": self.vendor_view(sid)}
 
     async def api_answer(self, rid, act=None, answers=None, text=None):
         req = self.req_by_rid.get(rid)
@@ -987,17 +990,23 @@ class Api:
             raise ValueError("bad model or effort")
         return model, effort
 
-    async def api_new(self, pkey, text, files=None, model=None, effort=None):
+    async def api_new(self, pkey, text, files=None, model=None, effort=None, vendor=None):
+        """vendor — who does it (stage M, step 2): "claude", a vendor's id, or nothing (an older app) — the project's
+        default."""
         text = (text or "").strip()
         path = self.project_path(pkey)
         if not (text or files) or not path or not os.path.isdir(path):
             raise ValueError(self.t("err.need_project_text"))
-        model, effort = self.check_choice(model, effort)
+        vid = self.vendor_for_new(pkey, vendor)
+        if vid:
+            model, effort = self.vendor_model(vid, model), None    # a vendor's model; the effort is Claude's own
+        else:
+            model, effort = self.check_choice(model, effort)
         if self.driven_full():
             raise ValueError(self.busy_driven())       # before the pictures are saved: nothing is left behind
         sid = str(uuid.uuid4())
         await self.drive(sid, path, self.with_uploads(text, files, path), None, pkey=pkey, model=model, effort=effort,
-                         app=True)
+                         app=True, vendor=vid or "claude")
         return {"ok": True, "sid": sid}
 
     async def api_model(self, sid, model=KEEP, effort=KEEP):
@@ -1010,6 +1019,8 @@ class Api:
         if model is KEEP and effort is KEEP:
             raise ValueError("no model or effort")
         m, e = self.check_choice(None if model is KEEP else model, None if effort is KEEP else effort)
+        if self.store.vendor_of(sid) and effort is not KEEP:
+            raise ValueError(self.t("vendor.err.effort"))         # how hard it thinks is Claude's own setting
         dr = self.driven.get(sid)
         tab = None if dr else self.tab_for(sid)
         # a VS Code tab: the wrapper sends the requests the tab's own controls end in (set_model — probe_model.py)
@@ -1044,6 +1055,119 @@ class Api:
         log("choice for %s: %s (%s)" % (sid[:8], ", ".join(said), "live" if live else "next start"))
         self.changed(sid)
         return {"ok": True, "live": live, "choice": self.choice.get(sid) or {}}
+
+    # ----- other vendors' models inside Claude Code (stage M, step 2; Q105, Q106) -----
+    # DeepSeek, GLM, Kimi answer Claude Code's own protocol (pult_vendors): a session Pult runs gets the vendor's profile
+    # in its environment. Only in a project the owner allowed (vendors.ok — the same as the second opinion's), only with
+    # the owner's key (the settings file; never without one: the subscription's token would go there), never in a VS
+    # Code tab; a session keeps its vendor (session_vendor) for its continuations and copies
+
+    def vendor_profiles(self):
+        return V.profiles(self.store.get("vendors.conf") or {})
+
+    def vendor_key(self, vid):
+        return (self.env.get(V.key_name(vid)) or "").strip() or None if vid else None
+
+    def vendor_default(self, pkey):
+        vid = (self.store.get("vendors.default") or {}).get(pkey)
+        return vid if vid in V.PRESETS else None
+
+    def vendors_list(self):
+        """For the app: each vendor — its name, whether its key is here, its models (the main one first)."""
+        return [{"id": vid, "name": p["name"], "key": bool(self.vendor_key(vid)), "models": p["models"]}
+                for vid, p in self.vendor_profiles().items()]
+
+    def vendor_view(self, sid):
+        """The vendor a session runs on, for its screen: {"id", "name", "models"}, or None — Claude."""
+        vid = self.store.vendor_of(sid)
+        p = self.vendor_profiles().get(vid) if vid else None
+        return {"id": vid, "name": p["name"], "models": p["models"], "key": bool(self.vendor_key(vid))} if p else None
+
+    def vendor_for_new(self, pkey, vendor=None):
+        """Whose model a new session runs on — "claude" or a vendor asked for, checked; None (an app or a message from
+        Telegram that doesn't say): the project's default while its key is here and the project allowed, else Claude.
+        → a vendor's id, or None for Claude."""
+        if vendor == "claude":
+            return None
+        if vendor is None:
+            vid = self.vendor_default(pkey)
+            return vid if vid and self.vendor_key(vid) and self.vendors_ok(pkey) else None
+        p = self.vendor_profiles().get(vendor)
+        if not p:
+            raise ValueError("bad vendor")
+        if not self.vendors_ok(pkey):
+            raise ValueError(self.t("vendor.err.allow", name=p["name"]))
+        if not self.vendor_key(vendor):
+            raise ValueError(self.t("vendor.err.key", name=p["name"]))
+        return vendor
+
+    def vendor_model(self, vid, model):
+        """A model the owner picked for a vendor's session — one of its list, or a name that could be one; None — its
+        main model."""
+        model = (model or "").strip() or None
+        if model and not V.MODEL_RE.fullmatch(model):
+            raise ValueError("bad model")
+        return model
+
+    async def api_vendor_key(self, vendor, key=""):
+        """A vendor's key from Settings: checked with the vendor (one token of its fast model), then written to the
+        settings file on this computer — never into anything the app can read back; "" removes it."""
+        p = self.vendor_profiles().get(vendor)
+        if not p:
+            raise ValueError("bad vendor")
+        key = str(key or "").strip()
+        model, warn = None, None
+        if key:
+            try:
+                model = await V.check_key(p, key, proxy=self.env.get("PULT_PROXY") or None)
+            except V.VendorError as e:
+                log("vendor %s: the key didn't pass — %s%s" % (vendor, e.kind, ": " + e.text[:120] if e.text else ""))
+                if e.kind != "model":            # the key itself is good: kept, the owner fixes the models' names
+                    raise ValueError(self.t("vendor.key." + e.kind, name=p["name"], why=e.text[:200])) from None
+                warn = self.t("vendor.key.model", name=p["name"], why=e.text[:200])
+        from pult_setup import write_env           # the same careful writer the command line uses
+        write_env(**{V.key_name(vendor): key or None})
+        self._env_mt = self.D.env_mtime()
+        if key:
+            self.env[V.key_name(vendor)] = key
+        else:
+            self.env.pop(V.key_name(vendor), None)
+        log("vendor %s: key %s%s" % (vendor, "set" if key else "removed", " (%s answered)" % model if model else ""))
+        self.changed()
+        return {"key": bool(key), "model": model, "warn": warn}
+
+    async def api_vendor_models(self, vendor, models=""):
+        """The owner's list of a vendor's models (Settings): the first one is the main model, the second the fast one
+        (titles, subagents); "" — back to Pult's own list."""
+        if vendor not in V.PRESETS:
+            raise ValueError("bad vendor")
+        conf = self.store.get("vendors.conf") or {}
+        if str(models or "").strip():
+            try:
+                conf.setdefault(vendor, {})["models"] = V.clean_models(models)
+            except ValueError:
+                raise ValueError(self.t("vendor.err.models")) from None
+        else:
+            conf.get(vendor, {}).pop("models", None)
+        self.store.put("vendors.conf", conf)
+        log("vendor %s: models %s" % (vendor, ", ".join(self.vendor_profiles()[vendor]["models"])))
+        return {"models": self.vendor_profiles()[vendor]["models"]}
+
+    async def api_vendor_default(self, pkey, vendor=None):
+        """Who does a project's new tasks by default (the sheet "Who does it" in New task): a vendor — the project
+        allowed and its key here — or None for Claude."""
+        if vendor not in (None, "", "claude"):
+            self.vendor_for_new(pkey, vendor)          # checks the vendor, the project's permission, the key
+        elif not await self.known_project(pkey):
+            raise ValueError(self.t("err.no_project"))
+        d = self.store.get("vendors.default") or {}
+        if vendor in (None, "", "claude"):
+            d.pop(pkey, None)
+        else:
+            d[pkey] = vendor
+        self.store.put("vendors.default", d)
+        log("app: project %s does its new tasks with %s" % (pkey, vendor if vendor not in (None, "", "claude") else "Claude"))
+        return {"vendor": self.vendor_default(pkey)}
 
     # ----- a second opinion (stage M, step 1; Q104, Q105): Codex reads what the task changed -----
     # A button under a session's outcome asks Codex — OpenAI's agent, on the owner's ChatGPT subscription — to read the
@@ -1169,8 +1293,9 @@ class Api:
         return {"ok": True}
 
     async def api_vendors_ok(self, pkey, on=False):
-        """The project's line "Codex can read this project · Disallow" (stage M, Q105 b): the owner takes it back —
-        or gives it again. → {"on"}."""
+        """Whether a project may go to other vendors (stage M, Q105 b): given in "Who does it" or by the second
+        opinion's first tap, taken back by the project's line "Disallow" — then its review stops, and its new tasks
+        go to Claude again (its default to a vendor goes). → {"on"}."""
         if on and not await self.known_project(pkey):
             raise ValueError(self.t("err.no_project"))
         ok = self.store.get("vendors.ok") or {}
@@ -1184,6 +1309,9 @@ class Api:
             for sid, task in list(self.second_tasks.items()):
                 if (self.seconds.get(sid) or {}).get("pkey") == pkey:
                     task.cancel()
+            d = self.store.get("vendors.default") or {}
+            if d.pop(pkey, None):
+                self.store.put("vendors.default", d)
         return {"on": bool(on)}
 
     async def second_run(self, sid, job, path, project, info):
@@ -1780,7 +1908,7 @@ class Api:
                 "hooks_missing": [e for e in pult_hook.EVENTS if e not in hooks] if hooks else [],
                 "mac": {"idle": idle, "away": await self.away(), "mode": self.mode()},
                 "telegram": "proxy" if len(self.tg.clients) > 1 and self.tg.cur == 0 else "direct",
-                "stt": self.stt_state(), "cc": self.cc_choice(),
+                "stt": self.stt_state(), "cc": self.cc_choice(), "vendors": self.vendors_list(),
                 "log": [x for x in lines if "Bearer" not in x][-40:]}
 
     async def api_prefs(self, **kw):

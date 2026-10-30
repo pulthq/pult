@@ -3,8 +3,8 @@
 asks whether its code may go to OpenAI — "no" leaves everything as it was, "yes" starts it; the card says Codex is
 reading, for how long and how many commands, and can stop it; then two findings, each with its place — a tap opens the
 file at that line; "Send to Claude" puts them into the session as your message and the card goes, the button comes back;
-"Got it" puts a second review away without a word; the project's screen says Codex may read it, and "Disallow" takes
-that back. The stand's output shows what the computer's journal says.
+"Got it" puts a second review away without a word; the project's screen says other vendors may get its code, and
+"Disallow" takes that back. The stand's output shows what the computer's journal says.
   STAND_SECOND=1 STAND_LANG=ru STAND_PORT=18161 HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out &
   ~/.local/share/pult/venv/bin/python tools/second_check.py /tmp/stand.out [out_dir]
 Screenshots go to out_dir (a temporary folder by default): the button, Codex reading, the findings (light and dark), the
@@ -110,10 +110,10 @@ async def main():
         await pg.tap(CARD + ".querySelector('.foot .link')", wait=0.8)
         verdict("«Got it» puts it away without a word to Claude", await pg.until("!" + CARD, 30) and journal().count("DRIVE") == n)
 
-        # the project's screen: Codex may read it — and "Disallow" takes that back
+        # the project's screen: other vendors may get its code — and "Disallow" takes that back
         await pg.js("location.hash = '#/p/' + encodeURIComponent('-Users-x-proj')")     # within the app, as a tap there
-        verdict("the project says Codex may read its code", await pg.until("!!document.querySelector('.vline')", 150)
-                and "Codex может читать код проекта" in await pg.js("document.querySelector('.vline').textContent"))
+        verdict("the project says other vendors may get its code", await pg.until("!!document.querySelector('.vline')", 150)
+                and "Код проекта можно отдавать другим производителям" in await pg.js("document.querySelector('.vline').textContent"))
         await pg.shot(os.path.join(OUT, "project.png"))
         await pg.tap("document.querySelector('.vline .link')", wait=0.8)
         verdict("... «Disallow» takes it back", not await pg.js("!!document.querySelector('.vline')")

@@ -565,9 +565,11 @@ function Session({ sid }) {
   // two steady lines: the model with its effort (a tap picks them) · where the text goes and the context gauge
   // the model: the one picked for the session, else the one its last request used; the effort — the same way
   const chosen = info.choice && info.choice.model;
-  const modelText = chosen ? chosen.charAt(0).toUpperCase() + chosen.slice(1) + (info.stats && info.stats.model && !modelName(info.stats.model).toLowerCase().startsWith(chosen) ? " ▸" : "")
+  const vend = info.vendor;                    // another vendor's model (stage M, step 2): its name and the model as it is
+  const modelText = vend ? vend.name + " · " + (chosen || (info.stats && info.stats.model) || vend.models[0])
+    : chosen ? chosen.charAt(0).toUpperCase() + chosen.slice(1) + (info.stats && info.stats.model && !modelName(info.stats.model).toLowerCase().startsWith(chosen) ? " ▸" : "")
     : info.stats && info.stats.model ? modelName(info.stats.model) : "";
-  const effortNow = (info.choice && info.choice.effort) || (info.stats && info.stats.effort) || "";
+  const effortNow = vend ? "" : (info.choice && info.choice.effort) || (info.stats && info.stats.effort) || "";
   const canPick = info.switch || info.switch_effort;
   // a tap on the status explains it in plain words, in a sheet of our own
   const explain = () => { setNote([lv.tab ? t("ex.tab") : lv.open ? (copyWhy(lv) ? copyWhy(lv) + " " + t("ex.copy.then") : t("ex.copy")) : t("ex.session"),
@@ -616,7 +618,7 @@ function Session({ sid }) {
     <div ref=${bottom}></div>
     ${(unread || far) && html`<button class=${"tobottom" + (unread ? " fresh" : "")} aria-label=${t("to.bottom")} onClick=${() => { toBottom(); setUnread(false); }}>${unread ? t("new.msgs") : "↓"}</button>`}
     <div class="composer" ref=${comp}>
-      ${pick && html`<${ModelPick} sid=${sid} choice=${info.choice} now=${info.stats || {}} driven=${lv.driven} tab=${lv.tab} dflt=${info.default} canModel=${info.switch} canEffort=${info.switch_effort} onClose=${closePick} onDone=${() => load("after")}/>`}
+      ${pick && html`<${ModelPick} sid=${sid} choice=${info.choice} now=${info.stats || {}} driven=${lv.driven} tab=${lv.tab} dflt=${info.default} canModel=${info.switch} canEffort=${info.switch_effort && !vend} vendor=${vend} onClose=${closePick} onDone=${() => load("after")}/>`}
       ${note && html`<${Sheet} title=${info.title} lines=${note} onClose=${closeNote}/>`}
       ${bgs && html`<${BgSheet} sid=${sid} onClose=${closeBgs}/>`}
       ${tagPick && html`<${TagPick} sid=${sid} info=${info} onDone=${() => load("after")} onClose=${closeTagPick}/>`}

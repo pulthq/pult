@@ -4,6 +4,17 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.27 — 2026-10-30
+
+- **Other vendors' models inside Claude Code.** New task has **Who does it** above the model: Claude, or DeepSeek, GLM or
+  Kimi — Claude Code itself runs the task on their model, with your key, and everything works as with Claude: the
+  turns, the cards, the outcome, the topic. Keys go in Settings → Other vendors (each is checked with one tiny request
+  and stays on the computer), with the vendor's list of models to edit — the main one first, the fast one second.
+  A project goes to other vendors only once you allow it (the same permission as the second opinion's), and can do
+  its new tasks there by default. A session keeps its vendor when it goes on or is copied, never starts without the
+  key, and doesn't show in VS Code's list. Their replies don't count against your Claude plan's pace. Without a key
+  Claude Code would send your Claude sign-in to the other address — Pult never starts such a session.
+
 ## 0.18.26 — 2026-10-30
 
 - **Second opinion: two races closed** (both found by Codex's own second opinion on the feature). **Disallow** on a

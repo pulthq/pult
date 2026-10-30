@@ -82,7 +82,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.26"
+VERSION = "0.18.27"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -2522,16 +2522,25 @@ class Pult(Api, Parts):
         return self.t("busy.driven", n=len(self.driven), sessions=I.plural(len(self.driven), "session"))
 
     async def drive(self, sid, path, text, origin, resume=None, fork=False, pkey=None, quote=True, here=None,
-                    model=None, effort=None, app=False):
+                    model=None, effort=None, app=False, vendor=None):
         """quote=False — the owner's message is in another topic (General): the turn doesn't reply to it
         but shows the prompt itself. here — where the owner wrote (for a refusal); the project topic by default.
         model, effort — the owner's choice for a new session; a resumed one keeps what was chosen for it.
         → True once the session is on its way; False — refused, told in Telegram. app=True: the refusal is a
         ValueError, which the app shows where the owner tapped (before 0.18.6 the app heard "ok" for a session that
-        never started, and the refusal went to the topic — review 2026-10-27, A2)."""
+        never started, and the refusal went to the topic — review 2026-10-27, A2). vendor — whose model a new session
+        runs on (stage M, step 2): "claude", a vendor's id, None — the project's default; a continuation or a copy keeps
+        the session's own, and never runs without its key."""
         pkey = pkey or sanitize(path)
         if fork:
             resume, sid = sid, str(uuid.uuid4())
+        vid = self.store.vendor_of(resume) if resume else self.vendor_for_new(pkey, vendor)
+        if vid and not self.vendor_key(vid):
+            msg = self.t("vendor.err.gone", name=self.vendor_profiles()[vid]["name"])
+            if app:
+                raise ValueError(msg)
+            await self.send(pkey, msg, reply_to=origin, here=here)
+            return False
         if model or effort:
             self.set_choice(sid, model, effort)
         choice = self.choice.get(sid) or {}
@@ -2544,6 +2553,8 @@ class Pult(Api, Parts):
                 return False
             idle[0].task.cancel()
         self.store.touch_session(sid, pkey, path=path, driven=True)
+        if vid:
+            self.store.set_vendor(sid, vid)        # before the process starts: Driven.options reads it
         self.set_focus(pkey, sid)
         if origin:
             self.store.map_msg(origin, sid, "owner")
@@ -2555,7 +2566,8 @@ class Pult(Api, Parts):
                                        model=choice.get("model"), effort=choice.get("effort"))
         dr.q.put_nowait((text, origin if quote else None))
         await self.react(origin, "👀")
-        log("Telegram session:", sid[:8], "fork" if fork else "resume" if resume else "new", path)
+        log("Telegram session:", sid[:8], "fork" if fork else "resume" if resume else "new", path,
+            "· " + vid if vid else "")
         return True
 
     # ----- VS Code tabs with Pult's wrapper (stage 2) -----

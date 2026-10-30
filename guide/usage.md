@@ -54,6 +54,15 @@ you're neither in the app nor at the computer. Reminders on long turns; warnings
   whether its code may go to OpenAI; the project's screen then says so, and **Disallow** takes it back. The button
   shows only where Codex is installed (ChatGPT for Mac carries it, or the `codex` command); a Codex version Pult
   wasn't checked on is checked against its own protocol first.
+- **Other vendors' models**: New task has **Who does it** above the model — Claude, or DeepSeek, GLM or Kimi. Claude
+  Code itself runs the task on their model (they answer its own protocol at an address of theirs), with your key:
+  the turns, the cards, the outcome and the topic work as with Claude, and the model field lists that vendor's models.
+  Put a key in Settings → Other vendors — it is checked with one tiny request and stays on the computer — and edit
+  the list of models there: the first is the main one, the second the fast one (titles, subagents). The first pick in
+  a project asks whether its code may go to other vendors (the same permission as the second opinion's); **Make it
+  the default** sends the project's new tasks there, from Telegram too. A session keeps its vendor when it goes on or
+  is copied, never starts without the key and doesn't show in VS Code's list. Anthropic doesn't support this, and
+  Claude Code's prompts are written for Claude: for the cheaper tasks, not the hard ones.
 - **A session** shows the whole conversation, live, with the model, the effort and the context gauge by the message
   field. Pick the model (Fable, Opus, Sonnet, Haiku) and how hard Claude thinks for that session; a running one
   switches at once. Settings → Model and effort sets what sessions from the app and Telegram start with; VS Code tabs
@@ -113,6 +122,9 @@ code to Telegram the same way as Claude's turns.
 - **Other vendors:** a project's code reaches OpenAI only with a second opinion you ask for, and only once you
   allowed that project. Codex reads in a read-only sandbox with your own ChatGPT sign-in; Pult gives it none of its
   keys. Codex keeps the review in its own history, as with any task of yours.
+- **Vendors' keys** live in `~/.config/pult/env` like the bot token; the app can set or remove one but never reads it
+  back. Without a key Claude Code would send your Claude sign-in to the vendor's address, so Pult never starts a vendor
+  session without one.
 - **No telemetry.** Logs stay on the computer. `pult report` prints the state with tokens, IDs, folder names and
   message text removed, for a bug report. Vulnerabilities: [SECURITY.md](../SECURITY.md).
 
