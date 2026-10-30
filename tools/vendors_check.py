@@ -6,7 +6,9 @@ models; "Make it the default" is kept for the project; the task starts with the 
 vendors: who does new tasks by default — Claude, or DeepSeek for every allowed project; DeepSeek's key is there, GLM's isn't; a bad key is refused with the vendor's words, a good one taken; the list of
 models is saved. A session on DeepSeek's model says so by the field — "DeepSeek · v4-pro", its name ending where Stop
 begins, on a narrow phone too — and its picker lists only DeepSeek's models; Home's "Running now" says which model does
-each task (the owner, 2026-10-30).
+each task (the owner, 2026-10-30); "Your move" too — an outcome at its foot across from "Got it", a request on its top line
+before how long it waits (Q108) — and a finished task's row at the right end of its second line (Q109), on 320 px too; a
+project's screen the same.
   STAND_VENDORS=1 STAND_HOMES=1 STAND_LANG=ru STAND_PORT=18171 HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out &
   ~/.local/share/pult/venv/bin/python tools/vendors_check.py /tmp/stand.out [out_dir]
 Screenshots go to out_dir (a temporary folder by default). Exit 1 on a failed check."""
@@ -172,7 +174,49 @@ async def main():
                           " w = m.parentElement.querySelector('.run-w'), b = m.getBoundingClientRect(); if (!w) return true;"
                           " const p = w.getBoundingClientRect(); return b.right <= r.right && b.left >= p.right && Math.abs(b.top - p.top) < 4; })")
         verdict("… on the top line's right end, beside the project", top)
+        # Q108: the cards of "Your move" name the model too — the outcome's at its foot, across from "Got it" (on its top
+        # line it pushed the tags out), a request's on its top line before how long it waits; Q109: a finished task's
+        # row at the right end of its second line (the owner, 2026-10-30)
+        await pg.until("!!document.querySelector('.card.mine .foot .llm')", 100)
         await pg.shot(os.path.join(OUT, "home.png"))
+        mine = await pg.js("[...document.querySelectorAll('.card.mine')].map((c) => [c.querySelector('.c-title').textContent.trim(),"
+                           " (c.querySelector('.foot .llm') || {}).textContent || '', !!c.querySelector('.c-proj .llm')])")
+        verdict("Your move: the outcome on DeepSeek says «DeepSeek · v4-pro» at its foot, never on its top line",
+                any(m == "DeepSeek · v4-pro" for _, m, _ in mine) and not any(top for _, _, top in mine), mine)
+        foot = ("[...document.querySelectorAll('.card.mine .foot .llm')].every((m) => { const c = m.closest('.card'), g = m.closest('.foot').querySelector(':scope > .link'),"
+                " t = c.querySelector('.c-title').getBoundingClientRect(), b = m.getBoundingClientRect(), k = g.getBoundingClientRect();"
+                " return Math.abs(b.left - t.left) < 1.5 && b.right <= k.left - 8 && Math.abs(b.bottom - k.bottom) < 4; })")
+        verdict("… at the foot's left edge, on the line of «Got it», short of it", await pg.js(foot))
+        reqs = await pg.js("[...document.querySelectorAll('.card:not(.mine) .c-proj .llm')].map((m) => { const w = m.parentElement.querySelector('.c-wait'),"
+                           " b = m.getBoundingClientRect(), k = w.getBoundingClientRect(); return [m.textContent, b.right <= k.left && Math.abs(b.top - k.top) < 4]; })")
+        verdict("a request says its model on the top line, before how long it waits", len(reqs) >= 2 and all(m == "Opus 5.5" and ok for m, ok in reqs), reqs)
+        rows = ("[...document.querySelectorAll('.brow .ln-row .llm')].map((m) => { const r = m.closest('.brow').getBoundingClientRect(),"
+                " h = m.closest('.brow').querySelector('.item-h').getBoundingClientRect(), b = m.getBoundingClientRect();"
+                " return [m.textContent, Math.abs(r.right - 14 - b.right) < 2 && b.top >= h.bottom - 1]; })")
+        got = await pg.js(rows)
+        verdict("a finished task's row: «Fable 5.1» at the right end of its second line", any(m == "Fable 5.1" and ok for m, ok in got) and all(ok for _, ok in got), got)
+        await pg.cmd("Emulation.setDeviceMetricsOverride", width=320, height=860, deviceScaleFactor=2, mobile=True)
+        await asyncio.sleep(0.4)
+        narrow = await pg.js(foot) and all(ok for _, ok in await pg.js(rows))
+        wait = await pg.js("[...document.querySelectorAll('.card .c-wait')].every((w) => w.getBoundingClientRect().right <= w.closest('.card').getBoundingClientRect().right)")
+        verdict("… on a narrow phone too: nothing runs over «Got it», the waiting time or the row's edge", narrow and wait)
+        # a request's model there is whole or gone — never "Opus 5…" — and the project's name keeps one line (320 px
+        # cut the one and broke the other in two)
+        whole = await pg.js("[...document.querySelectorAll('.card:not(.mine) .c-right')].map((g) => { const m = g.querySelector('.llm'),"
+                            " p = g.closest('.c-proj').querySelector(':scope > span:not(.c-right):not(.av)'), b = m && m.getBoundingClientRect(), k = g.getBoundingClientRect();"
+                            " return [m ? (b.top - k.top < 2 ? (m.scrollWidth <= m.clientWidth ? 'whole' : 'cut') : b.top - k.top >= 19 ? 'gone' : 'half') : 'none',"
+                            " p ? p.getBoundingClientRect().height < 24 : true]; })")
+        verdict("… a request's model whole or gone, the project's name on one line", len(whole) >= 2 and all(m in ("whole", "gone") and one for m, one in whole), whole)
+        await pg.shot(os.path.join(OUT, "home-320.png"))
+        await pg.cmd("Emulation.setDeviceMetricsOverride", width=412, height=860, deviceScaleFactor=2, mobile=True)
+        await asyncio.sleep(0.4)
+        # a project's screen: its "Waiting for you" says the same
+        await pg.js("location.hash = '#/p/' + encodeURIComponent('-Users-x-proj')")     # the shop's: the tests' project key
+        await pg.until("!!document.querySelector('.project .card.mine .foot .llm')", 100)
+        proj = await pg.js("[(document.querySelector('.project .card.mine .foot .llm') || {}).textContent,"
+                           " (document.querySelector('.project .card:not(.mine) .c-proj .llm') || {}).textContent]")
+        verdict("a project's screen: the outcome's foot and the request's top line name the model", proj == ["DeepSeek · v4-pro", "Opus 5.5"], proj)
+        await pg.shot(os.path.join(OUT, "project.png"))
         verdict("no script errors on the page", not pg.errors, pg.errors)
     print("screenshots:", OUT)
     sys.exit(verdict.code())

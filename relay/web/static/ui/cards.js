@@ -6,7 +6,7 @@ import { alertBox, haptic } from "../core/tg.js";
 import { t } from "../i18n.js";
 import { md } from "../md.js";
 import { html, useEffect, useRef, useState } from "../vendor/htm-preact-3.1.1.js";
-import { avatar, dur, ic, keyTap, nb, tagSt } from "./kit.js";
+import { avatar, dur, ic, keyTap, llmName, nb, tagSt } from "./kit.js";
 
 
 // ---------- cards: question, permission request, plan ----------
@@ -63,8 +63,11 @@ function Req({ r, onDone, showWhere = true, showProject = true }) {
     } catch (e) { alertBox(e.message); }
     setBusy(false);
   };
-  // how long it waits, as a session's card says: "your move" puts them all in one line by time
-  const waits = r.since && !done ? html`<span class="c-wait">${t("mine.waits", { dur: nb(dur(Date.now() / 1000 - r.since)) })}</span>` : "";
+  // how long it waits, as a session's card says: "your move" puts them all in one line by time; which model asks —
+  // before it, as "Running now" says it on top (Q108): a request has no tags there to push out. The two wrap from the
+  // right: a line too short for both drops the model whole, and the project keeps its name
+  const llm = llmName(r.llm);
+  const waits = r.since && !done ? html`<span class="c-right"><span class="c-wait">${t("mine.waits", { dur: nb(dur(Date.now() / 1000 - r.since)) })}</span>${llm && html`<span class="llm">${llm}</span>`}</span>` : "";
   // the header opens the session, as a session's card on Home does: Claude's whole message before the question is
   // there (the owner, 2026-10-28: a question on Home led nowhere — nothing to read before answering)
   const open = r.sid ? () => go("#/s/" + r.sid) : null;

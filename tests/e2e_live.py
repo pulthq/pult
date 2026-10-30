@@ -17,7 +17,7 @@ With the model on, a new task gets its section and topic as soon as its request 
 the first open of the project sorts its earlier tasks without tags, in a batch (T2).
 A task on another vendor's model (stage M, step 2): a stand-in for DeepSeek on this computer gets the session's requests with
 Pult's key and never the subscription's token; the outcome comes; the transcript names the vendor's model, and so does its
-row — Claude's session's row its real model.
+row — Claude's session's row its real model, and so does the owner's move on Home.
 """
 import asyncio, json, os, shutil, sys, tempfile, time, urllib.parse
 from pathlib import Path
@@ -186,9 +186,11 @@ async def main():
     # whose move (stage V): a real Stop leaves an outcome; nothing runs after PONG and nobody opened it — the owner's
     # move, with the result's first sentence as its line; opening the session puts it to rest
     ov = await p.api_overview()
-    mine = {r["sid"]: (r["state"], r["line"]) for r in ov["mine"]}
+    mine = {r["sid"]: (r["state"], r["line"], r.get("llm")) for r in ov["mine"]}
     log("твой ход:", mine.get(sid4), "· проектов на доске:", len(ov["board"]))
     assert mine.get(sid4) and mine[sid4][0] == "you" and "PONG" in mine[sid4][1].upper(), "no outcome for a real turn"
+    # its card names the model that did it (Q108): the real transcript's own
+    assert mine[sid4][2] and str(mine[sid4][2].get("model")).startswith("claude-") and "vendor" not in mine[sid4][2], "the owner's move doesn't say the model"
     await p.api_session(sid4)
     assert sid4 not in {r["sid"] for r in (await p.api_overview())["mine"]}, "opening the session didn't put it to rest"
     # which model does it, for its row on Home (2026-10-30): the real transcript's own

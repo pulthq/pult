@@ -39,6 +39,7 @@ STAND_SECOND=1 (stage M, step 1): the shop is a git repository whose search the 
 offers "Second opinion · Codex" under its outcome (tools/second_check.py). STAND_SECOND=allowed — the shop already allowed.
 STAND_VENDORS=1 (stage M, step 2): DeepSeek has a made-up key (GLM and Kimi none), a key's check passes "sk-…" without any
 network, and a session ran on DeepSeek's model (SESSV) — its next turn runs now, from the app, on deepseek-v4-pro[1m];
+the session that waits for you (SESS4) ran on DeepSeek too, the weekly report on Fable — the cards and rows name the model;
 "Who does it" in New task, Settings → Other vendors (tools/vendors_check.py). VS Code's settings and the tab
 switch are made up on every stand: the app never reads this computer's."""
 import asyncio, base64, hashlib, hmac, json, os, random, shutil, signal, sys, time, urllib.parse
@@ -969,7 +970,14 @@ async def main():
         p.live[SIDV].driven = True                    # a hook from the app's own session would say so itself
         p.live[SIDV].turn.started -= 50
         p.live[SIDV].run = p.live[SIDV].turn.started
+        # the session that waits for you ran on DeepSeek too: its card in "Your move" names the model at its foot (Q108)
+        store.set_vendor(SID4, "deepseek")
+        p.set_choice(SID4, "deepseek-v4-pro[1m]")
     store.touch_session(SID5, PKEY2, path=DESK, title=D["s5_title"])
+    if os.environ.get("STAND_VENDORS") == "1":         # the weekly report was Fable's: its row on the board says so (Q109)
+        fl = json.loads(aline(D["s5_line"] + ".", "s5", 900, ago=600))
+        fl["message"]["model"] = "claude-fable-5-1"
+        (d.parent / PKEY2 / (SID5 + ".jsonl")).write_text(line("user", D["s5_title"], ago=900) + "\n" + json.dumps(fl) + "\n")
     r = p.attn.finished(SID5, PKEY2, 300, D["s5_line"], D["s5_line"], waits=True, now=time.time() - 600)
     # STAND_ASK2=1: it waits for you as well — two in "your move", ten and twenty-five minutes (tools/ask_check.py)
     p.attn.briefed(SID5, r["ts"], {"line": D["s5_line"], "you": os.environ.get("STAND_ASK2") == "1", "need": ""}, True)

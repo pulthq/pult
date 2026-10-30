@@ -4,6 +4,13 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.31 — 2026-10-30
+
+- **Your move says which model did the work too.** A finished task's card names it at its foot, across from **Got it**
+  — Claude's model (Opus 5.5) or another vendor's (DeepSeek · v4-pro); a question or a permission says it on its top
+  line, before how long it waits, and drops it when a narrow phone has no room. A finished task's row on Home and in a
+  project's **Today** says it at the right end of its second line.
+
 ## 0.18.30 — 2026-10-30
 
 - **Which model does each task.** Home's **Running now** says it at the right end of a task's top line — Claude's model
