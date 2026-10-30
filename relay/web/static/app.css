@@ -114,6 +114,16 @@ button:focus-visible, a:focus-visible, label:focus-visible, [role="button"]:focu
 .run-top .run-w { flex: 1 1 auto; min-width: 0; }
 .llm { flex: none; margin-left: auto; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: var(--fs-cap); font-weight: 500; line-height: 20px; color: var(--muted); }
+/* a finished task's row (Q109): the model at the right end of the second line, level with its last line — the title,
+   cut already, keeps its room; a card of "Your move" (Q108): the outcome's at the foot, in the size of "Got it" across
+   from it, the first to end in "…" when the foot runs short */
+.ln-row { display: flex; align-items: flex-end; gap: 10px; margin-top: 3px; }
+.ln-row .ln { flex: 1 1 auto; min-width: 0; margin-top: 0; }
+.ln-row .llm { line-height: 1.45; }
+.foot-l { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 12px; }
+.foot-l .link { flex: none; }
+.foot-l + .link { flex: none; margin-left: 12px; }
+.foot .llm { flex: 0 1 auto; min-width: 0; max-width: none; margin-left: 0; padding-top: 6px; font-size: var(--fs-sec); line-height: inherit; }
 .run-h .meta { flex: none; display: flex; align-items: baseline; gap: 8px; }
 .run-h .pct { font-size: var(--fs-cap); color: var(--danger); white-space: nowrap; }
 .run-t { flex: 1; min-width: 0; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2;
@@ -600,6 +610,16 @@ table.tv th { color: var(--muted); font-weight: 500; }
 .c-proj { display: flex; align-items: center; gap: 7px; font-size: var(--fs-cap); color: var(--muted); font-weight: 500; }
 .c-proj .c-wait { margin-left: auto; color: var(--attn-ink); font-weight: 600; white-space: nowrap; }
 .c-proj .run-w { flex: 1 1 auto; min-width: 0; }      /* the project and the tags give way to how long it waits */
+/* a request's model (Q108), before how long it waits, a dot between: the pair wraps from the right, and a line too
+   short for both drops the model whole onto a hidden second line, as "Running now" drops a tag — never "Opus 5…",
+   and the project's name no longer breaks in two (320 px) */
+.c-right { margin-left: auto; flex: 0 1000 auto; display: flex; flex-flow: row-reverse wrap; align-items: center; column-gap: 7px;
+  height: 20px; overflow: hidden; }
+.c-right > * { line-height: 20px; }
+.c-proj .c-right .c-wait { margin-left: 0; }
+.c-right .llm { margin-left: 0; max-width: none; }
+.c-right .llm::after { content: "·"; margin-left: 7px; }
+.c-right + .c-go { margin-left: -2px; }
 .c-title { font-size: var(--fs-card); font-weight: 650; line-height: 1.3; display: flex; gap: 6px; align-items: baseline; }
 .c-go { margin-left: auto; flex: none; align-self: center; display: inline-flex; color: var(--muted); }   /* the header opens the session */
 .c-wait + .c-go { margin-left: -2px; }        /* after how long it waits, which takes the free room itself */

@@ -93,13 +93,15 @@ class Api:
                 lv = self.live.get(sid) or self.stub(sid, self.D.sanitize(a.get("cwd") or ""))
                 opened.append(dict(self.live_item(lv), project=os.path.basename((a.get("cwd") or "").rstrip(self.D.SEPS))))
         load = await self.load_state()
+        pending = [self.req_item(r) for r in self.req_by_rid.values() if not r.fut.done()]
+        for x in pending:                            # which model asks: a question's card says it too (Q108)
+            _, x["llm"] = await self.row_stats(x["sid"])
         return {"mac": {"idle": idle, "away": await self.away(), "mode": self.mode()}, "now": time.time(),
                 "lang": self.lang(), "load": self.load_sum(load[2], load[3]) if load else None,
                 # a session may end while this waited for the process snapshot (SessionEnd drops it): it is just gone
                 # from the list — before, Home failed with KeyError until the next event (review 2026-10-27, A1)
                 "live": [self.live_item(self.live[s]) for s in shown if s in self.live],
-                "pending": [self.req_item(r) for r in self.req_by_rid.values() if not r.fut.done()],
-                "open": opened, "recent": list(self.recent),
+                "pending": pending, "open": opened, "recent": list(self.recent),
                 "jobs": [self.job_item(j) for j in self.jobs.values()] + [self.job_item(j) for j in self.jobs_done],
                 "update": await self.update_row(), **await self.board(agents)}
 
@@ -180,6 +182,8 @@ class Api:
                              "work": sum(1 for r in rs if r["state"] in ("work", "bg", "queue")),
                              "mine": sum(1 for r in rs if r["state"] in A.MINE), "turns": turns, "secs": secs})
         mine = A.sort_rows([dict(r, project=p["name"]) for p in projects for r in p["rows_all"] if r["state"] in ("you", "fail")])
+        for r in mine:                               # which model did the work: its card says it too (Q108)
+            _, r["llm"] = await self.row_stats(r["sid"])
         projects = A.sort_projects(projects)
         pins, hides = self.store.pins(), self.store.hides()
         projects.sort(key=lambda p: -pins.get(p["pkey"], 0))      # the pinned first, the newest pin on top; the rest keep their order (stage Zh)
@@ -472,6 +476,8 @@ class Api:
                        key=lambda r: -(r["ts"] or 0))
         for r in live + today:
             r["ctx"], r["llm"] = await self.row_stats(r["sid"])
+        for r in mine + pending:                     # the cards that wait for the owner name the model too (Q108)
+            _, r["llm"] = await self.row_stats(r["sid"])
         shown = {r["sid"] for r in mine + live + today} | {r["sid"] for r in pending}
         earlier = []
         if path and os.path.isdir(path):

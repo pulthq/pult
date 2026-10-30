@@ -2080,6 +2080,35 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         live = {r["sid"]: r["llm"] for r in (await self.p.api_project(PKEY))["live"]}       # the project's screen too
         self.assertEqual((live[claude], live[vend]["vendor"]), ({"model": "claude-fable-5-1"}, "DeepSeek"))
 
+    async def test_waiting_model(self):
+        # the cards that wait for the owner name the model too (Q108): a request — a permission, a question — and a
+        # session's outcome in "Your move", on Home and on the project's screen; a finished task's row (Q109) — on the
+        # board and in the project's "Today"
+        self.p._procs = (time.monotonic() + 1e6, None)
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        Path(TP).write_text(tline("user", "Сделай отчёт") + "\n" + json.dumps({
+            "type": "assistant", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+            "message": {"id": "m1", "model": "claude-fable-5-1", "role": "assistant", "content": [],
+                        "usage": {"input_tokens": 10, "output_tokens": 5}}}) + "\n")
+        fable = {"model": "claude-fable-5-1"}
+        await run_hook(ev("SessionStart", source="startup"))
+        await run_hook(ev("UserPromptSubmit", prompt="Сделай отчёт"))
+        hook = await run_hook(ev("PermissionRequest", tool_name="Bash", tool_input={"command": "make report"}), wait=False)
+        await until(lambda: self.p.req_by_rid)
+        self.assertEqual([x["llm"] for x in (await self.p.api_overview())["pending"]], [fable])
+        self.assertEqual([x["llm"] for x in (await self.p.api_project(PKEY))["pending"]], [fable])
+        rid = next(iter(self.p.req_by_rid))
+        await self.p.on_callback({"id": "c1", "from": {"id": OWNER}, "data": "p:%s:y" % rid})
+        await hook.wait()
+        await run_hook(ev("Stop", last_assistant_message="**Отчёт готов.** Какой формат дальше — PDF или таблица?"))
+        await until(lambda: SID in self.p.attn.rec)
+        ov = await self.p.api_overview()
+        self.assertEqual([(r["sid"], r["state"], r["llm"]) for r in ov["mine"]], [(SID, "you", fable)])
+        self.assertEqual([r["llm"] for r in (await self.p.api_project(PKEY))["mine"]], [fable])
+        await self.p.api_seen(SID)                                                   # "Got it" → a finished row
+        self.assertEqual([(r["state"], r["llm"]) for r in (await self.p.api_overview())["board"][0]["rows"]], [("idle", fable)])
+        self.assertEqual([r["llm"] for r in (await self.p.api_project(PKEY))["today"]], [fable])
+
     async def test_new_project(self):
         # stage S: a folder in a place picked inside the home folder, git, the topic named by the title at once, the
         # project in the lists before Claude ever ran there; with a description — the first turn writes CLAUDE.md

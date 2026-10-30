@@ -118,10 +118,12 @@ const moveKey = (e) => e.key;
 
 // "Your move": a session that ended and waits for you — its project and tags, how long, what came out, what is
 // needed; ready replies, your own words, "Got it" to put it to rest; the title opens the session. The tags stay on
-// the top line, as in "Running now": in front of the line they ate it (2026-10-26)
+// the top line, as in "Running now": in front of the line they ate it (2026-10-26). Which model did the work — at
+// the foot, across from "Got it" (Q108): on the top line, beside how long it waits, it pushed the tags out
 function Mine({ r, now, onGot, stt, showProject = true }) {
   const [busy, setBusy] = useState(false);
   const [resume, setResume] = useState(r.resume);
+  const llm = llmName(r.llm);                // a computer before 0.18.31 doesn't say: no mark
   const got = async (e) => {
     e && e.stopPropagation();
     setBusy(true);
@@ -140,7 +142,7 @@ function Mine({ r, now, onGot, stt, showProject = true }) {
     ${r.need ? html`<div class="ln dim tap" onClick=${open}>${r.line}</div><div class="now tap" onClick=${open}>${r.need}</div>` : html`<div class="now tap" onClick=${open}>${r.line}</div>`}
     ${r.fail === "rate_limit" ? html`<${ResumeAt} sid=${r.sid} resume=${resume} reset=${r.reset} onSet=${setResume}/>` : html`<${Replies} sid=${r.sid} replies=${r.replies} onSent=${sent}/>`}
     <${QuickReply} sid=${r.sid} stt=${stt} onSent=${sent}/>
-    <div class="foot quiet">${copy ? html`<button class="link copy" onClick=${aboutCopy}>${ic("copy", 15)} ${t("dest.copy")}</button>` : html`<span></span>`}<button class="link" disabled=${busy} onClick=${got}>${ic("check", 15)} ${t("mine.got")}</button></div>
+    <div class="foot quiet"><span class="foot-l">${llm && html`<span class="llm">${llm}</span>`}${copy && html`<button class="link copy" onClick=${aboutCopy}>${ic("copy", 15)} ${t("dest.copy")}</button>`}</span><button class="link" disabled=${busy} onClick=${got}>${ic("check", 15)} ${t("mine.got")}</button></div>
   </div></${SwipeRow}>`;
 }
 
@@ -162,9 +164,11 @@ const ctxWarn = (r) => (r.ctx != null && r.ctx >= 90 ? html`<span class="pct bad
 // a row slides to a task's tags when the screen gives it onTags (stage Zh, step 2 — Q102): the sheet of the session's screen
 const tagsAct = (r, onTags) => [{ ic: "tag", label: t("row.tags"), on: () => onTags(r.sid) }];
 
-// one session on the board: what it does now or how its last turn ended, in a line or two
+// one session on the board: what it does now or how its last turn ended, in a line or two; which model did it — at
+// the right end of the second line, as a chat list's badge (Q109): the title, cut already, keeps its room
 function BoardRow({ r, now, onBg, onTags }) {
   const bgTap = (e) => { e.stopPropagation(); onBg(r); };
+  const llm = llmName(r.llm);
   const right = r.state === "work" ? workChip(r.since, now)
     : r.state === "queue" ? queueChip(r.since, now)
     : r.state === "bg" ? bgChip(r.since, now, bgTap)
@@ -173,7 +177,7 @@ function BoardRow({ r, now, onBg, onTags }) {
   // a row, not a <button>: its background task is a tap of its own, and a button can't hold one
   const body = html`<div role="button" tabindex="0" class=${"item brow" + (r.state === "idle" ? " rest" : "") + (r.state === "done" ? " fresh" : "")} onClick=${open} onKeyDown=${keyTap(open)}>
     <div class="item-h"><b class="one">${rowIcon(r)}${r.title}</b><span class="meta">${ctxWarn(r)}${right}</span></div>
-    ${(r.line || (r.tags && r.tags.length > 0)) && html`<div class="ln">${tagChips(r.tags)}${r.line}</div>`}
+    ${(r.line || (r.tags && r.tags.length > 0) || llm) && html`<div class="ln-row"><div class="ln">${tagChips(r.tags)}${r.line}</div>${llm && html`<span class="llm">${llm}</span>`}</div>`}
     ${r.bg && r.bg.length > 0 && html`<div class="bg tap" role="button" tabindex="0" onClick=${bgTap} onKeyDown=${keyTap(bgTap)}>${bgLine(r.bg)} ${ic("chev", 14)}</div>`}
   </div>`;
   return onTags ? html`<${SwipeRow} what="task" acts=${tagsAct(r, onTags)}>${body}</${SwipeRow}>` : body;
