@@ -1104,6 +1104,8 @@ S = {
                        "ru": "{name}: ключа ещё нет — добавь в «Настройки → Другие производители»."},
     "vendor.err.gone": {"en": "This session runs on {name}, and its key is gone — add it again in Settings to go on.",
                         "ru": "Эта сессия идёт на {name}, а его ключа больше нет — добавь его снова в «Настройках», чтобы продолжить."},
+    "vendor.err.revoked": {"en": "This session runs on {name}, and its project no longer goes to other vendors — allow it again on the project's screen to go on, or start the task anew with Claude.",
+                           "ru": "Эта сессия идёт на {name}, а проект больше не отдаётся другим производителям — разреши снова на экране проекта, чтобы продолжить, или начни задачу заново с Claude."},
     "vendor.err.effort": {"en": "How hard it thinks is Claude's setting; another vendor's session keeps its vendor's own.",
                           "ru": "Раздумья — настройка Claude; у сессии другого производителя — его собственные."},
     "vendor.err.models": {"en": "Models: their names separated by commas, up to 8.",

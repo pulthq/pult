@@ -280,8 +280,8 @@ class Driven:
             # another vendor's model (stage M, step 2): its profile in the environment, the owner's key in both of
             # Claude Code's places; never without the key — the subscription's own token would go there (pult_vendors)
             p, key = self.d.vendor_profiles().get(vid), self.d.vendor_key(vid)
-            if not p or not key:
-                raise RuntimeError("no key for %s" % vid)
+            if not p or not key or self.d.vendor_stop(self.sid):
+                raise RuntimeError("%s: no key, or the project no longer goes to other vendors" % vid)
             own = getattr(self, "want_model", None)
             model = own if own and own not in ("fable", "opus", "sonnet", "haiku") else p["models"][0]
             kw["env"] = dict(kw["env"], **V.session_env(p, key, model))

@@ -82,7 +82,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.28"
+VERSION = "0.18.29"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -2466,6 +2466,10 @@ class Pult(Api, Parts):
         trow = self.store.topic(pkey)
         quote = bool(trow and trow["thread"] == here)    # a reply in the same topic the session lives in
         dr = self.driven.get(sid)
+        why = self.vendor_stop(sid, pkey)
+        if why:                                          # a vendor's session that can't go on (its key, "Disallow")
+            await self.send(pkey, why, reply_to=origin, here=here)
+            return
         if dr and not getattr(dr, "closing", False):
             mark = "✍" if dr.busy else "👀"
             self.out_add(sid, text, tg=origin, react=mark)
@@ -2535,8 +2539,8 @@ class Pult(Api, Parts):
         if fork:
             resume, sid = sid, str(uuid.uuid4())
         vid = self.store.vendor_of(resume) if resume else self.vendor_for_new(pkey, vendor)
-        if vid and not self.vendor_key(vid):
-            msg = self.t("vendor.err.gone", name=self.vendor_profiles()[vid]["name"])
+        msg = self.vendor_stop(resume, pkey) if resume and vid else None      # its key gone, or "Disallow" since
+        if msg:
             if app:
                 raise ValueError(msg)
             await self.send(pkey, msg, reply_to=origin, here=here)

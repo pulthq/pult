@@ -2741,6 +2741,24 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             copy = next(o for o in started if o.fork_session)
             self.assertEqual((self.store.vendor_of(copy.session_id), copy.env["ANTHROPIC_BASE_URL"]),
                              ("deepseek", "https://api.deepseek.com/anthropic"))
+            # "Disallow" (Codex's second opinion on M2): the project's DeepSeek sessions stop, and none goes on — from the
+            # app, from Telegram, by a copy — until the project is allowed again
+            (TMP / "projects" / PKEY).mkdir(parents=True, exist_ok=True)
+            (TMP / "projects" / PKEY / (sid + ".jsonl")).write_text(tline("user", "Почини тесты", ago=60) + "\n")
+            self.assertIn(sid, self.p.driven)
+            await self.p.api_vendors_ok(PKEY, False)
+            await until(lambda: sid not in self.p.driven)
+            for go in (lambda: self.p.api_send(sid, "дальше"),
+                       lambda: self.p.drive(sid, str(proj), "дальше", None, pkey=PKEY, resume=sid, app=True),
+                       lambda: self.p.drive(sid, str(proj), "копия", None, pkey=PKEY, fork=True, app=True)):
+                with self.assertRaises(ValueError) as e:
+                    await go()
+                self.assertIn("больше не отдаётся", str(e.exception))
+            n = len(started)
+            await self.p.continue_session(sid, "дальше", 70, 77)
+            await until(lambda: any("больше не отдаётся" in t for t in self.texts()))
+            self.assertEqual(len(started), n)
+            await self.p.api_vendors_ok(PKEY, True)
             # the common default (the owner, 2026-10-30: one tap if Claude goes away): the allowed projects without a
             # choice of their own follow it; a project that keeps Claude keeps it; only a vendor with its key
             await self.p.api_vendor_default(PKEY, None)
@@ -6318,6 +6336,19 @@ class CodexTest(unittest.TestCase):
         with self.assertRaises(CX.CodexError) as e:
             asyncio.run(CX.review(cmd, str(proj), "x", env=dict(os.environ), timeout=1))
         self.assertEqual(e.exception.kind, "timeout")
+        # a Codex that doesn't end when its input closes: the tree's stop runs and is waited for — never skipped to the
+        # kill (Codex's second opinion on stage M, 2026-10-30: an "is" on a bound method was never true)
+        calls, orig = [], CX.AppServer.stop_tree
+
+        async def spy(me):
+            calls.append(1)
+            await orig(me)
+        conf.write_text(json.dumps({"hang": 20}))
+        t = time.monotonic()
+        with mock.patch.object(CX.AppServer, "stop_tree", spy), self.assertRaises(CX.CodexError):
+            asyncio.run(CX.review(cmd, str(proj), "x", env=dict(os.environ), timeout=1))
+        self.assertEqual(calls, [1])
+        self.assertLess(time.monotonic() - t, 6.5)          # 1 s + 3 s for its input + the stop; the kill's 3 s more — never
         with self.assertRaises(CX.CodexError) as e:
             asyncio.run(CX.review(str(d / "no-such-codex"), str(proj), "x", env=dict(os.environ)))
         self.assertEqual(e.exception.kind, "start")
