@@ -4,6 +4,14 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.29 — 2026-10-30
+
+- **Disallow stops other vendors' sessions too** (found by Codex's own second opinion). Taking a project back from other
+  vendors now stops its sessions on their models, and none goes on — from the app, from Telegram, as a copy — until
+  you allow it again; before, a continuation went to the vendor anyway.
+- **Stopping Codex really stops the whole of it.** The step that ends Codex with everything it started never ran, so on
+  Windows a stopped second opinion left Codex reading on; now it runs and is waited for.
+
 ## 0.18.28 — 2026-10-30
 
 - **Who does new tasks by default — for every project at once.** Settings → Other vendors has a line on top: Claude,

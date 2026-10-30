@@ -462,26 +462,34 @@ class AppServer:
         return m.get("result") or {}
 
     async def close(self):
-        """stdin closed — the app-server ends by itself and takes its commands with it; then a signal; then a kill.
-        On Windows the signal goes to the whole tree: codex there is npm's codex.cmd, and ending its cmd.exe left the
-        program itself reading on (CI on Windows, 2026-10-30)."""
+        """stdin closed — the app-server ends by itself and takes its commands with it; then a signal — on Windows to
+        the whole tree: codex there is npm's codex.cmd, and ending its cmd.exe left the program itself reading on (CI on
+        Windows, 2026-10-30); then a kill. Each step waits for its own end (a check of "is this step the tree's" by
+        `is` on a bound method was never true, and the tree's step never ran — Codex's second opinion, 2026-10-30)."""
         try:
             self.p.stdin.close()
         except (OSError, RuntimeError):
             pass
-        for stop in (None, self.stop_tree, self.p.kill):
-            if stop is not None:
-                try:
-                    await stop() if stop is self.stop_tree else stop()
-                except ProcessLookupError:
-                    break
+        if not await self.ended(3):
             try:
-                await asyncio.wait_for(self.p.wait(), 3)
-                break
-            except asyncio.TimeoutError:
-                continue
+                await self.stop_tree()
+            except ProcessLookupError:
+                pass
+            if not await self.ended(3):
+                try:
+                    self.p.kill()
+                except ProcessLookupError:
+                    pass
+                await self.ended(3)
         for t in self.tasks:
             t.cancel()
+
+    async def ended(self, wait):
+        try:
+            await asyncio.wait_for(self.p.wait(), wait)
+            return True
+        except asyncio.TimeoutError:
+            return False
 
     async def stop_tree(self):
         if os.name != "nt":

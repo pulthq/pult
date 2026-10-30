@@ -947,6 +947,9 @@ class Api:
         if not cwd:
             raise ValueError(self.t("err.no_folder_short"))
         tab = self.tab_for(sid)
+        why = self.vendor_stop(sid, pkey)
+        if why:
+            raise ValueError(why)
         if sid in self.driven and not getattr(self.driven[sid], "closing", False):
             how = "session"
         elif tab:
@@ -1098,6 +1101,20 @@ class Api:
         vid = self.store.vendor_of(sid)
         p = self.vendor_profiles().get(vid) if vid else None
         return {"id": vid, "name": p["name"], "models": p["models"], "key": bool(self.vendor_key(vid))} if p else None
+
+    def vendor_stop(self, sid, pkey=None):
+        """Why a session on another vendor's model can't go on — its key is gone, or its project no longer goes to other
+        vendors (Codex's second opinion on M2: a continuation after "Disallow" sent the code there again) — or None."""
+        vid = self.store.vendor_of(sid)
+        if not vid:
+            return None
+        p = self.vendor_profiles().get(vid)
+        name = p["name"] if p else vid
+        if not self.vendor_key(vid):
+            return self.t("vendor.err.gone", name=name)
+        row = self.store.session(sid)
+        pkey = pkey or (row["pkey"] if row else None)
+        return None if pkey and self.vendors_ok(pkey) else self.t("vendor.err.revoked", name=name)
 
     def vendor_for_new(self, pkey, vendor=None):
         """Whose model a new session runs on — "claude" or a vendor asked for, checked; None (an app or a message from
@@ -1347,6 +1364,11 @@ class Api:
             d = self.store.get("vendors.default") or {}
             if d.pop(pkey, None):
                 self.store.put("vendors.default", d)
+            for sid, dr in list(self.driven.items()):       # its sessions on another vendor's model stop now
+                row = self.store.session(sid)
+                if self.store.vendor_of(sid) and row and row["pkey"] == pkey:
+                    dr.task.cancel()
+                    log("vendor session %s stopped: the project stays with Claude only" % sid[:8])
         return {"on": bool(on)}
 
     async def second_run(self, sid, job, path, project, info):
