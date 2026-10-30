@@ -44,6 +44,7 @@ CHECKS = {
     "msgcopy": ({"STAND_LANG": "ru"}, "out", []),                  # stage Zh, step 3: a slide copies Claude's message
     "second": ({"STAND_SECOND": "1", "STAND_LANG": "ru"}, "out", []),   # stage M, step 1: Codex's second opinion
     "vendors": ({"STAND_VENDORS": "1", "STAND_HOMES": "1", "STAND_LANG": "ru"}, "out", []),   # stage M, step 2
+    "gotit": ({"STAND_REPORT": "1", "STAND_LANG": "ru"}, "out", []),   # every finished task waits for "Got it" (2026-10-30)
     "parts": None,
     "update": None,
     "vcheck": None,

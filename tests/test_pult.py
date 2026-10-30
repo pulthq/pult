@@ -1149,18 +1149,21 @@ class AttnTest(unittest.TestCase):
         self.assertEqual(A.state([], True, [], rec), "work")
         self.assertEqual(A.state([], False, [{"id": "b"}], rec), "bg")     # Claude goes on by itself
         self.assertEqual(A.state([], False, [], rec), "you")
-        self.assertEqual(A.state([], False, [], dict(rec, you=False)), "done")
+        # a plain report is the owner's move too, till they put it away themselves (2026-10-30): no more "done"
+        self.assertEqual(A.state([], False, [], dict(rec, you=False, model=True)), "you")
         self.assertEqual(A.state([], False, [], dict(rec, fail="rate_limit")), "fail")
         self.assertEqual(A.state([], False, [{"id": "b"}], dict(rec, fail="rate_limit")), "fail")
         self.assertEqual(A.state([], False, [], dict(rec, seen=True)), "idle")
         self.assertEqual(A.state([], False, [], None), "idle")
-        # a look puts an outcome to rest unless the owner has to decide: broke off, or the model's "your move"
-        self.assertFalse(A.needs_owner(dict(rec, model=False, need="")))   # the rule alone: nothing runs
-        self.assertTrue(A.needs_owner(dict(rec, model=True, need="")))
-        self.assertTrue(A.needs_owner(dict(rec, model=True, need="Выбери А или Б")))
-        self.assertFalse(A.needs_owner(dict(rec, model=True, you=False)))  # only a report
-        self.assertTrue(A.needs_owner(dict(rec, you=False, fail="rate_limit")))
-        self.assertFalse(A.needs_owner(None))
+        self.assertNotIn("done", A.ORDER)
+        # what waits for the owner, for "While you were away": a report as much as a question; not one Claude went on
+        # from by itself (a background task), nor one put away; a failure always
+        self.assertTrue(A.waiting(dict(rec, waits=True, you=False, model=True)))
+        self.assertFalse(A.waiting(dict(rec, waits=False, you=False)))
+        self.assertFalse(A.waiting(dict(rec, waits=True, seen=True)))
+        self.assertTrue(A.waiting(dict(rec, waits=False, fail="rate_limit")))
+        self.assertTrue(A.waiting(rec))                                     # kept from before: "you" stands in
+        self.assertFalse(A.waiting(None))
 
     def test_outcomes(self):
         st = self.Store()
@@ -1169,7 +1172,7 @@ class AttnTest(unittest.TestCase):
         self.assertEqual((r["you"], r["seen"], r["model"]), (True, False, False))
         self.assertIsNone(a.briefed("s1", r["ts"] - 1, {"line": "x", "you": False, "need": ""}, True))   # an older result
         a.briefed("s1", r["ts"], {"line": "Отчёт готов", "you": False, "need": ""}, True)
-        self.assertEqual(A.state([], False, [], a.rec["s1"]), "done")
+        self.assertEqual((a.rec["s1"]["you"], A.state([], False, [], a.rec["s1"])), (False, "you"))   # no call, still waits
         a.briefed("s1", r["ts"], {"line": "Нужен выбор", "you": True, "need": "Выбери А или Б"}, True)
         self.assertEqual((a.rec["s1"]["need"], A.state([], False, [], a.rec["s1"])), ("Выбери А или Б", "you"))
         r2 = a.finished("s2", "-p", 10, "Жду ревью.", "Жду ревью.", waits=False)       # a background task runs
@@ -1181,9 +1184,13 @@ class AttnTest(unittest.TestCase):
         b = A.Attn(st)                                                                # a restart keeps it all
         self.assertTrue(b.rec["s1"]["seen"])
         self.assertEqual(b.day_of("-p"), [2, 40])
-        b.finished("s3", "-p", 5, "", "", True, now=time.time() + A.KEEP + 10)       # three days later: old ones go
-        self.assertEqual(set(b.rec), {"s3"})
-        self.assertEqual([e[2] for e in b.log], ["s3"])                               # the log forgets the same way
+        b.finished("s3", "-p", 5, "", "", True, now=time.time() + A.KEEP + 10)       # three days later: what was put away goes;
+        self.assertEqual(set(b.rec), {"s2", "s3"})                                    # what still waits stays — only the owner puts it away
+        self.assertEqual([e[2] for e in b.log], ["s3"])                               # the log forgets after three days all the same
+        b.finished("s4", "-p", 5, "", "", True, now=time.time() + A.KEEP_MINE + 10)   # a month untouched: the store lets it go
+        self.assertEqual(set(b.rec), {"s3", "s4"})
+        w = b.finished("s5", "-p", 5, "", "", True, watched=True)                    # watched it end at the computer: no call,
+        self.assertEqual((w["seen"], w["paged"], A.state([], False, [], w)), (False, True, "you"))   # it waits all the same
 
     def test_log_and_replies(self):
         a = A.Attn(self.Store())
@@ -1210,12 +1217,12 @@ class AttnTest(unittest.TestCase):
 
     def test_order(self):
         rows = [{"state": "idle", "ts": 5}, {"state": "work", "since": 9}, {"state": "you", "since": 7},
-                {"state": "you", "since": 3}, {"state": "done", "ts": 8}, {"state": "fail", "since": 6}]
+                {"state": "you", "since": 3}, {"state": "idle", "ts": 8}, {"state": "fail", "since": 6}]
         self.assertEqual([(r["state"], r.get("since") or r.get("ts")) for r in A.sort_rows(rows)],
-                         [("fail", 6), ("you", 3), ("you", 7), ("work", 9), ("done", 8), ("idle", 5)])
+                         [("fail", 6), ("you", 3), ("you", 7), ("work", 9), ("idle", 8), ("idle", 5)])
         self.assertTrue(A.resting({"state": "idle", "ts": time.time() - A.RECENT - 1}))
         self.assertFalse(A.resting({"state": "idle", "ts": time.time()}))
-        self.assertFalse(A.resting({"state": "done", "ts": 0}))
+        self.assertFalse(A.resting({"state": "you", "ts": 0}))
 
     def test_brief_parse(self):
         res = types.SimpleNamespace(is_error=False, structured_output={"line": "  Готово:  всё  ", "you": False, "need": "x"})
@@ -2912,7 +2919,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         view = lambda: self.p.api_session(SID)                                      # noqa: E731
         # no outcome yet, no files: no button; after a turn that wrote files — there is
         self.assertFalse((await view())["second"]["can"])
-        rec = self.p.attn.finished(SID, PKEY, 60, "Добавил median.", "Добавил median.", waits=True, seen=True)
+        rec = self.p.attn.finished(SID, PKEY, 60, "Добавил median.", "Добавил median.", waits=True, watched=True)
         self.store.add_turn(SID, PKEY, rec["ts"] - 60, 60, [{"p": "stats.py", "size": 50, "mt": rec["ts"]}], 1)
         sec = (await view())["second"]
         self.assertEqual((sec["can"], sec["why"], sec["v"], sec["job"]), (True, None, "0.148.0-alpha.9", None))
@@ -3020,7 +3027,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         # findings twice — the hand-off waits, and requests run side by side; "Disallow" while a review waited for
         # another one let it start later and hand Codex the code anyway
         self.second_project(hang=30, steps=0)
-        rec = self.p.attn.finished(SID, PKEY, 60, "Добавил median.", "Добавил median.", waits=True, seen=True)
+        rec = self.p.attn.finished(SID, PKEY, 60, "Добавил median.", "Добавил median.", waits=True, watched=True)
         self.store.add_turn(SID, PKEY, rec["ts"] - 60, 60, [{"p": "stats.py", "size": 50, "mt": rec["ts"]}], 1)
         self.store.put("vendors.ok", {PKEY: time.time()})
         log = TMP / ("codex-%s.jsonl" % self._testMethodName)
@@ -3588,8 +3595,9 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_whose_move(self):
         # stage V: a turn typed here ends while the owner is away → "Your move" with the result's first sentence;
-        # opening the session puts it to rest; at the computer it is seen at once; a background task — Claude's
-        # move; an API error — a failure; "Got it"; the model's line (when allowed) can say "only a report"
+        # only the owner puts it away — "Got it" or an answer: opening the session doesn't, being at the computer when
+        # it ended doesn't (no call about it, though), nor does the model's "only a report" (2026-10-30: a task that
+        # went to the done list by itself got forgotten); a background task — Claude's move; an API error — a failure
         self.p._procs = (time.monotonic() + 1e6, None)
         Path(TP).parent.mkdir(parents=True, exist_ok=True)
         Path(TP).write_text(tline("user", "Сделай отчёт") + "\n" + tline("assistant", "Отчёт готов.") + "\n")
@@ -3601,18 +3609,21 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([(r["sid"], r["state"], r["line"]) for r in ov["mine"]], [(SID, "you", "Отчёт готов.")])
         proj = ov["board"][0]
         self.assertEqual((proj["name"], proj["mine"], proj["rows"], proj["turns"]), ("proj", 1, [], 1))
-        await self.p.api_session(SID)                                                # opened in the app → seen
+        await self.p.api_session(SID)                                                # opened in the app: still waits
+        self.assertEqual([(r["sid"], r["state"]) for r in (await self.p.api_overview())["mine"]], [(SID, "you")])
+        await self.p.api_seen(SID)                                                   # "Got it": put away
         ov = await self.p.api_overview()
         self.assertEqual(ov["mine"], [])
         self.assertEqual([(r["state"], r["line"]) for r in ov["board"][0]["rows"]], [("idle", "Отчёт готов.")])
-        # at the computer: the owner watched the turn end
+        # at the computer: the owner watched the turn end — Telegram won't call about it, yet it waits on Home
         self.p.env["PULT_FORCE_AWAY"] = "0"
         await run_hook(ev("UserPromptSubmit", prompt="Ещё раз"))
         await run_hook(ev("Stop", last_assistant_message="Сделано."))
         await until(lambda: self.p.attn.day_of(PKEY)[0] == 2)
-        self.assertEqual((await self.p.api_overview())["mine"], [])
+        self.assertEqual([(r["state"], r["line"]) for r in (await self.p.api_overview())["mine"]], [("you", "Сделано.")])
+        self.assertTrue(self.p.attn.rec[SID]["paged"])
         self.p.env["PULT_FORCE_AWAY"] = "1"
-        # a background task still runs: Claude goes on by itself
+        # a background task still runs: Claude goes on by itself (the new prompt put the last outcome away)
         await run_hook(ev("UserPromptSubmit", prompt="Собери в фоне"))
         await run_hook(ev("Stop", last_assistant_message="Запустил сборку.", background_tasks=[
             {"id": "b1", "type": "shell", "status": "running", "description": "Сборка", "command": "make"}]))
@@ -3631,7 +3642,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.p.fail_text("weird_new"), "оборвался: weird_new")
         await self.p.api_seen(SID)                                                   # "Got it"
         self.assertEqual((await self.p.api_overview())["mine"], [])
-        # the model's line, when allowed: "only a report" is not the owner's move
+        # the model's line, when allowed: "only a report" waits for the owner all the same, only without a call
         await self.p.api_prefs(brief=True)
         asked = []
 
@@ -3645,9 +3656,8 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             await until(lambda: self.p.attn.rec[SID].get("model"))
         self.assertEqual(asked, [("Проверь", "ru")])
         ov = await self.p.api_overview()
-        self.assertEqual(ov["mine"], [])
-        self.assertEqual([(r["state"], r["line"], r["model"]) for r in ov["board"][0]["rows"]],
-                         [("done", "Отчёт собран, всё зелёное", True)])
+        self.assertEqual([(r["state"], r["line"], r["model"]) for r in ov["mine"]], [("you", "Отчёт собран, всё зелёное", True)])
+        self.assertEqual((ov["board"][0]["rows"], self.p.attn.rec[SID]["you"]), ([], False))     # not on the board; no call
 
     async def test_away(self):
         # away from the computer: a locked screen at once; where the lock can be read, 5 min without input (watching
@@ -4164,10 +4174,11 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         r = await row()
         self.assertEqual((r["state"], "ask" in r, "now" in r), ("you", False, False))     # ended: no turn to tell about
 
-    async def test_seen_waits_for_the_model(self):
-        # the session screen re-reads itself the moment a turn ends, before the model has said what is needed: that
-        # look must not put a question away (2026-10-26, 11:49: "turn the cup ~120°" went grey unanswered); once the
-        # model has spoken it decides — its "your move" stays, a report or no answer at all is seen
+    async def test_only_the_owner_puts_it_away(self):
+        # a look never puts an outcome away, whatever the model says or before it has spoken — a question, its bare
+        # "you", a report, no answer at all: it stays "your move" till "Got it" or an answer (the owner, 2026-10-30:
+        # "I want to send every session I start to the checked ones myself"; before, a look put a report away — and a
+        # question opened before the model spoke once went grey unanswered, 2026-10-26)
         self.p._procs = (time.monotonic() + 1e6, None)
         Path(TP).parent.mkdir(parents=True, exist_ok=True)
         Path(TP).write_text(tline("user", "Что дальше?") + "\n" + tline("assistant", "Повернуть стакан?") + "\n")
@@ -4177,12 +4188,12 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         async def fake_brief(prompt, reply, bg, lang, cwd, tags=None):
             await go.wait()
             return answers.pop(0)
-        cases = [({"line": "Нужно повернуть стакан", "you": True, "need": "Повернуть стакан на 120°", "replies": []}, False),
-                 ({"line": "Жду тебя", "you": True, "need": "", "replies": []}, False),           # its word, though it named nothing
-                 ({"line": "Отчёт готов", "you": False, "need": "", "replies": []}, True),
-                 (None, True)]
+        cases = [{"line": "Нужно повернуть стакан", "you": True, "need": "Повернуть стакан на 120°", "replies": []},
+                 {"line": "Жду тебя", "you": True, "need": "", "replies": []},
+                 {"line": "Отчёт готов", "you": False, "need": "", "replies": []},
+                 None]
         with mock.patch.object(pultd.B, "brief", fake_brief):
-            for answer, seen in cases:
+            for answer in cases:
                 go.clear()
                 answers.append(answer)
                 n = self.p.attn.day_of(PKEY)[0]
@@ -4190,14 +4201,14 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
                 await run_hook(ev("Stop", last_assistant_message="Повернуть стакан на 120°?", background_tasks=[]))
                 await until(lambda: self.p.attn.day_of(PKEY)[0] == n + 1)
                 info = await self.p.api_session(SID)                       # the screen was open: it re-reads at once
-                self.assertEqual((info["outcome"]["state"], self.p.attn.rec[SID]["seen"]), ("you", False), answer)
+                self.assertEqual(info["outcome"]["state"], "you", answer)
                 go.set()
-                await until(lambda: SID not in self.p.reading)
-                self.assertEqual(self.p.attn.rec[SID]["seen"], seen, answer)
-        self.assertEqual([r["sid"] for r in (await self.p.api_overview())["mine"]], [])
-        # not opened while the model read: nothing is seen by itself
-        self.p.attn.finished(SID, PKEY, 5, "Выбери А или Б", "Два варианта", waits=True)
-        self.assertEqual([r["sid"] for r in (await self.p.api_overview())["mine"]], [SID])
+                await until(lambda: not self.p.brief_sem.locked())
+                info = await self.p.api_session(SID)                       # and once more, the model's word in
+                self.assertEqual((info["outcome"]["state"], self.p.attn.rec[SID]["seen"]), ("you", False), answer)
+                self.assertEqual([r["sid"] for r in (await self.p.api_overview())["mine"]], [SID], answer)
+        await self.p.api_seen(SID)                                         # "Got it"
+        self.assertEqual((await self.p.api_overview())["mine"], [])
 
     async def test_pager(self):
         # Telegram as a pager (stage V, Q22 «а», on where the app is set up): no turn or result messages for work
@@ -4333,15 +4344,21 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await until(lambda: any(t.startswith("<b>🟠 ждут тебя: 1") and "\n🎯 Сейчас: " in t for t in self.texts("editMessageText")))
 
     async def test_catchup(self):
-        # "While you were away": the app comes back after an hour or more — the turns since, what is done, what waits
+        # "While you were away": the app comes back after an hour or more — the turns since, what is behind (put away
+        # by the owner), what waits for them — a report as much as a question (2026-10-30)
         self.p._procs = (time.monotonic() + 1e6, None)
         self.p.app_seen = time.time() - 2 * 3600
-        self.p.attn.finished(SID, PKEY, 30, "", "Отчёт готов.", waits=False, now=time.time() - 3000)
-        self.p.attn.finished("99999999-2222-3333-4444-555555555555", PKEY, 30, "", "Нужен выбор.", waits=True)
+        other, third = "99999999-2222-3333-4444-555555555555", "99999999-3333-3333-4444-555555555555"
+        self.p.attn.finished(SID, PKEY, 30, "", "Отчёт готов.", waits=True, now=time.time() - 3000)
+        self.p.attn.finished(third, PKEY, 30, "", "Собираю в фоне.", waits=False, now=time.time() - 2000)   # Claude goes on
+        self.p.attn.finished(other, PKEY, 30, "", "Нужен выбор.", waits=True)
         self.assertIsNone((await self.p.api_overview())["catchup"])
         await self.p.api_presence(True)
         c = (await self.p.api_overview())["catchup"]
-        self.assertEqual((c["turns"], c["projects"], c["done"], c["mine"]), (2, 1, 1, 1))
+        self.assertEqual((c["turns"], c["projects"], c["done"], c["mine"]), (3, 1, 1, 2))     # the report waits too
+        await self.p.api_seen(SID)
+        c = (await self.p.api_overview())["catchup"]
+        self.assertEqual((c["turns"], c["projects"], c["done"], c["mine"]), (3, 1, 2, 1))
         self.assertEqual([(x["name"], x["line"], x["you"]) for x in c["lines"]], [("proj", "Нужен выбор.", True)])
         await self.p.api_presence(False)                                               # the visit is over
         self.assertIsNone((await self.p.api_overview())["catchup"])
