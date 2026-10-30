@@ -4,6 +4,13 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.28 — 2026-10-30
+
+- **Who does new tasks by default — for every project at once.** Settings → Other vendors has a line on top: Claude,
+  or a vendor whose key you put there. Pick DeepSeek, and every project you allowed to go to other vendors sends its
+  new tasks there, from the app and from Telegram — one tap if Claude goes away. A project's own choice in **Who does
+  it** comes first, and a project can keep Claude; removing the vendor's key brings everything back to Claude.
+
 ## 0.18.27 — 2026-10-30
 
 - **Other vendors' models inside Claude Code.** New task has **Who does it** above the model: Claude, or DeepSeek, GLM or

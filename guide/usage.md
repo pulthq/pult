@@ -60,7 +60,8 @@ you're neither in the app nor at the computer. Reminders on long turns; warnings
   Put a key in Settings → Other vendors — it is checked with one tiny request and stays on the computer — and edit
   the list of models there: the first is the main one, the second the fast one (titles, subagents). The first pick in
   a project asks whether its code may go to other vendors (the same permission as the second opinion's); **Make it
-  the default** sends the project's new tasks there, from Telegram too. A session keeps its vendor when it goes on or
+  the default** sends the project's new tasks there, from Telegram too; Settings → Other vendors → **Who does new tasks
+  by default** does it for every allowed project at once (a project's own choice comes first). A session keeps its vendor when it goes on or
   is copied, never starts without the key and doesn't show in VS Code's list. Anthropic doesn't support this, and
   Claude Code's prompts are written for Claude: for the cheaper tasks, not the hard ones.
 - **A session** shows the whole conversation, live, with the model, the effort and the context gauge by the message

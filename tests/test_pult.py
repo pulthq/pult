@@ -2728,7 +2728,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("ANTHROPIC_BASE_URL", started[-1].env)
             self.assertEqual(started[-1].env["CLAUDE_CODE_ENTRYPOINT"], "claude-vscode")
             # the project's default: a task from Telegram (it doesn't say whose) goes to DeepSeek
-            self.assertEqual(await self.p.api_vendor_default(PKEY, "deepseek"), {"vendor": "deepseek"})
+            self.assertEqual(await self.p.api_vendor_default(PKEY, "deepseek"), {"vendor": "deepseek", "who": "deepseek"})
             row = next(x for x in (await self.p.api_projects())["projects"] if x["pkey"] == PKEY) \
                 if (await self.p.api_projects())["projects"] else {"vendor": self.p.vendor_default(PKEY)}
             self.assertEqual(row["vendor"], "deepseek")
@@ -2741,8 +2741,22 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             copy = next(o for o in started if o.fork_session)
             self.assertEqual((self.store.vendor_of(copy.session_id), copy.env["ANTHROPIC_BASE_URL"]),
                              ("deepseek", "https://api.deepseek.com/anthropic"))
+            # the common default (the owner, 2026-10-30: one tap if Claude goes away): the allowed projects without a
+            # choice of their own follow it; a project that keeps Claude keeps it; only a vendor with its key
+            await self.p.api_vendor_default(PKEY, None)
+            self.assertIsNone(self.p.vendor_for_new(PKEY))
+            self.assertEqual(await self.p.api_vendor_all("deepseek"), {"vendor": "deepseek", "projects": 1})
+            self.assertEqual((self.p.vendor_for_new(PKEY), self.p.vendor_who(PKEY)), ("deepseek", "deepseek"))
+            row = (await self.p.api_projects())
+            self.assertEqual(row["vendor_all"], "deepseek")
+            self.assertEqual(await self.p.api_vendor_default(PKEY, "claude"), {"vendor": "claude", "who": "claude"})
+            self.assertIsNone(self.p.vendor_for_new(PKEY))
+            await self.p.api_vendor_default(PKEY, None)
+            with self.assertRaises(ValueError):
+                await self.p.api_vendor_all("glm")                         # no key
+            self.assertEqual(self.p.vendor_who("-Users-x-not-allowed"), "claude")
             # the key removed: no session of DeepSeek starts — from the app it says why, from Telegram too; new tasks
-            # go back to Claude by default
+            # go back to Claude by default, and the common default to it goes
             self.assertEqual((await self.p.api_vendor_key("deepseek", ""))["key"], False)
             self.assertNotIn("PULT_VENDOR_KEY_DEEPSEEK", Path(os.environ["PULT_ENV"]).read_text())
             for dr in list(self.p.driven.values()):
@@ -2758,6 +2772,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.1)
             self.assertEqual(len(started), n)                            # nothing started without the key
             self.assertIsNone(self.p.vendor_for_new(PKEY))
+            self.assertIsNone(self.p.vendor_all())
             # the project taken back: its default goes too
             await self.p.api_vendors_ok(PKEY, False)
             self.assertIsNone(self.p.vendor_default(PKEY))
@@ -3149,7 +3164,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         # the app shows the microphone only when there is a key: the flag rides with the projects (and the session)
         with mock.patch.object(self.p, "list_projects", lambda known: []):
             got = await self.p.api_projects()
-            self.assertEqual({k: v for k, v in got.items() if k != "vendors"},
+            self.assertEqual({k: v for k, v in got.items() if k not in ("vendors", "vendor_all")},
                              {"projects": [], "stt": False, "create": True, "choice": {"model": None, "effort": None}})
             self.assertEqual([v["id"] for v in got["vendors"]], ["deepseek", "glm", "kimi"])   # stage M, step 2
             self.p.stt = FakeStt()

@@ -187,7 +187,7 @@ function Parts() {
 
 // other vendors' models inside Claude Code (stage M, step 2): each vendor's key — checked by the computer with one tiny
 // request and kept there, never shown again — and its list of models, the main one first and the fast one second
-function Vendors({ list, onChange }) {
+function Vendors({ list, all, okN, onChange, onAll }) {
   const [keys, setKeys] = useState({});
   const [models, setModels] = useState({});
   const [busy, setBusy] = useState("");
@@ -210,7 +210,18 @@ function Vendors({ list, onChange }) {
     } catch (e) { alertBox(e.message); }
     setBusy("");
   };
-  return html`<h3>${t("vend.title")}</h3><div class="list">${list.map((v) => {
+  // who does new tasks by default everywhere (2026-10-30: one tap if Claude goes away) — the allowed projects follow it
+  const setAll = async (id) => {
+    if ((all || "claude") === id) return;
+    try { const r = await api("vendor_all", { vendor: id === "claude" ? null : id }); onAll(r.vendor); haptic("success"); }
+    catch (e) { alertBox(e.message); }
+  };
+  const can = list.filter((v) => v.key);
+  return html`<h3>${t("vend.title")}</h3>
+    ${can.length > 0 && html`<div class="lbl vend-all-h">${t("who.all")}</div>
+    <div class="seg vend-all">${[{ id: "claude", name: "Claude" }, ...can].map((v) => html`<button key=${v.id} class=${(all || "claude") === v.id ? "on" : ""} onClick=${() => setAll(v.id)}>${v.name}</button>`)}</div>
+    <div class="dim small vend-all-t">${t(all ? "who.all.vendor" : "who.all.claude", { n: okN || 0 })}</div>`}
+    <div class="list">${list.map((v) => {
     const k = keys[v.id] || "", m = models[v.id] == null ? v.models.join(", ") : models[v.id];
     return html`<div class="item static vend" key=${v.id}>
       <div class="vend-h"><b>${v.name}</b><span class=${"vend-st" + (v.key ? " on" : "")}>${v.key ? t("vend.key.on") : t("vend.key.off")}</span></div>
@@ -295,7 +306,8 @@ function Settings() {
       <div class="keyrow"><input ref=${plainField} maxlength="280" placeholder=${t("voice.words.ph")} value=${words === null ? d.stt.words : words} data-saved=${d.stt.words} onInput=${(e) => setWords(e.target.value)}/>
         <button class="btn" disabled=${words === null || words.trim() === d.stt.words || kbusy} onClick=${saveWords}>${t("voice.save")}</button></div>
     </div>` : ""}</div>
-    ${d.vendors && html`<${Vendors} list=${d.vendors} onChange=${(vs) => set(Object.assign({}, d, { vendors: vs }))}/>`}
+    ${d.vendors && html`<${Vendors} list=${d.vendors} all=${d.vendor_all} okN=${d.vendors_ok_n} onChange=${(vs) => set(Object.assign({}, d, { vendors: vs, vendor_all: vs.some((x) => x.id === d.vendor_all && x.key) ? d.vendor_all : null }))}
+      onAll=${(v) => set(Object.assign({}, d, { vendor_all: v }))}/>`}
     <${Logins}/>
     <h3>${t("status")}</h3><div class="list"><div class="item static">
       <div>${t("status.pult", { v: d.version, mac: d.mac.away ? t("mac.away", { dur: dur(d.mac.idle) }) : t("mac.here") })}</div>
