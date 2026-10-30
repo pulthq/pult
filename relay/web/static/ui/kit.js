@@ -79,8 +79,18 @@ const pct = (x) => (x >= 10 ? Math.round(x) : num(x || 0, 1)) + "\u00a0%";
 const level = (p) => (p >= 90 ? "bad" : p >= 70 ? "warn" : "");
 const modelName = (m) => {
   if (!m) return "";
-  const [name, ...ver] = m.replace(/^claude-/, "").split("-");
+  const [name, ...ver] = m.replace(/^claude-/, "").replace(/-\d{8}$/, "").split("-");     // a transcript may say the date too
   return name.charAt(0).toUpperCase() + name.slice(1) + (ver.length ? " " + ver.join(".") : "");
+};
+// which model does a session's work, in a word or two (the owner, 2026-10-30): Claude's by its name — "Opus 5.5";
+// another vendor's by the vendor, then its model without the vendor's name again — "DeepSeek · v4-pro". "[1m]" goes:
+// the window is the context gauge's to say
+const llmName = (l) => {
+  if (!l || !l.model) return "";
+  const m = String(l.model).replace(/\[1m\]$/i, "");
+  if (!l.vendor) return modelName(m);
+  const own = m.toLowerCase().startsWith(l.vendor.toLowerCase() + "-") ? m.slice(l.vendor.length + 1) : m;
+  return l.vendor + " · " + own;
 };
 // a block of code — in Claude's words, a plan, a markdown file, the command a permission asks about — is copied whole
 // by a tap: the commands Claude gives to run, with no selecting by hand on the phone (the owner, 2026-10-27). Text
@@ -438,4 +448,4 @@ function Loading({ err }) {
   return html`<div class="empty">${err || (c.state === "nomac" ? t("loading.nomac") : c.state === "denied" ? "" : t("loading"))}</div>`;
 }
 
-export { About, ChoicePick, Dots, GEAR, GLYPH, Loading, MODES, ModePick, ModelPick, Sheet, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, bytes, choiceText, copyRich, dayLabel, dot, dotted, dur, durShort, effortName, hhmm, home, hue, ic, keyTap, kilo, level, modelName, nb, num, pct, plainField, queueChip, quiet, resetText, sendKey, TAG_H, tagChips, tagJob, tagSt, toDate, useNow, workChip };
+export { About, ChoicePick, Dots, GEAR, GLYPH, Loading, MODES, ModePick, ModelPick, Sheet, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, bytes, choiceText, copyRich, dayLabel, dot, dotted, dur, durShort, effortName, hhmm, home, hue, ic, keyTap, kilo, level, llmName, modelName, nb, num, pct, plainField, queueChip, quiet, resetText, sendKey, TAG_H, tagChips, tagJob, tagSt, toDate, useNow, workChip };

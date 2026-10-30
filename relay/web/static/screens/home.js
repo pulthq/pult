@@ -7,7 +7,7 @@ import { Mic, useRecorder } from "../core/voice.js";
 import { plural, t } from "../i18n.js";
 import { html, useEffect, useRef, useState } from "../vendor/htm-preact-3.1.1.js";
 import { Req, TagPick, useRcpt } from "../ui/cards.js";
-import { GEAR, GLYPH, Loading, MODES, ModePick, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, dot, dur, durShort, hhmm, ic, keyTap, nb, pct, plainField, queueChip, quiet, tagChips, toDate, useNow, workChip } from "../ui/kit.js";
+import { GEAR, GLYPH, Loading, MODES, ModePick, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, dot, dur, durShort, hhmm, ic, keyTap, llmName, nb, pct, plainField, queueChip, quiet, tagChips, toDate, useNow, workChip } from "../ui/kit.js";
 import { BgSheet, bgLine, memPct } from "../ui/load.js";
 import { UpdRow } from "../ui/upd.js";
 
@@ -185,7 +185,8 @@ const sameStart = (a, b) => { const x = String(a || "").replace(/…$/, ""), y =
 // one session in "Running now" (Home; a project's screen — without the project): where on top — the project and the
 // task's tags, a tag that doesn't fit left out whole; the title whole, two lines at most, with its time beside it;
 // then what you asked in this turn and what Claude says so far — or, while its background task runs, how the turn
-// ended. The owner, 2026-10-26: a title cut after three words over a line of tags cut the same way said nothing
+// ended. The owner, 2026-10-26: a title cut after three words over a line of tags cut the same way said nothing.
+// At the top line's right end — which model does the task (2026-10-30); the project and the tags give way to it
 function RunRow({ r, now, onBg, onTags, showProject = true }) {
   const bgTap = (e) => { e.stopPropagation(); onBg(r); };
   const chip = r.state === "work" ? workChip(r.since, now) : r.state === "queue" ? queueChip(r.since, now) : bgChip(r.since, now, bgTap);
@@ -193,9 +194,11 @@ function RunRow({ r, now, onBg, onTags, showProject = true }) {
   const said = r.state === "queue" ? "" : r.state === "work" && "now" in r ? r.now || (!r.ask && r.note) : r.line;
   const asked = r.state === "queue" ? r.line : r.state === "work" ? r.ask : "";
   const ask = asked && !sameStart(asked, r.title) ? asked : "";
+  const where = (showProject && r.project) || (r.tags && r.tags.length > 0);
+  const llm = llmName(r.llm);                // a computer before 0.18.30 doesn't say: no mark
   const open = () => go("#/s/" + r.sid);
   const body = html`<div role="button" tabindex="0" class="item run" onClick=${open} onKeyDown=${keyTap(open)}>
-    ${(showProject && r.project) || (r.tags && r.tags.length > 0) ? html`<div class="run-w">${showProject && r.project ? html`<span class="run-who">${avatar(r.project, 16)}<span class="run-p">${r.project}</span></span>` : ""}${tagChips(r.tags)}</div>` : ""}
+    ${where || llm ? html`<div class="run-top">${where ? html`<div class="run-w">${showProject && r.project ? html`<span class="run-who">${avatar(r.project, 16)}<span class="run-p">${r.project}</span></span>` : ""}${tagChips(r.tags)}</div>` : ""}${llm && html`<span class="llm">${llm}</span>`}</div>` : ""}
     <div class="run-h"><div class="run-t">${rowIcon(r)}${r.title}</div><span class="meta">${ctxWarn(r)}${chip}</span></div>
     ${ask && html`<div class=${"run-ask" + (said ? "" : " solo")}>${t("run.you", { text: ask })}</div>`}
     ${said && html`<div class="run-now">${said}</div>`}

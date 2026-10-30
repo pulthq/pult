@@ -137,17 +137,29 @@ class Api:
         return {"id": j.rid, "cmd": j.cmd, "cwd": j.cwd, "project": self.project_label(j.pkey) if j.pkey else None,
                 "started": j.started, "ended": j.ended, "code": j.code, "last": j.last, "tail": j.tail[-30:]}
 
-    async def ctx_pct(self, sid):
-        """How full the session's context is, % — the number VS Code shows; None if unknown."""
+    async def row_stats(self, sid):
+        """A shown row's figures from its transcript: how full the session's context is, % — the number VS Code shows;
+        None if unknown — and which model does its work (llm_view)."""
         try:
             path, _ = self.transcript_of(sid)
         except ValueError:
-            return None
+            return None, self.llm_view(sid, None)
         st = await asyncio.to_thread(self.stats.get, path)
         ctx = self.ctx_of(sid, (st or {}).get("model"))
-        if not st or not st.get("context") or not ctx:
-            return None
-        return min(100, round(st["context"] * 100 / ctx_usable(ctx[0], ctx[1])))
+        pct = min(100, round(st["context"] * 100 / ctx_usable(ctx[0], ctx[1]))) if st and st.get("context") and ctx else None
+        return pct, self.llm_view(sid, st)
+
+    def llm_view(self, sid, stats):
+        """Which model does a session's work, for its row (the owner, 2026-10-30: two tasks running, one of them on
+        DeepSeek — which is which?): {"model"} — Claude's, as its last request said, else as picked for it; {"vendor",
+        "model"} — another vendor's (stage M, step 2): as picked, else as it answered, else its main one; None — not
+        known yet (no answer so far, nothing picked)."""
+        model, chosen = (stats or {}).get("model"), (self.choice.get(sid) or {}).get("model")
+        vid = self.store.vendor_of(sid)
+        p = self.vendor_profiles().get(vid) if vid else None
+        if p:
+            return {"vendor": p["name"], "model": chosen or model or p["models"][0]}
+        return {"model": model or chosen} if model or chosen else None
 
     async def board(self, agents):
         """The Home board (stage V): every session worth a look grouped by project; and "mine": the outcomes that
@@ -162,7 +174,7 @@ class Api:
             turns, secs = self.attn.day_of(pkey)
             shown = [r for r in A.sort_rows(rs) if r["state"] not in A.MINE and not A.resting(r, now)]
             for r in shown:
-                r["ctx"] = await self.ctx_pct(r["sid"])
+                r["ctx"], r["llm"] = await self.row_stats(r["sid"])
             projects.append({"pkey": pkey, "name": self.name_of(pkey, rs), "rows": shown, "rows_all": rs,
                              "resting": sum(1 for r in rs if A.resting(r, now)),
                              "work": sum(1 for r in rs if r["state"] in ("work", "bg", "queue")),
@@ -459,7 +471,7 @@ class Api:
         today = sorted([r for r in rows if r["state"] in ("done", "idle") and (r["ts"] or 0) >= midnight],
                        key=lambda r: -(r["ts"] or 0))
         for r in live + today:
-            r["ctx"] = await self.ctx_pct(r["sid"])
+            r["ctx"], r["llm"] = await self.row_stats(r["sid"])
         shown = {r["sid"] for r in mine + live + today} | {r["sid"] for r in pending}
         earlier = []
         if path and os.path.isdir(path):

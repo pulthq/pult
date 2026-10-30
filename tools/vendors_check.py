@@ -4,7 +4,9 @@ DeepSeek with its main model, GLM and Kimi grey without a key (a tap says where 
 a project asks whether its code may go there — "no" changes nothing, "yes" picks it; the model field turns to DeepSeek's
 models; "Make it the default" is kept for the project; the task starts with the vendor and the model. Settings → Other
 vendors: who does new tasks by default — Claude, or DeepSeek for every allowed project; DeepSeek's key is there, GLM's isn't; a bad key is refused with the vendor's words, a good one taken; the list of
-models is saved. A session on DeepSeek's model says so by the field, and its picker lists only DeepSeek's models.
+models is saved. A session on DeepSeek's model says so by the field — "DeepSeek · v4-pro", its name ending where Stop
+begins, on a narrow phone too — and its picker lists only DeepSeek's models; Home's "Running now" says which model does
+each task (the owner, 2026-10-30).
   STAND_VENDORS=1 STAND_HOMES=1 STAND_LANG=ru STAND_PORT=18171 HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out &
   ~/.local/share/pult/venv/bin/python tools/vendors_check.py /tmp/stand.out [out_dir]
 Screenshots go to out_dir (a temporary folder by default). Exit 1 on a failed check."""
@@ -136,15 +138,41 @@ async def main():
         await asyncio.sleep(0.3)
         await pg.shot(os.path.join(OUT, "settings.png"))
 
-        # a session on DeepSeek's model
+        # a session on DeepSeek's model: its next turn runs now, from the app, on deepseek-v4-pro[1m]
         await pg.js("location.hash = '#/s/99999999-4444-4444-8444-444444444444'")
-        verdict("a DeepSeek session says so by the field", await pg.until("!!document.querySelector('.mchip') && document.querySelector('.mchip').textContent.includes('DeepSeek · deepseek-flash')", 150),
+        verdict("a DeepSeek session says so by the field, the vendor's name not twice, no [1m]",
+                await pg.until("!!document.querySelector('.mchip') && document.querySelector('.mchip').textContent.trim() === 'DeepSeek · v4-pro'", 150),
                 await pg.js("document.querySelector('.mchip') && document.querySelector('.mchip').textContent"))
         verdict("… no effort dots", not await pg.js("!!document.querySelector('.mchip .dots')"))
+        # the owner, 2026-10-30: "DeepSeek · deepseek-v4-pro[1m]" ran on under Stop — the name ends where Stop begins,
+        # on a narrow phone too, where it ends in "…"
+        apart = ("(() => { const s = document.querySelector('.ctl .btn.danger'), m = document.querySelector('.mchip'); if (!s || !m) return null;"
+                 " return [m, ...m.children].every((x) => x.getBoundingClientRect().right <= s.getBoundingClientRect().left + 0.5); })()")
+        verdict("… the model's name ends where Stop begins", await pg.until(apart, 30), await pg.js("document.querySelector('.mchip').outerHTML"))
+        await pg.cmd("Emulation.setDeviceMetricsOverride", width=320, height=860, deviceScaleFactor=2, mobile=True)
+        await asyncio.sleep(0.4)
+        verdict("… on a narrow phone too", await pg.js(apart) and await pg.js("document.querySelector('.mchip > span').textContent.trim() === 'DeepSeek · v4-pro'"))
+        await pg.shot(os.path.join(OUT, "session-320.png"))
+        await pg.cmd("Emulation.setDeviceMetricsOverride", width=412, height=860, deviceScaleFactor=2, mobile=True)
+        await asyncio.sleep(0.4)
         await pg.tap("document.querySelector('.mchip')", wait=0.6)
         opts = await pg.js("[...document.querySelectorAll('.composer .card.pick .opt')].map((b) => b.textContent.trim())")
         verdict("its picker lists only DeepSeek's models", opts == ["deepseek-flash[1m]", "deepseek-flash", "deepseek-v4-pro[1m]"], opts)
         await pg.shot(os.path.join(OUT, "session.png"))
+
+        # Home: "Running now" says which model does each task, at the right end of its top line, beside the project
+        # (the owner, 2026-10-30: two tasks running, one of them on DeepSeek — which is which?)
+        await pg.js("location.hash = '#/'")
+        await pg.until("document.querySelectorAll('.item.run .llm').length >= 2", 150)
+        runs = await pg.js("[...document.querySelectorAll('.item.run')].map((r) => [r.querySelector('.run-t').textContent.trim(),"
+                           " (r.querySelector('.llm') || {}).textContent || ''])")
+        verdict("Running now: the DeepSeek task says «DeepSeek · v4-pro», the Claude one its model",
+                any(m == "DeepSeek · v4-pro" and t.startswith("Переименуй") for t, m in runs) and any(m == "Opus 5.5" for t, m in runs), runs)
+        top = await pg.js("[...document.querySelectorAll('.item.run .llm')].every((m) => { const r = m.closest('.item.run').getBoundingClientRect(),"
+                          " w = m.parentElement.querySelector('.run-w'), b = m.getBoundingClientRect(); if (!w) return true;"
+                          " const p = w.getBoundingClientRect(); return b.right <= r.right && b.left >= p.right && Math.abs(b.top - p.top) < 4; })")
+        verdict("… on the top line's right end, beside the project", top)
+        await pg.shot(os.path.join(OUT, "home.png"))
         verdict("no script errors on the page", not pg.errors, pg.errors)
     print("screenshots:", OUT)
     sys.exit(verdict.code())

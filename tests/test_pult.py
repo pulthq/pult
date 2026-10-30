@@ -2042,6 +2042,44 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.p.api_session(SID2))["ctx"]["window"], 200000)
         self.assertEqual(self.store.get("ctx_model"), {"claude-opus-5-5": [200000, 32000]})
 
+    async def test_row_model(self):
+        # which model does a task's work, on its row (the owner, 2026-10-30: two tasks running, one of them on DeepSeek —
+        # which is which?): Claude's as its last request said — Claude Code's own line after an API error is no request;
+        # another vendor's by its name: as picked for the session, else as it answered, else its main one; nothing
+        # known — nothing said
+        d = Path(TP).parent
+        d.mkdir(parents=True, exist_ok=True)
+
+        def reply(mid, model):
+            return json.dumps({"type": "assistant", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+                               "message": {"id": mid, "model": model, "role": "assistant", "content": [],
+                                           "usage": {"input_tokens": 10, "output_tokens": 5}}})
+        claude, vend, new = ("%s-1111-4111-8111-111111111111" % (c * 8) for c in "abc")
+        (d / (claude + ".jsonl")).write_text("\n".join([tline("user", "Почини тесты"), reply("m1", "claude-fable-5-1"),
+                                                        reply("m2", "<synthetic>")]) + "\n")
+        (d / (vend + ".jsonl")).write_text(tline("user", "Переименуй") + "\n" + reply("m1", "deepseek-v4-pro") + "\n")
+        (d / (new + ".jsonl")).write_text(tline("user", "Новая") + "\n")
+        self.store.set_vendor(vend, "deepseek")
+        for s in (claude, vend, new):
+            await run_hook(dict(ev("UserPromptSubmit", prompt="дальше"), session_id=s, transcript_path=str(d / (s + ".jsonl"))))
+        await until(lambda: all(s in self.p.live and self.p.live[s].turn for s in (claude, vend, new)))
+
+        async def llm():
+            return {r["sid"]: r["llm"] for p in (await self.p.api_overview())["board"] for r in p["rows"]}
+        got = await llm()
+        self.assertEqual(got[claude], {"model": "claude-fable-5-1"})
+        self.assertEqual(got[vend], {"vendor": "DeepSeek", "model": "deepseek-v4-pro"})          # as it answered
+        self.assertIsNone(got[new])
+        self.p.set_choice(vend, "deepseek-flash[1m]")
+        self.assertEqual((await llm())[vend], {"vendor": "DeepSeek", "model": "deepseek-flash[1m]"})   # as picked
+        self.p.set_choice(new, "sonnet")
+        self.assertEqual((await llm())[new], {"model": "sonnet"})                       # picked, no answer yet
+        self.p.set_choice(new, "")
+        self.store.set_vendor(new, "deepseek")
+        self.assertEqual((await llm())[new], {"vendor": "DeepSeek", "model": "deepseek-flash[1m]"})   # its main one
+        live = {r["sid"]: r["llm"] for r in (await self.p.api_project(PKEY))["live"]}       # the project's screen too
+        self.assertEqual((live[claude], live[vend]["vendor"]), ({"model": "claude-fable-5-1"}, "DeepSeek"))
+
     async def test_new_project(self):
         # stage S: a folder in a place picked inside the home folder, git, the topic named by the title at once, the
         # project in the lists before Claude ever ran there; with a description — the first turn writes CLAUDE.md

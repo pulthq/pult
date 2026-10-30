@@ -4,6 +4,15 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.30 — 2026-10-30
+
+- **Which model does each task.** Home's **Running now** says it at the right end of a task's top line — Claude's model
+  (Opus 5.5) or another vendor's (DeepSeek · v4-pro); a project's screen too.
+- **The model under the message field no longer runs under Stop.** Another vendor's model is named without the vendor's
+  name twice and without "[1m]" (the context gauge says the window), and a name too long for a narrow phone ends in "…".
+- **An API error no longer changes the session's model.** Claude Code's own line about the error was taken for a
+  request: the field showed "<synthetic>" for the model and an empty context gauge until the next answer.
+
 ## 0.18.29 — 2026-10-30
 
 - **Disallow stops other vendors' sessions too** (found by Codex's own second opinion). Taking a project back from other
