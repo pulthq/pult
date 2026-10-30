@@ -33,15 +33,17 @@ you're neither in the app nor at the computer. Reminders on long turns; warnings
 - **Home** is built around whose move it is: what runs right now (each task with what you asked and what Claude says
   so far), then what waits for you — permission requests to answer right there, and every session that ended, with
   ready replies taken from Claude's own message — then every project with its colour. A finished task stays there,
-  a plain report too, until you tap **Got it** (on the card, or under the outcome in the session) or answer it:
-  opening it doesn't put it away, so nothing finished slips by unchecked.
+  a plain report too, until you tap **Reviewed** (on the card, or under the outcome in the session) or answer it:
+  opening it doesn't put it away, so nothing finished slips by unchecked. Each state has its colour: what runs is
+  green, what waits for you warm — the whole card, a failed one red — and history plain, each row with a grey tick
+  of a task you reviewed; a project's screen shows them the same way.
 - **Pinned projects**: slide a project's row to the left on the Projects screen and tap Pin, or tap the pin in a
   project's header. Pinned projects stay on top of Projects, of Home and of the new task's list, the newest pin
   first; the rest are ordered by who needs you. The pin is kept on the computer, so every phone sees the same.
   The same slide offers **Hide** — the project goes into a folded "Hidden" section at the bottom of Projects and
   leaves Home's board and the new task's list (what runs in it and what waits for you still show; a slide in the
   fold brings it back) — and **New task**, which opens the form with that project. A task's row slides to **Tags**,
-  a card of "Your move" slides to **Got it**; questions and permissions don't slide.
+  a card of "Your move" slides to **Reviewed**; questions and permissions don't slide.
 - **Copy a message**: in a session, slide it to the left until its copy sign lights up and let go. A message of
   Claude's goes to the clipboard whole, formatted as Telegram copies a message — a paste into Telegram, notes or mail
   keeps the bold, the links, the code and the quotes — and as Claude's markdown for plain-text places; one of yours
@@ -52,7 +54,7 @@ you're neither in the app nor at the computer. Reminders on long turns; warnings
   request and Claude's report, so what was done on purpose isn't taken for a bug. It reads in a read-only sandbox and
   asks nothing; one at a time, usually a minute or two, and **Stop** ends it. The findings come as a card at the end
   of the session, each with its place in the project — a tap opens the file at that line; **Send to Claude** puts
-  them into the session as your message, **Got it** puts the card away. The first time in a project you're asked
+  them into the session as your message, **Reviewed** puts the card away. The first time in a project you're asked
   whether its code may go to OpenAI; the project's screen then says so, and **Disallow** takes it back. The button
   shows only where Codex is installed (ChatGPT for Mac carries it, or the `codex` command); a Codex version Pult
   wasn't checked on is checked against its own protocol first.

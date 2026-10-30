@@ -155,10 +155,13 @@ function Catchup({ c, onClose }) {
     ${c.lines.map((x) => html`<div class="ln tap" key=${x.pkey} onClick=${() => go("#/p/" + encodeURIComponent(x.pkey))}>${x.you ? dot("attn") : x.fail ? ic("alert", 14) : ic("check", 14)} <b>${x.name}</b> — ${x.line}</div>`)}</div>`;
 }
 
-// a session's mark in front of its title: the beating dot while it works, its background task, the queue, a fresh report
+// a session's mark in front of its title: the beating dot while it works, its background task, the queue, a fresh
+// report (a computer before 0.18.32 still puts one on the board); a grey tick once you put it away (Q111): what is in
+// history, you checked — then the phone of a session Pult drives
 const rowIcon = (r) => (r.state === "work" ? html`<span class="st st-work"></span>` : r.state === "bg" ? html`<span class="st-ic">${ic("bg", 15)}</span>`
   : r.state === "queue" ? html`<span class="st-ic">${ic("clock", 15)}</span>`
-  : r.state === "done" ? html`<span class="st-ic ok">${ic("check", 15)}</span>` : r.driven ? html`<span class="st-ic">${ic("phone", 15)}</span>` : "");
+  : r.state === "done" ? html`<span class="st-ic ok">${ic("check", 15)}</span>`
+  : html`${r.state === "idle" ? html`<span class="st-ic chk">${ic("check", 15)}</span>` : ""}${r.driven ? html`<span class="st-ic">${ic("phone", 15)}</span>` : ""}`);
 const ctxWarn = (r) => (r.ctx != null && r.ctx >= 90 ? html`<span class="pct bad">${ic("alert", 13)} ${r.ctx} %</span>` : "");
 
 // a row slides to a task's tags when the screen gives it onTags (stage Zh, step 2 — Q102): the sheet of the session's screen
@@ -228,7 +231,8 @@ function ProjectBlock({ p, now, onBg, onTags }) {
 // Home (stage V, "whose move"): one line on top — where you are, the computer's load, settings; then what runs right
 // now (turns, background tasks, tasks without Claude); what waits for you (questions and permissions to answer right
 // here, sessions that ended and need you); then every project with the rest of its sessions; finished tasks without
-// Claude. Nothing repeats: a session is in "Running now", in "Your move" or on the board
+// Claude. Nothing repeats: a session is in "Running now", in "Your move" or on the board. Each of the first two is a
+// zone of its colour (Q110): what runs green, what waits for you warm; the board, history, stays plain
 function Home() {
   const now = useNow(1000);            // "working 14 s" ticks every second: a turn in progress should look alive
   const [d, err, set] = useLive(() => api("overview"), []);
@@ -263,13 +267,13 @@ function Home() {
   return html`<div>
     <${Top} mac=${d.mac} load=${d.load} usagePct=${d.usage_pct} usageTop=${d.usage_top} pager=${d.pager} onSet=${(m) => set(Object.assign({}, d, { mac: Object.assign({}, d.mac, { mode: m }) }))}/>
     <${UpdRow} u=${d.update}/>
-    ${nRun > 0 && html`<h3>${t("home.running", { n: nRun - nQueue })}${nQueue ? " · " + t("home.queued", { n: nQueue }) : ""}</h3><div class="list">
+    ${nRun > 0 && html`<section class="zone-run"><h3>${dot("work")}${t("home.running", { n: nRun - nQueue })}${nQueue ? " · " + t("home.queued", { n: nQueue }) : ""}</h3><div class="list">
       ${running.map((r) => html`<${RunRow} key=${r.sid} r=${r} now=${now} onBg=${onBg} onTags=${onTags}/>`)}
-      ${jobsOn.map((j) => html`<${Job} key=${j.id} j=${j} now=${now} row=${true}/>`)}</div>`}
+      ${jobsOn.map((j) => html`<${Job} key=${j.id} j=${j} now=${now} row=${true}/>`)}</div></section>`}
     ${d.catchup && html`<${Catchup} c=${d.catchup} onClose=${() => { api("catchup_off").catch(() => {}); set(Object.assign({}, d, { catchup: null })); }}/>`}
-    ${(n > 0 || yours.length > 0) && html`<h3>${t("home.mine", { n })}</h3>
+    ${(n > 0 || yours.length > 0) && html`<section class="zone-mine"><h3>${dot("attn")}${t("home.mine", { n })}</h3>
       ${yours.map((e) => e.req ? html`<${Req} key=${e.key} r=${e.req}/>`
-        : html`<${Mine} key=${e.key} r=${Object.assign({ reset: d.reset }, e.mine)} now=${now} onGot=${gone} stt=${d.stt}/>`)}`}
+        : html`<${Mine} key=${e.key} r=${Object.assign({ reset: d.reset }, e.mine)} now=${now} onGot=${gone} stt=${d.stt}/>`)}</section>`}
     ${rest.length > 0 && html`<h3>${t("home.projects")}</h3>${rest.map((p) => html`<${ProjectBlock} key=${p.pkey} p=${p} now=${now} onBg=${onBg} onTags=${onTags}/>`)}`}
     ${!n && !board.length && !nRun && html`<div class="empty">${t("home.quiet")}</div>`}
     ${jobsDone.length > 0 && html`<h3>${t("home.jobs")}</h3><div class="list">${jobsDone.map((j) => html`<${Job} key=${j.id} j=${j} now=${now}/>`)}</div>`}

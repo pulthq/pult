@@ -69,6 +69,8 @@ function TagBar({ set, sel, top, all, onSel, onTop, pkey }) {
   </div>`}`;
 }
 
+// a project's screen: what waits for you — warm, what runs — green, as on Home (Q110); today's tasks and the earlier
+// ones are history: plain, each with the grey tick of a task you put away (Q111)
 function Project({ pkey, tag, topic }) {
   const now = useNow(1000);
   const [d, err, set] = useLive(() => api("project", { pkey }), [pkey]);
@@ -107,15 +109,15 @@ function Project({ pkey, tag, topic }) {
     ${d.vendors_ok && html`<div class="vline">${ic("eye", 14)}<span>${t("vend.ok")}</span><button class="link" onClick=${deny}>${t("vend.deny")}</button></div>`}
     ${d.tagset && (d.tagset.length > 0 || d.tags_n > 0) && html`<${TagBar} set=${d.tagset} sel=${sel} top=${top} all=${tagsOf.size} onSel=${setSel} onTop=${setTop} pkey=${d.tags_n != null ? pkey : null}/>`}
     ${d.tag_job && html`<div class="dim small tidy-run">${ic("auto", 14)} ${tagJob(d.tag_job)}</div>`}
-    ${(waits > 0 || mineF.length > 0) && html`<h3>${t("proj.waits", { n: waits })}</h3>
+    ${(waits > 0 || mineF.length > 0) && html`<section class="zone-mine"><h3>${dot("attn")}${t("proj.waits", { n: waits })}</h3>
       ${mineF.map((e) => e.req ? html`<${Req} key=${e.key} r=${e.req} showProject=${false}/>`
-        : html`<${Mine} key=${e.key} r=${Object.assign({ reset: d.reset }, e.mine)} now=${now} onGot=${gone} stt=${d.stt} showProject=${false}/>`)}`}
-    ${liveF.length > 0 && html`<h3>${t("proj.live", { n: liveF.length })}</h3><div class="list">${liveF.map((r) => html`<${RunRow} key=${r.sid} r=${r} now=${now} onBg=${onBg} onTags=${onTags} showProject=${false}/>`)}</div>`}
+        : html`<${Mine} key=${e.key} r=${Object.assign({ reset: d.reset }, e.mine)} now=${now} onGot=${gone} stt=${d.stt} showProject=${false}/>`)}</section>`}
+    ${liveF.length > 0 && html`<section class="zone-run"><h3>${dot("work")}${t("proj.live", { n: liveF.length })}</h3><div class="list">${liveF.map((r) => html`<${RunRow} key=${r.sid} r=${r} now=${now} onBg=${onBg} onTags=${onTags} showProject=${false}/>`)}</div></section>`}
     ${todayF.length > 0 && html`<h3>${t("proj.today")}</h3><div class="list">${todayF.map((r) => html`<${BoardRow} key=${r.sid} r=${r} now=${now} onBg=${onBg} onTags=${onTags}/>`)}</div>`}
     ${!waits && !mineF.length && !liveF.length && !todayF.length && !(sel && earlierF.length) && html`<div class="empty small">${t("proj.nothing")}</div>`}
     ${earlierF.length > 0 && html`<h3 class="toggle" role="button" tabindex="0" aria-expanded=${more} onClick=${() => setMore(!more)} onKeyDown=${keyTap(() => setMore(!more))}>${t("proj.earlier", { n: earlierF.length })} <span class=${"chev" + (more || sel ? " open" : "")}>${ic("chev", 14)}</span></h3>
       ${(more || sel) && html`<div class="list">${earlierF.map((x) => html`<${SwipeRow} key=${x.sid} what="task" acts=${[{ ic: "tag", label: t("row.tags"), on: () => onTags(x.sid) }]}><button class="item brow rest" onClick=${() => go("#/s/" + x.sid)}>
-        <div class="item-h"><b>${x.driven ? html`<span class="st-ic">${ic("phone", 14)}</span>` : ""}${x.title}</b><span class="meta"><span class="dim nowrap">${agoShort(x.last)}</span></span></div>
+        <div class="item-h"><b><span class="st-ic chk">${ic("check", 14)}</span>${x.driven ? html`<span class="st-ic">${ic("phone", 14)}</span>` : ""}${x.title}</b><span class="meta"><span class="dim nowrap">${agoShort(x.last)}</span></span></div>
         ${x.line || x.open || (x.tags && x.tags.length > 0) ? html`<div class="ln">${tagChips(x.tags)}${x.line || (x.open ? t("open.mac") : "")}</div>` : ""}</button></${SwipeRow}>`)}</div>`}`}
     <div class="stick"><button class="btn wide" onClick=${() => go("#/new?pkey=" + encodeURIComponent(pkey))}>${t("project.new")}</button></div>
     ${bgFor && html`<${BgSheet} sid=${bgFor} fixed=${true} onClose=${closeBg}/>`}
