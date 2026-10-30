@@ -1652,7 +1652,9 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.store.put("chat", CHAT)
         self.store.put("lang_tg", "ru")
         self.store.set_topic(PKEY, "/Users/x/proj", "proj", None)
-        self.p = pultd.Pult({"PULT_ALLOWED_USER_IDS": str(OWNER), "PULT_FORCE_AWAY": "1"}, tg, self.store)
+        # PULT_CODEX: no Codex unless a test gives its stand-in — this computer's own (ChatGPT.app) is never read here
+        self.p = pultd.Pult({"PULT_ALLOWED_USER_IDS": str(OWNER), "PULT_FORCE_AWAY": "1", "PULT_CODEX": str(TMP / "no-codex")},
+                            tg, self.store)
         self.p.out = pultd.Outbox(rate=60000, burst=1000)
         self.p._agents = (time.monotonic() + 1e6, [])
         fast = mock.patch.object(pultd, "EDIT_EVERY", 0.05)       # undone after each test: a test after this class
@@ -2653,10 +2655,10 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([(r["pkey"], r["open"], r["work"], r["ask"]) for r in rows],
                          [(PKEY, 2, 1, 1), ("-Users-x-other", 0, 0, 0)])            # active first, despite recency
 
-    async def test_second_opinion(self):
-        # stage M, step 1: a button under a session's outcome asks Codex to read what the task changed (a stand-in
-        # Codex here). The project goes to another vendor only once allowed, one tap; one review at a time; it shows
-        # at the end of the session until "Got it" or "Send to Claude"; the topic hears when the owner isn't looking
+    def second_project(self, **conf):
+        """A project in git whose task changed a file, its session with an outcome and a turn that wrote it, and a
+        stand-in Codex with these settings (stage M): → (the folder, the commit the task began on, its settings file,
+        the file every request to it lands in)."""
         proj = TMP / ("proj-" + self._testMethodName)
         now = time.time()
         base = git_repo(proj, now - 7200, {"stats.py": "def mean(xs):\n    return sum(xs) / len(xs)\n"})
@@ -2671,9 +2673,16 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
                                         tline("assistant", "Добавил median.", ago=200)]) + "\n")
         (proj / "stats.py").write_text("def median(xs):\n    return sorted(xs)[len(xs) // 2]\n")
         log = TMP / ("codex-%s.jsonl" % self._testMethodName)
-        cmd, conf = codex_conf(TMP / ("codex-" + self._testMethodName), log=str(log), wait=0.3)
+        cmd, path = codex_conf(TMP / ("codex-" + self._testMethodName), log=str(log), **dict({"wait": 0.3}, **conf))
         self.p.env["PULT_CODEX"] = cmd
         self.p.env["PULT_APP_LINK"] = "https://t.me/b/pult"
+        return proj, base, path, log
+
+    async def test_second_opinion(self):
+        # stage M, step 1: a button under a session's outcome asks Codex to read what the task changed (a stand-in
+        # Codex here). The project goes to another vendor only once allowed, one tap; one review at a time; it shows
+        # at the end of the session until "Got it" or "Send to Claude"; the topic hears when the owner isn't looking
+        proj, base, conf, log = self.second_project()
         view = lambda: self.p.api_session(SID)                                      # noqa: E731
         # no outcome yet, no files: no button; after a turn that wrote files — there is
         self.assertFalse((await view())["second"]["can"])
@@ -2747,7 +2756,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await self.p.api_second(SID, "start")
         await until(lambda: (self.p.seconds.get(SID) or {}).get("st") == "run")
         self.assertEqual(await self.p.api_second(SID, "cancel"), {"ok": True})
-        await until(lambda: SID not in self.p.second_tasks)
+        await until(lambda: SID not in self.p.second_tasks, 15)    # Codex is given 3 s to end by itself, then stopped
         self.assertIsNone((await view())["second"]["job"])
         await asyncio.sleep(0.1)
         self.assertEqual(len(self.texts()), told_before)
@@ -2779,6 +2788,61 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.p._codex = (0.0, None)
         sec = (await view())["second"]
         self.assertEqual((sec["can"], sec["why"]), (False, None))
+
+    async def test_second_opinion_races(self):
+        # Codex's own second opinion on stage M, step 1 (2026-10-30): "Send to Claude" from two windows at once sent the
+        # findings twice — the hand-off waits, and requests run side by side; "Disallow" while a review waited for
+        # another one let it start later and hand Codex the code anyway
+        self.second_project(hang=30, steps=0)
+        rec = self.p.attn.finished(SID, PKEY, 60, "Добавил median.", "Добавил median.", waits=True, seen=True)
+        self.store.add_turn(SID, PKEY, rec["ts"] - 60, 60, [{"p": "stats.py", "size": 50, "mt": rec["ts"]}], 1)
+        self.store.put("vendors.ok", {PKEY: time.time()})
+        log = TMP / ("codex-%s.jsonl" % self._testMethodName)
+        started = lambda: [m for m in (json.loads(x) for x in log.read_text().splitlines()) if m.get("method") == "thread/start"] \
+            if log.exists() else []                                                   # noqa: E731
+        # "Disallow" while it waits for the review before it: it never starts
+        await self.p.codex_lock.acquire()
+        self.assertEqual(await self.p.api_second(SID, "start"), {"ok": True})
+        await asyncio.sleep(0.1)
+        self.assertEqual(self.p.seconds[SID]["st"], "wait")
+        self.assertEqual(await self.p.api_vendors_ok(PKEY, False), {"on": False})
+        await until(lambda: SID not in self.p.second_tasks)
+        self.assertIsNone((await self.p.api_session(SID))["second"]["job"])
+        # taken back by any way while it waits: it asks again when its turn comes, and doesn't run
+        self.store.put("vendors.ok", {PKEY: time.time()})
+        self.assertEqual(await self.p.api_second(SID, "start"), {"ok": True})
+        await asyncio.sleep(0.1)
+        self.store.put("vendors.ok", {})
+        self.p.codex_lock.release()
+        await until(lambda: SID not in self.p.second_tasks)
+        self.assertEqual((SID in self.p.seconds, started()), (False, []))             # Codex was never started
+        # "Disallow" while Codex reads: it is stopped
+        self.store.put("vendors.ok", {PKEY: time.time()})
+        await self.p.api_second(SID, "start")
+        await until(lambda: (self.p.seconds.get(SID) or {}).get("st") == "run" and started())
+        await self.p.api_vendors_ok(PKEY, False)
+        await until(lambda: SID not in self.p.second_tasks, 15)    # Codex is given 3 s to end by itself, then stopped
+        self.assertIsNone((await self.p.api_session(SID))["second"]["job"])
+        # two "Send to Claude" at once: one hand-off, the other is "decided"; a hand-off that fails lets go
+        self.p.seconds[SID] = {"st": "done", "ts": time.time(), "pkey": PKEY, "model": "gpt-5.6-sol",
+                               "items": [{"prio": "P1", "title": "x", "file": "stats.py", "line": 2, "end": 2, "body": "y"}]}
+        said, fail = [], [True]
+
+        async def slow_send(sid, text, fork=False, files=None):
+            said.append(text)
+            await asyncio.sleep(0.2)
+            if fail[0]:
+                fail[0] = False
+                raise ValueError("the session is gone")
+            return {"ok": True, "how": "session", "out": "o1"}
+        with mock.patch.object(self.p, "api_send", slow_send):
+            with self.assertRaises(ValueError):
+                await self.p.api_second(SID, "send")
+            self.assertNotIn("sending", self.p.seconds[SID])
+            got = await asyncio.gather(self.p.api_second(SID, "send"), self.p.api_second(SID, "send"))
+        self.assertEqual(sorted(r["ok"] for r in got), [False, True])
+        self.assertEqual(next(r for r in got if not r["ok"]), {"ok": False, "note": I.T("note.decided")})
+        self.assertEqual(len(said), 2)                                                # the failed one and one of the pair
 
     async def test_pins(self):
         # pinned projects (stage Zh, Q98): on top of the app's lists, the newest pin first, the rest in their order;

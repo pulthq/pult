@@ -542,8 +542,8 @@ async def main():
         if second == "allowed":
             store.put("vendors.ok", {T.PKEY: time.time()})
     p = pultd.Pult({"PULT_ALLOWED_USER_IDS": str(T.OWNER), "PULT_FORCE_AWAY": "1"}, tg, store)
-    if second:
-        p.env["PULT_CODEX"] = codex
+    # Codex is the stand-in or none: this computer's own (ChatGPT.app) is never read here, as VS Code's settings aren't
+    p.env["PULT_CODEX"] = codex if second else str(T.TMP / "no-codex")
     p.out = pultd.Outbox(rate=60000, burst=1000)
     p._agents = (time.monotonic() + 1e6, [{"sessionId": SID3, "cwd": "/Users/x/blog"}])
     pultd.EDIT_EVERY = 0.2

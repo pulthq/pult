@@ -462,15 +462,17 @@ class AppServer:
         return m.get("result") or {}
 
     async def close(self):
-        """stdin closed — the app-server ends by itself and takes its commands with it; then a signal; then a kill."""
+        """stdin closed — the app-server ends by itself and takes its commands with it; then a signal; then a kill.
+        On Windows the signal goes to the whole tree: codex there is npm's codex.cmd, and ending its cmd.exe left the
+        program itself reading on (CI on Windows, 2026-10-30)."""
         try:
             self.p.stdin.close()
         except (OSError, RuntimeError):
             pass
-        for stop in (None, self.p.terminate, self.p.kill):
+        for stop in (None, self.stop_tree, self.p.kill):
             if stop is not None:
                 try:
-                    stop()
+                    await stop() if stop is self.stop_tree else stop()
                 except ProcessLookupError:
                     break
             try:
@@ -480,6 +482,16 @@ class AppServer:
                 continue
         for t in self.tasks:
             t.cancel()
+
+    async def stop_tree(self):
+        if os.name != "nt":
+            self.p.terminate()
+            return
+        try:
+            await asyncio.to_thread(subprocess.run, ["taskkill", "/PID", str(self.p.pid), "/T", "/F"],
+                                    capture_output=True, timeout=15, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            self.p.terminate()
 
 
 def kind_of(err):
