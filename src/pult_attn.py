@@ -1,20 +1,24 @@
-"""Whose move: per session, how its last turn ended and whether the owner has seen it (stage V, "Attention").
+"""Whose move: per session, how its last turn ended and whether the owner has put it away (stage V, "Attention").
 
 A session's move is Claude's while a turn runs or a background task will wake it, and the owner's when it waits
-for an answer, failed, or ended a turn that needs them and they haven't seen it yet. Once seen, it rests: a line in
-its project, no counter, no call. This module keeps what has to outlive a restart (the outcome of each session's
-last turn, the "seen" mark, today's turns per project) and decides a session's state from it plus what the daemon
-knows live. Standard library only. Design: docs/project.html, stage V.
+for an answer, failed, or ended a turn — any turn, a plain report too — until the owner puts it away by hand: "Got it"
+or an answer. Neither the model's "only a report", nor a look at the session, nor being at the computer when it ended
+puts it away (the owner, 2026-10-30: "I want to send every session I start to the checked ones myself" — a task that
+went to the done list by itself got forgotten). Put away, it rests: a line in its project, no counter, no call. This
+module keeps what has to outlive a restart (the outcome of each session's last turn, the "seen" mark, today's turns
+per project) and decides a session's state from it plus what the daemon knows live. Standard library only. Design:
+docs/project.html, stage V.
 """
 import time
 
-KEEP = 3 * 86400        # s: outcomes older than this are forgotten
+KEEP = 3 * 86400        # s: outcomes put away are forgotten after this, and the log too
+KEEP_MINE = 30 * 86400  # s: one still waiting for the owner stays this long — only they put it away; this only bounds the store
 LOG_MAX = 300           # outcomes kept for "While you were away"
 RECENT = 3 * 3600       # s: a resting session with an outcome this fresh is still shown in its project
 CTX_WARN = 85           # % of the context window: time to compact or start a new session
 
 # a session's state, in the order the owner should look at them
-ORDER = {"ask": 0, "fail": 1, "you": 2, "work": 3, "queue": 4, "bg": 5, "done": 6, "idle": 7}
+ORDER = {"ask": 0, "fail": 1, "you": 2, "work": 3, "queue": 4, "bg": 5, "idle": 6}
 MINE = ("ask", "fail", "you")          # the owner's move
 
 
@@ -36,12 +40,16 @@ class Attn:
         self.store.put("attn_log", self.log)
         self.store.put("attn_resume", self.resume)
 
-    def finished(self, sid, pkey, dur, text, line, waits, fail=None, seen=False, now=None):
-        """A turn ended. waits — nothing else runs in the session, so the next step is the owner's (the rule; the
-        model may refine it with briefed); fail — the error when the turn broke off; seen — the owner watched it."""
+    def finished(self, sid, pkey, dur, text, line, waits, fail=None, watched=False, now=None):
+        """A turn ended: the owner's move until they put it away (seen). waits — nothing else runs in the session, so
+        the next step is the owner's to decide (the rule; the model may refine it with briefed) — Telegram calls only
+        about those; fail — the error when the turn broke off; watched — the owner saw it end at the computer: no call
+        about it, though it still waits on Home."""
         now = now or time.time()
         self.rec[sid] = {"pkey": pkey, "ts": now, "dur": dur, "line": line, "need": "", "you": bool(waits),
-                         "fail": fail, "seen": bool(seen), "text": text, "model": False, "replies": []}
+                         "waits": bool(waits), "fail": fail, "seen": False, "text": text, "model": False, "replies": []}
+        if watched:
+            self.rec[sid]["paged"] = True
         self.log.append([now, pkey, sid, line, bool(waits), fail])
         self.resume.pop(sid, None)            # a new outcome: an old "continue after the reset" is moot
         d = today(now)
@@ -54,8 +62,9 @@ class Attn:
         return self.rec[sid]
 
     def briefed(self, sid, ts, brief, waits):
-        """The model's reading of the result that ended at ts: its line, and whether Claude waits for the owner
-        (only while nothing else runs — a background task means Claude goes on by itself)."""
+        """The model's reading of the result that ended at ts: its line, and whether Claude waits for the owner's
+        decision (only while nothing else runs — a background task means Claude goes on by itself): what is needed,
+        ready replies, a call in Telegram. Either way the outcome waits on Home until the owner puts it away."""
         r = self.rec.get(sid)
         if not r or r["ts"] != ts or not brief:
             return None
@@ -86,7 +95,7 @@ class Attn:
         return "own words, %d offered" % n
 
     def seen(self, sid):
-        """The owner saw the outcome: opened the session, answered it, dismissed it, closed the tab."""
+        """The owner put the outcome away: "Got it", an answer, a new turn in the session."""
         r = self.rec.get(sid)
         if r and not r["seen"]:
             r["seen"] = True
@@ -95,8 +104,10 @@ class Attn:
         return False
 
     def prune(self, now=None):
-        old = (now or time.time()) - KEEP
-        for sid in [s for s, r in self.rec.items() if r["ts"] < old]:
+        """Outcomes put away go after KEEP; one that still waits stays: it goes away only by the owner's hand."""
+        now = now or time.time()
+        old = now - KEEP
+        for sid in [s for s, r in self.rec.items() if r["ts"] < (old if r["seen"] else now - KEEP_MINE)]:
             del self.rec[sid]
         self.log = [e for e in self.log if e[0] >= old][-LOG_MAX:]
 
@@ -112,7 +123,7 @@ class Attn:
 def state(pending, working, bg, rec, queued=None):
     """The session's state: ask (waits for an answer), work, queue (a message waits for a place among the turns
     that may run at once), bg (Claude goes on by itself after a background task), fail / you (ended and the owner
-    hasn't seen it: broke off / needs them), done (ended, unseen, only a report), idle (rests)."""
+    hasn't put it away: broke off / any other end, a plain report too), idle (rests)."""
     if pending:
         return "ask"
     if working:
@@ -125,15 +136,14 @@ def state(pending, working, bg, rec, queued=None):
     if bg:
         return "bg"
     if fresh:
-        return "you" if rec.get("you") else "done"
+        return "you"
     return "idle"
 
 
-def needs_owner(rec):
-    """The outcome waits for the owner's decision, so a look at it doesn't put it to rest: it broke off, or it is their
-    move by the model's reading (what is needed, or just "you" — its word). Without the model, "nothing runs, your
-    move" is only the rule, and opening the session is enough (the owner, 2026-10-20: reading isn't deciding)."""
-    return bool(rec and (rec.get("fail") or (rec.get("you") and (rec.get("need") or rec.get("model")))))
+def waiting(rec):
+    """The outcome waits for the owner: not put away, and nothing went on by itself after it (a background task) — or
+    it broke off. One kept from before this rule has no "waits": its "you" stands in."""
+    return bool(rec and not rec.get("seen") and (rec.get("fail") or rec.get("waits", rec.get("you"))))
 
 
 def resting(row, now=None):

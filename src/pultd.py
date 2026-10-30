@@ -82,7 +82,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.31"
+VERSION = "0.18.32"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -355,7 +355,6 @@ class Pult(Api, Parts):
         for r in self.attn.rec.values():
             r.setdefault("paged", True)    # outcomes from before this start were announced then: no burst of calls now
         self.brief_sem = asyncio.Semaphore(1)        # the result-reading model: one request at a time
-        self.reading = {}              # sid → {"ts", "viewed"}: an outcome the model still reads, opened meanwhile or not
         self.tidying = set()           # projects whose tags the model looks over now (stage T, T2: offers to merge)
         self.tidy_failed = {}          # pkey → (the list's names, when): the model gave nothing — not again at once
         self.tag_jobs = {}             # pkey → {"kind": "old" | "resort", "done", "total", "list"}: tasks sorted in batches
@@ -1152,7 +1151,7 @@ class Pult(Api, Parts):
         if files:                                  # kept: the files stay viewable after the next turn (stage F4)
             tid = self.store.add_turn(lv.sid, lv.pkey, t.started, (t.done[1] - t.started) if t.done else None, files, n)
             tf = {"id": tid, "n": n, "size": sum(f["size"] for f in files)}
-        self.outcome(lv, t, text, fail, seen=bool(t and t.here) and not await self.away(), files=tf)
+        self.outcome(lv, t, text, fail, watched=bool(t and t.here) and not await self.away(), files=tf)
         # what follows is Telegram's: it needs the turn's own message (its id to reply to) — the outcome above doesn't
         # wait for it (a pause for Telegram's rate limit held Home and the app for minutes; review 2026-10-27, Я11)
         if t is not None:
@@ -1216,21 +1215,21 @@ class Pult(Api, Parts):
         key = "fail." + code
         return self.t(key) if key in I.S else self.t("fail.other", code=R.esc(code))
 
-    def outcome(self, lv, t, text, fail=None, seen=False, files=None):
-        """A turn ended: remember how (pult_attn) and, if the owner allowed it, let the model read the result.
-        seen — the owner typed this turn here and is still at the computer: they watched it end; files — the turn's
-        files as kept ({id, n, size}), or None."""
+    def outcome(self, lv, t, text, fail=None, watched=False, files=None):
+        """A turn ended: remember how (pult_attn) and, if the owner allowed it, let the model read the result. It is
+        the owner's move until they put it away themselves — "Got it" or an answer (2026-10-30). watched — they typed
+        this turn here and are still at the computer: they saw it end, so Telegram won't call about it; files — the
+        turn's files as kept ({id, n, size}), or None."""
         waits = not lv.bg                                  # nothing else runs: the next step is the owner's
         line = self.fail_text(fail) if fail else B.first_sentence(text)
         dur = (t.done[1] - t.started) if t and t.done else None
-        rec = self.attn.finished(lv.sid, lv.pkey, dur, R.plain(text, 600), line, waits, fail=fail, seen=seen)
+        rec = self.attn.finished(lv.sid, lv.pkey, dur, R.plain(text, 600), line, waits, fail=fail, watched=watched)
         if files:
             rec["turn_files"] = files                      # {id, n, size}: the app's line to the turn's files (stage F4)
             self.attn.save()
         self.changed(lv.sid)
         if not fail and text.strip() and self.prefs()["brief"]:
             bg = [b.get("description") or b.get("command") or "" for b in lv.bg]
-            self.reading[lv.sid] = {"ts": rec["ts"], "viewed": False}
             asyncio.create_task(self.brief_result(lv, rec["ts"], (t.ask or t.prompt) if t else None, text, bg, waits,
                                                   since=t.started if t else 0.0))
 
@@ -1242,9 +1241,9 @@ class Pult(Api, Parts):
             log("message %s not deleted: %s" % (mid, e))
 
     def mark_seen(self, sid, said=None):
-        """The owner saw a session's outcome (opened it, answered it, "Got it", a new turn): it rests, and a call
-        about it in Telegram folds into "✔️ … · line" without buttons. said — their answer, from wherever it came:
-        the call shows it too."""
+        """The owner put a session's outcome away ("Got it"), answered it, or a new turn began: it rests, and a call
+        about it in Telegram folds into "✔️ … · line" without buttons. Opening the session doesn't count (2026-10-30).
+        said — their answer, from wherever it came: the call shows it too."""
         r = self.attn.rec.get(sid)
         how = self.attn.judge(sid, said) if said else None
         if how:
@@ -1287,7 +1286,7 @@ class Pult(Api, Parts):
     async def page_due(self):
         """Telegram as a pager: requests and outcomes that wait for the owner and that they can't see — not in the app,
         not at the computer (page_now). An outcome waits up to PAGE_WAIT for the model's line, so the call says
-        what is needed and offers the ready replies; "only a report" is never paged."""
+        what is needed and offers the ready replies; "only a report" is never paged — it waits on Home for "Got it"."""
         if not await self.page_now():
             return
         for req in list(self.req_by_rid.values()):
@@ -1382,30 +1381,21 @@ class Pult(Api, Parts):
     async def brief_result(self, lv, ts, prompt, text, bg, waits, since=0.0):
         """The model's line for a finished turn (pult_brief: haiku, the owner's subscription), one request at a
         time; a newer outcome of the same session makes the request moot. The same request reads the task's tags
-        (stage T) — unless they are the owner's: theirs are final. since — the turn's start: its files are a hint.
-        Opened while the model read it (api_session): the look counts now, unless the model reads it as the owner's move."""
-        try:
-            async with self.brief_sem:
-                r = self.attn.rec.get(lv.sid)
-                if not r or r["ts"] != ts:
-                    return
-                BRIEF_DIR.mkdir(parents=True, exist_ok=True)
-                tags = await self.tag_ctx(lv, since)
-                b = await B.brief(R.prompt_text(prompt) if prompt else None, text, bg, self.lang(), BRIEF_DIR, tags=tags)
-                if b is None:
-                    log("brief %s: no answer from the model — the first sentence stays" % lv.sid[:8])
-                    return
-                if tags is not None and b.get("tags"):
-                    self.tags_set(lv, b["tags"])
-                if self.attn.briefed(lv.sid, ts, b, waits):
-                    self.changed(lv.sid)
-        finally:
-            reading = self.reading.get(lv.sid)
-            if reading and reading["ts"] == ts:
-                del self.reading[lv.sid]
-                r = self.attn.rec.get(lv.sid)
-                if reading["viewed"] and r and r["ts"] == ts and not A.needs_owner(r):
-                    self.mark_seen(lv.sid)
+        (stage T) — unless they are the owner's: theirs are final. since — the turn's start: its files are a hint."""
+        async with self.brief_sem:
+            r = self.attn.rec.get(lv.sid)
+            if not r or r["ts"] != ts:
+                return
+            BRIEF_DIR.mkdir(parents=True, exist_ok=True)
+            tags = await self.tag_ctx(lv, since)
+            b = await B.brief(R.prompt_text(prompt) if prompt else None, text, bg, self.lang(), BRIEF_DIR, tags=tags)
+            if b is None:
+                log("brief %s: no answer from the model — the first sentence stays" % lv.sid[:8])
+                return
+            if tags is not None and b.get("tags"):
+                self.tags_set(lv, b["tags"])
+            if self.attn.briefed(lv.sid, ts, b, waits):
+                self.changed(lv.sid)
 
     # ----- task tags (stage T): a section of the project and a topic in it; the model keeps them, the owner corrects -----
 

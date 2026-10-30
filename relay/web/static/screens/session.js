@@ -120,10 +120,10 @@ function TextMsg({ i, fold }) {
 }
 
 // how the session's last turn ended, at the end of the chat right above the field: what came out, what is needed,
-// ready replies (or "continue after the reset"). Red while it waited for you when you opened it; a plain report gets
-// no card — the whole answer is right above
-// the session's last outcome at the end of the chat; one that waits for a decision stays "your move" on Home after
-// reading — "Got it" here puts it to rest without an answer
+// ready replies (or "continue after the reset"). Red while it waits for you; a report put away gets no card — the
+// whole answer is right above
+// the session's last outcome at the end of the chat stays "your move" on Home after reading, a plain report too —
+// "Got it" here puts it away without an answer (the owner, 2026-10-30: every task is theirs to check off)
 // the files the turn made or changed in the project (stage F4): one line in the outcome, a tap opens their screen
 const fsize = (b) => (b >= 1048576 ? t("size.mb", { n: num(b / 1048576, 1) }) : t("size.kb", { n: Math.max(1, Math.round(b / 1024)) }));
 function TurnLine({ sid, tf }) {
@@ -296,15 +296,14 @@ function Outcome({ sid, out, state, now, second }) {
     try { await api("seen", { sid }); haptic("success"); setGot(true); } catch (err) { alertBox(err.message); }
   };
   const head = state === "fail" ? html`${ic("alert", 14)} ${out.line || t("out.failed")}` : state === "you" ? html`${dot("attn")}${t("out.waits", { dur: dur(now - out.ts) })}` : html`${ic("check", 14)} ${t("out.done")}`;
-  const got1 = mine && (out.need || state === "fail");
   return html`<div class=${"card outcome" + (mine ? " mine" : "") + (state === "fail" ? " fail" : "")}>
     <div class="k">${head}${out.dur ? " · " + t("home.took", { dur: dur(out.dur) }) : ""}</div>
     ${state !== "fail" && out.line && html`<div class="o-l"><b>${t("out.line")}</b> ${out.line}</div>`}
     ${out.need && html`<div class="o-l"><b>${t("out.need")}</b> ${out.need}</div>`}
     ${out.fail === "rate_limit" ? html`<${ResumeAt} sid=${sid} resume=${resume} reset=${out.reset} onSet=${setResume}/>` : html`<${Replies} sid=${sid} replies=${out.replies}/>`}
     ${out.turn_files && html`<${TurnLine} sid=${sid} tf=${out.turn_files}/>`}
-    ${(got1 || second) && html`<div class="foot quiet">${second ? html`<button class="link sec-ask" onClick=${second}>${ic("eye", 15)} ${t("sec.ask")}</button>` : html`<span></span>`}
-      ${!got1 ? "" : got ? html`<span class="dim">${ic("check", 14)} ${t("mine.got")}</span>` : html`<button class="link" onClick=${gotIt}>${ic("check", 15)} ${t("mine.got")}</button>`}</div>`}
+    ${(mine || second) && html`<div class="foot quiet">${second ? html`<button class="link sec-ask" onClick=${second}>${ic("eye", 15)} ${t("sec.ask")}</button>` : html`<span></span>`}
+      ${!mine ? "" : got ? html`<span class="dim">${ic("check", 14)} ${t("mine.got")}</span>` : html`<button class="link" onClick=${gotIt}>${ic("check", 15)} ${t("mine.got")}</button>`}</div>`}
   </div>`;
 }
 
@@ -401,7 +400,7 @@ function Session({ sid }) {
   const [openFull, closeFull] = useOverlay(!!full, (v) => { if (!v) setFull(null); });
   const pending = useRcpt(s.info ? s.info.pending : []);       // in the chat's order: the latest at the bottom
   const shown = useRef([]);
-  const firstOut = useRef(null);       // the outcome as you found it: opening the session marks it seen, the card stays red
+  const firstOut = useRef(null);       // the outcome as you found it: put away meanwhile (an older computer did it on opening), the card stays red
   // earlier history loads by itself as the top comes near — no button to hunt for; the place being read stays put
   const [early, setEarly] = useState(false);
   const earlyRef = useRef(false);

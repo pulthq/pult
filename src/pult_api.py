@@ -196,8 +196,9 @@ class Api:
                 "pager": self.pager()}
 
     def catchup(self):
-        """"While you were away": the turns since the app was last on the screen, what is done, what waits for the
-        owner now, the latest line per project."""
+        """"While you were away": the turns since the app was last on the screen, what is behind (put away by the owner
+        or followed by another turn), what waits for them now — every outcome they haven't put away — the latest line
+        per project."""
         if not self.catch_from:
             return None
         es = self.attn.since(self.catch_from)
@@ -206,14 +207,15 @@ class Api:
         last = {}
         for e in es:
             last[e[1]] = e
+        def waits(e):                                # this very outcome still waits for the owner
+            r = self.attn.rec.get(e[2])
+            return bool(r and r["ts"] == e[0] and A.waiting(r))
         lines = []
         for pkey, e in sorted(last.items(), key=lambda x: -x[1][0])[:4]:
-            r = self.attn.rec.get(e[2]) or {}
-            lines.append({"pkey": pkey, "name": self.name_of(pkey), "line": e[3],
-                          "you": bool(e[4] and not r.get("seen")), "fail": e[5]})
+            lines.append({"pkey": pkey, "name": self.name_of(pkey), "line": e[3], "you": waits(e), "fail": e[5]})
         return {"from": self.catch_from, "turns": len(es), "projects": len(last),
-                "done": sum(1 for e in es if not e[4] and not e[5]), "lines": lines,
-                "mine": sum(1 for r in self.attn.rec.values() if not r["seen"] and (r["you"] or r["fail"]))}
+                "done": sum(1 for e in es if not e[5] and not waits(e)), "lines": lines,
+                "mine": sum(1 for r in self.attn.rec.values() if A.waiting(r))}
 
     def limit_pct(self):
         """The 5-hour window, % used, from the last usage reading (no new request), or None."""
@@ -472,7 +474,7 @@ class Api:
                    if not r.fut.done() and (self.live.get(r.sid) or self.stub(r.sid)).pkey == pkey]
         mine = A.sort_rows([r for r in rows if r["state"] in ("you", "fail")])
         live = A.sort_rows([r for r in rows if r["state"] in ("work", "bg", "queue")])
-        today = sorted([r for r in rows if r["state"] in ("done", "idle") and (r["ts"] or 0) >= midnight],
+        today = sorted([r for r in rows if r["state"] == "idle" and (r["ts"] or 0) >= midnight],     # put away by the owner
                        key=lambda r: -(r["ts"] or 0))
         for r in live + today:
             r["ctx"], r["llm"] = await self.row_stats(r["sid"])
@@ -885,8 +887,8 @@ class Api:
         path, lv = self.transcript_of(sid)
         row = self.store.session(sid)
         lv = lv or self.stub(sid, row["pkey"] if row else Path(path).parent.name)
-        # the session's last outcome, as the owner found it (before opening it marks it seen): the app shows it at
-        # the end of the chat — what came out, what is needed, ready replies — until the next turn
+        # the session's last outcome: the app shows it at the end of the chat — what came out, what is needed, ready
+        # replies, "Got it" while it waits — until the next turn
         rec = self.attn.rec.get(sid)
         pending = [r for r in lv.pending.values() if not r.fut.done()]
         outcome = None
@@ -894,16 +896,9 @@ class Api:
             outcome = {k: rec.get(k) for k in ("line", "need", "replies", "fail", "ts", "dur", "turn_files")}
             outcome.update(state=A.state(pending, False, lv.bg, rec), resume=self.attn.resume.get(sid),
                            reset=self.limit_reset() if rec.get("fail") == "rate_limit" else None)
-        # the owner opened it: its outcome no longer calls them — unless it waits for their decision (the model's
-        # "your move") or broke off: reading isn't deciding, so that stays "your move" until they answer, write to
-        # the session or press "Got it" (the owner, 2026-10-20; pult_attn.needs_owner). The model reads a fresh result
-        # for a few seconds, and the screen re-reads itself the moment a turn ends: that look waits for its word
-        # (brief_result) — taken for "seen" at once, it put a question away unanswered (2026-10-26)
-        reading = self.reading.get(sid)
-        if rec and rec.get("you") and not rec.get("model") and reading and reading["ts"] == rec["ts"]:
-            reading["viewed"] = True
-        elif not A.needs_owner(rec):
-            self.mark_seen(sid)
+        # opening it puts nothing away: the outcome stays "your move" until the owner presses "Got it" or answers —
+        # a report too (the owner, 2026-10-30: "I want to send every session I start to the checked ones myself";
+        # before, a look put a report away, and so did the model's "only a report" — and a task went by unnoticed)
         page = await asyncio.to_thread(PW.transcript_page, path, before, after, lv.cwd)
         stats = await asyncio.to_thread(self.stats.get, path)
         live = self.live_item(lv)

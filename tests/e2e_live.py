@@ -7,7 +7,7 @@ Run (uses a little of the subscription, ~90 s):
 A new session from "Telegram" → permission via a button → question via buttons → result;
 continuing the same session; a fork of a session "open on the Mac";
 a background command — "in the background" in the result, the load view finds its process, a turn when it ends,
-the next prompt with its own result; that result is the owner's move on Home until the session is opened.
+the next prompt with its own result; that result is the owner's move on Home — opened, too — until "Got it".
 With Telegram as a pager: a task from the app makes no turn or result message; its question is paged once.
 A message from the app mid-turn reaches Claude in that turn, the app shows it as written mid-turn, its ticks say read.
 Stop from the app closes the interrupted turn, though Claude Code sends no Stop hook for it.
@@ -183,8 +183,8 @@ async def main():
     log("следующий запрос:", done(mark2)[0].replace("\n", " | "), "· bg процесса:", p.driven[sid4].bg)
     assert "PONG" in done(mark2)[0].upper(), "the result of another turn"
     assert p.live[sid4].run > run, "the owner's next prompt didn't start a new run"
-    # whose move (stage V): a real Stop leaves an outcome; nothing runs after PONG and nobody opened it — the owner's
-    # move, with the result's first sentence as its line; opening the session puts it to rest
+    # whose move (stage V): a real Stop leaves an outcome; nothing runs after PONG — the owner's move, with the
+    # result's first sentence as its line; opening the session doesn't put it away, "Got it" does (2026-10-30)
     ov = await p.api_overview()
     mine = {r["sid"]: (r["state"], r["line"], r.get("llm")) for r in ov["mine"]}
     log("твой ход:", mine.get(sid4), "· проектов на доске:", len(ov["board"]))
@@ -192,7 +192,9 @@ async def main():
     # its card names the model that did it (Q108): the real transcript's own
     assert mine[sid4][2] and str(mine[sid4][2].get("model")).startswith("claude-") and "vendor" not in mine[sid4][2], "the owner's move doesn't say the model"
     await p.api_session(sid4)
-    assert sid4 not in {r["sid"] for r in (await p.api_overview())["mine"]}, "opening the session didn't put it to rest"
+    assert sid4 in {r["sid"] for r in (await p.api_overview())["mine"]}, "opening the session put it away"
+    await p.api_seen(sid4)
+    assert sid4 not in {r["sid"] for r in (await p.api_overview())["mine"]}, "Got it didn't put it away"
     # which model does it, for its row on Home (2026-10-30): the real transcript's own
     llm4 = (await p.row_stats(sid4))[1]
     log("модель в строке:", llm4)

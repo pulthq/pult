@@ -31,8 +31,10 @@ you're neither in the app nor at the computer. Reminders on long turns; warnings
 ## In the web app
 
 - **Home** is built around whose move it is: what runs right now (each task with what you asked and what Claude says
-  so far), then what waits for you — permission requests to answer right there, sessions that ended and need you,
-  with ready replies taken from Claude's own message — then every project with its colour.
+  so far), then what waits for you — permission requests to answer right there, and every session that ended, with
+  ready replies taken from Claude's own message — then every project with its colour. A finished task stays there,
+  a plain report too, until you tap **Got it** (on the card, or under the outcome in the session) or answer it:
+  opening it doesn't put it away, so nothing finished slips by unchecked.
 - **Pinned projects**: slide a project's row to the left on the Projects screen and tap Pin, or tap the pin in a
   project's header. Pinned projects stay on top of Projects, of Home and of the new task's list, the newest pin
   first; the rest are ordered by who needs you. The pin is kept on the computer, so every phone sees the same.

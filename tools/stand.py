@@ -40,8 +40,10 @@ offers "Second opinion · Codex" under its outcome (tools/second_check.py). STAN
 STAND_VENDORS=1 (stage M, step 2): DeepSeek has a made-up key (GLM and Kimi none), a key's check passes "sk-…" without any
 network, and a session ran on DeepSeek's model (SESSV) — its next turn runs now, from the app, on deepseek-v4-pro[1m];
 the session that waits for you (SESS4) ran on DeepSeek too, the weekly report on Fable — the cards and rows name the model;
-"Who does it" in New task, Settings → Other vendors (tools/vendors_check.py). VS Code's settings and the tab
-switch are made up on every stand: the app never reads this computer's."""
+"Who does it" in New task, Settings → Other vendors (tools/vendors_check.py). STAND_REPORT=1: the weekly report hasn't
+been put away — a plain report waits in "Your move" for "Got it" like any other (tools/gotit_check.py); without it (and
+without STAND_ASK2) the owner has put it away. VS Code's settings and the tab switch are made up on every stand: the app
+never reads this computer's."""
 import asyncio, base64, hashlib, hmac, json, os, random, shutil, signal, sys, time, urllib.parse
 from pathlib import Path
 
@@ -251,9 +253,9 @@ TAGS_D = {
             dict(st="bg", ago=900, tag=("Frame", "Strength"), title="Run a strength check on the frame",
                  line="The frame simulation under 40 kg is running; the outcome when it ends", bg="Frame strength simulation",
                  bg_cmd="python sim/frame_fea.py --load 40"),
-            dict(st="done", ago=2400, tag=("Electronics", "Power"), title="Power board: reverse polarity protection",
+            dict(st="idle", ago=2400, tag=("Electronics", "Power"), title="Power board: reverse polarity protection",
                  line="Added a diode and a fuse; the schematic and the parts list are updated"),
-            dict(st="done", ago=4200, tag=("Slicer", "Profiles"), title="A PETG profile for the slicer",
+            dict(st="idle", ago=4200, tag=("Slicer", "Profiles"), title="A PETG profile for the slicer",
                  line="The profile is ready: 240 °C, 30 % fan, a clean test print"),
             dict(st="idle", ago=7800, tag=("Frame", "Mounts"), title="A display mount on the frame",
                  line="The mount is redrawn and prints without supports"),
@@ -288,9 +290,9 @@ TAGS_D = {
             dict(st="bg", ago=900, tag=("Корпус", "Прочность"), title="Посчитай раму на прочность",
                  line="Запустил расчёт рамы под нагрузкой 40 кг; итог — по готовности", bg="Расчёт прочности рамы",
                  bg_cmd="python sim/frame_fea.py --load 40"),
-            dict(st="done", ago=2400, tag=("Электроника", "Питание"), title="Схема питания: защита от переполюсовки",
+            dict(st="idle", ago=2400, tag=("Электроника", "Питание"), title="Схема питания: защита от переполюсовки",
                  line="Добавил диод и предохранитель; схема и список деталей обновлены"),
-            dict(st="done", ago=4200, tag=("Слайсер", "Профили"), title="Профиль PETG для слайсера",
+            dict(st="idle", ago=4200, tag=("Слайсер", "Профили"), title="Профиль PETG для слайсера",
                  line="Профиль готов: 240 °C, обдув 30 %, пробник без паутины"),
             dict(st="idle", ago=7800, tag=("Корпус", "Крепления"), title="Крепление дисплея на раму",
                  line="Крепление перерисовано, печатается без поддержек"),
@@ -354,9 +356,11 @@ async def stand_tags(p, store, projects):
                                                     "description": x["bg"], "command": x["bg_cmd"]}]))
             p.live[sid].title, p.live[sid].named = x["title"], True
         else:
-            r = p.attn.finished(sid, pk, 600, x["line"], x["line"], waits=True, seen=x["st"] == "idle", now=now - x["ago"])
+            r = p.attn.finished(sid, pk, 600, x["line"], x["line"], waits=True, now=now - x["ago"])
             p.attn.briefed(sid, r["ts"], {"line": x["line"], "you": x["st"] == "you", "need": x.get("need") or "",
                                           "replies": x.get("replies") or []}, True)
+            if x["st"] == "idle":
+                p.attn.seen(sid)                   # the owner has put it away: "Got it" (2026-10-30)
     # the earlier tasks: the SDK lists a project's sessions from the real ~/.claude/projects, which the stand never
     # touches — so for the printer's folder the list is made up here, the same fields
     import claude_agent_sdk
@@ -900,8 +904,8 @@ async def main():
     p.jobs["j1"].last = D["job_last"]
     await p.on_run({"op": "start", "id": "j2", "cmd": "npm run build", "cwd": SHOP, "pid": os.getpid()})
     await p.on_run({"op": "end", "id": "j2", "code": 1, "tail": ["src/cart.ts(12,5): error TS2322", "Found 1 error."]})
-    # whose move (stage V): a session that ended and needs you, one that only reported, one resting since morning;
-    # the lines are what the result-reading model would write
+    # whose move (stage V): a session that ended and needs you, one that reported and you put away, one resting since
+    # morning; the lines are what the result-reading model would write
     store.touch_session(SID4, T.PKEY, path=SHOP, title=D["s4_title"])
     (d / (SID4 + ".jsonl")).write_text("\n".join([       # its chat: a long report (folded), then the question
         line("user", D["s4_title"], ago=2500),
@@ -954,7 +958,8 @@ async def main():
         vline = json.loads(aline(D["v_done"], "sv1", 420, ago=900))
         vline["message"]["model"] = "deepseek-flash"
         (d / (SIDV + ".jsonl")).write_text(line("user", D["v_ask"], ago=1200) + "\n" + json.dumps(vline) + "\n")
-        r = p.attn.finished(SIDV, T.PKEY, 300, D["v_done"], D["v_done"], waits=True, seen=True, now=time.time() - 900)
+        r = p.attn.finished(SIDV, T.PKEY, 300, D["v_done"], D["v_done"], waits=True, now=time.time() - 900)
+        p.attn.seen(SIDV)
         store.add_turn(SIDV, T.PKEY, r["ts"] - 300, 300, [{"p": "admin/theme.css", "size": 8200, "mt": r["ts"] - 60}], 1)
         # and its next turn runs now, from the app, on the model picked for it — the owner's case (2026-10-30): "Running
         # now" says which model does it, and the model's long name under the field gives way to Stop
@@ -974,19 +979,24 @@ async def main():
         store.set_vendor(SID4, "deepseek")
         p.set_choice(SID4, "deepseek-v4-pro[1m]")
     store.touch_session(SID5, PKEY2, path=DESK, title=D["s5_title"])
-    if os.environ.get("STAND_VENDORS") == "1":         # the weekly report was Fable's: its row on the board says so (Q109)
+    if os.environ.get("STAND_VENDORS") == "1" or os.environ.get("STAND_REPORT") == "1":   # its chat: the ask, the report
         fl = json.loads(aline(D["s5_line"] + ".", "s5", 900, ago=600))
-        fl["message"]["model"] = "claude-fable-5-1"
+        if os.environ.get("STAND_VENDORS") == "1":     # the weekly report was Fable's: its row on the board says so (Q109)
+            fl["message"]["model"] = "claude-fable-5-1"
         (d.parent / PKEY2 / (SID5 + ".jsonl")).write_text(line("user", D["s5_title"], ago=900) + "\n" + json.dumps(fl) + "\n")
     r = p.attn.finished(SID5, PKEY2, 300, D["s5_line"], D["s5_line"], waits=True, now=time.time() - 600)
-    # STAND_ASK2=1: it waits for you as well — two in "your move", ten and twenty-five minutes (tools/ask_check.py)
+    # STAND_ASK2=1: it waits for you as well — two in "your move", ten and twenty-five minutes (tools/ask_check.py);
+    # STAND_REPORT=1: it waits as the model's "only a report" (tools/gotit_check.py); else the owner has put it away
     p.attn.briefed(SID5, r["ts"], {"line": D["s5_line"], "you": os.environ.get("STAND_ASK2") == "1", "need": ""}, True)
+    if os.environ.get("STAND_ASK2") != "1" and os.environ.get("STAND_REPORT") != "1":
+        p.attn.seen(SID5)                              # "Got it"
     if os.environ.get("STAND_ASK2") == "1":            # the permission waits fifteen minutes: between the two sessions
         for q_ in p.req_by_rid.values():
             if q_.tool == "Bash":
                 q_.ts -= 900
     store.touch_session(SID6, T.PKEY, path=SHOP, title=D["s6_title"])
-    p.attn.finished(SID6, T.PKEY, 200, "…", "…", waits=True, seen=True, now=time.time() - 5 * 3600)
+    p.attn.finished(SID6, T.PKEY, 200, "…", "…", waits=True, now=time.time() - 5 * 3600)
+    p.attn.seen(SID6)
     p.attn.day = {"d": pultd.A.today(), "p": {T.PKEY: [14, 7300], PKEY2: [5, 1900]}}
     p.catch_from = time.time() - 2 * 3600 - 600       # "While you were away": the app was last open two hours ago
     p._usage = await fake_usage()                      # the quiet top line reads the last usage, no request

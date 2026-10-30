@@ -4,6 +4,14 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.32 — 2026-10-30
+
+- **A finished task waits for you until you check it off.** Every task that ended — a plain report too — stays in
+  **Your move** until you tap **Got it** (on its card, or under the outcome in the session) or answer it. Opening the
+  session no longer puts it away, nor does the result-reading model's "only a report", nor being at the computer when
+  it ended; one you haven't put away is kept for 30 days instead of 3. Telegram still calls only about decisions and
+  failures.
+
 ## 0.18.31 — 2026-10-30
 
 - **Your move says which model did the work too.** A finished task's card names it at its foot, across from **Got it**
