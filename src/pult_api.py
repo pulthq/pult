@@ -373,7 +373,7 @@ class Api:
                         "path": path, "last": mtime, "open": c.get("open", 0), "work": c.get("work", 0), "ask": c.get("ask", 0),
                         "mine": sum(1 for r in rs if r["state"] in A.MINE), "line": last["line"] if last else "",
                         "turns": self.attn.day_of(pkey)[0], "pinned": pins.get(pkey, 0), "hidden": hides.get(pkey, 0),
-                        "vendor": self.vendor_default(pkey), "vok": self.vendors_ok(pkey)})
+                        "vendor": self.vendor_default(pkey), "who": self.vendor_who(pkey), "vok": self.vendors_ok(pkey)})
         # the pinned first, the newest pin on top (stage Zh, Q98); then what needs you, then what works, then what
         # is open, then by recency; the hidden last — the app folds them (Q101)
         out.sort(key=lambda r: (-r["pinned"], r["hidden"] > 0, -(r["mine"] > 0), -(r["work"] + r["ask"] > 0), -(r["open"] > 0), -r["last"]))
@@ -382,7 +382,8 @@ class Api:
         p = self.prefs()
         # vendors: who else can do a task (stage M, step 2) — each with its key's state and models
         return {"projects": out, "stt": self.stt_state()["on"], "create": True,
-                "choice": {"model": p["model"], "effort": p["effort"]}, "vendors": self.vendors_list()}
+                "choice": {"model": p["model"], "effort": p["effort"]}, "vendors": self.vendors_list(),
+                "vendor_all": self.vendor_all()}
 
     async def known_project(self, pkey):
         """A project the computer knows — with a topic, or with transcripts: the only ones the app's lists show."""
@@ -1069,8 +1070,23 @@ class Api:
         return (self.env.get(V.key_name(vid)) or "").strip() or None if vid else None
 
     def vendor_default(self, pkey):
+        """The project's own choice for its new tasks: a vendor's id, "claude" (Claude, whatever the common default
+        says), or None — it follows the common one."""
         vid = (self.store.get("vendors.default") or {}).get(pkey)
+        return vid if vid in V.PRESETS or vid == "claude" else None
+
+    def vendor_all(self):
+        """Who does new tasks by default everywhere (Settings → Other vendors; the owner, 2026-10-30: one tap if
+        Claude goes away): a vendor's id, or None — Claude. Only projects allowed to go to other vendors follow it."""
+        vid = self.store.get("vendors.all")
         return vid if vid in V.PRESETS else None
+
+    def vendor_who(self, pkey):
+        """Who does a project's new task when nothing else is said: the project's own choice, else the common default
+        — a vendor only while its key is here and the project allowed — → a vendor's id, or "claude"."""
+        own = self.vendor_default(pkey)
+        vid = own or self.vendor_all()
+        return vid if vid and vid != "claude" and self.vendor_key(vid) and self.vendors_ok(pkey) else "claude"
 
     def vendors_list(self):
         """For the app: each vendor — its name, whether its key is here, its models (the main one first)."""
@@ -1085,13 +1101,13 @@ class Api:
 
     def vendor_for_new(self, pkey, vendor=None):
         """Whose model a new session runs on — "claude" or a vendor asked for, checked; None (an app or a message from
-        Telegram that doesn't say): the project's default while its key is here and the project allowed, else Claude.
-        → a vendor's id, or None for Claude."""
+        Telegram that doesn't say): the project's own default, else the common one (vendor_who). → a vendor's id, or
+        None for Claude."""
         if vendor == "claude":
             return None
         if vendor is None:
-            vid = self.vendor_default(pkey)
-            return vid if vid and self.vendor_key(vid) and self.vendors_ok(pkey) else None
+            vid = self.vendor_who(pkey)
+            return None if vid == "claude" else vid
         p = self.vendor_profiles().get(vendor)
         if not p:
             raise ValueError("bad vendor")
@@ -1132,6 +1148,8 @@ class Api:
             self.env[V.key_name(vendor)] = key
         else:
             self.env.pop(V.key_name(vendor), None)
+            if self.vendor_all() == vendor:          # no key, no common default to it
+                self.store.put("vendors.all", None)
         log("vendor %s: key %s%s" % (vendor, "set" if key else "removed", " (%s answered)" % model if model else ""))
         self.changed()
         return {"key": bool(key), "model": model, "warn": warn}
@@ -1155,19 +1173,36 @@ class Api:
 
     async def api_vendor_default(self, pkey, vendor=None):
         """Who does a project's new tasks by default (the sheet "Who does it" in New task): a vendor — the project
-        allowed and its key here — or None for Claude."""
+        allowed and its key here — "claude", or None — as the common default says. → {"vendor", "who"}."""
         if vendor not in (None, "", "claude"):
             self.vendor_for_new(pkey, vendor)          # checks the vendor, the project's permission, the key
         elif not await self.known_project(pkey):
             raise ValueError(self.t("err.no_project"))
         d = self.store.get("vendors.default") or {}
-        if vendor in (None, "", "claude"):
+        if vendor in (None, ""):
             d.pop(pkey, None)
         else:
             d[pkey] = vendor
         self.store.put("vendors.default", d)
-        log("app: project %s does its new tasks with %s" % (pkey, vendor if vendor not in (None, "", "claude") else "Claude"))
-        return {"vendor": self.vendor_default(pkey)}
+        log("app: project %s does its new tasks with %s" % (pkey, {"claude": "Claude"}.get(vendor, vendor or "the common default")))
+        return {"vendor": self.vendor_default(pkey), "who": self.vendor_who(pkey)}
+
+    async def api_vendor_all(self, vendor=None):
+        """Who does new tasks by default everywhere (Settings → Other vendors): a vendor with its key here, or None —
+        Claude. Only the projects allowed to go to other vendors follow it; a project's own choice comes first."""
+        if vendor in ("", "claude"):
+            vendor = None
+        if vendor is not None:
+            p = self.vendor_profiles().get(vendor)
+            if not p:
+                raise ValueError("bad vendor")
+            if not self.vendor_key(vendor):
+                raise ValueError(self.t("vendor.err.key", name=p["name"]))
+        self.store.put("vendors.all", vendor)
+        n = sum(1 for k in (self.store.get("vendors.ok") or {}) if not self.vendor_default(k))
+        log("app: new tasks by default — %s (allowed projects following it: %d)" % (vendor or "Claude", n))
+        self.changed()
+        return {"vendor": vendor, "projects": n}
 
     # ----- a second opinion (stage M, step 1; Q104, Q105): Codex reads what the task changed -----
     # A button under a session's outcome asks Codex — OpenAI's agent, on the owner's ChatGPT subscription — to read the
@@ -1908,7 +1943,8 @@ class Api:
                 "hooks_missing": [e for e in pult_hook.EVENTS if e not in hooks] if hooks else [],
                 "mac": {"idle": idle, "away": await self.away(), "mode": self.mode()},
                 "telegram": "proxy" if len(self.tg.clients) > 1 and self.tg.cur == 0 else "direct",
-                "stt": self.stt_state(), "cc": self.cc_choice(), "vendors": self.vendors_list(),
+                "stt": self.stt_state(), "cc": self.cc_choice(), "vendors": self.vendors_list(), "vendor_all": self.vendor_all(),
+                "vendors_ok_n": len(self.store.get("vendors.ok") or {}),
                 "log": [x for x in lines if "Bearer" not in x][-40:]}
 
     async def api_prefs(self, **kw):

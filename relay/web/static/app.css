@@ -912,3 +912,6 @@ button.tagc { border: 0; font-family: inherit; cursor: pointer; }
 .vend-st { font-size: var(--fs-sec); color: var(--muted); }
 .vend-st.on { color: var(--ok); }
 .vend-m { font-size: var(--fs-sec); margin-top: 10px; }
+.vend-all-h { margin: 0 4px 6px; }
+.vend-all { margin-bottom: 4px; }
+.vend-all-t { margin: 6px 4px 12px; }

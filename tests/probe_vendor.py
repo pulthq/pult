@@ -12,7 +12,8 @@ so nothing leaves the computer and no subscription is spent. Each run is one pro
   quiet   — "token" with CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1: what still tries to reach elsewhere;
   both    — the token and the key at once, both ours (Pult's way: an inherited Anthropic key can't take either place);
   window  — "both" with a compaction window of 128 000 and the SDK's own entrypoint (hidden from VS Code's list);
-  deepseek — DeepSeek's own settings for Claude Code: a model with the [1m] suffix and effort "max" — what reaches it.
+  deepseek — DeepSeek's own settings for Claude Code: a model with the [1m] suffix and effort "max" — what reaches it;
+  nologin — the key with no Claude sign-in at all (an empty Claude Code folder): whether a vendor's session needs Claude.
   ~/.local/share/pult/venv/bin/python tests/probe_vendor.py [run …]
 """
 import asyncio, json, os, re, shutil, sys, tempfile, time
@@ -186,6 +187,9 @@ async def main():
         "bare": ({"ANTHROPIC_BASE_URL": api_url}, "sonnet"),
         "direct": ({"ANTHROPIC_BASE_URL": api_url, "ANTHROPIC_AUTH_TOKEN": OURS}, "probe-direct-id"),
         "both": (dict(ROLES, ANTHROPIC_BASE_URL=api_url, ANTHROPIC_AUTH_TOKEN=OURS, ANTHROPIC_API_KEY=OURS), "sonnet"),
+        # no Claude sign-in at all (an empty Claude Code folder): does a vendor's session still run? ("Claude is off")
+        "nologin": (dict(ROLES, ANTHROPIC_BASE_URL=api_url, ANTHROPIC_AUTH_TOKEN=OURS, ANTHROPIC_API_KEY=OURS,
+                         CLAUDE_CONFIG_DIR=tempfile.mkdtemp(prefix="pult-vendor-noclaude-")), "sonnet"),
         # DeepSeek's own settings for Claude Code (api-docs.deepseek.com, 2026-10-30): the [1m] suffix, effort max
         "deepseek": ({"ANTHROPIC_BASE_URL": api_url, "ANTHROPIC_AUTH_TOKEN": OURS, "ANTHROPIC_API_KEY": OURS,
                       "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-flash[1m]", "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-flash[1m]",

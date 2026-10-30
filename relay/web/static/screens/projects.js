@@ -142,7 +142,7 @@ function ProjectPick({ projects, cur, onPick, onClose, create }) {
 // who does a task (stage M, step 2): Claude, or another vendor's model inside Claude Code — only with a key, only in a
 // project allowed to go to other vendors (asked once, Q105), the project's default kept from here
 function VendorPick({ vendors, cur, proj, onPick, onDefault, onClose }) {
-  const def = (proj && proj.vendor) || "claude";
+  const def = (proj && (proj.who || proj.vendor)) || "claude";        // who does it with nothing picked: its own or the common
   const row = (id, name, sub, off) => html`<button key=${id} class=${"opt" + (id === cur ? " on" : "") + (off ? " vo-off" : "")} onClick=${() => onPick(id)}>${name}<span class="dim">${sub}</span></button>`;
   return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick tall fixed who">
     <div class="q-t pick-h">${t("who.title")}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
@@ -178,7 +178,8 @@ function NewTask({ pkey }) {
   const cur = d.projects.find((x) => x.pkey === p);
   const vendors = d.vendors || [];                  // a computer before stage M, step 2 sends none: Claude only
   const byId = (id) => vendors.find((v) => v.id === id);
-  const dv = cur && cur.vendor && byId(cur.vendor);
+  // with nothing picked: what the computer says this project's new task goes to — its own default, else the common one
+  const dv = cur && byId(cur.who || cur.vendor);
   const whoNow = who || (dv && dv.key && cur.vok ? dv.id : "claude");
   const vend = whoNow === "claude" ? null : byId(whoNow);
   const send = async () => {
@@ -206,7 +207,7 @@ function NewTask({ pkey }) {
     setWho(id); setModel(""); setEffort(""); haptic("success"); close();
   };
   const makeDefault = async (id) => {
-    try { const r = await api("vendor_default", { pkey: p, vendor: id === "claude" ? null : id }); keep(Object.assign({}, cur, { vendor: r.vendor })); haptic("success"); }
+    try { const r = await api("vendor_default", { pkey: p, vendor: id }); keep(Object.assign({}, cur, { vendor: r.vendor, who: r.who || id })); haptic("success"); }
     catch (e) { alertBox(e.message); }
   };
   return html`<div class="form"><h2>${t("new.title")}</h2>

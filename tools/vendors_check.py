@@ -3,7 +3,7 @@ made-up DeepSeek key (STAND_VENDORS=1): New task has "Who does it" above the mod
 DeepSeek with its main model, GLM and Kimi grey without a key (a tap says where to add one); the first pick of DeepSeek in
 a project asks whether its code may go there — "no" changes nothing, "yes" picks it; the model field turns to DeepSeek's
 models; "Make it the default" is kept for the project; the task starts with the vendor and the model. Settings → Other
-vendors: DeepSeek's key is there, GLM's isn't; a bad key is refused with the vendor's words, a good one taken; the list of
+vendors: who does new tasks by default — Claude, or DeepSeek for every allowed project; DeepSeek's key is there, GLM's isn't; a bad key is refused with the vendor's words, a good one taken; the list of
 models is saved. A session on DeepSeek's model says so by the field, and its picker lists only DeepSeek's models.
   STAND_VENDORS=1 STAND_HOMES=1 STAND_LANG=ru STAND_PORT=18171 HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out &
   ~/.local/share/pult/venv/bin/python tools/vendors_check.py /tmp/stand.out [out_dir]
@@ -102,6 +102,16 @@ async def main():
         await pg.js("location.hash = '#/settings'")
         verdict("Settings has «Другие производители»", await pg.until("[...document.querySelectorAll('h3')].some((h) => h.textContent === 'Другие производители')", 150))
         await pg.js(SPY)
+        # who does new tasks by default everywhere: Claude, or a vendor with its key — the allowed projects follow it
+        seg = await pg.js("[...document.querySelectorAll('.vend-all button')].map((b) => [b.textContent, b.classList.contains('on')])")
+        verdict("«Кто делает новые задачи по умолчанию»: Claude (on) and DeepSeek, which has a key", seg == [["Claude", True], ["DeepSeek", False]], seg)
+        await pg.tap("[...document.querySelectorAll('.vend-all button')].find((b) => b.textContent === 'DeepSeek')", wait=0.8)
+        verdict("… DeepSeek for everything allowed", await pg.until("document.querySelector('.vend-all button.on').textContent === 'DeepSeek'", 30)
+                and "Новые задачи разрешённых проектов (1) идут ему" in await pg.js("document.querySelector('.vend-all-t').textContent")
+                and "new tasks by default — deepseek (allowed projects following it: 0)" in journal(), journal()[-200:])
+        await pg.js("document.querySelector('.vend-all').scrollIntoView({block: 'center'})")
+        await asyncio.sleep(0.3)
+        await pg.shot(os.path.join(OUT, "settings-all.png"))
         VEND = "[...document.querySelectorAll('.item.vend')].find((x) => x.querySelector('b').textContent === %r)"
         st = await pg.js("[...document.querySelectorAll('.item.vend')].map((x) => x.querySelector('.vend-st').textContent)")
         verdict("DeepSeek's key is there, GLM's and Kimi's aren't", st == ["ключ есть", "нет ключа", "нет ключа"], st)
