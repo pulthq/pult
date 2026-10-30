@@ -4,11 +4,12 @@ itself copies a message, and the markdown Claude wrote — and the message sprin
 slide or a tap copies nothing; a slide from a block of code or a table doesn't move the message (the block keeps its own
 tap, which still copies it); a finger held still first is selecting words, and a mouse drag selects them too; when the
 lift doesn't reach the clipboard, the message stays open on its round button and a tap on it copies; without
-ClipboardItem the copy command's event carries both kinds. The stand's output shows what the computer's journal says.
+ClipboardItem the copy command's event carries both kinds. Your own message slides the same way and goes as you wrote it
+(2026-10-30). The stand's output shows what the computer's journal says.
   STAND_LANG=ru STAND_PORT=18151 HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out &
   ~/.local/share/pult/venv/bin/python tools/msgcopy_check.py /tmp/stand.out [out_dir]
 Screenshots go to out_dir (a temporary folder by default): the slide past the mark (light and dark), the copy done, the
-button left out. Exit 1 on a failed check."""
+button left out, your message slid. Exit 1 on a failed check."""
 import asyncio
 import json
 import os
@@ -50,6 +51,8 @@ SPY = """(() => { window.__w = []; window.__t = []; window.__x = []; window.__ac
   return true; })()"""
 MSG = "[...document.querySelectorAll('.swr.quick')].find((r) => r.textContent.includes('27 тестов'))"
 WORDS = MSG + ".querySelector('.md p')"
+ASK = "Сделай сообщения об ошибках при оплате понятнее, по примерам из макета"
+MINE = "[...document.querySelectorAll('.swr.quick')].find((r) => r.querySelector('.msg.me') && r.textContent.includes(%s))" % json.dumps(ASK)
 X = "(() => { const tf = getComputedStyle((%s).querySelector('.swr-in')).transform; return tf === 'none' ? 0 : Math.round(new DOMMatrixReadOnly(tf).m41); })()" % MSG
 SIGN = "+getComputedStyle((%s).querySelector('.swr-act')).opacity" % MSG
 TOAST = "window.__toasts.at(-1)"
@@ -62,12 +65,21 @@ def journal():
 
 
 async def finger(pg, expr):
-    """Where the finger goes: the element's middle, scrolled to the middle of the screen — and a moment for the page
-    to settle after the scroll (it may load earlier messages): a finger comes down on a still screen."""
-    r = await pg.js("(() => { const el = (%s); el.scrollIntoView({block: 'center'}); const b = el.getBoundingClientRect();"
-                    " return [b.left + b.width / 2, b.top + b.height / 2]; })()" % expr)
-    await asyncio.sleep(0.3)
-    return r
+    """Where the finger goes: the element's middle — once it stays put there, two looks 0.15 s apart, and nothing else
+    is on top of it; scrolled to the middle of the screen when it isn't. The session scrolls itself to its end as new
+    events load (it keeps to the end when you are near it), and a finger came down on what was above the message: one
+    run in three had no first slide at all (2026-10-30)."""
+    last = None
+    for _ in range(40):
+        r = await pg.js("(() => { const el = (%s); const b = el.getBoundingClientRect();"
+                        " const x = Math.round(b.left + b.width / 2), y = Math.round(b.top + b.height / 2), at = document.elementFromPoint(x, y);"
+                        " if (!at || !el.contains(at) || b.top < 0 || b.bottom > innerHeight) { el.scrollIntoView({block: 'center'}); return null; }"
+                        " return [x, y]; })()" % expr)
+        if r and r == last:
+            return r
+        last = r
+        await asyncio.sleep(0.15)
+    raise RuntimeError("no still place for a finger on " + expr)
 
 
 async def slide(pg, expr, dx, rest=0.0, lift=True):
@@ -170,6 +182,22 @@ async def main():
         verdict("a tap on the button copies and closes", await pg.until("window.__w.length === %d" % (n + 1))
                 and await pg.until(TOAST + " === 'Скопировано'") and await pg.js(X) == 0, await pg.js("window.__w.length"),
                 await pg.js(TOAST), await pg.js(X))
+
+        # your own message slides the same way and goes as you wrote it
+        n, toasts, lit = await pg.js("[window.__w.length, window.__toasts.length, window.__lit]")
+        await slide(pg, MINE + ".querySelector('.msg.me')", -110, lift=False)
+        verdict("your message slides too, its sign lit", await pg.js(MINE + ".classList.contains('armed')"), await pg.js(MINE + ".className"))
+        await pg.shot(os.path.join(OUT, "mine.png"))
+        await up(pg)
+        w = await pg.js("window.__w.at(-1)") if await pg.until("window.__w.length === %d" % (n + 1)) else None
+        verdict("... and the lift copies your words as you wrote them", bool(w) and w["text"] == ASK and w["html"] == ASK, w)
+        verdict("... «Скопировано» and the outline", await pg.until("window.__toasts.length === %d && %s === 'Скопировано'" % (toasts + 1, TOAST))
+                and await pg.until("window.__lit === %d" % (lit + 1)), await pg.js("window.__toasts"), await pg.js("window.__lit"))
+        for _ in range(30):
+            if "swipe on your message copied it with its formatting" in journal():
+                break
+            await asyncio.sleep(0.1)
+        verdict("... and the journal says so", "swipe on your message copied it with its formatting" in journal())
 
         # the same slide in the dark
         await pg.cmd("Emulation.setEmulatedMedia", features=[{"name": "prefers-color-scheme", "value": "dark"}])

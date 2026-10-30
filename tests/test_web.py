@@ -211,6 +211,12 @@ class InitTest(unittest.TestCase):
             "текст"], out.stderr)
         self.assertNotIn('"onmouseover', lines[8])                         # the address stays inside its quotes
         self.assertNotIn("href", lines[9])                                 # only a web page becomes a link
+        # your own words (2026-10-30): as you wrote them — line breaks and spaces kept, nothing read as markdown
+        mine = ["строка 1\r\n  - не список **не жирный**\n\n<b>x</b> & `y`\n\n"]
+        js = "import {clipPlain} from %s; for (const s of %s) console.log(JSON.stringify(clipPlain(s)));" % (json.dumps(md), json.dumps(mine))
+        out = subprocess.run(["node", "--input-type=module", "-e", js], capture_output=True, text=True, timeout=30)
+        self.assertEqual([json.loads(x) for x in out.stdout.splitlines()],
+                         ["строка 1<br>&nbsp; - не список **не жирный**<br><br>&lt;b&gt;x&lt;/b&gt; &amp; `y`"], out.stderr)
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_pacer_in_the_app(self):
