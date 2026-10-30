@@ -45,6 +45,7 @@ CHECKS = {
     "second": ({"STAND_SECOND": "1", "STAND_LANG": "ru"}, "out", []),   # stage M, step 1: Codex's second opinion
     "vendors": ({"STAND_VENDORS": "1", "STAND_HOMES": "1", "STAND_LANG": "ru"}, "out", []),   # stage M, step 2
     "gotit": ({"STAND_REPORT": "1", "STAND_LANG": "ru"}, "out", []),   # every finished task waits for "Got it" (2026-10-30)
+    "states": ({"STAND_TAGS": "1", "STAND_ASK2": "1", "STAND_LANG": "ru"}, "out", []),   # a task's state in colour (Q110–Q112)
     "parts": None,
     "update": None,
     "vcheck": None,

@@ -4,6 +4,15 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.33 — 2026-10-30
+
+- **Each task's state in colour.** On Home and on a project's screen, what runs is a green zone — its rows tinted, a
+  green bar along the list and a green heading — and what waits for you a warm one: every card of **Your move** tinted
+  whole (a failed one red), its fields and choices kept plain to read. History stays plain, each row starting with a
+  grey tick: a task you reviewed. The tints are mixed from Telegram's own theme, light or dark.
+- **Got it is now Reviewed** — on a card of **Your move**, its slide, under a session's outcome and on Codex's second
+  opinion: what you have reviewed is what goes to history.
+
 ## 0.18.32 — 2026-10-30
 
 - **A finished task waits for you until you check it off.** Every task that ended — a plain report too — stays in

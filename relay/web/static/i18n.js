@@ -380,7 +380,8 @@ const S = {
   "top.cpu": { en: "CPU", ru: "ЦП" },
   "top.mem": { en: "RAM", ru: "ОЗУ" },
   "mine.waits": { en: "waits {dur}", ru: "ждёт {dur}" },
-  "mine.got": { en: "Got it", ru: "Понятно" },
+  // what puts a finished task away into history — the owner calls it "the checked ones" (Q112; "Got it" before)
+  "mine.got": { en: "Reviewed", ru: "Проверено" },
   "row.resting": { en: "+ {n} more {rest}", ru: "+ ещё {n} {rest}" },
   "proj.turns": { en: "{n} {turns} today", ru: "{n} {turns} сегодня" },
   "proj.resting": { en: "{n} resting", ru: "спят: {n}" },

@@ -154,7 +154,7 @@ async def main():
         n = await pg.js("document.querySelectorAll('.swr.card-sw').length")
         card = "document.querySelector('.swr.card-sw')"
         await slide(pg, "(%s).querySelector('.card-h')" % card, -120)       # from the card's header: a slide from its field stays the field's
-        verdict("a card of yours slides to Got it", await acts(pg, card) == ["Понятно"], await acts(pg, card))
+        verdict("a card of yours slides to Reviewed", await acts(pg, card) == ["Проверено"], await acts(pg, card))
         verdict("... and the journal says so", "swipe on a card opened on its action" in journal())
         await pg.shot(os.path.join(OUT, "card.png"))
         await pg.tap("(%s).querySelector('.swr-act')" % card)
