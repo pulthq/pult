@@ -2756,7 +2756,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await self.p.api_second(SID, "start")
         await until(lambda: (self.p.seconds.get(SID) or {}).get("st") == "run")
         self.assertEqual(await self.p.api_second(SID, "cancel"), {"ok": True})
-        await until(lambda: SID not in self.p.second_tasks)
+        await until(lambda: SID not in self.p.second_tasks, 15)    # Codex is given 3 s to end by itself, then stopped
         self.assertIsNone((await view())["second"]["job"])
         await asyncio.sleep(0.1)
         self.assertEqual(len(self.texts()), told_before)
@@ -2821,7 +2821,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await self.p.api_second(SID, "start")
         await until(lambda: (self.p.seconds.get(SID) or {}).get("st") == "run" and started())
         await self.p.api_vendors_ok(PKEY, False)
-        await until(lambda: SID not in self.p.second_tasks)
+        await until(lambda: SID not in self.p.second_tasks, 15)    # Codex is given 3 s to end by itself, then stopped
         self.assertIsNone((await self.p.api_session(SID))["second"]["job"])
         # two "Send to Claude" at once: one hand-off, the other is "decided"; a hand-off that fails lets go
         self.p.seconds[SID] = {"st": "done", "ts": time.time(), "pkey": PKEY, "model": "gpt-5.6-sol",

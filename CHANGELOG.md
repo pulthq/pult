@@ -10,6 +10,8 @@ Versions 0.x come before the first public release. Newest first.
   project's screen now stops its review that is running and the ones waiting for their turn — a waiting one checks
   again before it starts, so the code never reaches OpenAI after you took that back. **Send to Claude** tapped in two
   windows at once sends the findings once; the other tap says it's already done.
+- **Second opinion on Windows: Stop stops Codex.** There codex is npm's `codex.cmd`, and stopping a review ended only
+  its command window while Codex itself read on; now the whole tree goes.
 
 ## 0.18.25 — 2026-10-30
 
