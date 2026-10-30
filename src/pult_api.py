@@ -1127,9 +1127,15 @@ class Api:
             return {"ok": True}
         if act == "send":
             job = self.second_job(sid)
-            if not job or job.get("st") != "done" or not job.get("items") or job.get("away"):
+            if not job or job.get("st") != "done" or not job.get("items") or job.get("away") or job.get("sending"):
                 return {"ok": False, "note": self.t("note.decided")}          # a second tap, or another screen did it
-            res = await self.api_send(sid, CX.message(job["items"], job.get("model")), fork=fork)
+            # taken before the hand-off, which waits: requests run side by side, and a tap in a second window during
+            # it sent the same findings twice (Codex's own second opinion on this, 2026-10-30); let go when it fails
+            job["sending"] = True
+            try:
+                res = await self.api_send(sid, CX.message(job["items"], job.get("model")), fork=fork)
+            finally:
+                job.pop("sending", None)
             if res.get("ok"):
                 job["away"] = job["sent"] = True
                 self.second_keep(sid, job)
@@ -1174,6 +1180,10 @@ class Api:
             ok.pop(pkey, None)
         self.store.put("vendors.ok", ok)
         log("app: project %s %s" % (pkey, "may go to other vendors" if on else "stays with Claude only"))
+        if not on:                           # taken back: no review of it goes on, nor starts later from the queue
+            for sid, task in list(self.second_tasks.items()):
+                if (self.seconds.get(sid) or {}).get("pkey") == pkey:
+                    task.cancel()
         return {"on": bool(on)}
 
     async def second_run(self, sid, job, path, project, info):
@@ -1182,6 +1192,11 @@ class Api:
         cut = False
         try:
             async with self.codex_lock:
+                if not self.vendors_ok(job["pkey"]):     # taken back while it waited (Codex's second opinion, 2026-10-30)
+                    cut = True
+                    self.seconds.pop(sid, None)
+                    log("second opinion %s: not run — the project stays with Claude only" % sid[:8])
+                    return
                 job.update(st="run", t0=time.time(), steps=0)
                 self.changed(sid)
                 facts = await asyncio.to_thread(CX.task_facts, path, project)
@@ -1202,7 +1217,8 @@ class Api:
         except asyncio.CancelledError:
             cut = True
             self.seconds.pop(sid, None)
-            log("second opinion %s: stopped by the owner" % sid[:8])
+            log("second opinion %s: %s" % (sid[:8], "stopped by the owner" if self.vendors_ok(job["pkey"])
+                                            else "stopped — the project stays with Claude only"))
         except CX.CodexError as e:
             job.update(st="fail", why=e.kind, text=R.short(e.text, 300), dur=time.time() - job.get("t0", job["ts"]))
             log("second opinion %s: Codex didn't — %s: %s" % (sid[:8], e.kind, e.text[:300]))

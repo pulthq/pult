@@ -4,6 +4,13 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.26 — 2026-10-30
+
+- **Second opinion: two races closed** (both found by Codex's own second opinion on the feature). **Disallow** on a
+  project's screen now stops its review that is running and the ones waiting for their turn — a waiting one checks
+  again before it starts, so the code never reaches OpenAI after you took that back. **Send to Claude** tapped in two
+  windows at once sends the findings once; the other tap says it's already done.
+
 ## 0.18.25 — 2026-10-30
 
 - **A second opinion from Codex.** Under a session's outcome, **Second opinion · Codex** asks Codex — OpenAI's
