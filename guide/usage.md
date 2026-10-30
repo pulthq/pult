@@ -44,6 +44,16 @@ you're neither in the app nor at the computer. Reminders on long turns; warnings
   Claude's goes to the clipboard whole, formatted as Telegram copies a message — a paste into Telegram, notes or mail
   keeps the bold, the links, the code and the quotes — and as Claude's markdown for plain-text places; one of yours
   goes as you wrote it. A tap on a grey block of code still copies just that block.
+- **A second opinion from Codex**: under a session's outcome, **Second opinion · Codex** asks Codex — OpenAI's coding
+  agent, with the ChatGPT sign-in on your computer — to read what the task changed since it began (in git: everything
+  since the commit the folder was on, new files too; without git: the files Claude's edits wrote), together with your
+  request and Claude's report, so what was done on purpose isn't taken for a bug. It reads in a read-only sandbox and
+  asks nothing; one at a time, usually a minute or two, and **Stop** ends it. The findings come as a card at the end
+  of the session, each with its place in the project — a tap opens the file at that line; **Send to Claude** puts
+  them into the session as your message, **Got it** puts the card away. The first time in a project you're asked
+  whether its code may go to OpenAI; the project's screen then says so, and **Disallow** takes it back. The button
+  shows only where Codex is installed (ChatGPT for Mac carries it, or the `codex` command); a Codex version Pult
+  wasn't checked on is checked against its own protocol first.
 - **A session** shows the whole conversation, live, with the model, the effort and the context gauge by the message
   field. Pick the model (Fable, Opus, Sonnet, Haiku) and how hard Claude thinks for that session; a running one
   switches at once. Settings → Model and effort sets what sessions from the app and Telegram start with; VS Code tabs
@@ -100,6 +110,9 @@ code to Telegram the same way as Claude's turns.
   login again with the bot token, which never leaves it. The page runs scripts only from your server and Telegram.
 - **Alerts** with sound on an app login from a new network and on signs that someone else holds the bot token;
   Settings → Logins in the app logs every window out. A link whose words hide its address shows its domain.
+- **Other vendors:** a project's code reaches OpenAI only with a second opinion you ask for, and only once you
+  allowed that project. Codex reads in a read-only sandbox with your own ChatGPT sign-in; Pult gives it none of its
+  keys. Codex keeps the review in its own history, as with any task of yours.
 - **No telemetry.** Logs stay on the computer. `pult report` prints the state with tokens, IDs, folder names and
   message text removed, for a bug report. Vulnerabilities: [SECURITY.md](../SECURITY.md).
 

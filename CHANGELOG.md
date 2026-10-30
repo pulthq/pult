@@ -4,6 +4,18 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.25 — 2026-10-30
+
+- **A second opinion from Codex.** Under a session's outcome, **Second opinion · Codex** asks Codex — OpenAI's
+  coding agent, on the ChatGPT subscription signed in on your computer — to read what the task changed since it
+  began, with your request and Claude's report beside it, in a read-only sandbox that asks nothing. Its findings
+  come as a card at the end of the session, each with its place in the project (a tap opens the file at that
+  line); **Send to Claude** puts them into the session as your message. A project's code goes to OpenAI only once
+  you allow that project — asked on the first tap, taken back on the project's screen. One review at a time;
+  the topic hears when it's ready if you aren't looking. The button shows only where Codex is installed
+  (ChatGPT for Mac carries it, or the `codex` command); a Codex version Pult wasn't checked on is first checked
+  against its own protocol schema.
+
 ## 0.18.24 — 2026-10-30
 
 - **Your own messages copy with a slide too.** In a session, slide one of your messages to the left the same way:

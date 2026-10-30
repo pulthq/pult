@@ -856,6 +856,28 @@ const S = {
   "pace.about": { en: "A limit is “on pace” if at the current pace it reaches {n} % by its reset; less is “under”, running out before the reset is “over”.",
     ru: "Лимит «в темпе», если при нынешнем темпе к сбросу выйдет от {n} %; меньше — «недобор», кончится раньше сброса — «перебор»." },
 
+  // a second opinion (stage M, step 1): Codex reads what a task changed
+  "sec.ask": { en: "Second opinion · Codex", ru: "Второе мнение · Codex" },
+  "sec.title": { en: "Second opinion · Codex", ru: "Второе мнение · Codex" },
+  "sec.allow": { en: "Codex is OpenAI's agent: it will read the code of {p} on your ChatGPT subscription and change nothing. Allow it for this project? Asked once — you can take it back on the project's screen.",
+    ru: "Codex — агент OpenAI: он прочитает код проекта {p} по твоей подписке ChatGPT и ничего не изменит. Разрешить для этого проекта? Спрашиваю один раз — запретить можно на экране проекта." },
+  "sec.wait": { en: "Waits: Codex is reading another task", ru: "Ждёт: Codex читает другую задачу" },
+  "sec.run": { en: "Codex is reading the task's changes · {dur}", ru: "Codex читает изменения задачи · {dur}" },
+  "sec.run.about": { en: "In a read-only sandbox: it changes nothing. Usually a minute or two.", ru: "В песочнице только для чтения — ничего не меняет. Обычно минута-две." },
+  "sec.cancel": { en: "Stop", ru: "Остановить" },
+  "sec.none": { en: "No findings", ru: "Замечаний нет" },
+  "sec.send": { en: "Send to Claude", ru: "Отправить Claude" },
+  "sec.again": { en: "Try again", ru: "Ещё раз" },
+  "sec.limit": { en: "Codex's {h}-hour window: {pct} % used", ru: "Окно Codex на {h} ч: занято {pct} %" },
+  "sec.fail.login": { en: "Codex isn't signed in to ChatGPT: open ChatGPT on the computer and sign in.", ru: "Codex не вошёл в ChatGPT: открой ChatGPT на компьютере и войди." },
+  "sec.fail.limit": { en: "Codex's limit in your ChatGPT subscription is used up for now.", ru: "Лимит Codex в подписке ChatGPT пока исчерпан." },
+  "sec.fail.timeout": { en: "Codex took longer than 15 minutes and was stopped.", ru: "Codex не уложился в 15 минут — остановлен." },
+  "sec.fail.start": { en: "Codex didn't start or stopped answering.", ru: "Codex не запустился или перестал отвечать." },
+  "sec.fail.failed": { en: "Codex stopped with an error.", ru: "Codex остановился с ошибкой." },
+  "sec.why.version": { en: "Codex {v} doesn't fit Pult yet: its protocol has changed. A Pult release will catch up.", ru: "Codex {v} пока не подходит Пульту: его протокол изменился. Догонит выпуск Пульта." },
+  "vend.ok": { en: "Codex may read this project's code for a second opinion", ru: "Codex может читать код проекта для второго мнения" },
+  "vend.deny": { en: "Disallow", ru: "Запретить" },
+
   // tabs
   "tab.home": { en: "Home", ru: "Главная" },
   "tab.projects": { en: "Projects", ru: "Проекты" },
@@ -873,6 +895,8 @@ const P = {
   item: { en: ["item", "items"], ru: ["объект", "объекта", "объектов"] },
   time: { en: ["time", "times"], ru: ["раз", "раза", "раз"] },
   rest: { en: ["resting", "resting"], ru: ["спит", "спят", "спят"] },
+  command: { en: ["command", "commands"], ru: ["команда", "команды", "команд"] },
+  finding: { en: ["finding", "findings"], ru: ["замечание", "замечания", "замечаний"] },
 };
 
 export let LANG = "en";

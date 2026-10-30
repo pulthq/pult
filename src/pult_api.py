@@ -25,6 +25,7 @@ import uuid
 from pathlib import Path
 
 import pult_attn as A
+import pult_codex as CX
 from pult_driven import MAX_RUNNING   # turns at once — pult_driven's
 import pult_files as F
 import pult_hook
@@ -52,6 +53,8 @@ TAGS_RECENT = 30 * 86400   # s: the tags screen puts first the tags of the tasks
 TIDY_RETRY = 600           # s: the model gave nothing on a project's list — not asked about the same names before this
 TAG_NOTE = 120             # s: the tags screen tells this long that a "Sort them again" changed nothing
 MERGE_EXAMPLES = 2         # the latest tasks of a tag the owner merged into another: examples of where such tasks go
+CODEX_TTL = 600            # s: Codex on this computer is looked up again after this (ChatGPT.app updates it by itself)
+SECOND_LINES = 5           # findings named in the topic when a second opinion is ready; the rest — in the app
 
 
 def log(*a):
@@ -479,7 +482,8 @@ class Api:
                 "reset": self.limit_reset(), "stt": self.stt_state()["on"],
                 "tagset": self.tag_list(pkey, list(shown) + [x["sid"] for x in earlier]),
                 "tags_n": len(self.store.tag_vocab(pkey)), "tag_job": self.tag_jobs.get(pkey),
-                "pinned": bool(self.store.pins().get(pkey)), "hidden": bool(self.store.hides().get(pkey))}
+                "pinned": bool(self.store.pins().get(pkey)), "hidden": bool(self.store.hides().get(pkey)),
+                "vendors_ok": self.vendors_ok(pkey)}
 
     async def api_sessions(self, pkey):
         path = self.project_path(pkey)
@@ -906,7 +910,7 @@ class Api:
                 "switch_effort": switch_effort, "default": dflt, "stt": self.stt_state()["on"],
                 "ctx": {"window": ctx[0], "max_out": ctx[1], "usable": ctx_usable(ctx[0], ctx[1])} if ctx else None,
                 "pending": [self.req_item(r) for r in lv.pending.values() if not r.fut.done()],
-                "out": self.out_view(sid)}
+                "out": self.out_view(sid), "second": await self.second_view(sid, rec, lv)}
 
     async def api_answer(self, rid, act=None, answers=None, text=None):
         req = self.req_by_rid.get(rid)
@@ -1040,6 +1044,201 @@ class Api:
         log("choice for %s: %s (%s)" % (sid[:8], ", ".join(said), "live" if live else "next start"))
         self.changed(sid)
         return {"ok": True, "live": live, "choice": self.choice.get(sid) or {}}
+
+    # ----- a second opinion (stage M, step 1; Q104, Q105): Codex reads what the task changed -----
+    # A button under a session's outcome asks Codex — OpenAI's agent, on the owner's ChatGPT subscription — to read the
+    # task's changes in a read-only sandbox and write its findings (pult_codex). One review at a time; a project goes to
+    # another vendor only once the owner allowed it, one tap, once (Q105 b). The review shows at the end of the session
+    # until the owner puts it away: "Got it", or "Send to Claude" — the findings as a message into the same session
+
+    async def codex_state(self):
+        """Codex on this computer: {"path", "v", "ok", "why"} — why: "missing" (none here) or "version" (one Pult
+        can't use) — looked up again after CODEX_TTL. Pult uses a version pult_codex.VERIFIED lists, or one whose own
+        schema still has what a review needs: checked once per version, the answer kept in the store."""
+        at, got = self._codex
+        if got is not None and time.monotonic() - at < CODEX_TTL:
+            return got
+        env = dict(os.environ, **({"PULT_CODEX": self.env["PULT_CODEX"]} if self.env.get("PULT_CODEX") else {}))
+        path = await asyncio.to_thread(CX.find, env)
+        got = {"path": path, "v": None, "ok": False, "why": None if path else "missing"}
+        if path:
+            v = got["v"] = await asyncio.to_thread(CX.version, path)
+            if v in CX.VERIFIED:
+                got["ok"] = True
+            elif v:
+                seen = self.store.get("codex.checked") or {}
+                if v not in seen:
+                    ok, why = await asyncio.to_thread(CX.schema_ok, path)
+                    seen[v] = {"ok": ok, "why": why, "ts": time.time()}
+                    self.store.put("codex.checked", seen)
+                    log("codex %s: %s" % (v, "its protocol has what a second opinion needs" if ok else "can't be used — " + why))
+                got["ok"] = bool(seen[v]["ok"])
+            if not got["ok"]:
+                got["why"] = "version"
+        self._codex = (time.monotonic(), got)
+        return got
+
+    def second_job(self, sid):
+        """The session's second opinion as kept: running or waiting — in memory; done, failed — in the store too."""
+        job = self.seconds.get(sid)
+        if job is None:
+            job = self.store.get("second." + sid)
+            if job:
+                self.seconds[sid] = job
+        return job
+
+    def second_keep(self, sid, job):
+        self.seconds[sid] = job
+        if job["st"] in ("done", "fail"):
+            self.store.put("second." + sid, job)
+
+    def vendors_ok(self, pkey):
+        """Whether the owner let this project go to other vendors (Q105 b): its code reaches OpenAI with a second opinion."""
+        return bool((self.store.get("vendors.ok") or {}).get(pkey))
+
+    async def second_view(self, sid, rec, lv):
+        """For the session's screen: can — the button under the outcome (Codex is here, the task changed files, its
+        turn has ended); why — what a tap says instead ("version": a Codex Pult can't use), v — its version; job — the
+        review while it runs and once done, until the owner puts it away, else None."""
+        info = await self.codex_state()
+        job = self.second_job(sid)
+        return {"can": bool(info["path"] and rec and lv.turn is None and self.store.turn(sid)),
+                "why": info["why"] if info["path"] else None, "v": info["v"],
+                "job": {k: job.get(k) for k in ("st", "ts", "t0", "dur", "steps", "model", "summary", "items", "why",
+                                                "text", "limits")} if job and not job.get("away") else None}
+
+    async def api_second(self, sid, act="start", fork=False):
+        """act: start — ask Codex (→ {"need": "allow", "project"} when the project isn't allowed yet); allow — allow
+        the project and start; cancel — stop it; away — "Got it"; send — the findings into the session (api_send: a
+        session open on the computer without the wrapper answers {"need": "fork"} the same way)."""
+        path, lv = self.transcript_of(sid)
+        pkey, project = self.session_project(sid)
+        if act == "away":
+            job = self.second_job(sid)
+            if job:
+                job["away"] = True
+                self.second_keep(sid, job)
+                self.changed(sid)
+            return {"ok": True}
+        if act == "cancel":
+            task = self.second_tasks.get(sid)
+            if task:
+                task.cancel()
+            return {"ok": True}
+        if act == "send":
+            job = self.second_job(sid)
+            if not job or job.get("st") != "done" or not job.get("items") or job.get("away"):
+                return {"ok": False, "note": self.t("note.decided")}          # a second tap, or another screen did it
+            res = await self.api_send(sid, CX.message(job["items"], job.get("model")), fork=fork)
+            if res.get("ok"):
+                job["away"] = job["sent"] = True
+                self.second_keep(sid, job)
+                log("second opinion %s: sent to Claude (%d findings)" % (sid[:8], len(job["items"])))
+                self.changed(sid)
+            return res
+        if act not in ("start", "allow"):
+            raise ValueError("bad act")
+        if not project:
+            raise ValueError(self.t("err.no_folder_short"))
+        info = await self.codex_state()
+        if not info["ok"]:
+            raise ValueError(self.t("second.err." + (info["why"] or "missing"), v=info["v"] or "?"))
+        if lv and lv.turn is not None:
+            raise ValueError(self.t("second.err.turn"))
+        if act == "allow":
+            ok = self.store.get("vendors.ok") or {}
+            ok[pkey] = time.time()
+            self.store.put("vendors.ok", ok)
+            log("app: project %s may go to other vendors (a second opinion asked there)" % pkey)
+        elif not self.vendors_ok(pkey):
+            return {"ok": False, "need": "allow", "project": self.name_of(pkey)}
+        job = self.second_job(sid)
+        if job and job.get("st") in ("wait", "run"):
+            return {"ok": True}
+        job = {"st": "wait", "ts": time.time(), "pkey": pkey}
+        self.second_keep(sid, job)
+        self.store.put("second." + sid, None)            # the one before is replaced: a new review, the old one gone
+        self.second_tasks[sid] = asyncio.create_task(self.second_run(sid, job, path, project, info))
+        self.changed(sid)
+        return {"ok": True}
+
+    async def api_vendors_ok(self, pkey, on=False):
+        """The project's line "Codex can read this project · Disallow" (stage M, Q105 b): the owner takes it back —
+        or gives it again. → {"on"}."""
+        if on and not await self.known_project(pkey):
+            raise ValueError(self.t("err.no_project"))
+        ok = self.store.get("vendors.ok") or {}
+        if on:
+            ok[pkey] = time.time()
+        else:
+            ok.pop(pkey, None)
+        self.store.put("vendors.ok", ok)
+        log("app: project %s %s" % (pkey, "may go to other vendors" if on else "stays with Claude only"))
+        return {"on": bool(on)}
+
+    async def second_run(self, sid, job, path, project, info):
+        """One review, after any other one ends (a single Codex at a time): the task's facts, the commit it began on,
+        Codex's answer read into findings; the topic hears when it's ready if the owner isn't looking (page_now)."""
+        cut = False
+        try:
+            async with self.codex_lock:
+                job.update(st="run", t0=time.time(), steps=0)
+                self.changed(sid)
+                facts = await asyncio.to_thread(CX.task_facts, path, project)
+                base = await asyncio.to_thread(CX.git_base, project, facts["t0"])
+                text = CX.instructions(facts, base, self.lang(), rules=os.path.isfile(os.path.join(project, "CLAUDE.md")))
+                env = {k: v for k, v in os.environ.items() if not k.startswith("PULT_")}
+
+                def step(n):
+                    job["steps"] = n
+                    self.changed(sid)
+                got = await CX.review(info["path"], project, text, env=env, on_step=step, client=self.D.VERSION)
+                read = CX.parse(got["text"], project)
+                job.update(st="done", dur=time.time() - job["t0"], model=got["model"], summary=read["summary"],
+                           items=read["items"], limits=got["limits"])
+                log("second opinion %s: Codex %s (%s), %d findings, %d commands, %.0f s%s" % (
+                    sid[:8], info["v"], got["model"], len(read["items"]), job["steps"], job["dur"],
+                    "; declined: " + ", ".join(got["asked"]) if got["asked"] else ""))
+        except asyncio.CancelledError:
+            cut = True
+            self.seconds.pop(sid, None)
+            log("second opinion %s: stopped by the owner" % sid[:8])
+        except CX.CodexError as e:
+            job.update(st="fail", why=e.kind, text=R.short(e.text, 300), dur=time.time() - job.get("t0", job["ts"]))
+            log("second opinion %s: Codex didn't — %s: %s" % (sid[:8], e.kind, e.text[:300]))
+        except Exception as e:
+            job.update(st="fail", why="failed", text=R.short(repr(e), 300), dur=time.time() - job.get("t0", job["ts"]))
+            log("second opinion %s: failed — %r" % (sid[:8], e))
+        finally:
+            self.second_tasks.pop(sid, None)
+            if not cut:
+                self.second_keep(sid, job)
+            self.changed(sid)
+        if not cut:
+            await self.second_told(sid, job)
+
+    async def second_told(self, sid, job):
+        """The topic hears that a second opinion is ready — its findings by name, the rest in the app — only when the
+        owner isn't looking (page_now: the same rule as a "your move")."""
+        try:
+            if not self.chat or not await self.page_now():
+                return
+            lv = self.live.get(sid) or self.stub(sid, job.get("pkey"))
+            head = "👁 <b>%s</b> · " % R.esc(lv.title or self.title(lv))         # as the session's screen names it
+            items = job.get("items") or []
+            if job["st"] == "fail":
+                text = head + self.t("second.tg.fail", why=R.esc(self.t("second.why." + job.get("why", "failed"))))
+            elif not items:
+                text = head + self.t("second.tg.none")
+            else:
+                text = head + self.t("second.tg.done", n=len(items), findings=I.plural(len(items), "finding")) + "\n" + \
+                    "\n".join("%d. %s" % (n, R.esc(R.short(it["title"], 140))) for n, it in enumerate(items[:SECOND_LINES], 1)) + \
+                    ("\n…" if len(items) > SECOND_LINES else "")
+            row = self.app_row(sid, self.t("btn.details"))
+            await self.send(job.get("pkey") or lv.pkey, text, buttons=[row] if row else None, notify=True, sid=sid,
+                            kind="second")
+        except Exception as e:
+            log("second opinion %s: the topic not told — %r" % (sid[:8], e))
 
     async def api_resume_at(self, sid, at=None):
         """"Continue when the usage limit resets": at that time (a minute after it) Pult says CONTINUE in the session,
