@@ -108,7 +108,12 @@ button:focus-visible, a:focus-visible, label:focus-visible, [role="button"]:focu
 .run-who .av { flex: none; }
 .run-p { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-h { display: flex; align-items: baseline; gap: 10px; }
-.run-w + .run-h { margin-top: 4px; }
+.run-top + .run-h { margin-top: 4px; }
+/* the top line's right end: which model does the task (2026-10-30) — the project and the tags give way to it */
+.run-top { display: flex; align-items: center; gap: 8px; }
+.run-top .run-w { flex: 1 1 auto; min-width: 0; }
+.llm { flex: none; margin-left: auto; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: var(--fs-cap); font-weight: 500; line-height: 20px; color: var(--muted); }
 .run-h .meta { flex: none; display: flex; align-items: baseline; gap: 8px; }
 .run-h .pct { font-size: var(--fs-cap); color: var(--danger); white-space: nowrap; }
 .run-t { flex: 1; min-width: 0; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2;
@@ -319,6 +324,8 @@ pre.cmdline { background: var(--code); border-radius: 8px; padding: 6px 9px; fon
 .ctl .status .mchip { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sec); font-weight: 600; color: var(--ink); white-space: nowrap; }
 .ctl .status .mchip.on { color: var(--link); }
 .ctl .status .mchip .caret { font-size: 11px; margin-left: -2px; }
+/* a long model's name ends in "…" — it ran on under Stop (DeepSeek · deepseek-v4-pro[1m], 2026-10-30) */
+.ctl .status .mchip > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .dots { display: block; flex: none; }
 .ctl .status .where { font-size: var(--fs-cap); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card.pick { margin: 0 0 4px; position: relative; z-index: 8; }

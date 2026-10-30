@@ -455,8 +455,8 @@ class Stats:
         if e.get("type") != "assistant" or m.get("id") == st["last_id"]:
             return                                    # one message is written as several lines
         u = m.get("usage")
-        if not u:
-            return                                    # no token data — not a model request
+        if not u or m.get("model") == "<synthetic>":
+            return                                    # no token data, or Claude Code's own line — not a model request
         st["last_id"] = m.get("id")
         st["model"] = m.get("model") or st["model"]
         st["effort"] = e.get("effort") or st["effort"]

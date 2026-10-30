@@ -38,8 +38,8 @@ STAND_SECOND=1 (stage M, step 1): the shop is a git repository whose search the 
 (tests/fake_codex.py) that reads it for about five seconds and finds two things; the session that waits for you (SESS4)
 offers "Second opinion · Codex" under its outcome (tools/second_check.py). STAND_SECOND=allowed — the shop already allowed.
 STAND_VENDORS=1 (stage M, step 2): DeepSeek has a made-up key (GLM and Kimi none), a key's check passes "sk-…" without any
-network, and a session ran on DeepSeek's model (SESSV); "Who does it" in New task, Settings → Other vendors
-(tools/vendors_check.py). VS Code's settings and the tab
+network, and a session ran on DeepSeek's model (SESSV) — its next turn runs now, from the app, on deepseek-v4-pro[1m];
+"Who does it" in New task, Settings → Other vendors (tools/vendors_check.py). VS Code's settings and the tab
 switch are made up on every stand: the app never reads this computer's."""
 import asyncio, base64, hashlib, hmac, json, os, random, shutil, signal, sys, time, urllib.parse
 from pathlib import Path
@@ -112,7 +112,8 @@ D = {
         s5_line="The weekly report is ready: 48 tickets, 2 overdue", s6_title="Images: WebP thumbnails",
         s7_ask="Add a dark theme to the admin panel", s7_now="Colours are variables now; the tables and charts are next.",
         v_ask="Rename the admin theme's CSS variables to the new scheme",
-        v_done="Renamed 14 variables in admin/theme.css; nothing else used the old names."),
+        v_done="Renamed 14 variables in admin/theme.css; nothing else used the old names.",
+        v_ask2="Now the same for the storefront's theme"),
     "ru": dict(
         title="Оформление заказа: понятные ошибки",
         ask="Сделай сообщения об ошибках при оплате понятнее, по примерам из макета",
@@ -146,7 +147,8 @@ D = {
         s5_line="Отчёт за неделю готов: 48 заявок, 2 просрочены", s6_title="Картинки: превью WebP",
         s7_ask="Сделай тёмную тему для админки", s7_now="Цвета вынесены в переменные; дальше — таблицы и графики.",
         v_ask="Переименуй CSS-переменные темы админки по новой схеме",
-        v_done="Переименовал 14 переменных в admin/theme.css; старые имена больше нигде не используются."),
+        v_done="Переименовал 14 переменных в admin/theme.css; старые имена больше нигде не используются.",
+        v_ask2="Теперь то же для темы витрины"),
 }[LANG if LANG in ("en", "ru") else "en"]
 
 
@@ -953,6 +955,20 @@ async def main():
         (d / (SIDV + ".jsonl")).write_text(line("user", D["v_ask"], ago=1200) + "\n" + json.dumps(vline) + "\n")
         r = p.attn.finished(SIDV, T.PKEY, 300, D["v_done"], D["v_done"], waits=True, seen=True, now=time.time() - 900)
         store.add_turn(SIDV, T.PKEY, r["ts"] - 300, 300, [{"p": "admin/theme.css", "size": 8200, "mt": r["ts"] - 60}], 1)
+        # and its next turn runs now, from the app, on the model picked for it — the owner's case (2026-10-30): "Running
+        # now" says which model does it, and the model's long name under the field gives way to Stop
+        p.set_choice(SIDV, "deepseek-v4-pro[1m]")
+        with (d / (SIDV + ".jsonl")).open("a") as f:
+            f.write(line("user", D["v_ask2"], ago=50) + "\n")
+        await T.run_hook(ev("UserPromptSubmit", SIDV, prompt=D["v_ask2"]))
+        await T.run_hook(ev("PostToolUse", SIDV, tool_name="Read", tool_input={"file_path": SHOP + "/storefront/theme.css"}))
+        for _ in range(100):                          # the hooks are the daemon's to take in, a moment later
+            if SIDV in p.live and p.live[SIDV].turn:
+                break
+            await asyncio.sleep(0.05)
+        p.live[SIDV].driven = True                    # a hook from the app's own session would say so itself
+        p.live[SIDV].turn.started -= 50
+        p.live[SIDV].run = p.live[SIDV].turn.started
     store.touch_session(SID5, PKEY2, path=DESK, title=D["s5_title"])
     r = p.attn.finished(SID5, PKEY2, 300, D["s5_line"], D["s5_line"], waits=True, now=time.time() - 600)
     # STAND_ASK2=1: it waits for you as well — two in "your move", ten and twenty-five minutes (tools/ask_check.py)

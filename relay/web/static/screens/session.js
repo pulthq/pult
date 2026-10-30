@@ -10,7 +10,7 @@ import { html, useEffect, useMemo, useRef, useState } from "../vendor/htm-preact
 import { Replies, ResumeAt, copyWhy, forkAsk } from "./home.js";
 import { TagPick } from "../ui/cards.js";
 import { Req, useRcpt } from "../ui/cards.js";
-import { Dots, Loading, ModelPick, Sheet, SwipeRow, avatar, bgChip, copyRich, dayLabel, dot, dotted, dur, effortName, hhmm, home, ic, kilo, modelName, num, plainField, queueChip, sendKey, tagChips, toDate, useNow, workChip } from "../ui/kit.js";
+import { Dots, Loading, ModelPick, Sheet, SwipeRow, avatar, bgChip, copyRich, dayLabel, dot, dotted, dur, effortName, hhmm, home, ic, kilo, llmName, modelName, num, plainField, queueChip, sendKey, tagChips, toDate, useNow, workChip } from "../ui/kit.js";
 import { BgSheet, bgLine } from "../ui/load.js";
 import { Attach, Pic, Thumbs, Viewer, useAttach, useNoFold } from "../ui/pics.js";
 
@@ -566,7 +566,7 @@ function Session({ sid }) {
   // the model: the one picked for the session, else the one its last request used; the effort — the same way
   const chosen = info.choice && info.choice.model;
   const vend = info.vendor;                    // another vendor's model (stage M, step 2): its name and the model as it is
-  const modelText = vend ? vend.name + " · " + (chosen || (info.stats && info.stats.model) || vend.models[0])
+  const modelText = vend ? llmName({ vendor: vend.name, model: chosen || (info.stats && info.stats.model) || vend.models[0] })
     : chosen ? chosen.charAt(0).toUpperCase() + chosen.slice(1) + (info.stats && info.stats.model && !modelName(info.stats.model).toLowerCase().startsWith(chosen) ? " ▸" : "")
     : info.stats && info.stats.model ? modelName(info.stats.model) : "";
   const effortNow = vend ? "" : (info.choice && info.choice.effort) || (info.stats && info.stats.effort) || "";

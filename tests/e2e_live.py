@@ -16,7 +16,8 @@ A file made in a session goes to the project's topic with `pult send`, and the t
 With the model on, a new task gets its section and topic as soon as its request is in, and again with the result (stage T);
 the first open of the project sorts its earlier tasks without tags, in a batch (T2).
 A task on another vendor's model (stage M, step 2): a stand-in for DeepSeek on this computer gets the session's requests with
-Pult's key and never the subscription's token; the outcome comes; the transcript names the vendor's model.
+Pult's key and never the subscription's token; the outcome comes; the transcript names the vendor's model, and so does its
+row — Claude's session's row its real model.
 """
 import asyncio, json, os, shutil, sys, tempfile, time, urllib.parse
 from pathlib import Path
@@ -190,6 +191,10 @@ async def main():
     assert mine.get(sid4) and mine[sid4][0] == "you" and "PONG" in mine[sid4][1].upper(), "no outcome for a real turn"
     await p.api_session(sid4)
     assert sid4 not in {r["sid"] for r in (await p.api_overview())["mine"]}, "opening the session didn't put it to rest"
+    # which model does it, for its row on Home (2026-10-30): the real transcript's own
+    llm4 = (await p.row_stats(sid4))[1]
+    log("модель в строке:", llm4)
+    assert llm4 and str(llm4.get("model")).startswith("claude-") and "vendor" not in llm4, "the row doesn't say Claude's model"
     # Telegram as a pager (stage V): a task from the app gets no turn or result message; Claude's question to the
     # owner, who is away, comes once — the session's title, the line, the way into the app
     p.env.update(PULT_APP_LINK="https://t.me/b/pult", PULT_RELAY_URL="wss://h.example/pult/agent")
@@ -361,6 +366,9 @@ async def main():
                                             if '"assistant"' in x} - {None}))
     assert "deepseek-flash" in models and '"model":"deepseek-flash"' in tr.replace(" ", ""), "the vendor's model isn't in the transcript"
     assert p.store.vendor_of(sid11) == "deepseek"
+    llm11 = (await p.row_stats(sid11))[1]
+    log("модель в строке:", llm11)
+    assert llm11 and llm11.get("vendor") == "DeepSeek" and llm11["model"].startswith("deepseek-flash"), "the row doesn't say the vendor's model"
     await runner.cleanup()
     log("тем создано:", len([1 for m, _ in calls if m == "createForumTopic"]), "· вызовов Telegram:", len(calls))
     for d in list(p.driven.values()):
