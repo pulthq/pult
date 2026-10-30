@@ -411,14 +411,16 @@ class Api:
     async def api_swipe(self, end="back", ms=0, dx=0, what="project"):
         """How a slide on a row ended (stage Zh): open on its actions, sprung back, or cancelled — the browser or
         Telegram's window took the finger (pointercancel); what — a project's row, a task's row or a card of "Your move"
-        (step 2), or Claude's message, which a slide copies (step 3): with its formatting, as plain text only, or not at
-        all — the lift of the finger didn't count for the clipboard, and the copy waits on its button. The app says
+        (step 2), or a message in a session — Claude's or the owner's own — which a slide copies (step 3): with its
+        formatting, as plain text only, or not at all — the lift of the finger didn't count for the clipboard, and the
+        copy waits on its button. The app says
         nothing of it; the journal tells whether the gesture works inside Telegram on the phone at all. Every field is
         checked: it goes to the log."""
         ends = {"open": "opened on its action", "back": "sprang back", "cancel": "cancelled — the window took the finger",
                 "copied": "copied it with its formatting", "plain": "copied it as plain text only",
                 "nocopy": "didn't copy it — the copy waits on its button"}
-        rows = {"project": "a project's row", "task": "a task's row", "card": "a card", "msg": "Claude's message"}
+        rows = {"project": "a project's row", "task": "a task's row", "card": "a card", "msg": "Claude's message",
+                "mine": "your message"}
         try:
             ms, dx = min(60000, max(0, int(ms))), min(1000, max(0, int(dx)))
         except (TypeError, ValueError):

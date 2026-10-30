@@ -288,8 +288,8 @@ const IC = {
 // anywhere inside the row but a field: from the phone's left edge comes the system's own Back. One row open at a
 // time, as chats in Telegram. How each slide ended goes to the computer's journal, silently: whether the gesture
 // works inside Telegram's window at all is known from there, not from words on the screen (runbook, the lesson of Q97).
-// Claude's message in a session (step 3) is `quick`: one action, done right as the finger lets go past the mark — its
-// copy — and the message springs back; it stays open on the action's round button only when that didn't work (a lift
+// A message in a session (step 3 — Claude's, and yours) is `quick`: one action, done right as the finger lets go past the
+// mark — its copy — and the message springs back; it stays open on the action's round button only when that didn't work (a lift
 // of the finger may not count as a tap for the clipboard in some webview — the button's tap does). Its sign comes out
 // at the finger's height, past the mark it lights up with a tick. Only a finger slides a message: a mouse selects its
 // words. A block of code or a table keeps its own drag, as a field does (they scroll in themselves), and a finger that

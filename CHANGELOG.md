@@ -4,6 +4,11 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.24 — 2026-10-30
+
+- **Your own messages copy with a slide too.** In a session, slide one of your messages to the left the same way:
+  letting go past the mark copies it as you wrote it, line breaks and all. A message still on its way doesn't slide.
+
 ## 0.18.23 — 2026-10-29
 
 - **Copy Claude's message with a slide.** In a session, slide one of Claude's messages to the left: past the mark

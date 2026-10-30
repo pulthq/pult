@@ -172,3 +172,7 @@ export function clip(src) {
     return spaced(esc(text)).replace(/\n/g, "<br>");
   }
 }
+
+// your own words for the clipboard (2026-10-30): as you wrote them — the app shows them as typed, not read as markdown —
+// in the same HTML: a <br> for every line break, runs of spaces kept
+export const clipPlain = (src) => spaced(esc(String(src ?? "").replace(/\r\n?/g, "\n").replace(/^\n+|\s+$/g, ""))).replace(/\n/g, "<br>");
