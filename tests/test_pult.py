@@ -35,6 +35,7 @@ import httpx  # noqa: E402
 
 import pult_api  # noqa: E402
 import pult_attn as A  # noqa: E402
+import pult_codex as CX  # noqa: E402
 import pult_brief as B  # noqa: E402
 import pult_driven  # noqa: E402
 import pult_hook  # noqa: E402
@@ -50,6 +51,8 @@ import pult_tags as G  # noqa: E402
 import pult_tg  # noqa: E402
 import pult_update as U  # noqa: E402
 import pultd  # noqa: E402
+sys.path.insert(1, str(Path(__file__).resolve().parent))
+import fake_codex  # noqa: E402  (a stand-in for Codex's program: stage M)
 
 # Pult's folder and the transcripts' are the tests' temporary ones: a module imported before the environment above
 # would keep the owner's own, and tests delete files there (review 2026-10-27, Т8; the stand once wrote there)
@@ -2649,6 +2652,133 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             pultd.CLAUDE_PROJECTS = old
         self.assertEqual([(r["pkey"], r["open"], r["work"], r["ask"]) for r in rows],
                          [(PKEY, 2, 1, 1), ("-Users-x-other", 0, 0, 0)])            # active first, despite recency
+
+    async def test_second_opinion(self):
+        # stage M, step 1: a button under a session's outcome asks Codex to read what the task changed (a stand-in
+        # Codex here). The project goes to another vendor only once allowed, one tap; one review at a time; it shows
+        # at the end of the session until "Got it" or "Send to Claude"; the topic hears when the owner isn't looking
+        proj = TMP / ("proj-" + self._testMethodName)
+        now = time.time()
+        base = git_repo(proj, now - 7200, {"stats.py": "def mean(xs):\n    return sum(xs) / len(xs)\n"})
+        (proj / "CLAUDE.md").write_text("rules")
+        self.store.set_topic(PKEY, str(proj), "proj", 77)
+        self.store.touch_session(SID, PKEY, path=str(proj), title="Медиана")
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        edit = json.dumps({"type": "assistant", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(now - 300)),
+                           "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "e1", "name": "Edit",
+                                                                         "input": {"file_path": str(proj / "stats.py")}}]}})
+        Path(TP).write_text("\n".join([tline("user", "Добавь медиану", ago=3600), edit,
+                                        tline("assistant", "Добавил median.", ago=200)]) + "\n")
+        (proj / "stats.py").write_text("def median(xs):\n    return sorted(xs)[len(xs) // 2]\n")
+        log = TMP / ("codex-%s.jsonl" % self._testMethodName)
+        cmd, conf = codex_conf(TMP / ("codex-" + self._testMethodName), log=str(log), wait=0.3)
+        self.p.env["PULT_CODEX"] = cmd
+        self.p.env["PULT_APP_LINK"] = "https://t.me/b/pult"
+        view = lambda: self.p.api_session(SID)                                      # noqa: E731
+        # no outcome yet, no files: no button; after a turn that wrote files — there is
+        self.assertFalse((await view())["second"]["can"])
+        rec = self.p.attn.finished(SID, PKEY, 60, "Добавил median.", "Добавил median.", waits=True, seen=True)
+        self.store.add_turn(SID, PKEY, rec["ts"] - 60, 60, [{"p": "stats.py", "size": 50, "mt": rec["ts"]}], 1)
+        sec = (await view())["second"]
+        self.assertEqual((sec["can"], sec["why"], sec["v"], sec["job"]), (True, None, "0.148.0-alpha.9", None))
+        # the project isn't allowed yet: the app asks once; "allow" lets it and starts
+        self.assertFalse((await self.p.api_project(PKEY))["vendors_ok"])
+        self.assertEqual(await self.p.api_second(SID, "start"), {"ok": False, "need": "allow", "project": "proj"})
+        self.assertIsNone((await view())["second"]["job"])
+        self.assertEqual(await self.p.api_second(SID, "allow"), {"ok": True})
+        self.assertTrue((await self.p.api_project(PKEY))["vendors_ok"])
+        self.assertIn((await view())["second"]["job"]["st"], ("wait", "run"))
+        self.assertEqual([b["title"] for b in self.p.busy_report()], ["Второе мнение · Codex — Медиана"])   # a restart asks
+        await until(lambda: (self.p.seconds.get(SID) or {}).get("st") == "done")
+        job = (await view())["second"]["job"]
+        self.assertEqual((job["model"], [i["file"] for i in job["items"]], job["steps"], job["limits"][0]["pct"]),
+                         ("gpt-5.6-sol", ["search/index.py", "search/query.py"], 2, 12))
+        self.assertEqual(self.p.busy_report(), [])
+        # what Codex was told: read-only, no approvals, the project's folder; the request, the report, the commit
+        sent = [json.loads(x) for x in log.read_text().splitlines()]
+        start = next(m for m in sent if m.get("method") == "thread/start")["params"]
+        self.assertEqual((start["sandbox"], start["approvalPolicy"], os.path.realpath(start["cwd"])),
+                         ("read-only", "never", os.path.realpath(str(proj))))
+        told = next(m for m in sent if m.get("method") == "review/start")["params"]["target"]["instructions"]
+        for part in ("Добавь медиану", "Добавил median.", "`git diff %s -- .`" % base, "stats.py", "CLAUDE.md", "Write in Russian."):
+            self.assertIn(part, told)
+        # the topic: the owner is away (PULT_FORCE_AWAY) — the findings by name and a button into the app
+        await until(lambda: any("второе мнение Codex" in t for t in self.texts()))
+        msg = next(d for d in self.fake.of("sendMessage") if "второе мнение Codex" in d["text"])
+        self.assertEqual(msg["text"], "👁 <b>Медиана</b> · второе мнение Codex: 2 замечания\n"
+                                      "1. Rebuild only the new item's trigrams\n2. Skip fuzzy search for one or two letters")
+        self.assertEqual(json.loads(msg["reply_markup"])["inline_keyboard"][0][0]["url"],
+                         "https://t.me/b/pult?startapp=s_" + SID)
+        # kept across a restart of the daemon
+        self.p.seconds.clear()
+        self.assertEqual(len((await view())["second"]["job"]["items"]), 2)
+        # "Send to Claude": the findings go into the session the way a message from the app goes
+        said = []
+
+        async def fake_send(sid, text, fork=False, files=None):
+            said.append((sid, text, fork))
+            return {"ok": True, "how": "session", "out": "o1"}
+        with mock.patch.object(self.p, "api_send", fake_send):
+            self.assertEqual(await self.p.api_second(SID, "send"), {"ok": True, "how": "session", "out": "o1"})
+        self.assertEqual(said[0][0], SID)
+        self.assertTrue(said[0][1].startswith("A second opinion from Codex (gpt-5.6-sol) on this task's changes."))
+        self.assertIn("1. [P1] Rebuild only the new item's trigrams — search/index.py:41-58", said[0][1])
+        sec = (await view())["second"]
+        self.assertEqual((sec["can"], sec["job"]), (True, None))                    # put away; the button is back
+        self.assertEqual(await self.p.api_second(SID, "send"), {"ok": False, "note": I.T("note.decided")})
+        # a second review asks no more: the project is allowed; "Got it" puts it away without a word to Claude
+        self.assertEqual(await self.p.api_second(SID, "start"), {"ok": True})
+        await until(lambda: (self.p.seconds.get(SID) or {}).get("st") == "done")
+        self.assertEqual(await self.p.api_second(SID, "away"), {"ok": True})
+        self.assertIsNone((await view())["second"]["job"])
+        # Codex not signed in, its limit: the card says why, and so does the topic
+        conf.write_text(json.dumps({"login": False}))
+        await self.p.api_second(SID, "start")
+        await until(lambda: (self.p.seconds.get(SID) or {}).get("st") == "fail")
+        self.assertEqual((await view())["second"]["job"]["why"], "login")
+        await until(lambda: any("не получилось" in t for t in self.texts()))
+        self.assertIn("Codex не вошёл в ChatGPT", [t for t in self.texts() if "не получилось" in t][-1])
+        conf.write_text(json.dumps({"fail": "usageLimitExceeded"}))
+        await self.p.api_second(SID, "start")
+        await until(lambda: (self.p.seconds.get(SID) or {}).get("st") == "fail" and self.p.seconds[SID].get("why") == "limit")
+        # stopped by the owner: no card, no word in the topic; the next one waits for the one running
+        conf.write_text(json.dumps({"hang": 30, "steps": 0}))
+        told_before = len(self.texts())
+        await self.p.api_second(SID, "start")
+        await until(lambda: (self.p.seconds.get(SID) or {}).get("st") == "run")
+        self.assertEqual(await self.p.api_second(SID, "cancel"), {"ok": True})
+        await until(lambda: SID not in self.p.second_tasks)
+        self.assertIsNone((await view())["second"]["job"])
+        await asyncio.sleep(0.1)
+        self.assertEqual(len(self.texts()), told_before)
+        # Claude works on: no second opinion until the outcome
+        self.p.start_turn(self.p.live_of(SID, PKEY))
+        with self.assertRaises(ValueError):
+            await self.p.api_second(SID, "start")
+        self.assertFalse((await view())["second"]["can"])
+        self.p.live[SID].turn = None
+        # the owner takes the project back on its screen: asked again next time
+        self.assertEqual(await self.p.api_vendors_ok(PKEY, False), {"on": False})
+        with self.assertRaises(ValueError):
+            await self.p.api_vendors_ok("-Users-x-nope", True)                     # only a project the computer knows
+        self.assertEqual((await self.p.api_second(SID, "start"))["need"], "allow")
+        # a Codex version Pult wasn't checked on: its own schema decides, once per version; one that lost the custom
+        # review can't be used — the tap says which version
+        conf.write_text(json.dumps({"version": "0.150.0"}))
+        self.p._codex = (0.0, None)
+        self.assertEqual((await view())["second"]["why"], None)
+        self.assertTrue(self.store.get("codex.checked")["0.150.0"]["ok"])
+        conf.write_text(json.dumps({"version": "0.151.0", "schema": "old"}))
+        self.p._codex = (0.0, None)
+        self.assertEqual((await view())["second"]["why"], "version")
+        with self.assertRaises(ValueError) as e:
+            await self.p.api_second(SID, "allow")
+        self.assertIn("0.151.0", str(e.exception))
+        # no Codex at all: no button
+        self.p.env["PULT_CODEX"] = str(TMP / "no-codex")
+        self.p._codex = (0.0, None)
+        sec = (await view())["second"]
+        self.assertEqual((sec["can"], sec["why"]), (False, None))
 
     async def test_pins(self):
         # pinned projects (stage Zh, Q98): on top of the app's lists, the newest pin first, the rest in their order;
@@ -5753,6 +5883,160 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.p.drive = drive2
         await self.p.on_message(dict(base, message_id=13, text="ещё", reply_to_message={"message_id": 500}))
         self.assertEqual(seen[-1], (SID, SID, False, True))
+
+
+def git_repo(path, when, files):
+    """A repository with one commit dated `when` (epoch) holding files {name: text} — the folder as a task found it."""
+    path.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ, GIT_AUTHOR_DATE="@%d" % when, GIT_COMMITTER_DATE="@%d" % when)
+    for k, v in files.items():
+        (path / k).parent.mkdir(parents=True, exist_ok=True)
+        (path / k).write_text(v)
+    for cmd in (["init", "-q"], ["config", "user.email", "t@example.invalid"], ["config", "user.name", "t"],
+                ["config", "commit.gpgsign", "false"], ["add", "-A"], ["commit", "-qm", "before the task"]):
+        subprocess.run(["git", "-C", str(path), *cmd], check=True, env=env, capture_output=True)
+    return subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+
+
+def codex_conf(folder, **c):
+    """The stand-in Codex in folder with these settings (tests/fake_codex.py): → (its command, its settings file)."""
+    folder.mkdir(parents=True, exist_ok=True)
+    conf = folder / "conf.json"
+    conf.write_text(json.dumps(c))
+    return fake_codex.launcher(str(folder), str(conf)), conf
+
+
+class CodexTest(unittest.TestCase):
+    """A second opinion from Codex (stage M, step 1): what Codex is told and how its answer reads, the task's facts
+    from its transcript, the commit it began on, finding Codex and whether its protocol still fits."""
+
+    def test_parse(self):
+        cwd = str(TMP / "rv")
+        many = ("Two problems.\n\nFull review comments:\n\n- [P1] Index — rebuilt each time — %s/search/index.py:41-58\n"
+                "  The whole index.\n  Add the trigrams.\n\n- [x] [P3] Short query — /elsewhere/q.py:12-12\n  Three letters." % cwd)
+        got = CX.parse(many, cwd)
+        self.assertEqual(got["summary"], "Two problems.")
+        self.assertEqual(got["items"], [
+            {"prio": "P1", "title": "Index — rebuilt each time", "file": "search/index.py", "line": 41, "end": 58,
+             "body": "The whole index.\nAdd the trigrams."},
+            {"prio": "P3", "title": "Short query", "file": "/elsewhere/q.py", "line": 12, "end": 12, "body": "Three letters."}])
+        self.assertEqual([CX.where(i) for i in got["items"]], ["search/index.py:41-58", "/elsewhere/q.py:12"])
+        one = CX.parse("Fine but one.\n\nReview comment:\n\n- [P2] Even lengths — %s/stats.py:10-10\n  median([1, 3])." % cwd, cwd)
+        self.assertEqual((len(one["items"]), one["items"][0]["file"], one["items"][0]["prio"]), (1, "stats.py", "P2"))
+        self.assertEqual(CX.parse("Looks right, nothing to add.", cwd), {"summary": "Looks right, nothing to add.", "items": []})
+        self.assertEqual(CX.parse("Full review comments:\n\n- A title without a place", cwd)["items"][0],
+                         {"prio": "", "title": "A title without a place", "file": None, "line": None, "end": None, "body": ""})
+        msg = CX.message(got["items"], "gpt-5.6-sol")
+        self.assertTrue(msg.startswith("A second opinion from Codex (gpt-5.6-sol) on this task's changes."), msg)
+        self.assertIn("1. [P1] Index — rebuilt each time — search/index.py:41-58\n   The whole index.\n   Add the trigrams.", msg)
+        self.assertIn("2. [P3] Short query — /elsewhere/q.py:12\n   Three letters.", msg)
+
+    def test_task_facts(self):
+        d = TMP / "facts"
+        d.mkdir(exist_ok=True)
+        cwd = str(d / "proj")
+
+        def e(kind, content, **kw):
+            return json.dumps(dict({"type": kind, "timestamp": "2026-10-30T10:00:%02dZ" % len(rows), "message": {"role": kind, "content": content}}, **kw))
+        rows = []
+        rows.append(e("user", "<system-reminder>noise</system-reminder>Сделай поиск с опечатками"))
+        rows.append(e("assistant", [{"type": "text", "text": "Смотрю код."},
+                                    {"type": "tool_use", "id": "1", "name": "Edit", "input": {"file_path": cwd + "/search/index.py"}}]))
+        rows.append(e("user", [{"type": "tool_result", "tool_use_id": "1", "content": "ok"}]))
+        rows.append(e("assistant", [{"type": "tool_use", "id": "2", "name": "Write", "input": {"file_path": cwd + "/search/query.py"}},
+                                    {"type": "tool_use", "id": "3", "name": "NotebookEdit", "input": {"notebook_path": "/elsewhere/n.ipynb"}},
+                                    {"type": "tool_use", "id": "4", "name": "Edit", "input": {"file_path": cwd + "/search/index.py"}},
+                                    {"type": "tool_use", "id": "5", "name": "Read", "input": {"file_path": cwd + "/README.md"}}]))
+        rows.append(e("user", "<command-name>/model</command-name>"))
+        rows.append(e("assistant", [{"type": "text", "text": "subagent"}], isSidechain=True))
+        rows.append(json.dumps({"type": "attachment", "timestamp": "2026-10-30T10:01:00Z",
+                                "attachment": {"type": "queued_command", "prompt": "и тесты не забудь"}}))
+        rows.append(e("assistant", [{"type": "text", "text": "Готово: поиск с опечатками, 12 тестов."}]))
+        (d / "t.jsonl").write_text("\n".join(rows) + "\n{broken\n")
+        f = CX.task_facts(str(d / "t.jsonl"), cwd)
+        self.assertEqual(f["asks"], ["Сделай поиск с опечатками", "и тесты не забудь"])
+        self.assertEqual(f["report"], "Готово: поиск с опечатками, 12 тестов.")
+        self.assertEqual(f["files"], ["search/index.py", "search/query.py", "/elsewhere/n.ipynb"])
+        self.assertAlmostEqual(f["t0"], 1793354400.0)              # 2026-10-30T10:00:00Z
+        self.assertEqual(CX.task_facts(str(d / "none.jsonl")), {"t0": None, "asks": [], "report": "", "files": []})
+
+    def test_git_base_and_instructions(self):
+        now = time.time()
+        repo = TMP / "base-repo"
+        first = git_repo(repo, now - 7200, {"a.py": "x = 1\n"})
+        env = dict(os.environ, GIT_AUTHOR_DATE="@%d" % (now - 60), GIT_COMMITTER_DATE="@%d" % (now - 60))
+        (repo / "a.py").write_text("x = 2\n")
+        subprocess.run(["git", "-C", str(repo), "commit", "-qam", "the task's own"], check=True, env=env, capture_output=True)
+        self.assertEqual(CX.git_base(str(repo), now - 3600), first)          # the task's commit comes after its start
+        self.assertEqual(CX.git_base(str(repo), now - 9000), CX.EMPTY_TREE)  # every commit later
+        plain = TMP / "not-git"
+        plain.mkdir(exist_ok=True)
+        self.assertIsNone(CX.git_base(str(plain), now))
+        facts = {"t0": now - 3600, "asks": ["Сделай поиск", "без внешних библиотек", "и тесты"],
+                 "report": "Готово.", "files": ["search/index.py"]}
+        text = CX.instructions(facts, first, "ru", rules=True)
+        for part in ('"""\nСделай поиск\n"""', "- без внешних библиотек\n- и тесты", "Claude's report at the end:\n\"\"\"\nГотово.",
+                     "`git diff %s -- .`" % first, "commit %s" % first[:12], "wrote these files: search/index.py",
+                     "CLAUDE.md", "Write in Russian.", "Change nothing."):
+            self.assertIn(part, text)
+        self.assertIn("the folder's first commit", CX.instructions(facts, CX.EMPTY_TREE, "en"))
+        bare = CX.instructions(dict(facts, files=[]), None, "en")
+        self.assertIn("not in git", bare)
+        self.assertNotIn("CLAUDE.md", bare)
+        self.assertIn("Write in English.", bare)
+        self.assertIn("read them as they are now: search/index.py", CX.instructions(facts, None, "en"))
+        long = CX.instructions(dict(facts, asks=["я" * 9000]), first, "ru")
+        self.assertLess(len(long), 9000)
+
+    def test_find_and_schema(self):
+        d = TMP / "codex-find"
+        cmd, conf = codex_conf(d / "fake")
+        self.assertEqual(CX.find({"PULT_CODEX": cmd}), cmd)
+        self.assertIsNone(CX.find({"PULT_CODEX": str(d / "nope")}))
+        self.assertEqual(CX.find({"PATH": str(d / "fake")}), shutil.which("codex", path=str(d / "fake")))
+        self.assertEqual(CX.version(cmd), "0.148.0-alpha.9")
+        self.assertEqual(CX.schema_ok(cmd), (True, ""))
+        conf.write_text(json.dumps({"schema": "old"}))
+        self.assertEqual(CX.schema_ok(cmd), (False, "review/start custom"))
+        self.assertEqual([CX.kind_of(x) for x in ({"codexErrorInfo": "usageLimitExceeded"}, {"codexErrorInfo": "unauthorized"},
+                                                   {"message": "You've hit your usage limit"}, {"message": "boom"}, "Please log in")],
+                         ["limit", "login", "limit", "failed", "login"])
+        self.assertEqual(CX.window({"rateLimits": {"secondary": {"usedPercent": 30, "windowDurationMins": 10080, "resetsAt": 2},
+                                                   "primary": {"usedPercent": 12, "windowDurationMins": 300, "resetsAt": 1}}}),
+                         [{"pct": 12, "mins": 300, "reset": 1}, {"pct": 30, "mins": 10080, "reset": 2}])
+
+    def test_review_over_the_protocol(self):
+        d = TMP / "codex-review"
+        log = d / "log.jsonl"
+        cmd, conf = codex_conf(d / "fake", log=str(log), steps=3, wait=0.1, ask=True)
+        proj = d / "proj"
+        proj.mkdir(parents=True)
+        steps = []
+        got = asyncio.run(CX.review(cmd, str(proj), "Read the change.", env=dict(os.environ), on_step=steps.append, client="9"))
+        self.assertEqual((got["model"], got["effort"], steps), ("gpt-5.6-sol", "high", [1, 2, 3]))
+        self.assertEqual(got["limits"][0]["pct"], 12)
+        self.assertEqual(got["asked"], ["item/commandExecution/requestApproval"])
+        self.assertEqual(len(CX.parse(got["text"], str(proj))["items"]), 2)
+        sent = [json.loads(x) for x in log.read_text().splitlines()]
+        start = next(m for m in sent if m.get("method") == "thread/start")["params"]
+        self.assertEqual((start["sandbox"], start["approvalPolicy"], os.path.realpath(start["cwd"])),
+                         ("read-only", "never", os.path.realpath(str(proj))))
+        rv = next(m for m in sent if m.get("method") == "review/start")["params"]
+        self.assertEqual(rv["target"], {"type": "custom", "instructions": "Read the change."})
+        self.assertEqual(next(m for m in sent if m.get("method") == "initialize")["params"]["clientInfo"]["version"], "9")
+        self.assertTrue(any(m.get("id") == 99 and "error" in m for m in sent))      # the server's own request: declined
+        for c, kind in (({"login": False}, "login"), ({"fail": "usageLimitExceeded"}, "limit"), ({"fail": "other"}, "failed")):
+            conf.write_text(json.dumps(c))
+            with self.assertRaises(CX.CodexError) as e:
+                asyncio.run(CX.review(cmd, str(proj), "x", env=dict(os.environ)))
+            self.assertEqual(e.exception.kind, kind)
+        conf.write_text(json.dumps({"hang": 3}))
+        with self.assertRaises(CX.CodexError) as e:
+            asyncio.run(CX.review(cmd, str(proj), "x", env=dict(os.environ), timeout=1))
+        self.assertEqual(e.exception.kind, "timeout")
+        with self.assertRaises(CX.CodexError) as e:
+            asyncio.run(CX.review(str(d / "no-such-codex"), str(proj), "x", env=dict(os.environ)))
+        self.assertEqual(e.exception.kind, "start")
 
 
 class TabCheckTest(unittest.IsolatedAsyncioTestCase):

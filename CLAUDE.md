@@ -7,7 +7,7 @@ Claude Code hook (`src/pult_hook.py`), an optional VS Code tab wrapper (`src/pul
 `pult` command (`src/pultctl.py`, `src/pult_setup.py`), a speech-to-text client used only when a key is set
 (`src/pult_stt.py`, Groq Whisper), the load view's counting (`src/pult_load.py`; the process snapshot is in
 `pult_os`), usage pace on Resources (`src/pult_spend.py`), a new project from the phone (`src/pult_new.py`), files to and from the phone (`src/pult_files.py`, `pult send`; a project file opened from a link in Claude's words — `api_file`), an update installed from the app
-(`src/pult_update.py`), whose move it is on Home (`src/pult_attn.py`) with an optional small model reading each result
+(`src/pult_update.py`), a second opinion from Codex on what a task changed (`src/pult_codex.py`; `tests/fake_codex.py` stands in for it), whose move it is on Home (`src/pult_attn.py`) with an optional small model reading each result
 (`src/pult_brief.py`) and keeping each task's tags (`src/pult_tags.py`) and an optional web app with a relay (`src/pult_web.py`, `relay/`). Start with
 [README.md](README.md), [ARCHITECTURE.md](ARCHITECTURE.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
 

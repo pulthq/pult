@@ -82,7 +82,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.24"
+VERSION = "0.18.25"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -385,6 +385,10 @@ class Pult(Api, Parts):
         self.srv_rel = (0.0, None, None)   # what to tell it (Parts.release_for_server): when found, for what, what
         self.announcing = None          # the task telling it (relay_said): one at a time, never awaited on the relay's link
         self.gh = {"at": None, "ok": None, "t": None}  # the last look at GitHub for a release: when, whether it answered
+        self.seconds = {}              # sid → its second opinion (stage M, step 1; pult_api.api_second): done ones in the store
+        self.second_tasks = {}         # sid → the review running or waiting for its turn
+        self.codex_lock = asyncio.Lock()   # one Codex at a time
+        self._codex = (0.0, None)      # Codex on this computer, as last looked up (pult_api.codex_state)
 
     # ----- this computer's environment -----
 
@@ -3248,6 +3252,10 @@ class Pult(Api, Parts):
             if turn or n:
                 out.append({"sid": sid, "title": self.title(lv) if lv else sid[:8],
                             "project": self.name_of(lv.pkey) if lv else "", "turn": turn, "bg": bg, "n": n})
+        for sid in list(self.second_tasks):           # a second opinion: Codex is the daemon's child too (stage M)
+            lv = self.live.get(sid) or self.stub(sid)
+            out.append({"sid": sid, "title": self.t("second.busy", title=lv.title or self.title(lv)), "project": self.name_of(lv.pkey),
+                        "turn": True, "bg": [], "n": 0})
         return out
 
     async def handle_conn(self, reader, writer):

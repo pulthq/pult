@@ -120,6 +120,8 @@ And:
 - **Voice** — a voice message in the topic, or the microphone in the app, arrives as text (Groq Whisper, with a key of yours).
 - **Model and effort** — per session, switched while it runs; a default for the sessions Pult starts.
 - **Ticks** on your message — sent, read by Claude — and a pager that knows whether you're at the computer.
+- **A second opinion** — under an outcome, Codex (OpenAI's agent, on your ChatGPT subscription) reads what the task
+  changed in a read-only sandbox; its findings go back to Claude with one tap. Per project, only once you allow it.
 - **`pult run`** for your own long commands, reported like a turn.
 
 **[All of it](guide/usage.md)**.

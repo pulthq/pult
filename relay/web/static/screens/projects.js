@@ -96,9 +96,15 @@ function Project({ pkey, tag, topic }) {
     try { const r = await api("pin", { pkey, on: !d.pinned, via: "button" }); haptic("success"); set(Object.assign({}, d, { pinned: r.pinned })); }
     catch (e) { alertBox(e.message); }
   };
+  // stage M (Q105): the project went to another vendor once you allowed it — here you take that back
+  const deny = async () => {
+    try { await api("vendors_ok", { pkey, on: false }); haptic("success"); set(Object.assign({}, d, { vendors_ok: false })); }
+    catch (e) { alertBox(e.message); }
+  };
   return html`<div class="project">
     <div class="ph">${avatar(d.name, 44)}<div><h2>${d.name}</h2><div class="sum dim">${sum}</div></div>
       <button class=${"pinb" + (d.pinned ? " on" : "")} aria-label=${t(d.pinned ? "unpin" : "pin")} title=${t(d.pinned ? "unpin" : "pin")} aria-pressed=${!!d.pinned} onClick=${pin}>${ic("pin", 20)}</button></div>
+    ${d.vendors_ok && html`<div class="vline">${ic("eye", 14)}<span>${t("vend.ok")}</span><button class="link" onClick=${deny}>${t("vend.deny")}</button></div>`}
     ${d.tagset && (d.tagset.length > 0 || d.tags_n > 0) && html`<${TagBar} set=${d.tagset} sel=${sel} top=${top} all=${tagsOf.size} onSel=${setSel} onTop=${setTop} pkey=${d.tags_n != null ? pkey : null}/>`}
     ${d.tag_job && html`<div class="dim small tidy-run">${ic("auto", 14)} ${tagJob(d.tag_job)}</div>`}
     ${(waits > 0 || mineF.length > 0) && html`<h3>${t("proj.waits", { n: waits })}</h3>

@@ -33,7 +33,10 @@ STAND_HOMES=1 (stage Zh): the three made-up projects get real folders, so the Pr
 printer's has one); STAND_PINS=blog,shop — these pinned, in that order, the last one the newest; STAND_HIDES=desk — hidden
 (tools/pins_check.py).
 STAND_COPY=1: the session that waits for you is open in a VS Code tab on a Claude Code Pult isn't checked on — its card
-says "goes as a copy" before you type, and sending says why (tools/copy_check.py). VS Code's settings and the tab
+says "goes as a copy" before you type, and sending says why (tools/copy_check.py).
+STAND_SECOND=1 (stage M, step 1): the shop is a git repository whose search the task changed, and Codex is a stand-in
+(tests/fake_codex.py) that reads it for about five seconds and finds two things; the session that waits for you (SESS4)
+offers "Second opinion · Codex" under its outcome (tools/second_check.py). STAND_SECOND=allowed — the shop already allowed. VS Code's settings and the tab
 switch are made up on every stand: the app never reads this computer's."""
 import asyncio, base64, hashlib, hmac, json, os, random, shutil, signal, sys, time, urllib.parse
 from pathlib import Path
@@ -459,6 +462,51 @@ def shop_files():
     return root
 
 
+# STAND_SECOND=1 (stage M, step 1): the shop's search as it was before the task (a commit three hours old) and as the task
+# left it; Codex's made-up answer about it, in the stand's language
+SECOND_REVIEW = {
+    "en": ("Typo-tolerant search works; two places will hurt on a big catalogue.\n\nFull review comments:\n\n"
+           "- [P1] Rebuild only the new product's trigrams — {cwd}/search/index.py:41-58\n"
+           "  The whole index is rebuilt on every new product: with 40,000 products that is a couple of seconds without "
+           "writes. Add the new product's trigrams instead.\n\n"
+           "- [P2] Skip typo search for one or two letters — {cwd}/search/query.py:12-12\n"
+           "  A query of one or two letters returns half the catalogue: search with typos only from three characters, "
+           "and add a test for `q(\"ab\")`."),
+    "ru": ("Поиск с опечатками работает; на большом каталоге заболят два места.\n\nFull review comments:\n\n"
+           "- [P1] Пересобирайте только триграммы нового товара — {cwd}/search/index.py:41-58\n"
+           "  Индекс пересобирается целиком на каждый новый товар: на 40 тыс. товаров это пара секунд без записи. "
+           "Хватит дописывать триграммы одного товара.\n\n"
+           "- [P2] Не ищите с опечатками по одной-двум буквам — {cwd}/search/query.py:12-12\n"
+           "  Запрос из одной-двух букв вернёт полкаталога: искать с опечатками только от трёх символов — и тест на "
+           "`q(\"ab\")`."),
+}
+
+
+def shop_repo():
+    """The shop as a git repository: its search before the task, committed three hours ago, and the task's change — in
+    the stand's own temporary folder, gone with it (the system's temporary folder is shared by every stand)."""
+    import subprocess
+    root = T.TMP / "acme-shop"
+    (root / "search").mkdir(parents=True, exist_ok=True)
+    when = int(time.time() - 3 * 3600)
+    env = dict(os.environ, GIT_AUTHOR_DATE="@%d" % when, GIT_COMMITTER_DATE="@%d" % when)
+    (root / "search" / "index.py").write_text('"""The product index."""\n\nINDEX = {}\n')
+    (root / "search" / "query.py").write_text('"""A search query."""\n')
+    for cmd in (["init", "-q"], ["config", "user.email", "stand@example.invalid"], ["config", "user.name", "stand"],
+                ["config", "commit.gpgsign", "false"], ["add", "-A"], ["commit", "-qm", "search: exact names"]):
+        subprocess.run(["git", "-C", str(root), *cmd], check=True, env=env, capture_output=True)
+    (root / "search" / "index.py").write_text("".join(
+        ['"""The product index: trigrams of every name, for typo-tolerant search."""\n', "\n", "INDEX = {}\n", "\n"]
+        + ["# the trigram table, part %d\n" % i for i in range(1, 37)]
+        + ["def add(product):\n", "    INDEX.clear()\n", "    for p in catalogue():\n",
+           "        for g in trigrams(p.name):\n", "            INDEX.setdefault(g, set()).add(p.id)\n"]
+        + ["    # rebuilt whole, line %d\n" % i for i in range(1, 14)]))
+    (root / "search" / "query.py").write_text("".join(
+        ['"""A search query, with typos."""\n', "\n"] + ["# step %d\n" % i for i in range(1, 10)]
+        + ["def q(text):\n", "    return fuzzy(text)\n"]))
+    return root
+
+
 async def main():
     pultd.CLAUDE_PROJECTS = Path(T.TP).parent.parent      # made-up transcripts only: never the Mac's own sessions
     fake = T.FakeTg()
@@ -484,7 +532,18 @@ async def main():
             store.set_hide(pk, True)
     if os.environ.get("STAND_FILES") == "1":                 # stage F5: links in Claude's words open the project's files
         store.set_topic(T.PKEY, str(shop_files()), "acme-shop", 77)
+    second = os.environ.get("STAND_SECOND")
+    if second:                                               # stage M: the shop's search changed, and Codex reads it
+        store.set_topic(T.PKEY, str(shop_repo()), "acme-shop", 77)
+        import fake_codex
+        conf = T.TMP / "stand-codex.json"
+        conf.write_text(json.dumps({"wait": 5, "steps": 4, "review": SECOND_REVIEW[LANG]}))
+        codex = fake_codex.launcher(str(T.TMP), str(conf))
+        if second == "allowed":
+            store.put("vendors.ok", {T.PKEY: time.time()})
     p = pultd.Pult({"PULT_ALLOWED_USER_IDS": str(T.OWNER), "PULT_FORCE_AWAY": "1"}, tg, store)
+    if second:
+        p.env["PULT_CODEX"] = codex
     p.out = pultd.Outbox(rate=60000, burst=1000)
     p._agents = (time.monotonic() + 1e6, [{"sessionId": SID3, "cwd": "/Users/x/blog"}])
     pultd.EDIT_EVERY = 0.2

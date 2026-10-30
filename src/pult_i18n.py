@@ -1077,6 +1077,25 @@ S = {
     "cmd.stop": {"en": "interrupt the turn (in a topic or as a reply)", "ru": "прервать ход (в теме или ответом)"},
     "cmd.app": {"en": "open the app", "ru": "открыть приложение"},
     "cmd.feedback": {"en": "report a bug or suggest an idea", "ru": "сообщить об ошибке или идее"},
+
+    # ----- a second opinion (stage M, step 1): Codex reads what a task changed -----
+    "second.busy": {"en": "Second opinion · Codex — {title}", "ru": "Второе мнение · Codex — {title}"},
+    "second.err.missing": {"en": "Codex isn't on this computer: install ChatGPT for Mac (Codex comes with it) or the codex command.",
+                           "ru": "Codex на этом компьютере нет: поставь ChatGPT для Mac (Codex идёт с ним) или команду codex."},
+    "second.err.version": {"en": "Codex {v} doesn't fit Pult yet: its protocol has changed. A Pult release will catch up.",
+                           "ru": "Codex {v} пока не подходит Пульту: его протокол изменился. Догонит выпуск Пульта."},
+    "second.err.turn": {"en": "Claude is still working — ask once the task has its outcome.",
+                        "ru": "Claude ещё работает — спроси, когда будет итог."},
+    "second.tg.done": {"en": "Codex's second opinion: {n} {findings}", "ru": "второе мнение Codex: {n} {findings}"},
+    "second.tg.none": {"en": "Codex's second opinion: no findings", "ru": "второе мнение Codex: замечаний нет"},
+    "second.tg.fail": {"en": "Codex's second opinion didn't come: {why}", "ru": "второе мнение Codex не получилось: {why}"},
+    "second.why.login": {"en": "Codex isn't signed in to ChatGPT — open ChatGPT on the computer and sign in",
+                         "ru": "Codex не вошёл в ChatGPT — открой ChatGPT на компьютере и войди"},
+    "second.why.limit": {"en": "Codex's limit in the ChatGPT subscription is used up for now",
+                         "ru": "лимит Codex в подписке ChatGPT пока исчерпан"},
+    "second.why.timeout": {"en": "Codex took longer than 15 minutes", "ru": "Codex не уложился в 15 минут"},
+    "second.why.start": {"en": "Codex didn't start or stopped answering", "ru": "Codex не запустился или перестал отвечать"},
+    "second.why.failed": {"en": "Codex stopped with an error", "ru": "Codex остановился с ошибкой"},
 }
 
 COMMANDS = ("new", "stop", "status", "sessions", "projects", "app", "desk", "phone", "auto", "mode", "help", "feedback")
@@ -1087,6 +1106,7 @@ P = {
     "line": {"en": ("line", "lines"), "ru": ("строка", "строки", "строк")},
     "request": {"en": ("request", "requests"), "ru": ("запрос", "запроса", "запросов")},
     "session": {"en": ("session", "sessions"), "ru": ("сессия", "сессии", "сессий")},
+    "finding": {"en": ("finding", "findings"), "ru": ("замечание", "замечания", "замечаний")},
 }
 
 LANG = "en"          # the owner's language; Pult has one owner, so one language at a time (set_lang)
