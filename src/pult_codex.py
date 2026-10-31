@@ -5,7 +5,8 @@ to Codex's own program through its app-server protocol: JSON-RPC over stdio, one
   • where Codex is and which version (find, version), and whether Pult may use it: a version VERIFIED lists, or one
     whose own schema still has what Pult uses (schema_ok) — ChatGPT.app updates its Codex by itself, alpha builds often;
   • what the task was (task_facts — the owner's words, Claude's last report, the files its edit tools wrote, from the
-    transcript; git_base — the commit the folder stood at when the task began);
+    transcript; git_base — the commit the folder stood at when the task began; nested_repos — the parts of the folder
+    that are repositories of their own, each with its commit);
   • what Codex is told (instructions) and how its answer reads (parse — "[P1] title — file:lines" and the text);
   • one review (review): initialize → account/read → thread/start → review/start → its items → turn/completed;
   • what "Send to Claude" says in the session (message).
@@ -19,6 +20,7 @@ import collections
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -40,6 +42,8 @@ LATER_MAX = 600         # …of each later one, the last LATER_N of them
 LATER_N = 12
 REPORT_MAX = 4000       # …of Claude's last report
 FILES_MAX = 60          # files named, at most
+REPOS_MAX = 8           # nested repositories Codex gets the history of; the ones past it — by name
+DIRS_MAX = 400          # folders of the task's files looked at for a nested repository, at most
 ANSWER = 30             # s for an answer before the review itself starts
 TIMEOUT = 15 * 60       # s for the whole review (the probe's took 91 s)
 LINE_MAX = 16 << 20     # bytes of one message from Codex: a command's whole output rides in its item
@@ -244,16 +248,65 @@ def git_base(cwd, t0):
     return (r.stdout.strip() if r.returncode == 0 else "") or EMPTY_TREE
 
 
+def _repo_dir(d, root):
+    """The nearest folder from d up to root, root itself left out, that holds a .git — a repository's root or a
+    worktree's; None when there is none: the file belongs to whatever the project's folder is in."""
+    while d != root and d.startswith(root + os.sep):
+        if os.path.lexists(os.path.join(d, ".git")):
+            return d
+        d = os.path.dirname(d)
+    return None
+
+
+def _toplevel(d):
+    try:
+        r = subprocess.run(["git", "-C", d, "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=20,
+                           stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return os.path.realpath(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
+
+
+def nested_repos(cwd, files, t0):
+    """The git repositories inside the project's folder, other than the one the folder itself is in, where the task
+    changed files — one big project whose parts are repositories of their own (2026-10-31): the folder's own history
+    doesn't show their changes. files — paths from the folder or absolute; those outside it are left out, as Codex
+    reads only the project the owner allowed. → [{"dir": the repository's folder from the project's, "base": its
+    git_base, None past REPOS_MAX}] in the order first met. Plain files, no git, for most folders: git runs only for
+    a folder with a .git below the project's."""
+    root = os.path.realpath(cwd)
+    where, checked, out = {}, set(), []
+    for f in files:
+        p = os.path.realpath(f if os.path.isabs(f) else os.path.join(root, f))
+        if not p.startswith(root + os.sep):
+            continue
+        d = os.path.dirname(p)
+        if d not in where:
+            if len(where) >= DIRS_MAX:
+                break
+            where[d] = _repo_dir(d, root)
+        top = where[d]
+        if not top or top in checked:
+            continue
+        checked.add(top)
+        if _toplevel(top) != os.path.realpath(top):      # a stray .git, not a repository
+            continue
+        out.append({"dir": os.path.relpath(top, root).replace(os.sep, "/"),
+                    "base": git_base(top, t0) if len(out) < REPOS_MAX else None})
+    return out
+
+
 def _cut(s, n):
     s = str(s or "").strip()
     return s if len(s) <= n else s[:n - 1].rstrip() + "…"
 
 
-def instructions(facts, base, lang="en", rules=False):
+def instructions(facts, base, lang="en", rules=False, repos=()):
     """What Codex is told: the task in the owner's words, Claude's report, what changed and how to see it, what to
     report and in which language. Without the request and the report a second opinion argues with the task's own
     decisions — the probe's one finding did (2026-10-30) — so both go, and what they call deliberate isn't a finding.
-    base — git_base's answer; rules — the folder has a CLAUDE.md (Codex itself reads only AGENTS.md)."""
+    base — git_base's answer; rules — the folder has a CLAUDE.md (Codex itself reads only AGENTS.md); repos —
+    nested_repos': the parts of the folder that are repositories of their own, each with its own history."""
     asks = facts.get("asks") or []
     parts = ["You are giving a second opinion on a task another coding agent (Claude Code) has just done in this folder. "
              "Read what it changed and report real problems only. Change nothing."]
@@ -275,12 +328,32 @@ def instructions(facts, base, lang="en", rules=False):
             what += (" Claude's edit tools wrote these files: %s; commands may have changed more. Other sessions may "
                      "work in this folder at the same time: a change that touches none of the task's files is likely "
                      "theirs — leave it out." % named)
+    elif repos:
+        what = "This folder itself is not in git; the parts of it named below are."
+        if files:
+            what += " Claude's edit tools wrote these files: %s; commands may have changed more." % named
     elif files:
         what = ("This folder is not in git, so there is no history: the task wrote these files — read them as they are "
                 "now: %s." % named)
     else:
         what = "This folder is not in git, and the task's own files are unknown: judge by the request and the report."
     parts.append(what)
+    if repos:
+        lines = []
+        for r in repos:
+            if not r.get("base"):
+                continue
+            q = shlex.quote(r["dir"])
+            since = "its first commit" if r["base"] == EMPTY_TREE else "commit %s" % r["base"][:12]
+            lines.append("- %s/ — since %s: `git -C %s diff %s -- .` and `git -C %s status --short -- .`"
+                         % (r["dir"], since, q, r["base"], q))
+        more = [r["dir"] + "/" for r in repos if not r.get("base")]
+        if more:
+            lines.append("- and these, the same way: %s" % ", ".join(more))
+        parts.append("Parts of this folder are git repositories of their own, and the task changed files in them: the "
+                     "folder's own history doesn't show those changes. What changed in each since the task began "
+                     "(committed and not yet, and new files):\n%s\nIn them too, a change that touches none of the "
+                     "task's files is likely another session's — leave it out." % "\n".join(lines))
     if rules:
         parts.append("The project's rules for agents are in CLAUDE.md: what it and the documents it points to record as "
                      "decided is deliberate.")

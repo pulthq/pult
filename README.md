@@ -148,9 +148,9 @@ And:
 
 The next steps of the universal remote, one release each:
 
+- **Codex as a doer** — a task done by Codex itself, with the same cards, questions and permissions.
 - **Spend by vendor** — Resources shows what each vendor took: Codex's windows, the dollars of each key, beside your
   Claude plan's limits.
-- **Codex as a doer** — a task done by Codex itself, with the same cards, questions and permissions.
 - **Hand a task over** — midway, to another vendor: what you asked, what is done, the changes and what is left.
 
 ## Next to the official options

@@ -530,6 +530,16 @@ class Store:
                     prev=near("SELECT max(id) FROM turns WHERE sid=? AND id<?"),
                     next=near("SELECT min(id) FROM turns WHERE sid=? AND id>?"))
 
+    def task_files(self, sid):
+        """Every file the session's kept turns made or changed, each once, from the oldest turn on — the task's own,
+        as paths inside its project (a second opinion finds its nested repositories by them)."""
+        seen = {}
+        for r in self.db.execute("SELECT files FROM turns WHERE sid=? ORDER BY id", (sid,)):
+            for f in json.loads(r["files"] or "[]"):
+                if isinstance(f, dict) and f.get("p"):
+                    seen.setdefault(f["p"], None)
+        return list(seen)
+
     def work_of(self, sid):
         """(seconds of work counted, seed or None) — or None: nothing counted yet."""
         r = self.db.execute("SELECT secs, seed FROM work WHERE sid=?", (sid,)).fetchone()

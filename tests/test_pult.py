@@ -1073,6 +1073,36 @@ class FilesTest(unittest.TestCase):
         self.assertEqual(F.zip_name(str(proj) + os.sep, at), "turnproj-2026-10-23-1240.zip")
         self.assertEqual([F.size_text(n) for n in (436, 12 * 1024, 2_400_000)], ["436 B", "12 KB", "2.3 MB"])
 
+    def test_turn_files_named(self):
+        # a big tree — one project of many repositories (2026-10-31): the walk stops early, but every file the turn's own
+        # tools named is in wherever it is (a hidden folder too), and the walk starts from their folders
+        proj = TMP / "turnnamed"
+        start = time.time() - 60
+        for i in range(30):
+            old = proj / "zdata" / ("f%02d.csv" % i)
+            old.parent.mkdir(parents=True, exist_ok=True)
+            old.write_text("old")
+            os.utime(old, (start - 600, start - 600))
+        for rel in ["deep/a/b/edited.py", "deep/a/b/by_command.txt", ".claude/worktrees/x/src/w.py", ".github/ci.yml",
+                    "inbox/2026-10-31/photo.jpg", "deep/.env", "deep/~$lock.docx", "node_modules/pkg/patched.js"]:
+            (proj / rel).parent.mkdir(parents=True, exist_ok=True)
+            (proj / rel).write_text(rel)
+        named = ["deep/a/b/edited.py", ".claude/worktrees/x/src/w.py", ".github/ci.yml", "inbox/2026-10-31/photo.jpg",
+                 "deep/.env", "deep/~$lock.docx", "node_modules/pkg/patched.js", "../outside.txt", "gone.py", "zdata"]
+        want = sorted(os.path.join(*p.split("/")) for p in ["deep/a/b/edited.py", "deep/a/b/by_command.txt",
+                                                              ".claude/worktrees/x/src/w.py", ".github/ci.yml",
+                                                              "node_modules/pkg/patched.js"])
+        with mock.patch.object(F, "SCAN_MAX", 3):
+            info = {}
+            got, n = F.turn_files(str(proj), start, None, named, info)
+            self.assertEqual((sorted(f["p"] for f in got), n, info["cut"]), (want, 5, True))
+            got, n = F.turn_files(str(proj), start, None, (), info)           # without them: the walk alone, cut
+            self.assertTrue(info["cut"])
+            self.assertLess(n, 5)
+        info = {}
+        got, n = F.turn_files(str(proj), start, None, named, info)
+        self.assertEqual((n, info["cut"]), (5, False))                       # the whole walk adds nothing old
+
 
 class LoadTest(unittest.TestCase):
     def test_ps_rows(self):
@@ -2563,6 +2593,28 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await run_hook(ev("SessionStart", source="startup"), extra_env={"PULT_SOCK": str(TMP / "нет.sock")}), "")
         self.assertEqual(await run_hook(ev("Stop"), extra_env={"PULT_SOCK": os.environ["PULT_SOCK"]}), "")
 
+    async def test_turn_files_named_by_tools(self):
+        # a big tree (2026-10-31): the walk stops early, but what the turn's own tools wrote is among its files — read
+        # from its transcript — and the journal says the walk was cut
+        proj = TMP / ("proj-" + self._testMethodName)
+        (proj / "deep" / "x").mkdir(parents=True)
+        self.store.set_topic(PKEY, str(proj), "proj", 77)
+        t0 = time.time() - 5
+        made = proj / "deep" / "x" / "edited.py"
+        made.write_text("x")
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        Path(TP).write_text(json.dumps({"type": "assistant", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+                                        "message": {"role": "assistant", "content": [
+                                            {"type": "tool_use", "id": "w1", "name": "Write", "input": {"file_path": str(made)}}]}}) + "\n")
+        lv = self.p.live_of(SID, PKEY)
+        lv.transcript = TP
+        logged = []
+        with mock.patch.object(F, "SCAN_MAX", 0), \
+                mock.patch.object(pultd, "log", lambda *a: logged.append(" ".join(map(str, a)))):
+            files, n = await self.p.files_of_turn(lv, types.SimpleNamespace(started=t0))
+        self.assertEqual(([f["p"] for f in files], n), ([os.path.join("deep", "x", "edited.py")], 1))
+        self.assertTrue(any("stopped after" in x for x in logged), logged)
+
     async def test_project_inbox_pictures(self):
         # the app shows a picture from a project's inbox in the chat; nothing outside it, nothing but pictures
         proj = TMP / ("proj-" + self._testMethodName)
@@ -3084,8 +3136,11 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await until(lambda: any("не получилось" in t for t in self.texts()))
         self.assertIn("Codex не вошёл в ChatGPT", [t for t in self.texts() if "не получилось" in t][-1])
         conf.write_text(json.dumps({"fail": "usageLimitExceeded"}))
+        failed = sum("не получилось" in t for t in self.texts())
         await self.p.api_second(SID, "start")
         await until(lambda: (self.p.seconds.get(SID) or {}).get("st") == "fail" and self.p.seconds[SID].get("why") == "limit")
+        # its word reaches the topic a moment after the card's state: counted before it, it was a race (2026-10-31)
+        await until(lambda: sum("не получилось" in t for t in self.texts()) > failed)
         # stopped by the owner: no card, no word in the topic; the next one waits for the one running
         conf.write_text(json.dumps({"hang": 30, "steps": 0}))
         told_before = len(self.texts())
@@ -3179,6 +3234,26 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sorted(r["ok"] for r in got), [False, True])
         self.assertEqual(next(r for r in got if not r["ok"]), {"ok": False, "note": I.T("note.decided")})
         self.assertEqual(len(said), 2)                                                # the failed one and one of the pair
+
+    async def test_second_opinion_nested_repos(self):
+        # one big project whose parts are repositories of their own (2026-10-31): the folder's own history doesn't
+        # show their changes, so Codex gets each part's, found by the files the task's turns made or changed
+        proj, base, conf, log = self.second_project()
+        now = time.time()
+        (proj / ".gitignore").write_text("builder/\n")
+        inner = git_repo(proj / "builder", now - 7200, {"slice.py": "x = 1\n"})
+        (proj / "builder" / "slice.py").write_text("x = 2\n")
+        rec = self.p.attn.finished(SID, PKEY, 60, "Готово.", "Готово.", waits=True, watched=True)
+        self.store.add_turn(SID, PKEY, rec["ts"] - 120, 60, [{"p": "stats.py", "size": 50, "mt": rec["ts"]}], 1)
+        self.store.add_turn(SID, PKEY, rec["ts"] - 60, 60, [{"p": "builder/slice.py", "size": 6, "mt": rec["ts"]},
+                                                           {"p": "stats.py", "size": 50, "mt": rec["ts"]}], 2)
+        self.assertEqual(self.store.task_files(SID), ["stats.py", "builder/slice.py"])
+        self.assertEqual(await self.p.api_second(SID, "allow"), {"ok": True})
+        await until(lambda: (self.p.seconds.get(SID) or {}).get("st") == "done")
+        sent = [json.loads(x) for x in log.read_text().splitlines()]
+        told = next(m for m in sent if m.get("method") == "review/start")["params"]["target"]["instructions"]
+        self.assertIn("`git diff %s -- .`" % base, told)                                # the folder's own, as before
+        self.assertIn("- builder/ — since commit %s: `git -C builder diff %s -- .`" % (inner[:12], inner), told)
 
     async def test_pins(self):
         # pinned projects (stage Zh, Q98): on top of the app's lists, the newest pin first, the rest in their order;
@@ -6488,6 +6563,45 @@ class CodexTest(unittest.TestCase):
         self.assertIn("read them as they are now: search/index.py", CX.instructions(facts, None, "en"))
         long = CX.instructions(dict(facts, asks=["я" * 9000]), first, "ru")
         self.assertLess(len(long), 9000)
+
+    def test_nested_repos(self):
+        # one big project whose parts are repositories of their own (2026-10-31): the parts the task changed files in,
+        # each with its own commit from before the task — whether the folder itself is in git, outside it, or inside
+        # another repository; nothing outside the folder, no stray .git
+        now = time.time()
+        top = TMP / "nested"
+        b = git_repo(top / "builder", now - 7200, {"slice.py": "x = 1\n"})
+        k = git_repo(top / "device" / "firmware", now - 7200, {"main.py": "y = 1\n"})
+        git_repo(top / "untouched", now - 7200, {"u.py": "u\n"})
+        (top / "lab").mkdir(parents=True, exist_ok=True)
+        (top / "lab" / ".git").write_text("not a repository")
+        (top / "docs").mkdir(exist_ok=True)
+        files = ["builder/slice.py", str(top / "device" / "firmware" / "src" / "deleted.c"), "lab/notes.md", "docs/plan.md",
+                 str(TMP / "elsewhere" / "x.py"), "builder/sub/new.py"]
+        got = CX.nested_repos(str(top), files, now - 3600)
+        self.assertEqual(got, [{"dir": "builder", "base": b}, {"dir": "device/firmware", "base": k}])
+        with mock.patch.object(CX, "REPOS_MAX", 1):
+            self.assertEqual(CX.nested_repos(str(top), files, now - 3600),
+                             [{"dir": "builder", "base": b}, {"dir": "device/firmware", "base": None}])
+        self.assertEqual(CX.nested_repos(str(top), [], now), [])
+        outer = TMP / "outer-ws"                       # the project's folder inside a repository of documents
+        git_repo(outer, now - 7200, {".gitignore": "app/builder/\n", "app/docs/a.md": "a\n"})
+        vb = git_repo(outer / "app" / "builder", now - 7200, {"m.py": "m\n"})
+        self.assertEqual(CX.nested_repos(str(outer / "app"), ["docs/a.md", "builder/m.py"], now - 3600),
+                         [{"dir": "builder", "base": vb}])
+        facts = {"t0": now - 3600, "asks": ["Поправь слайсер"], "report": "Готово.", "files": ["builder/slice.py"]}
+        text = CX.instructions(facts, None, "en", repos=got)
+        for part in ("This folder itself is not in git; the parts of it named below are.", "wrote these files: builder/slice.py",
+                     "- builder/ — since commit %s: `git -C builder diff %s -- .` and `git -C builder status --short -- .`"
+                     % (b[:12], b), "- device/firmware/ — since commit %s: `git -C device/firmware diff %s -- .`" % (k[:12], k),
+                     "another session's"):
+            self.assertIn(part, text)
+        self.assertNotIn("read them as they are now", text)
+        both = CX.instructions(facts, "abc123", "en", repos=[{"dir": "my parts", "base": CX.EMPTY_TREE}, {"dir": "more", "base": None}])
+        self.assertIn("`git diff abc123 -- .`", both)
+        self.assertIn("- my parts/ — since its first commit: `git -C 'my parts' diff %s -- .`" % CX.EMPTY_TREE, both)
+        self.assertIn("- and these, the same way: more/", both)
+        self.assertNotIn("Parts of this folder", CX.instructions(facts, "abc123", "en"))
 
     def test_find_and_schema(self):
         d = TMP / "codex-find"

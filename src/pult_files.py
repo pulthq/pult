@@ -221,17 +221,48 @@ def temp_like(name):
     return any(fnmatch.fnmatchcase(name, pat) for pat in TEMP_NAMES)
 
 
-def turn_files(project, since, until=None):
+def turn_files(project, since, until=None, named=(), info=None):
     """The project's files made or changed from `since` (a turn's start) to `until`: ([{p: path inside the project,
-    size, mt}] newest first, at most TURN_FILES_MAX; how many there were in all). Hidden folders, dependencies and
-    caches, the owner's inbox and lock files are skipped; the walk stops after SCAN_MAX entries or SCAN_TIME s."""
+    size, mt}] newest first, at most TURN_FILES_MAX; how many there were in all). named — paths inside the project
+    the turn's own tools gave (pult_tags.turn_paths): each one changed in that time is in, wherever it is, and the walk
+    starts from their folders; it stops after SCAN_MAX entries or SCAN_TIME s, so in a big tree (one project of many
+    repositories, 2026-10-31) the rest is what may go unseen, not the turn's own files. Hidden folders, dependencies
+    and caches, the owner's inbox and lock files are skipped by the walk. info — a dict, if given, gets "cut": the
+    walk stopped early, and "seen": the entries it walked."""
     root = os.path.realpath(project)
     if not os.path.isdir(root):
         return [], 0
-    t0, seen, out = time.monotonic(), 0, []
-    stack = [root]
+    t0, seen, got = time.monotonic(), 0, {}
+
+    def take(rel, st):
+        if st.st_mtime >= since - 1 and (until is None or st.st_mtime <= until + 1):
+            got[rel] = (st.st_mtime, st.st_size)
+
+    starts = []
+    for rel in named:
+        p = os.path.realpath(os.path.join(root, rel))
+        if not p.startswith(root + os.sep):
+            continue
+        parts = p[len(root) + 1:].split(os.sep)
+        if ".git" in parts or parts[0] == INBOX:
+            continue
+        try:
+            st = os.stat(p)
+        except OSError:
+            continue
+        if os.path.isfile(p):
+            if not (parts[-1].startswith(".") or temp_like(parts[-1])):     # a hidden folder on the way is fine
+                take(os.path.relpath(p, root), st)
+            p, parts = os.path.dirname(p), parts[:-1]
+        if parts and not any(x in SKIP_DIRS for x in parts) and p not in starts:
+            starts.append(p)
+    # the walk: the named files' folders first (a stack — the last pushed goes first), then the whole project
+    stack, walked, cut = [root] + starts[::-1], set(), False
     while stack:
         d = stack.pop()
+        if d in walked:
+            continue
+        walked.add(d)
         try:
             it = os.scandir(d)
         except OSError:
@@ -240,7 +271,7 @@ def turn_files(project, since, until=None):
             for e in it:
                 seen += 1
                 if seen > SCAN_MAX or time.monotonic() - t0 > SCAN_TIME:
-                    stack = []
+                    stack, cut = [], True
                     break
                 name = e.name
                 try:
@@ -250,12 +281,12 @@ def turn_files(project, since, until=None):
                         continue
                     if not e.is_file(follow_symlinks=False) or name.startswith(".") or temp_like(name):
                         continue
-                    st = e.stat(follow_symlinks=False)
+                    take(os.path.relpath(e.path, root), e.stat(follow_symlinks=False))
                 except OSError:
                     continue
-                if st.st_mtime >= since - 1 and (until is None or st.st_mtime <= until + 1):
-                    out.append((st.st_mtime, os.path.relpath(e.path, root), st.st_size))
-    out.sort(reverse=True)
+    if info is not None:
+        info.update(cut=cut, seen=seen)
+    out = sorted(((mt, rel, size) for rel, (mt, size) in got.items()), reverse=True)
     return [{"p": rel, "size": size, "mt": round(mt, 1)} for mt, rel, size in out[:TURN_FILES_MAX]], len(out)
 
 
