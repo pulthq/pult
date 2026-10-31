@@ -572,7 +572,10 @@ function Session({ sid }) {
   const modelText = vend ? llmName({ vendor: vend.name, model: chosen || (info.stats && info.stats.model) || vend.models[0] })
     : chosen ? chosen.charAt(0).toUpperCase() + chosen.slice(1) + (info.stats && info.stats.model && !modelName(info.stats.model).toLowerCase().startsWith(chosen) ? " ▸" : "")
     : info.stats && info.stats.model ? modelName(info.stats.model) : "";
-  const effortNow = vend ? "" : (info.choice && info.choice.effort) || (info.stats && info.stats.effort) || "";
+  // Codex's task (M4.1): the level picked for it, else its model's own default; another vendor's — none of its own
+  const cxModel = vend && vend.own ? chosen || vend.models[0] : null;
+  const effortNow = vend ? (vend.own ? (info.choice && info.choice.effort) || (vend.effort && vend.effort[cxModel]) || "" : "")
+    : (info.choice && info.choice.effort) || (info.stats && info.stats.effort) || "";
   const canPick = info.switch || info.switch_effort;
   // a tap on the status explains it in plain words, in a sheet of our own
   const explain = () => { setNote([lv.tab ? t("ex.tab") : lv.open ? (copyWhy(lv) ? copyWhy(lv) + " " + t("ex.copy.then") : t("ex.copy")) : t("ex.session"),

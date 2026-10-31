@@ -8,7 +8,7 @@ import { plural, q, t } from "../i18n.js";
 import { html, useEffect, useRef, useState } from "../vendor/htm-preact-3.1.1.js";
 import { BoardRow, Mine, RunRow, moveKey, moves } from "./home.js";
 import { Req, TagPick, useRcpt } from "../ui/cards.js";
-import { ChoicePick, Loading, SwipeRow, agoShort, avatar, choiceText, codexModel, dot, dotted, dur, ic, keyTap, plainField, sendKey, tagChips, tagJob, tagSt, useNow } from "../ui/kit.js";
+import { ChoicePick, CodexCols, Loading, SwipeRow, agoShort, avatar, choiceText, codexModel, dot, dotted, dur, effortName, ic, keyTap, plainField, sendKey, tagChips, tagJob, tagSt, useNow } from "../ui/kit.js";
 import { BgSheet } from "../ui/load.js";
 import { Attach, Thumbs, useAttach } from "../ui/pics.js";
 
@@ -156,6 +156,13 @@ function VendorPick({ vendors, cur, proj, onPick, onDefault, onClose }) {
     <div class="dim small">${t("who.about")}</div>
     <div class="dim small who-codex">${t("who.codex")}</div></div>`;
 }
+// a Codex task's model and level of effort, in words: "GPT-5.6-Sol · Много"; nothing picked — its default level
+const codexText = (v, model, effort) => {
+  const m = model || v.models[0];
+  if (!m) return t("who.codex.model");
+  const e = effort || (v.effort && v.effort[m]);
+  return codexModel(m) + (e ? " · " + effortName(e) : "");
+};
 function VendorModels({ v, cur, onPick, onClose }) {
   return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick tall fixed">
     <div class="q-t pick-h">${t("vend.model.pick", { name: v.name })}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
@@ -181,7 +188,8 @@ function NewTask({ pkey }) {
   if (!d) return html`<${Loading} err=${err}/>`;
   const cur = d.projects.find((x) => x.pkey === p);
   // a computer before stage M, step 2 sends none: Claude only. Codex (M4.1) — its own agent, no key: right after Claude
-  const cx = d.codex && { id: "codex", name: "Codex", own: true, key: d.codex.ok, why: d.codex.why, models: d.codex.models || [] };
+  const cx = d.codex && { id: "codex", name: "Codex", own: true, key: d.codex.ok, why: d.codex.why, models: d.codex.models || [],
+    efforts: d.codex.efforts || {}, effort: d.codex.effort || {} };
   const vendors = (cx ? [cx] : []).concat(d.vendors || []);
   const byId = (id) => vendors.find((v) => v.id === id);
   // with nothing picked: what the computer says this project's new task goes to — its own default, else the common one
@@ -230,12 +238,18 @@ function NewTask({ pkey }) {
       <span>${vend ? vend.name : "Claude"}<i class="dim vf-sub"> · ${vend ? t(vend.own ? "who.codex.short" : "who.inside.short") : t("who.claude")}</i></span><span class="dim">${ic("down", 18)}</span></button>`}
     <label class="lbl">${vend ? t("vend.model.pick", { name: vend.name }) : t("model.pick")}</label>
     <button class="field" onClick=${() => setSheet({ k: "model" })}>
-      <span>${vend ? model || vend.models[0] || t("who.codex.model") : choiceText(model, effort, d.choice)}</span><span class="dim">${ic("down", 18)}</span></button>
+      <span>${vend && vend.own ? codexText(vend, model, effort) : vend ? model || vend.models[0] : choiceText(model, effort, d.choice)}</span><span class="dim">${ic("down", 18)}</span></button>
     <button class="btn wide" disabled=${busy || !p || (!text.trim() && !a.files.length)} onClick=${send}>${t("new.start")}</button>
     <div class="dim small">${vend ? (vend.own ? t("new.about.codex") : t("new.about.vendor", { name: vend.name })) : t("new.about")}</div>
     ${sheet && sheet.k === "who" && html`<${VendorPick} vendors=${vendors} cur=${whoNow} proj=${cur} onPick=${pickWho} onDefault=${makeDefault} onClose=${close}/>`}
     ${sheet && sheet.k === "project" && html`<${ProjectPick} projects=${sheet.list} cur=${p} create=${d.create} onClose=${close} onPick=${(k) => { if (k !== p) { setWho(""); setModel(""); } setP(k); haptic("success"); close(); }}/>`}
-    ${sheet && sheet.k === "model" && (vend ? html`<${VendorModels} v=${vend} cur=${model} onClose=${close} onPick=${(m) => { setModel(m); haptic("success"); close(); }}/>`
+    ${sheet && sheet.k === "model" && vend && vend.own && html`<div class="backdrop" onClick=${close}></div><div class="card pick tall fixed">
+      <div class="q-t pick-h">${t("vend.model.pick", { name: vend.name })}<button class="x" aria-label=${t("close")} onClick=${close}>${ic("x", 18)}</button></div>
+      <${CodexCols} v=${vend} model=${model} effort=${effort} onPick=${(c) => {
+        if ("model" in c) { setModel(c.model); if (effort && !((vend.efforts || {})[c.model] || []).includes(effort)) setEffort(""); }
+        if ("effort" in c) setEffort(c.effort);
+        haptic("success"); }}/></div>`}
+    ${sheet && sheet.k === "model" && !(vend && vend.own) && (vend ? html`<${VendorModels} v=${vend} cur=${model} onClose=${close} onPick=${(m) => { setModel(m); haptic("success"); close(); }}/>`
       : html`<${ChoicePick} model=${model} effort=${effort} def=${d.choice} onClose=${close}
       onPick=${(c) => { if ("model" in c) setModel(c.model); if ("effort" in c) setEffort(c.effort); haptic("success"); }}/>`)}
   </div>`;

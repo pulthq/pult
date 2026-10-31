@@ -605,7 +605,7 @@ class CodexDriven(Driven):
         tp = {"threadId": self.thread, "input": [{"type": "text", "text": text}]}
         if choice.get("model"):
             tp["model"] = choice["model"]
-        if choice.get("effort") in CX.EFFORTS:
+        if choice.get("effort") and CX.EFFORT_RE.fullmatch(choice["effort"]):     # checked against its model (api_model)
             tp["effort"] = choice["effort"]
         r = await self.server.request("turn/start", tp)
         self.turn_id = (r.get("turn") or {}).get("id")

@@ -1114,6 +1114,7 @@ S = {
                            "ru": "Эта сессия идёт на {name}, а проект больше не отдаётся другим производителям — разреши снова на экране проекта, чтобы продолжить, или начни задачу заново с Claude."},
     "vendor.err.codex": {"en": "Codex isn't here, or Pult can't use its version — the second opinion's line in Settings says which.",
                          "ru": "Codex нет на компьютере, или Пульт не может работать с его версией — почему, скажет строка второго мнения в «Настройках»."},
+    "vendor.err.cx_effort": {"en": "{m} has no such level of effort: {e}.", "ru": "У {m} нет такого уровня раздумий: {e}."},
     "vendor.err.effort": {"en": "How hard it thinks is Claude's setting; another vendor's session keeps its vendor's own.",
                           "ru": "Раздумья — настройка Claude; у сессии другого производителя — его собственные."},
     "vendor.err.models": {"en": "Models: their names separated by commas, up to 8.",

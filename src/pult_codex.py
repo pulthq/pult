@@ -599,7 +599,7 @@ def kind_of(err):
 
 SANDBOX = "workspace-write"     # it writes in the project's folder only
 APPROVAL = "on-request"         # it asks only to leave that sandbox — the network, a write outside (the owner, Q121)
-EFFORTS = ("low", "medium", "high", "xhigh")
+EFFORT_RE = re.compile(r"[a-z]{2,16}")    # a model's own effort (model/list): low … xhigh, max, ultra on 0.148
 # Codex reads AGENTS.md, never CLAUDE.md (tests/probe_codex_doer.py): the project's rules reach it this way
 RULES = ("This project's rules for coding agents are in CLAUDE.md at the root of this folder, and in CLAUDE.md files in "
          "the folders under it: read the root one before you start, the others when you work in their folders, and "
@@ -626,7 +626,9 @@ def fail_of(err):
 
 async def models(path, env=None, client="0"):
     """Codex's models for "Who does it" — its own list (model/list), the default first, hidden ones left out:
-    [model id]; [] when it can't say. One app-server for a moment (~2–4 s): Pult asks once per Codex version."""
+    [{"model", "efforts": its own levels, "effort": its default level}]; [] when it can't say. One app-server for a
+    moment (~2–4 s): Pult asks once per Codex version. On 0.148 each model has its levels — low … max, some ultra too —
+    and its default (Sol's is low, Terra's and Luna's medium: 2026-10-31)."""
     s = await AppServer.start(path, tempfile.gettempdir(), env)
     try:
         await s.request("initialize", {"clientInfo": {"name": "pult", "title": "Pult", "version": client}})
@@ -634,7 +636,13 @@ async def models(path, env=None, client="0"):
         got = await s.request("model/list", {})
         rows = [m for m in got.get("data") or [] if isinstance(m, dict) and not m.get("hidden") and m.get("model")]
         rows.sort(key=lambda m: not m.get("isDefault"))
-        return [m["model"] for m in rows]
+        out = []
+        for m in rows:
+            levels = [e.get("reasoningEffort") for e in m.get("supportedReasoningEfforts") or [] if isinstance(e, dict)]
+            levels = [e for e in levels if isinstance(e, str) and EFFORT_RE.fullmatch(e)]
+            dflt = m.get("defaultReasoningEffort")
+            out.append({"model": m["model"], "efforts": levels, "effort": dflt if dflt in levels else None})
+        return out
     except CodexError:
         return []
     finally:

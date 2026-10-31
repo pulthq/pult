@@ -389,15 +389,17 @@ async def main():
     elif not (await p.codex_state())["ok"]:
         log("Codex: есть, но Пульт не может работать с его версией — шаг пропущен")
     else:
+        levels, dflt = p.codex_efforts(None)
+        level = "medium" if "medium" in levels else None          # its own level of effort, picked as from the app
         sid12 = (await p.api_new(pkey5, "Create the file codex.txt containing the word hi. Reply in one short sentence.",
-                                 vendor="codex"))["sid"]
+                                 vendor="codex", effort=level))["sid"]
         await until(lambda: (p.attn.rec.get(sid12) or {}).get("ts"), what="итог задачи Codex")
         made = os.path.join(p.project_path(pkey5), "codex.txt")
         items = (await p.api_session(sid12))["page"]["items"]
         llm12 = (await p.row_stats(sid12))[1]
-        log("Codex %s: итог «%s» · файл %s · шаги %s · строка %s" % (
+        log("Codex %s: итог «%s» · файл %s · шаги %s · строка %s · раздумья %s (по умолчанию %s, уровни %s)" % (
             (await p.codex_state())["v"], p.attn.rec[sid12]["line"], os.path.isfile(made),
-            [i.get("step") for i in items if i["k"] == "tool"][:4], llm12))
+            [i.get("step") for i in items if i["k"] == "tool"][:4], llm12, level, dflt, "/".join(levels)))
         assert os.path.isfile(made) and open(made).read().strip() == "hi", "Codex didn't write the file"
         assert [i["k"] for i in items].count("user") == 1 and any(i["k"] == "text" for i in items), "the screen lacks the chat"
         assert llm12 and llm12["vendor"] == "Codex", "the row doesn't say Codex"

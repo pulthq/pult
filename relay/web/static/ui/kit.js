@@ -190,7 +190,7 @@ const choiceText = (model, effort, def) => {
 };
 const effortName = (e) => (!e ? t("pick.default") : EFFORT_N[e] ? t("effort." + e) : e);
 // effort as VS Code draws it by its model name: five dots, as many lit as the level
-const EFFORT_N = { low: 1, medium: 2, high: 3, xhigh: 4, max: 5 };
+const EFFORT_N = { low: 1, medium: 2, high: 3, xhigh: 4, max: 5, ultra: 5 };     // ultra — Codex's own, past max
 function Dots({ e }) {
   const n = EFFORT_N[e] || 0;
   return html`<svg class="dots" width="29" height="10" viewBox="0 0 29 10" role="img" aria-label=${effortName(e)}>
@@ -222,6 +222,11 @@ function ModelPick({ sid, choice, now, driven, tab, dflt, canModel, canEffort, v
     t(dflt && (dflt.model || dflt.effort) ? "pick.default.pult" : "pick.default.note"),
     tab && canEffort ? t("effort.tab") : ""];
   const why = tab && !canModel ? t("model.reload") : tab && !canEffort ? t("effort.reload") : "";
+  // Codex's task (stage M, M4.1): its own models and each one's own levels of effort, two columns as Claude's; they go
+  // with its next turn (the owner, 2026-10-31: "selectable effort, like Claude's")
+  if (vendor && vendor.own) return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick"><div class="q-t pick-h">${t("vend.model.pick", { name: vendor.name })}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
+    <${CodexCols} v=${vendor} model=${cur.model} effort=${cur.effort} busy=${busy} onPick=${pick}/>
+    <div class="dim small">${t("cx.model.next")}</div></div>`;
   // another vendor's session (stage M, step 2): only its own models, the main one when nothing is picked; no effort
   if (vendor) return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick"><div class="q-t pick-h">${t("vend.model.pick", { name: vendor.name })}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
     <div class="pick-col">${vendor.models.map((m) => html`<button key=${m} class=${"opt" + (m === (cur.model || vendor.models[0]) ? " on" : "")} disabled=${busy} onClick=${() => pick({ model: m })}>${m}</button>`)}</div>
@@ -429,6 +434,19 @@ const quiet = (v, bad) => (v >= bad ? "bad" : v >= bad - 10 ? "warn" : "dim");
 const GLYPH = { pace: "●", under: "▼", over: "▲" };
 
 // the "Default" line says in grey what it stands for now (def); Settings names it "As in Claude Code" (top)
+// Codex's model and level of effort, side by side: its own lists (model/list); "Default" says what it is for the model
+function CodexCols({ v, model, effort, busy, onPick }) {
+  const m = model || v.models[0];
+  const levels = (v.efforts && v.efforts[m]) || [];
+  const dflt = v.effort && v.effort[m];
+  const col = (title, items, on, key, cur) => html`<div class="pick-col"><div class="pick-t">${title}</div>
+    ${items.map(([x, label]) => html`<button key=${x} class=${"opt" + (x === on ? " on" : "")} disabled=${busy} onClick=${() => onPick({ [key]: x })}>${label}${!x && cur ? html`<span class="dim">${cur}</span>` : ""}</button>`)}</div>`;
+  return html`<div class="pick-cols">
+    ${col(t("model"), v.models.map((x) => [x, codexModel(x)]), m, "model")}
+    ${col(t("effort"), [["", t("pick.default")]].concat(levels.map((e) => [e, effortName(e)])), effort || "", "effort", dflt && effortName(dflt))}
+  </div>`;
+}
+
 function ChoicePick({ model, effort, def, top, note, onPick, onClose }) {
   const col = (title, items, on, key, cur) => html`<div class="pick-col"><div class="pick-t">${title}</div>
     ${items.map(([v, label]) => html`<button key=${v} class=${"opt" + (v === on ? " on" : "")} onClick=${() => onPick({ [key]: v })}>${label}${!v && cur ? html`<span class="dim">${cur}</span>` : ""}</button>`)}</div>`;
@@ -455,4 +473,4 @@ function Loading({ err }) {
   return html`<div class="empty">${err || (c.state === "nomac" ? t("loading.nomac") : c.state === "denied" ? "" : t("loading"))}</div>`;
 }
 
-export { About, ChoicePick, Dots, GEAR, GLYPH, Loading, MODES, ModePick, ModelPick, Sheet, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, bytes, choiceText, codexModel, copyRich, dayLabel, dot, dotted, dur, durShort, effortName, hhmm, home, hue, ic, keyTap, kilo, level, llmName, modelName, nb, num, pauseChip, pct, plainField, queueChip, quiet, resetText, sendKey, TAG_H, tagChips, tagJob, tagSt, toDate, useNow, workChip };
+export { About, ChoicePick, CodexCols, Dots, GEAR, GLYPH, Loading, MODES, ModePick, ModelPick, Sheet, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, bytes, choiceText, codexModel, copyRich, dayLabel, dot, dotted, dur, durShort, effortName, hhmm, home, hue, ic, keyTap, kilo, level, llmName, modelName, nb, num, pauseChip, pct, plainField, queueChip, quiet, resetText, sendKey, TAG_H, tagChips, tagJob, tagSt, toDate, useNow, workChip };

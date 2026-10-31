@@ -227,9 +227,14 @@ def serve(c):
             doer.stop.set()
             say({"id": i, "result": {}})
         elif meth == "model/list":
-            say({"id": i, "result": {"data": [{"model": "gpt-5.6-mini", "isDefault": False, "hidden": False},
-                                              {"model": "gpt-5.6-sol", "isDefault": True, "hidden": False},
-                                              {"model": "codex-internal", "isDefault": False, "hidden": True}]}})
+            def levels(*names):
+                return [{"reasoningEffort": n, "description": n} for n in names]
+            say({"id": i, "result": {"data": [
+                {"model": "gpt-5.6-mini", "isDefault": False, "hidden": False, "defaultReasoningEffort": "medium",
+                 "supportedReasoningEfforts": levels("low", "medium", "high")},
+                {"model": "gpt-5.6-sol", "isDefault": True, "hidden": False, "defaultReasoningEffort": "low",
+                 "supportedReasoningEfforts": levels("low", "medium", "high", "xhigh", "max", "ultra")},
+                {"model": "codex-internal", "isDefault": False, "hidden": True}]}})
         elif meth == "initialize":
             say({"id": i, "result": {"userAgent": "fake_codex/0"}})
         elif meth == "account/read":

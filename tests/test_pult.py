@@ -3261,12 +3261,18 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             conf.write_text(json.dumps(c))
         got = (await self.p.api_projects())["codex"]
         self.assertEqual((got["ok"], got["models"]), (True, ["gpt-5.6-sol", "gpt-5.6-mini"]))     # its default first
+        # each model's own levels of effort and its default (the owner, 2026-10-31: "selectable effort, like Claude's")
+        self.assertEqual((got["efforts"]["gpt-5.6-sol"][-1], got["effort"]), ("ultra", {"gpt-5.6-sol": "low", "gpt-5.6-mini": "medium"}))
         with self.assertRaises(ValueError) as e:                    # the project doesn't go to other vendors yet
             await self.p.api_new(PKEY, "Создай hello.txt", vendor="codex")
         self.assertIn("Codex", str(e.exception))
         await self.p.api_vendors_ok(PKEY, True)
-        sid = (await self.p.api_new(PKEY, "Создай hello.txt", vendor="codex"))["sid"]
+        with self.assertRaises(ValueError):                         # a level its model doesn't have
+            await self.p.api_new(PKEY, "Создай hello.txt", vendor="codex", model="gpt-5.6-mini", effort="ultra")
+        sid = (await self.p.api_new(PKEY, "Создай hello.txt", vendor="codex", effort="high"))["sid"]
         self.assertEqual(self.store.vendor_of(sid), "codex")
+        await until(lambda: any(m.get("method") == "turn/start" for m in sent()))
+        self.assertEqual(next(m for m in sent() if m.get("method") == "turn/start")["params"]["effort"], "high")
         # it asks to write the file: the same card as Claude's permission, said as Codex's; "always" is "in this task"
         await until(lambda: any(lv.pending for lv in self.p.live.values()))
         req = next(r for lv in self.p.live.values() for r in lv.pending.values())
@@ -3290,12 +3296,22 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((s["vendor"]["id"], s["vendor"]["models"][0]), ("codex", "gpt-5.6-sol"))
         self.assertFalse(s["second"]["can"])                 # Codex doesn't review its own work (Claude's — step 4.2)
         self.assertEqual(self.p.llm_view(sid, None), {"vendor": "Codex", "model": "gpt-5.6-sol"})
+        self.assertEqual((s["vendor"]["efforts"]["gpt-5.6-sol"][-1], s["vendor"]["effort"]["gpt-5.6-mini"]), ("ultra", "medium"))
+        # its model and effort from the session's screen: its own lists, with the next turn; a level the new model
+        # hasn't goes back to its default; one it never had is refused
+        self.assertEqual((await self.p.api_model(sid, effort="ultra"))["choice"], {"effort": "ultra"})
+        self.assertEqual((await self.p.api_model(sid, model="gpt-5.6-mini"))["choice"], {"model": "gpt-5.6-mini"})
+        with self.assertRaises(ValueError):
+            await self.p.api_model(sid, effort="ultra")
+        self.assertEqual((await self.p.api_model(sid, effort="medium"))["choice"], {"model": "gpt-5.6-mini", "effort": "medium"})
         # a message mid-turn goes into the turn that runs (turn/steer); Codex's words say it took it
         doer(wait=1.5)
         self.assertEqual((await self.p.api_send(sid, "Ещё строку"))["how"], "session")
         await until(lambda: self.p.live[sid].turn is not None and self.p.driven[sid].turn_id)
         self.assertEqual((await self.p.api_send(sid, "и bye в конце"))["how"], "session")
         await until(lambda: any(m.get("method") == "turn/steer" for m in sent()))
+        last = [m for m in sent() if m.get("method") == "turn/start"][-1]["params"]
+        self.assertEqual((last["model"], last["effort"]), ("gpt-5.6-mini", "medium"))
         await until(lambda: "Учёл: и bye в конце" in str(self.p.attn.rec[sid].get("text") or self.p.attn.rec[sid].get("line")))
         # Stop interrupts a turn: it ends as Claude's interrupted one does — no outcome of its own
         doer(wait=30)
@@ -6667,6 +6683,8 @@ class CodexTest(unittest.TestCase):
                 row("event_msg", "user_message", 6, message="и bye в конце"),
                 row("response_item", "custom_tool_call", 7, call_id="c2", name="exec",
                     input='const patch = "*** Begin Patch\\n*** Add File: %s/hello.txt\\n+hi\\n*** End Patch";\ntext(await tools.apply_patch(patch));' % cwd),
+                row("response_item", "custom_tool_call", 8, call_id="c3", name="exec",
+                    input='const patch = "*** Begin Patch\\n*** Update File: notes/plan.md\\n+x\\n*** End Patch";\ntext(await tools.apply_patch(patch));'),
                 row("event_msg", "task_complete", 8, turn_id="t1"),
                 row("event_msg", "task_started", 9, turn_id="t2"), row("event_msg", "user_message", 10, message="Долгая"),
                 row("event_msg", "turn_aborted", 11, turn_id="t2", reason="interrupted"), "{broken"]
@@ -6677,7 +6695,8 @@ class CodexTest(unittest.TestCase):
         got = PW.codex_page(str(f), cwd=str(d))
         self.assertEqual([(i["k"], i.get("step") or i.get("text"), i.get("mid", False)) for i in got["items"]],
                          [("user", "Создай hello.txt", False), ("text", "Делаю.", False), ("tool", "⌘ ls -la", False),
-                          ("user", "и bye в конце", True), ("tool", "✏️ hello.txt", False), ("user", "Долгая", False),
+                          ("user", "и bye в конце", True), ("tool", "✏️ hello.txt", False),
+                          ("tool", "✏️ " + os.path.join("notes", "plan.md"), False), ("user", "Долгая", False),
                           ("note", I.T("cx.stopped"), False)])
         self.assertEqual(got["items"][2]["out"], "total 0")
         self.assertEqual(PW.codex_page(str(d / "none.jsonl")), {"items": [], "before": None, "end": None})
