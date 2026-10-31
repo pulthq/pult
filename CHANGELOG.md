@@ -4,6 +4,23 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.34 — 2026-10-31
+
+- **One clock for a whole task.** "Working 47 min" now counts all of Claude's work on the task — every turn of the
+  session, not the last one from zero — and stops while the task waits for you: a question, a permission, a plan, a
+  finished turn. On a card of **Your move** and at the top of the session the same clock stands, grey with a pause
+  sign; your answer starts it again from there. A background task left running after a turn isn't counted, the turn its
+  end starts is. Telegram's "done in N" and a project's "of work today" leave the wait out too; a task begun before the
+  update gets its earlier turns from its transcript, once.
+- **The docs describe the universal remote Pult has become.** The README, the guide and ARCHITECTURE now start from
+  what it is: an app inside Telegram for the AI agents on your computer — Claude Code on Claude's models or, with your
+  key, on DeepSeek's, GLM's or Kimi's, and Codex for a second opinion — where one model does the task and another
+  checks it. New pictures: the opening one — a task on DeepSeek's model, Codex's second opinion on it and the findings
+  sent back, step by step in the app — Pult's three sides at a glance, the three steps, **Who does it** and Codex's
+  findings; the other screens are taken anew, with the state colours and the models' marks.
+- **Codex's findings go back to whoever did the task, by name.** The button under them says **Send to DeepSeek** when
+  DeepSeek's model did the work — **Send to Claude** otherwise.
+
 ## 0.18.33 — 2026-10-30
 
 - **Each task's state in colour.** On Home and on a project's screen, what runs is a green zone — its rows tinted, a

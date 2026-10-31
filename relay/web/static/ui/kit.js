@@ -59,6 +59,9 @@ function TimeChip({ cls, text, onClick }) {
     onClick=${onClick} onKeyDown=${onClick ? keyTap(onClick) : undefined}><span>${text}</span>${widest.map((w) => html`<span class="ghost" aria-hidden="true">${w}</span>`)}</span>`;
 }
 const workChip = (since, now) => html`<${TimeChip} cls="ok" text=${since ? t("st.work", { dur: durShort(now - since) }) : t("load.st.work")}/>`;
+// the same clock, stopped while the task waits for you (2026-10-30): grey, with the pause sign — all Claude's work on it
+// so far, without the waits; "working N" goes on from it once you answer. A computer before 0.18.34 doesn't say: none
+const pauseChip = (work) => (work >= 1 ? html`<span class="chip paused" role="img" aria-label=${t("work.total", { dur: dur(work) })}>${ic("pause", 11)}${dur(work)}</span>` : "");
 // a message waits for a place among the turns that may run at once (Driven.slot): amber, since when it waits
 const queueChip = (since, now) => html`<${TimeChip} cls="warn" text=${t("st.queue", { dur: durShort(now - (since || now)) })}/>`;
 // background tasks run, Claude rests: grey, pulsing too — something still goes on
@@ -291,6 +294,7 @@ const IC = {
   lock: '<rect x="4.5" y="10.5" width="15" height="11" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>',
   pin: '<path d="M8.5 2.5h7"/><path d="M9.5 2.5v6.3L6.5 12v2h11v-2l-3-3.2V2.5"/><path d="M12 14v7.5"/>',
   pinoff: '<path d="M8.5 2.5h7"/><path d="M9.5 2.5v6.3L6.5 12v2h11v-2l-3-3.2V2.5"/><path d="M12 14v7.5"/><path d="m4 4 16 16"/>',
+  pause: '<rect x="6.5" y="5" width="3.6" height="14" rx="1.2" fill="currentColor" stroke="none"/><rect x="13.9" y="5" width="3.6" height="14" rx="1.2" fill="currentColor" stroke="none"/>',
   eye: '<path d="M2.5 12c1.2-2.6 5-7 9.5-7s8.3 4.4 9.5 7c-1.2 2.6-5 7-9.5 7s-8.3-4.4-9.5-7z"/><circle cx="12" cy="12" r="3"/>',
   eyeoff: '<path d="m3 3 18 18"/><path d="M10.6 10.6a2 2 0 0 0 2.8 2.8"/><path d="M9.9 5.2A9.6 9.6 0 0 1 12 5c4.5 0 8.3 4.4 9.5 7-.4.9-1.2 2.1-2.4 3.3"/><path d="M6.7 6.7C4.5 8.3 3.1 10.5 2.5 12c1.2 2.6 5 7 9.5 7 1.4 0 2.7-.4 3.9-1"/>',
 };
@@ -448,4 +452,4 @@ function Loading({ err }) {
   return html`<div class="empty">${err || (c.state === "nomac" ? t("loading.nomac") : c.state === "denied" ? "" : t("loading"))}</div>`;
 }
 
-export { About, ChoicePick, Dots, GEAR, GLYPH, Loading, MODES, ModePick, ModelPick, Sheet, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, bytes, choiceText, copyRich, dayLabel, dot, dotted, dur, durShort, effortName, hhmm, home, hue, ic, keyTap, kilo, level, llmName, modelName, nb, num, pct, plainField, queueChip, quiet, resetText, sendKey, TAG_H, tagChips, tagJob, tagSt, toDate, useNow, workChip };
+export { About, ChoicePick, Dots, GEAR, GLYPH, Loading, MODES, ModePick, ModelPick, Sheet, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, bytes, choiceText, copyRich, dayLabel, dot, dotted, dur, durShort, effortName, hhmm, home, hue, ic, keyTap, kilo, level, llmName, modelName, nb, num, pauseChip, pct, plainField, queueChip, quiet, resetText, sendKey, TAG_H, tagChips, tagJob, tagSt, toDate, useNow, workChip };

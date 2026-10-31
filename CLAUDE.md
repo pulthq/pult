@@ -1,6 +1,8 @@
 # Pult — notes for coding agents
 
-Pult is a Telegram remote for the Claude Code sessions on a computer (macOS, Linux or Windows): a per-user daemon
+Pult is a universal remote in Telegram for the AI agents on a computer (macOS, Linux or Windows): every Claude Code
+session — on Claude's models or, with the owner's key, another vendor's — and Codex for a second opinion. It drives
+each agent's own program and never stands in for it. It is a per-user daemon
 (`src/pultd.py`, run by launchd, systemd --user or a logon task; the sessions it runs through the Agent SDK are in
 `src/pult_driven.py`, the handlers of the app's requests — a mixin of the daemon's class — in `src/pult_api.py`, the parts and updates — another such mixin — in `src/pult_parts.py`, its Telegram client, the outbox and the state database in `src/pult_tg.py`, what differs between systems in `src/pult_os.py`), a
 Claude Code hook (`src/pult_hook.py`), an optional VS Code tab wrapper (`src/pult_tab.py`, `src/pult-tab.sh`), the

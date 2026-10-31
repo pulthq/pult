@@ -2,33 +2,11 @@
 
 [README](../README.md) · [Install](install.md) · **Using it** · [Troubleshooting](troubleshooting.md) · [Русский](usage.ru.md)
 
-## In Telegram
+Pult is an app inside Telegram for the AI agents on your computer: the app is the main screen, and the chat calls you
+when you're needed. Every Claude Code session shows there — VS Code tabs, terminals, the tasks you start from the
+phone — on Claude's models or another vendor's, and another model can check what one did.
 
-Every project gets a topic in your group; its sessions' turns, results, questions and permission requests go there.
-
-| | |
-|---|---|
-| reply to a session's message | continue that session |
-| text in a topic | the topic's current session (🎯 in the pinned card); none — the only open one, else Pult asks once |
-| `/new text`, or `/new` then the text | a new session in this project |
-| files, photos, an album | land in the project's `inbox/<date>/` under their own names; files without words wait for your next message |
-| a voice message | becomes text (with a free Groq key, `pult stt`) |
-| `/desk` `/phone` `/auto` `/mode` | where you are: silent at the computer, always sound, or sound after 2 minutes away |
-| `/status`, `/projects`, `/sessions` | what's open now; projects; recent sessions of this project |
-| `/stop` | interrupt the topic's current session started from Telegram |
-| `/app`, 📱 Pult in a topic's pinned bar | open the web app |
-
-Signs in the feed: ⏳ works · ✅ a result · ✔️ decided or done · 🟠 waits for you · ✋ a permission · ❓ a question ·
-⚠️ a failure · ⚙️ a job. A long result shows its beginning; the rest opens with a tap.
-
-**Asking Claude for a file.** Every session learns, at its start, that it can send files of its project to the
-project's topic with `pult send FILE… [-m TEXT]`. Only files inside the project, up to 50 MB each, ten at once, and
-nothing that looks like keys or settings (`.env`, `*.pem`, `.ssh/`, `credentials*`).
-
-**Called only when it matters.** With the web app, Telegram becomes a pager: it rings when Claude waits for you and
-you're neither in the app nor at the computer. Reminders on long turns; warnings at 80 % and 95 % of a limit.
-
-## In the web app
+## In the app
 
 - **Home** is built around whose move it is: what runs right now (each task with what you asked and what Claude says
   so far), then what waits for you — permission requests to answer right there, and every session that ended, with
@@ -48,26 +26,6 @@ you're neither in the app nor at the computer. Reminders on long turns; warnings
   Claude's goes to the clipboard whole, formatted as Telegram copies a message — a paste into Telegram, notes or mail
   keeps the bold, the links, the code and the quotes — and as Claude's markdown for plain-text places; one of yours
   goes as you wrote it. A tap on a grey block of code still copies just that block.
-- **A second opinion from Codex**: under a session's outcome, **Second opinion · Codex** asks Codex — OpenAI's coding
-  agent, with the ChatGPT sign-in on your computer — to read what the task changed since it began (in git: everything
-  since the commit the folder was on, new files too; without git: the files Claude's edits wrote), together with your
-  request and Claude's report, so what was done on purpose isn't taken for a bug. It reads in a read-only sandbox and
-  asks nothing; one at a time, usually a minute or two, and **Stop** ends it. The findings come as a card at the end
-  of the session, each with its place in the project — a tap opens the file at that line; **Send to Claude** puts
-  them into the session as your message, **Reviewed** puts the card away. The first time in a project you're asked
-  whether its code may go to OpenAI; the project's screen then says so, and **Disallow** takes it back. The button
-  shows only where Codex is installed (ChatGPT for Mac carries it, or the `codex` command); a Codex version Pult
-  wasn't checked on is checked against its own protocol first.
-- **Other vendors' models**: New task has **Who does it** above the model — Claude, or DeepSeek, GLM or Kimi. Claude
-  Code itself runs the task on their model (they answer its own protocol at an address of theirs), with your key:
-  the turns, the cards, the outcome and the topic work as with Claude, and the model field lists that vendor's models.
-  Put a key in Settings → Other vendors — it is checked with one tiny request and stays on the computer — and edit
-  the list of models there: the first is the main one, the second the fast one (titles, subagents). The first pick in
-  a project asks whether its code may go to other vendors (the same permission as the second opinion's); **Make it
-  the default** sends the project's new tasks there, from Telegram too; Settings → Other vendors → **Who does new tasks
-  by default** does it for every allowed project at once (a project's own choice comes first). A session keeps its vendor when it goes on or
-  is copied, never starts without the key and doesn't show in VS Code's list. Anthropic doesn't support this, and
-  Claude Code's prompts are written for Claude: for the cheaper tasks, not the hard ones.
 - **A session** shows the whole conversation, live, with the model, the effort and the context gauge by the message
   field. Pick the model (Fable, Opus, Sonnet, Haiku) and how hard Claude thinks for that session; a running one
   switches at once. Settings → Model and effort sets what sessions from the app and Telegram start with; VS Code tabs
@@ -105,6 +63,65 @@ you're neither in the app nor at the computer. Reminders on long turns; warnings
   ([once: `install.sh --auto`](../deploy/relay/README.md#updates)). A Claude Code version VS Code has downloaded is
   checked on your computer before the tabs move to it; "Check new Claude Code versions" turns that off.
 
+## Who does the task, who checks it
+
+Pult drives each vendor's own program: Claude Code for Claude's models and, inside it, for DeepSeek, GLM and Kimi;
+Codex for a second opinion. So one model can do a task and another check it — from the phone.
+
+- **Other vendors' models**: New task has **Who does it** above the model — Claude, or DeepSeek, GLM or Kimi. Claude
+  Code itself runs the task on their model (they answer its own protocol at an address of theirs), with your key:
+  the turns, the cards, the outcome and the topic work as with Claude, and the model field lists that vendor's models.
+  Put a key in Settings → Other vendors — it is checked with one tiny request and stays on the computer — and edit
+  the list of models there: the first is the main one, the second the fast one (titles, subagents). The first pick in
+  a project asks whether its code may go to other vendors (the same permission as the second opinion's); **Make it
+  the default** sends the project's new tasks there, from Telegram too; Settings → Other vendors → **Who does new tasks
+  by default** does it for every allowed project at once (a project's own choice comes first). A session keeps its vendor when it goes on or
+  is copied, never starts without the key and doesn't show in VS Code's list. Anthropic doesn't support this, and
+  Claude Code's prompts are written for Claude: for the cheaper tasks, not the hard ones.
+- **Which model did what**: every card names its model — in Running now at the right of its top line ("Opus 5.5",
+  "DeepSeek · v4-pro"), on a finished task's card at its foot across from Reviewed, on a question or a permission
+  before how long it waits, on a finished task's row at the right end of its second line; in a session, by the field.
+- **How long Claude worked**: "working 47 min" in Running now is the whole task's work — all its turns, without the
+  time it waited for you; on a card of Your move and at the top of a session the same clock stands, grey with a pause
+  sign, until you answer. A background task Claude left running isn't in it; the turn its end starts is.
+- **A second opinion from Codex**: under a session's outcome, **Second opinion · Codex** asks Codex — OpenAI's coding
+  agent, with the ChatGPT sign-in on your computer — to read what the task changed since it began (in git: everything
+  since the commit the folder was on, new files too; without git: the files Claude's edits wrote), together with your
+  request and Claude's report, so what was done on purpose isn't taken for a bug. It reads in a read-only sandbox and
+  asks nothing; one at a time, usually a minute or two, and **Stop** ends it. The findings come as a card at the end
+  of the session, each with its place in the project — a tap opens the file at that line; **Send to Claude** puts
+  them into the session as your message — the button names whoever did the task: **Send to DeepSeek** on DeepSeek's
+  model — and **Reviewed** puts the card away. The first time in a project you're asked
+  whether its code may go to OpenAI; the project's screen then says so, and **Disallow** takes it back. The button
+  shows only where Codex is installed (ChatGPT for Mac carries it, or the `codex` command); a Codex version Pult
+  wasn't checked on is checked against its own protocol first.
+
+## In Telegram
+
+Every project gets a topic in your group; its sessions' turns, results, questions and permission requests go there.
+
+| | |
+|---|---|
+| reply to a session's message | continue that session |
+| text in a topic | the topic's current session (🎯 in the pinned card); none — the only open one, else Pult asks once |
+| `/new text`, or `/new` then the text | a new session in this project |
+| files, photos, an album | land in the project's `inbox/<date>/` under their own names; files without words wait for your next message |
+| a voice message | becomes text (with a free Groq key, `pult stt`) |
+| `/desk` `/phone` `/auto` `/mode` | where you are: silent at the computer, always sound, or sound after 2 minutes away |
+| `/status`, `/projects`, `/sessions` | what's open now; projects; recent sessions of this project |
+| `/stop` | interrupt the topic's current session started from Telegram |
+| `/app`, 📱 Pult in a topic's pinned bar | open the web app |
+
+Signs in the feed: ⏳ works · ✅ a result · ✔️ decided or done · 🟠 waits for you · ✋ a permission · ❓ a question ·
+⚠️ a failure · ⚙️ a job. A long result shows its beginning; the rest opens with a tap.
+
+**Asking Claude for a file.** Every session learns, at its start, that it can send files of its project to the
+project's topic with `pult send FILE… [-m TEXT]`. Only files inside the project, up to 50 MB each, ten at once, and
+nothing that looks like keys or settings (`.env`, `*.pem`, `.ssh/`, `credentials*`).
+
+**Called only when it matters.** With the web app, Telegram becomes a pager: it rings when Claude waits for you and
+you're neither in the app nor at the computer. Reminders on long turns; warnings at 80 % and 95 % of a limit.
+
 ## In a terminal
 
 `pult help` lists them all: `status`, `setup`, `start|stop|restart`, `busy`, `hooks on|off`, `tab …`, `app`, `stt`,
@@ -133,15 +150,22 @@ code to Telegram the same way as Claude's turns.
 - **No telemetry.** Logs stay on the computer. `pult report` prints the state with tokens, IDs, folder names and
   message text removed, for a bug report. Vulnerabilities: [SECURITY.md](../SECURITY.md).
 
-## Claude Code, your plan and Anthropic
+## Your plans and the vendors
 
-Pult has no login and no model of its own. It drives the Claude Code already installed and signed in on your
-computer, with your account and your plan's limits, the same as you would in a terminal. Anthropic's
-[Agent SDK documentation](https://code.claude.com/docs/en/agent-sdk/overview) says: *"Unless previously approved,
-Anthropic does not allow third party developers to offer claude.ai login or rate limits for their products,
-including agents built on the Claude Agent SDK."* Pult doesn't offer a login: it runs your own Claude Code for
-you. Still, read the terms of your plan and decide for yourself. Claude Code can also be signed in with an
-Anthropic API key; Pult hasn't been tested that way yet.
+Pult has no login and no model of its own. It drives the agents already installed and signed in on your computer, with
+your accounts and your plans' limits, the same as you would by hand.
 
-Pult is an independent open-source project, not affiliated with or endorsed by Anthropic. Claude and Claude Code
-are trademarks of Anthropic.
+- **Claude Code** — your Claude account and plan, the same as in a terminal. Anthropic's
+  [Agent SDK documentation](https://code.claude.com/docs/en/agent-sdk/overview) says: *"Unless previously approved,
+  Anthropic does not allow third party developers to offer claude.ai login or rate limits for their products,
+  including agents built on the Claude Agent SDK."* Pult doesn't offer a login: it runs your own Claude Code for
+  you. Still, read the terms of your plan and decide for yourself. Claude Code can also be signed in with an
+  Anthropic API key; Pult hasn't been tested that way yet.
+- **Codex** — your ChatGPT sign-in, in Codex's own program; a review takes a share of your plan's Codex windows (its card
+  says how much of the 5-hour one is taken).
+- **DeepSeek, GLM, Kimi** — your key with each, paid to them at their prices. Claude Code's prompts are written for
+  Claude, and Anthropic doesn't support other models inside it.
+
+Pult is an independent open-source project, not affiliated with or endorsed by Anthropic, OpenAI or any other vendor
+it works with. Claude and Claude Code are trademarks of Anthropic, Codex and ChatGPT of OpenAI; other names belong to
+their owners.

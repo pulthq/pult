@@ -150,6 +150,7 @@ async def main():
     sid4 = "aaaaaaaa-0000-4000-8000-000000000004"
     mark = len(calls)
     done = lambda after: [t for t in texts(after) if t.startswith("✅")]
+    begin = time.time()
     await p.drive(sid4, str(PROJ), "This is a test of background commands. Your first action must be a call to the Bash "
                   "tool with command `sleep 8; echo bg-done` and the parameter run_in_background: true. After the tool "
                   "call returns, do not wait or check on it: reply with one word, STARTED. Later, when you are notified "
@@ -158,7 +159,7 @@ async def main():
     if buttons("p:", mark):                     # sleep may be allowed in the owner's settings — then there is no button
         await p.on_callback({"id": "c4", "from": {"id": OWNER}, "data": "p:%s:y" % buttons("p:", mark)[0].split(":")[1]})
     await until(lambda: done(mark), what="итог с фоном")
-    run = p.live[sid4].run                       # the owner's prompt set the work going: "working N" counts from it
+    work1 = p.work_total(sid4)                   # the task's clock after its first turn (2026-10-30)
     log("итог с фоном:", done(mark)[0].replace("\n", " | "))
     assert "⚙️ Still running in the background" in done(mark)[0], "no “in the background” line"
     # the load view finds that command among the computer's processes, under this session's claude (0.9.16)
@@ -174,15 +175,19 @@ async def main():
     note = [t for t in texts(mark) if "Background task" in t and not t.startswith("✅")]
     log("ход по фону:", note[-1].replace("\n", " | ") if note else "НЕТ", "· итог:", done(mark)[1].replace("\n", " | "))
     assert note and "task-notification" not in "".join(texts(mark)), "the background-task turn is shown wrong"
-    log("начало захода:", run, "· после хода по фону:", p.live[sid4].run)
-    assert run and p.live[sid4].run == run, "Claude's own turn restarted the owner's run"
+    # one clock for the task: Claude's own turn goes on from the first one's work, without the background sleep between
+    await until(lambda: p.live[sid4].turn is None, what="ход по фону закрыт")
+    work2, wall = p.work_total(sid4), time.time() - begin
+    log("часы задачи: после первого хода %.1f с · после хода по фону %.1f с · с запроса прошло %.1f с" % (work1, work2, wall))
+    assert work1 < work2 < wall - 5, "the task's clock: Claude's own turn restarted it, or the background sleep is in it"
     mark2 = len(calls)
     await p.continue_session(sid4, "Reply with one word: PONG", None, None)
     await until(lambda: done(mark2), what="итог следующего запроса")
     await until(lambda: not p.driven[sid4].busy, what="сессия свободна")
     log("следующий запрос:", done(mark2)[0].replace("\n", " | "), "· bg процесса:", p.driven[sid4].bg)
     assert "PONG" in done(mark2)[0].upper(), "the result of another turn"
-    assert p.live[sid4].run > run, "the owner's next prompt didn't start a new run"
+    log("часы задачи после следующего запроса: %.1f с" % p.work_total(sid4))
+    assert p.work_total(sid4) > work2, "the owner's next prompt started the task's clock from zero"
     # whose move (stage V): a real Stop leaves an outcome; nothing runs after PONG — the owner's move, with the
     # result's first sentence as its line; opening the session doesn't put it away, "Got it" does (2026-10-30)
     ov = await p.api_overview()
@@ -222,7 +227,7 @@ async def main():
                             "word: DONE. If a new message from the user comes in meanwhile, follow it instead."))["sid"]
     await until(lambda: p.driven.get(sid6) and p.driven[sid6].asking and p.live.get(sid6) and p.live[sid6].turn,
                 what="долгий ход")
-    turn6, run6 = p.live[sid6].turn, p.live[sid6].run
+    turn6 = p.live[sid6].turn
     await asyncio.sleep(8)
     r = await p.api_send(sid6, "Stop the test now: make no more tool calls and reply with one word: HALTED.")
     await until(lambda: (p.attn.rec.get(sid6) or {}).get("ts"), what="итог долгого хода")
@@ -235,10 +240,10 @@ async def main():
     assert r.get("how") == "session" and 0 < len(bash) < 5, "the message waited for the turn's end"
     assert len(mid) == 1 and "HALTED" in mid[0]["text"], "the app doesn't show the message written mid-turn"
     # the absorbed message has a UserPromptSubmit of its own, with the turn's prompt_id: the turn goes on, and "working
-    # N" counts from the first prompt (2026-10-24: "working 28 s" 19 min into a turn)
+    # N" counts from the first prompt (2026-10-24: "working 28 s" 19 min into a turn) — the task's clock is that turn
     log("посреди хода: тот же ход —", p.live[sid6].turn in (None, turn6), "· закрыт:", turn6.done and turn6.done[0],
-        "· начало захода то же:", p.live[sid6].run == run6)
-    assert turn6.done and turn6.done[0] == "✔️" and p.live[sid6].run == run6, "the mid-turn message started a turn"
+        "· часы задачи %.1f с, ход %.1f с" % (p.work_total(sid6), turn6.work()))
+    assert turn6.done and turn6.done[0] == "✔️" and abs(p.work_total(sid6) - turn6.work()) < 2, "the mid-turn message started a turn"
     # its ticks (Q56): sent → read by its own UserPromptSubmit, at the step Claude read it
     out6 = [o for o in p.outbox.get(sid6) or [] if o["id"] == r.get("out")]
     log("галочки:", out6 and out6[0]["st"], "· прочитано через %.1f с" % (out6[0]["at"] - out6[0]["ts"]) if out6 else "")

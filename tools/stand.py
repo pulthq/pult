@@ -226,6 +226,18 @@ def ev(name, sid, cwd=SHOP, **kw):
     return dict(hook_event_name=name, session_id=sid, transcript_path=str(folder / (sid + ".jsonl")), cwd=cwd, **kw)
 
 
+async def taken(p, sid, has=lambda lv: lv.turn):
+    """The session as the daemon has it once it has taken in the hooks just run: the hook leaves without waiting for
+    the daemon (Т8), so right after it the turn may not be there yet — the tags stand once failed to start so
+    (2026-10-30, a retry passed)."""
+    for _ in range(200):
+        lv = p.live.get(sid)
+        if lv and has(lv):
+            return lv
+        await asyncio.sleep(0.05)
+    raise RuntimeError("stand: the daemon never took in the hooks of %s" % sid[:8])
+
+
 # STAND_TAGS=1 (stage T): a third project — a maker of 3D printers — with fifteen tasks in every state, each with its
 # section and topic as Claude would have given them (made two days ago; one topic a moment ago — the app draws it
 # dashed); the shop's and the desk's tasks get a section and a topic too. The tags go into the store: the daemon's own
@@ -346,21 +358,24 @@ async def stand_tags(p, store, projects):
                     fh.write(aline(x["now"], "w%d" % n, 1200) + "\n")
             await T.run_hook(evp("UserPromptSubmit", sid, prompt=x.get("ask") or x["title"]))
             await T.run_hook(evp("PostToolUse", sid, tool_name="Edit", tool_input={"file_path": path + "/" + x["edit"]}))
-            p.live[sid].turn.started -= x["ago"]
-            p.live[sid].run = p.live[sid].turn.started
-            p.live[sid].title, p.live[sid].named = x["title"], True
+            lv = await taken(p, sid)
+            lv.turn.started -= x["ago"]
+            lv.title, lv.named = x["title"], True
         elif x["st"] == "bg":
             await T.run_hook(evp("UserPromptSubmit", sid, prompt=x["title"]))
             await T.run_hook(evp("Stop", sid, last_assistant_message=x["line"],
                                  background_tasks=[{"id": "bt%d" % n, "type": "shell", "status": "running",
                                                     "description": x["bg"], "command": x["bg_cmd"]}]))
-            p.live[sid].title, p.live[sid].named = x["title"], True
+            lv = await taken(p, sid, lambda lv: lv.bg)
+            lv.title, lv.named = x["title"], True
         else:
             r = p.attn.finished(sid, pk, 600, x["line"], x["line"], waits=True, now=now - x["ago"])
             p.attn.briefed(sid, r["ts"], {"line": x["line"], "you": x["st"] == "you", "need": x.get("need") or "",
                                           "replies": x.get("replies") or []}, True)
             if x["st"] == "idle":
                 p.attn.seen(sid)                   # the owner has put it away: "Got it" (2026-10-30)
+        if x["st"] in ("work", "you", "fail"):     # how long Claude worked on it before (made up): its clock goes on
+            store.seed_work(sid, (9 + 13 * n % 50) * 60)
     # the earlier tasks: the SDK lists a project's sessions from the real ~/.claude/projects, which the stand never
     # touches — so for the printer's folder the list is made up here, the same fields
     import claude_agent_sdk
@@ -847,7 +862,8 @@ async def main():
         await tab_w.drain()
     await T.run_hook(ev("SessionStart", T.SID))
     await T.run_hook(ev("UserPromptSubmit", T.SID, prompt=D["ask_short"], prompt_id="stand-p1"))
-    p.live[T.SID].title, p.live[T.SID].named = D["title"], True
+    lv = await taken(p, T.SID)
+    lv.title, lv.named = D["title"], True
     if os.environ.get("STAND_TICKS"):     # the tab reads a message at its turn's next step: the transcript, then the hook
         wait = float(os.environ["STAND_TICKS"])
 
@@ -872,8 +888,7 @@ async def main():
     with (d / (T.SID + ".jsonl")).open("a") as f:
         f.write(aline(D["now"], "u6", 900) + "\n")
     await T.run_hook(ev("PostToolUse", T.SID, tool_name="Read", tool_input={"file_path": SHOP + "/checkout/errors.py"}))
-    p.live[T.SID].turn.started -= 380
-    p.live[T.SID].run = p.live[T.SID].turn.started        # "working N" counts from the owner's prompt
+    (await taken(p, T.SID)).turn.started -= 380
     await T.run_hook(ev("PermissionRequest", T.SID, tool_name="Bash",
                         tool_input={"command": D["cmd"], "description": D["cmd_desc"]},
                         permission_suggestions=[{"type": "addRules"}]), wait=False)
@@ -968,13 +983,9 @@ async def main():
             f.write(line("user", D["v_ask2"], ago=50) + "\n")
         await T.run_hook(ev("UserPromptSubmit", SIDV, prompt=D["v_ask2"]))
         await T.run_hook(ev("PostToolUse", SIDV, tool_name="Read", tool_input={"file_path": SHOP + "/storefront/theme.css"}))
-        for _ in range(100):                          # the hooks are the daemon's to take in, a moment later
-            if SIDV in p.live and p.live[SIDV].turn:
-                break
-            await asyncio.sleep(0.05)
-        p.live[SIDV].driven = True                    # a hook from the app's own session would say so itself
-        p.live[SIDV].turn.started -= 50
-        p.live[SIDV].run = p.live[SIDV].turn.started
+        lv = await taken(p, SIDV)                     # the hooks are the daemon's to take in, a moment later
+        lv.driven = True                              # a hook from the app's own session would say so itself
+        lv.turn.started -= 50
         # the session that waits for you ran on DeepSeek too: its card in "Your move" names the model at its foot (Q108)
         store.set_vendor(SID4, "deepseek")
         p.set_choice(SID4, "deepseek-v4-pro[1m]")
@@ -1005,9 +1016,12 @@ async def main():
     store.touch_session(SID7, T.PKEY, path=SHOP, title=D["s7_ask"])
     await T.run_hook(ev("UserPromptSubmit", SID7, prompt=D["s7_ask"]))
     await T.run_hook(ev("PostToolUse", SID7, tool_name="Edit", tool_input={"file_path": SHOP + "/admin/theme.css"}))
-    p.live[SID7].turn.started -= 400
-    p.live[SID7].run = p.live[SID7].turn.started
+    (await taken(p, SID7)).turn.started -= 400
     p.set_ctx(SID7, 200000, 32000, model="claude-opus-5-5")
+    # how long Claude worked on each task before these turns (made up, 2026-10-30): "working N" of one at work goes on
+    # from it, the card of one that waits for you and its outcome show it stopped
+    for sid, mins in ((SID7, 41), (SID4, 52), (SID5, 9), (SIDV, 12), (T.SID, 18), (SID2, 7)):
+        store.seed_work(sid, mins * 60)
     if os.environ.get("STAND_QUEUE") == "1":          # all places taken: a turn of the third session waits in the queue
         import claude_agent_sdk
 

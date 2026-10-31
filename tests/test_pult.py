@@ -1822,21 +1822,120 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await until(lambda: any("работает 10 мин" in t for t in self.sent()))
         await run_hook(ev("Stop", last_assistant_message="ок"))
 
-    async def test_run_started_before_pult(self):
+    async def test_clock_started_before_pult(self):
         # the same mid-turn, in a turn Claude started itself (its background task reported back): the turn begins at
-        # that report, the owner's work — at their own prompt; an origin marks what Claude Code wrote itself
+        # that report; the task's clock has the owner's turn before it too, by the transcript — Claude's 200 s of it,
+        # not the build's time in between (2026-10-30)
         Path(TP).parent.mkdir(parents=True, exist_ok=True)
         auto = json.loads(tline("user", "<task-notification>\n<task-id>b1</task-id>\n</task-notification>", ago=120))
         auto["origin"] = {"kind": "task-notification"}
-        Path(TP).write_text(tline("user", "Собери и проверь", ago=900) + "\n" + json.dumps(auto) + "\n")
+        Path(TP).write_text(tline("user", "Собери и проверь", ago=900) + "\n" + tline("assistant", "Запустил", ago=700) +
+                            "\n" + json.dumps(auto) + "\n")
         self.assertAlmostEqual(pultd.prompt_started(TP), time.time() - 120, delta=5)
-        self.assertAlmostEqual(pultd.prompt_started(TP, owner=True), time.time() - 900, delta=5)
         await run_hook(ev("SessionStart", source="startup"))
         await run_hook(ev("PostToolUse", tool_name="Read", tool_input={"file_path": "/Users/x/proj/a.md"}))
         await until(lambda: self.p.live[SID].turn)
         self.assertAlmostEqual(self.p.live[SID].turn.started, time.time() - 120, delta=5)
-        self.assertAlmostEqual(self.p.live_item(self.p.live[SID])["run"], time.time() - 900, delta=5)
+        await self.p.api_overview()                                 # the first look adds the turns from before
+        self.assertAlmostEqual(self.p.live_item(self.p.live[SID])["run"], time.time() - 320, delta=5)
         await run_hook(ev("Stop", last_assistant_message="ок"))
+
+    async def test_work_clock(self):
+        # one clock for the whole task (the owner, 2026-10-30: "if a task is paused on me, the time pauses"): "working N"
+        # counts Claude's work in every turn of the session — a permission or a question stops it, the answer starts it
+        # from there; the next prompt goes on from the turns before, not from zero; the result, the outcome and the
+        # project's day say how long Claude worked, without the wait
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        Path(TP).write_text(tline("user", "Большая задача") + "\n")
+        await run_hook(ev("UserPromptSubmit", prompt="Большая задача"))
+        await until(lambda: SID in self.p.live and self.p.live[SID].turn)
+        t = self.p.live[SID].turn
+        t.started -= 900                                           # 15 min ago: 10 of them work, then it asked
+        proc = await run_hook(ev("PermissionRequest", tool_name="Bash", tool_input={"command": "make deploy"}), wait=False)
+        await until(lambda: self.p.req_by_rid)
+        req = next(iter(self.p.req_by_rid.values()))
+        self.assertIsNotNone(t.pause_from)
+        t.pause_from -= 300                                        # the owner has been thinking for 5 min
+        w = self.p.work_total(SID)
+        self.assertAlmostEqual(w, 600, delta=2)
+        await asyncio.sleep(0.3)
+        self.assertEqual(self.p.work_total(SID), w)                # stopped while it waits for them
+        ov = await self.p.api_overview()
+        self.assertEqual([x["sid"] for x in ov["pending"]], [SID])
+        self.p.act(req, "y")
+        await proc.stdout.read()
+        await proc.wait()
+        await until(lambda: t.pause_from is None)
+        self.assertAlmostEqual(t.paused, 300, delta=2)
+        ov = await self.p.api_overview()                           # at work again: from the 10 min, not 15
+        self.assertEqual([r["state"] for r in ov["board"][0]["rows"]], ["work"])
+        self.assertAlmostEqual(ov["board"][0]["rows"][0]["since"], time.time() - 600, delta=3)
+        self.assertAlmostEqual(self.p.live_item(self.p.live[SID])["run"], time.time() - 600, delta=3)
+        await run_hook(ev("Stop", last_assistant_message="Выложил."))
+        await until(lambda: any(x.startswith("✅") and "Выложил" in x for x in self.texts()))
+        res = next(x for x in self.texts() if x.startswith("✅") and "Выложил" in x)
+        self.assertIn("готово за 10 мин", res)                     # not 15: the wait isn't work
+        self.assertAlmostEqual(self.p.attn.rec[SID]["dur"], 600, delta=3)
+        self.assertAlmostEqual(self.p.attn.day_of(PKEY)[1], 600, delta=3)
+        self.assertAlmostEqual(self.p.store.work_of(SID)[0], 600, delta=3)
+        ov = await self.p.api_overview()                           # its card in "Your move": the clock, stopped
+        self.assertAlmostEqual(next(r for r in ov["mine"] if r["sid"] == SID)["work"], 600, delta=3)
+        got = await self.p.api_session(SID)
+        self.assertAlmostEqual(got["outcome"]["work"], 600, delta=3)
+        # the owner's next prompt: the clock goes on from the 10 min
+        await run_hook(ev("UserPromptSubmit", prompt="Теперь проверь"))
+        await until(lambda: self.p.live[SID].turn and self.p.live[SID].turn.prompt == "Теперь проверь")
+        self.p.live[SID].turn.started -= 120
+        self.assertAlmostEqual(self.p.work_total(SID), 720, delta=3)
+        ov = await self.p.api_overview()
+        self.assertAlmostEqual(ov["board"][0]["rows"][0]["since"], time.time() - 720, delta=3)
+        await run_hook(ev("Stop", last_assistant_message="ок"))
+
+    async def test_work_from_the_transcript(self):
+        # a session from before 0.18.34, or one Pult never saw: its earlier turns come from the transcript (Stats), once —
+        # up to the first turn Pult counted itself, which is never counted twice (2026-10-30)
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        Path(TP).write_text("\n".join([tline("user", "Первая", ago=7200), tline("assistant", "…", ago=6600),     # 10 min
+                                       tline("user", "Вторая", ago=3600), tline("assistant", "…", ago=3300)]) + "\n")  # 5 min
+        self.p.attn.finished(SID, PKEY, 300, "Готово.", "Готово.", waits=True, now=time.time() - 3300)
+        ov = await self.p.api_overview()
+        self.assertAlmostEqual(next(r for r in ov["mine"] if r["sid"] == SID)["work"], 900, delta=2)
+        await self.p.work_ready(SID)
+        await self.p.api_overview()
+        self.assertAlmostEqual(self.p.store.work_of(SID)[0], 900, delta=2)       # added once
+        self.assertIsNone(self.p.store.work_of(SID)[1])
+        with open(TP, "a") as f:
+            f.write(tline("user", "Третья") + "\n")
+        await run_hook(ev("UserPromptSubmit", prompt="Третья"))
+        await until(lambda: self.p.live.get(SID) and self.p.live[SID].turn)
+        self.p.live[SID].turn.started -= 60
+        await run_hook(ev("Stop", last_assistant_message="ок"))
+        await until(lambda: self.p.live[SID].turn is None)
+        self.assertAlmostEqual(self.p.work_total(SID), 960, delta=3)
+        # a session whose first counted turn ended before anyone looked: the transcript adds the turns before it, not it
+        sid2 = "22222222-2222-4222-8222-222222222222"
+        tp2 = Path(TP).parent / (sid2 + ".jsonl")
+        tp2.write_text("\n".join([tline("user", "Раньше", ago=4000), tline("assistant", "…", ago=3700),      # 5 min
+                                  tline("user", "Сейчас", ago=100), tline("assistant", "…", ago=0)]) + "\n")
+        lv = self.p.live_of(sid2, PKEY)
+        lv.transcript = str(tp2)
+        t = self.p.start_turn(lv, "Сейчас")
+        t.started -= 100
+        self.p.finish_turn(lv, "✔️")
+        self.assertEqual(self.p.store.work_of(sid2)[1], t.started)              # the turns before it — later
+        self.assertAlmostEqual(self.p.store.work_of(sid2)[0], 100, delta=2)
+        await self.p.work_ready(sid2)
+        self.assertAlmostEqual(self.p.store.work_of(sid2)[0], 400, delta=3)     # 5 min before + its own 100 s
+        self.assertIsNone(self.p.store.work_of(sid2)[1])
+        # a turn running in a tab Pult hasn't heard from since a restart: not from the transcript — Pult counts it whole
+        # when its first step comes (prompt_started)
+        sid3 = "33333333-3333-4333-8333-333333333333"
+        tp3 = Path(TP).parent / (sid3 + ".jsonl")
+        tp3.write_text("\n".join([tline("user", "Раньше", ago=4000), tline("assistant", "…", ago=3700),
+                                  tline("user", "Идёт", ago=200), tline("assistant", "…", ago=10)]) + "\n")
+        self.p._agents = (time.monotonic() + 1e6, [{"sessionId": sid3, "status": "busy", "cwd": "/Users/x/proj"}])
+        await self.p.work_ready(sid3, str(tp3))
+        self.assertAlmostEqual(self.p.store.work_of(sid3)[0], 300, delta=3)     # only the turn before the running one
 
     async def test_stale_turn(self):
         lv = self.p.live_of(SID, PKEY)
@@ -1859,11 +1958,15 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         lv = self.p.live_of(SID, PKEY)
         t1 = self.p.start_turn(lv, "задача")
         t2 = self.p.start_turn(lv, "задача")
+        t1.started -= 600
         t1.changed.set()
         await until(lambda: t1.done)
         self.assertEqual((t1.done[0], lv.turn, t2.done), ("⏹", t2, None))
+        self.assertIsNone(self.p.store.work_of(SID))               # its time ran beside the session's own: not counted
+        t2.started -= 60
         self.p.finish_turn(lv, "✔️")
         self.assertEqual((t2.done[0], lv.turn), ("✔️", None))
+        self.assertAlmostEqual(self.p.store.work_of(SID)[0], 60, delta=2)
 
     async def run_cli(self, *cmd, cwd=None, sock=None):
         env = plain_env(PULT_SOCK=sock or os.environ["PULT_SOCK"])            # pult.cmd gives -X utf8 to itself only
@@ -3435,10 +3538,12 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_background_tasks(self):
         # turn over, its background command still running → a line in the result; once it ends, Claude starts a turn
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        Path(TP).write_text(tline("user", "Собери проект в фоне") + "\n")   # nothing from before: the clock is Pult's own
         await run_hook(ev("UserPromptSubmit", prompt="Собери проект в фоне"))
         await until(lambda: SID in self.p.live and self.p.live[SID].turn)
-        run0 = self.p.live[SID].run                                 # the owner's prompt sets the work going
-        self.assertEqual(run0, self.p.live[SID].turn.started)
+        t1 = self.p.live[SID].turn
+        t1.started -= 120                                           # Claude worked 2 min, then left the build running
         await run_hook(ev("PostToolUse", tool_name="Bash", tool_input={"command": "make", "run_in_background": True}))
         await run_hook(ev("Stop", last_assistant_message="Запустил сборку",
                           background_tasks=[{"id": "b7", "type": "shell", "status": "running",
@@ -3461,11 +3566,14 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("task-notification", "".join(self.sent()))
         self.assertEqual(self.p.live[SID].bg, [])
         self.assertEqual(self.p.live_item(self.p.live[SID])["note"], "⚙️ Закончилась фоновая задача «Сборка проекта»")
-        # Claude's own turn goes on with the owner's work: "working N" counts from their prompt, not from this turn
-        self.assertGreater(self.p.live[SID].turn.started, run0)
-        self.assertEqual(self.p.live_item(self.p.live[SID])["run"], run0)
+        # Claude's own turn goes on with the task's clock: "working N" is the 2 min before and this turn so far — not
+        # this turn from zero, and not the build's time in between (2026-10-30: the clock counts Claude's work only)
+        self.assertGreater(self.p.live[SID].turn.started, t1.started)
+        work = t1.work() + self.p.live[SID].turn.work()
+        self.assertAlmostEqual(self.p.live_item(self.p.live[SID])["run"], time.time() - work, delta=2)
         ov = await self.p.api_overview()
-        self.assertEqual([(r["state"], r["since"]) for r in ov["board"][0]["rows"]], [("work", run0)])
+        self.assertEqual([r["state"] for r in ov["board"][0]["rows"]], ["work"])
+        self.assertAlmostEqual(ov["board"][0]["rows"][0]["since"], time.time() - work, delta=2)
         await run_hook(ev("Stop", last_assistant_message="Сборка прошла", background_tasks=[]))
         await until(lambda: any(t.startswith("✅") and "Сборка прошла" in t for t in self.texts()))
         self.assertNotIn("В фоне", self.texts()[-1])
@@ -3474,8 +3582,9 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await run_hook(ev("UserPromptSubmit", prompt="Позови ревьюера"))
         # the hook may be done before the daemon has read it (Windows, over TCP): wait for the turn it starts
         await until(lambda: self.p.live[SID].turn and self.p.live[SID].turn.prompt == "Позови ревьюера")
-        run1 = self.p.live[SID].run
-        self.assertGreater(run1, run0)                              # a new prompt of the owner — a new run
+        before = self.p.store.work_of(SID)[0]                       # the turns so far: the owner's next prompt goes on
+        self.assertAlmostEqual(before, 120, delta=5)
+        self.assertAlmostEqual(self.p.work_total(SID), before + self.p.live[SID].turn.work(), delta=1)
         await run_hook(ev("Stop", last_assistant_message="Ревьюер смотрит", background_tasks=[
             {"id": "a9", "type": "subagent", "status": "running", "description": "Ревью правки"}]))
         await until(lambda: any(t.startswith("✅") and "Ревьюер смотрит" in t for t in self.texts()))
@@ -3485,7 +3594,8 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await until(lambda: len(self.texts()) > n)
         self.assertIn("<i>⚙️ Закончилась фоновая задача «Ревью правки»</i>", self.texts()[n])
         self.assertNotIn("agent-message", "".join(self.sent()))
-        self.assertEqual((self.p.live[SID].bg, self.p.live[SID].run), ([], run1))
+        self.assertEqual(self.p.live[SID].bg, [])
+        self.assertGreater(self.p.work_total(SID), before)                 # one clock for the whole task
 
     async def test_background_task_ends_mid_turn(self):
         # a background task that ends while a turn runs: its note comes absorbed into that turn — its prompt_id — at the
@@ -3511,10 +3621,12 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         # a message absorbed into the running turn (another session's SendMessage, the owner's mid-turn message) comes
         # with a UserPromptSubmit of its own, but with the turn's prompt_id (probe_midturn.py, 2.1.300 and 2.1.301):
         # the turn goes on and "working N" keeps counting — 2026-10-24 it showed "working 28 s" 19 min into a turn
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        Path(TP).write_text(tline("user", "Сделай большую работу") + "\n")
         await run_hook(ev("UserPromptSubmit", prompt="Сделай большую работу", prompt_id="p1"))
         await until(lambda: SID in self.p.live and self.p.live[SID].turn)
         t0 = self.p.live[SID].turn
-        run0 = self.p.live[SID].run
+        t0.started -= 600                                           # 10 min into the turn
         await run_hook(ev("PostToolUse", tool_name="Bash", tool_input={"command": "make"}, prompt_id="p1"))
         await until(lambda: t0.n == 1)
         self.p.expect[SID] = 7                                      # a mid-turn message from Telegram (Driven.say)
@@ -3532,16 +3644,19 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await until(lambda: t0.n == 2)
         self.assertIs(self.p.live[SID].turn, t0)
         self.assertIsNone(t0.done)
-        self.assertEqual((self.p.live[SID].run, t0.prompt), (run0, "Сделай большую работу"))
+        self.assertEqual(t0.prompt, "Сделай большую работу")
         ov = await self.p.api_overview()
-        self.assertEqual([(r["state"], r["since"]) for r in ov["board"][0]["rows"]], [("work", run0)])
+        self.assertEqual([r["state"] for r in ov["board"][0]["rows"]], ["work"])
+        self.assertAlmostEqual(ov["board"][0]["rows"][0]["since"], t0.started, delta=2)   # 10 min, not from zero
         await run_hook(ev("Stop", last_assistant_message="Готово", prompt_id="p1", background_tasks=[]))
         await until(lambda: t0.done)
         self.assertEqual(t0.done[0], "✔️")                         # one turn, one result — none closed as "⏹"
-        # the next prompt is a turn of its own: a new prompt_id, a new run
+        # the next prompt is a turn of its own: a new prompt_id — the task's clock goes on from the 10 min
         await run_hook(ev("UserPromptSubmit", prompt="Теперь другое", prompt_id="p2"))
         await until(lambda: self.p.live[SID].turn and self.p.live[SID].turn.prompt == "Теперь другое")
-        self.assertGreater(self.p.live[SID].run, run0)
+        self.assertIsNot(self.p.live[SID].turn, t0)
+        self.assertAlmostEqual(self.p.work_total(SID), t0.work() + self.p.live[SID].turn.work(), delta=1)
+        self.assertGreaterEqual(self.p.work_total(SID), 600)
         # Claude Code without prompt_id: as before, every prompt starts a turn
         t2 = self.p.live[SID].turn
         await run_hook(ev("UserPromptSubmit", prompt="без id"))
