@@ -211,7 +211,10 @@ CREATE TABLE IF NOT EXISTS tag_alias(pkey TEXT, old TEXT, old_topic TEXT, sec TE
 CREATE TABLE IF NOT EXISTS tag_examples(pkey TEXT, sid TEXT, title TEXT, ask TEXT, sec TEXT, topic TEXT, ts REAL,
     PRIMARY KEY(pkey, sid));
 CREATE TABLE IF NOT EXISTS session_vendor(sid TEXT PRIMARY KEY, vendor TEXT, ts REAL);
+CREATE TABLE IF NOT EXISTS work(sid TEXT PRIMARY KEY, secs REAL, seed REAL, ts REAL);
 """
+# work: how long Claude has worked on each session, its turns as Pult counted them (pult_driven.Turn.work); seed — the
+# start of the first turn counted, while its transcript's turns before it are still to be added (Stats.worked), else NULL
 # stage T, T2: what the owner did to a project's list lives in tables of its own — the hidden tags (topic "" for a
 # whole section), the pairs kept apart, the names a tag had before a rename or a merge (by pult_tags.key), the owner's
 # own choices for tasks (the model's examples) — so the tables of 0.17 stay as they were and an older daemon still
@@ -527,7 +530,25 @@ class Store:
                     prev=near("SELECT max(id) FROM turns WHERE sid=? AND id<?"),
                     next=near("SELECT min(id) FROM turns WHERE sid=? AND id>?"))
 
+    def work_of(self, sid):
+        """(seconds of work counted, seed or None) — or None: nothing counted yet."""
+        r = self.db.execute("SELECT secs, seed FROM work WHERE sid=?", (sid,)).fetchone()
+        return (r["secs"] or 0.0, r["seed"]) if r else None
+
+    def add_work(self, sid, secs, seed):
+        """A finished turn's work. The session's first one keeps seed — its start: the turns before it come from the
+        transcript later (seed_work)."""
+        self.db.execute("INSERT INTO work(sid, secs, seed, ts) VALUES(?,?,?,?) ON CONFLICT(sid) DO UPDATE SET "
+                        "secs = secs + excluded.secs, ts = excluded.ts", (sid, secs, seed, time.time()))
+
+    def seed_work(self, sid, secs):
+        """The turns from before Pult counted the session, once."""
+        self.db.execute("INSERT INTO work(sid, secs, seed, ts) VALUES(?,?,NULL,?) ON CONFLICT(sid) DO UPDATE SET "
+                        "secs = secs + excluded.secs, seed = NULL, ts = excluded.ts", (sid, secs, time.time()))
+
     def prune(self, days=60):
         self.db.execute("DELETE FROM msgs WHERE ts < ?", (time.time() - days * 86400,))
+        # a session's count goes too: if it comes back, its transcript gives the whole of it again (Stats.worked)
+        self.db.execute("DELETE FROM work WHERE ts < ?", (time.time() - days * 86400,))
         self.db.execute("DELETE FROM usage_log WHERE ts < ?", (time.time() - days * 86400,))
         self.db.execute("DELETE FROM turns WHERE ts < ?", (time.time() - days * 86400,))

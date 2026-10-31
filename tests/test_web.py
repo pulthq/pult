@@ -553,6 +553,54 @@ class UsageStatsTest(unittest.TestCase):
         got = s.get(str(p))
         self.assertEqual((got["model"], got["context"], got["sess"]["req"]), ("claude-opus-5-5", 4019, 4))
 
+    def test_stats_work(self):
+        # how long Claude worked, by the transcript — for the turns Pult didn't count itself (a session from before
+        # 0.18.34): from a prompt to Claude's last line, less the waits for the owner — a question, a permission a person
+        # decided, merged where several wait at once; the gap to the next prompt is theirs. A turn is Claude Code's
+        # promptId: a message absorbed into it — its own; another session's message — a new turn, though isMeta; a line
+        # without one — a prompt by its words; a subagent's lines — not the session's (2026-10-30)
+        p = T.TMP / "work.jsonl"
+        t0 = 1_800_000_000.0
+
+        def iso(s):
+            return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t0 + s)) + ".000Z"
+
+        def u(s, content, pid=None, meta=False, src=None, side=False):
+            e = {"type": "user", "isMeta": meta, "isSidechain": side, "timestamp": iso(s),
+                 "message": {"role": "user", "content": content}}
+            if pid:
+                e["promptId"] = pid
+            if src:
+                e["permissionDecision"] = {"decision": "accept", "source": src}
+            return json.dumps(e)
+
+        def a(s, *tools, side=False):
+            content = [{"type": "tool_use", "id": i, "name": n, "input": {}} for i, n in tools] or [{"type": "text", "text": "…"}]
+            return json.dumps({"type": "assistant", "isSidechain": side, "timestamp": iso(s),
+                               "message": {"id": "m%d" % s, "content": content}})
+
+        def res(s, i, pid, src=None):
+            return u(s, [{"type": "tool_result", "tool_use_id": i, "content": "ok"}], pid, src=src)
+        p.write_text("\n".join([
+            u(0, "сделай", "p1"), a(60, ("q1", "AskUserQuestion")), res(660, "q1", "p1", "hook"),   # the owner thinks 10 min
+            a(700), u(710, "и ещё", "p1"), a(760, ("r1", "Read")), res(765, "r1", "p1", "config"), a(770),
+            a(2000, side=True),                                                                   # a subagent's line
+            u(4000, "Another Claude session sent a message", "p2", meta=True), a(4030, ("b1", "Bash"), ("b2", "Bash")),
+            res(4330, "b1", "p2", "hook"), res(4340, "b2", "p2", "hook"), a(4350),               # two permissions: one wait
+            u(9000, "без promptId"), u(9050, "[Image …]", meta=True), a(9100)]) + "\n")
+        s_ = PW.Stats()
+        got = s_.get(str(p))
+        self.assertNotIn("wk", got)                                     # the app's stats stay as they were
+        self.assertEqual([(round(a_ - t0), round(w)) for a_, w in PW.Stats.segs(s_.files[str(p)]["wk"])],
+                         [(0, 170), (4000, 40), (9000, 100)])
+        self.assertEqual(round(s_.worked(str(p), t0 + 4000)), 170)        # the turns that began before
+        self.assertEqual(round(s_.worked(str(p), t0 + 1e6)), 310)
+        self.assertEqual(round(s_.last_start(str(p)) - t0), 9000)
+        with p.open("a") as f:                                          # read on: the last turn goes on
+            f.write(a(9400) + "\n")
+        s_.get(str(p))
+        self.assertEqual(round(s_.worked(str(p), t0 + 1e6)), 170 + 40 + 400)
+
     def test_day_tokens(self):
         root = T.TMP / "day"
         now = time.time()

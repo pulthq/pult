@@ -95,7 +95,10 @@ async def main():
         await pg.tap("document.querySelector('.fv-b')", wait=0.6)
         verdict("... Back closes it", not await pg.js("!!document.querySelector('.fv')"))
 
-        # "Send to Claude": into the session as your message; the card goes, the button is back
+        # "Send to Claude": into the session as your message; the card goes, the button is back. It names the doer (Q116):
+        # the shop's task is Claude's here — on DeepSeek's model it says "Отправить DeepSeek" (tools/hero.py checks that)
+        verdict("the button names the doer", await pg.js(CARD + ".querySelector('.foot .btn').textContent.trim()") == "Отправить Claude",
+                await pg.js(CARD + ".querySelector('.foot .btn').textContent"))
         await pg.tap(CARD + ".querySelector('.foot .btn')", wait=1.0)
         verdict("«Send to Claude» sends the findings into the session",
                 "DRIVE" in journal() and "A second opinion from Codex (gpt-5.6-sol)" in journal(), journal()[-600:])

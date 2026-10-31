@@ -636,6 +636,11 @@ table.tv th { color: var(--muted); font-weight: 500; }
 .c-right + .c-go { margin-left: -2px; }
 .c-title { font-size: var(--fs-card); font-weight: 650; line-height: 1.3; display: flex; gap: 6px; align-items: baseline; }
 .c-go { margin-left: auto; flex: none; align-self: center; display: inline-flex; color: var(--muted); }   /* the header opens the session */
+/* the task's clock, stopped while it waits for you (2026-10-30): grey, the pause sign — where "Running now" has it green */
+.chip.paused { display: inline-flex; align-items: center; gap: 4px; font-variant-numeric: tabular-nums; }
+.chip.paused .ic { flex: none; }
+.c-title .chip.paused { margin-left: auto; align-self: center; font-size: var(--fs-cap); }
+.c-title .chip.paused + .c-go { margin-left: -2px; }
 .c-wait + .c-go { margin-left: -2px; }        /* after how long it waits, which takes the free room itself */
 .kind { display: flex; align-items: center; gap: 6px; font-size: var(--fs-cap); font-weight: 600; color: var(--attn-ink); margin: 2px 0 6px; }
 .q-t { font-weight: 500; font-size: var(--fs-body); }

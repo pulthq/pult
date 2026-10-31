@@ -83,6 +83,29 @@ class Turn:
         self.here = False         # the owner typed the prompt at this computer (not from Telegram or the app)
         self.prompt_id = None     # Claude Code's id of the turn: a message absorbed into it comes with the same one
         self.ask = None           # the owner's request as written, wherever it came from (prompt — only when typed here)
+        self.paused = 0.0         # s the turn waited for the owner — a question, a permission, a plan: not work
+        self.pause_from = None    # since when it waits for them now (None — it doesn't)
+
+    # the turn's clock (the owner, 2026-10-30): it counts only while Claude works — a request waiting for the owner
+    # stops it, their answer starts it again; the session's clock is the sum of its turns (pultd.work_total)
+
+    def wait_start(self, ts=None):
+        if self.pause_from is None and not self.done:
+            self.pause_from = max(ts or time.time(), self.started)
+
+    def wait_end(self, now=None):
+        if self.pause_from is not None:
+            end = now or time.time()
+            if self.done:
+                end = min(end, self.done[1])
+            self.paused += max(0.0, end - self.pause_from)
+            self.pause_from = None
+
+    def work(self, now=None):
+        """How long Claude has worked in this turn, s: from its start to its end (or to now), less its waits."""
+        end = self.done[1] if self.done else now or time.time()
+        waited = self.paused + (max(0.0, end - self.pause_from) if self.pause_from is not None else 0.0)
+        return max(0.0, end - self.started - waited)
 
 
 class Req:
@@ -118,8 +141,6 @@ class Live:
         self.pending = {}
         self.bg = []              # background tasks still running after the turn (background_tasks in Stop)
         self.bg_seen = {}         # task id → when Pult first saw it running
-        self.run = None           # when the owner's prompt set the work going: turns Claude starts by itself (its
-                                  # background task or subagent reported back) go on with it — "working 27 min"
         self.pid = None           # the session's claude process: the hook's parent (probe_load.py)
 
 

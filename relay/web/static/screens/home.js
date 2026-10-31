@@ -7,7 +7,7 @@ import { Mic, useRecorder } from "../core/voice.js";
 import { plural, t } from "../i18n.js";
 import { html, useEffect, useRef, useState } from "../vendor/htm-preact-3.1.1.js";
 import { Req, TagPick, useRcpt } from "../ui/cards.js";
-import { GEAR, GLYPH, Loading, MODES, ModePick, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, dot, dur, durShort, hhmm, ic, keyTap, llmName, nb, pct, plainField, queueChip, quiet, tagChips, toDate, useNow, workChip } from "../ui/kit.js";
+import { GEAR, GLYPH, Loading, MODES, ModePick, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, dot, dur, durShort, hhmm, ic, keyTap, llmName, nb, pauseChip, pct, plainField, queueChip, quiet, tagChips, toDate, useNow, workChip } from "../ui/kit.js";
 import { BgSheet, bgLine, memPct } from "../ui/load.js";
 import { UpdRow } from "../ui/upd.js";
 
@@ -119,7 +119,8 @@ const moveKey = (e) => e.key;
 // "Your move": a session that ended and waits for you — its project and tags, how long, what came out, what is
 // needed; ready replies, your own words, "Got it" to put it to rest; the title opens the session. The tags stay on
 // the top line, as in "Running now": in front of the line they ate it (2026-10-26). Which model did the work — at
-// the foot, across from "Got it" (Q108): on the top line, beside how long it waits, it pushed the tags out
+// the foot, across from "Got it" (Q108): on the top line, beside how long it waits, it pushed the tags out. Beside the
+// title — the task's clock, stopped while it waits for you, where "Running now" has it ticking (2026-10-30)
 function Mine({ r, now, onGot, stt, showProject = true }) {
   const [busy, setBusy] = useState(false);
   const [resume, setResume] = useState(r.resume);
@@ -138,7 +139,7 @@ function Mine({ r, now, onGot, stt, showProject = true }) {
   const aboutCopy = (e) => { e.stopPropagation(); alertBox(t("ex.copy")); };
   return html`<${SwipeRow} what="card" cls="card-sw" acts=${[{ ic: "check", label: t("mine.got"), on: got }]}><div class=${"card mine" + (r.state === "fail" ? " fail" : "")}>
     <div class="card-h tap" role="button" tabindex="0" onClick=${open} onKeyDown=${keyTap(open)}><div class="c-proj"><span class="run-w">${showProject && r.project ? html`<span class="run-who">${avatar(r.project, 18)}<span class="run-p">${r.project}</span></span>` : ""}${tagChips(r.tags)}</span><span class="c-wait">${t("mine.waits", { dur: nb(dur(now - r.since)) })}</span></div>
-      <b class="c-title">${r.state === "fail" ? ic("alert", 16) : ""}${r.title}<span class="c-go">${ic("chev", 16)}</span></b></div>
+      <b class="c-title">${r.state === "fail" ? ic("alert", 16) : ""}${r.title}${pauseChip(r.work)}<span class="c-go">${ic("chev", 16)}</span></b></div>
     ${r.need ? html`<div class="ln dim tap" onClick=${open}>${r.line}</div><div class="now tap" onClick=${open}>${r.need}</div>` : html`<div class="now tap" onClick=${open}>${r.line}</div>`}
     ${r.fail === "rate_limit" ? html`<${ResumeAt} sid=${r.sid} resume=${resume} reset=${r.reset} onSet=${setResume}/>` : html`<${Replies} sid=${r.sid} replies=${r.replies} onSent=${sent}/>`}
     <${QuickReply} sid=${r.sid} stt=${stt} onSent=${sent}/>

@@ -500,6 +500,8 @@ const S = {
   "brief.about": { en: "After each turn a small model (haiku, on your subscription) reads Claude's last message: one plain line for Home and whether Claude waits for you. It also gives each task its tags — the section of the project and the topic in it — when the request comes in and again with the line. About 5 s and a fraction of a percent of usage per result and per new task. Off — the first sentence and a simple rule: nothing runs, so it's your move; a task has only the tags you give it.",
     ru: "После каждого хода маленькая модель (haiku, по твоей подписке) читает последнее сообщение Claude: одна строка простыми словами для «Главной» и ждёт ли Claude тебя. Она же ставит задаче теги — раздел проекта и тему в нём — по запросу и ещё раз вместе со строкой. Около 5 сек и доли процента расхода на каждый итог и на старт задачи. Выключено — первая фраза и простое правило: ничего не идёт — значит, твой ход; теги у задачи — только те, что поставишь ты." },
   "home.took": { en: "in {dur}", ru: "за {dur}" },
+  // the task's clock, stopped: all Claude's work on it so far, without the waits for you (2026-10-30)
+  "work.total": { en: "{dur} of work", ru: "{dur} работы" },
   "job.running": { en: "running {dur}", ru: "идёт {dur}" },
   "job.killed": { en: "interrupted", ru: "прервана" },
   "job.code": { en: "code {code}", ru: "код {code}" },
@@ -867,7 +869,7 @@ const S = {
   "sec.run.about": { en: "In a read-only sandbox: it changes nothing. Usually a minute or two.", ru: "В песочнице только для чтения — ничего не меняет. Обычно минута-две." },
   "sec.cancel": { en: "Stop", ru: "Остановить" },
   "sec.none": { en: "No findings", ru: "Замечаний нет" },
-  "sec.send": { en: "Send to Claude", ru: "Отправить Claude" },
+  "sec.send": { en: "Send to {who}", ru: "Отправить {who}" },
   "sec.again": { en: "Try again", ru: "Ещё раз" },
   "sec.limit": { en: "Codex's {h}-hour window: {pct} % used", ru: "Окно Codex на {h} ч: занято {pct} %" },
   "sec.fail.login": { en: "Codex isn't signed in to ChatGPT: open ChatGPT on the computer and sign in.", ru: "Codex не вошёл в ChatGPT: открой ChatGPT на компьютере и войди." },

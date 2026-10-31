@@ -10,7 +10,7 @@ import { html, useEffect, useMemo, useRef, useState } from "../vendor/htm-preact
 import { Replies, ResumeAt, copyWhy, forkAsk } from "./home.js";
 import { TagPick } from "../ui/cards.js";
 import { Req, useRcpt } from "../ui/cards.js";
-import { Dots, Loading, ModelPick, Sheet, SwipeRow, avatar, bgChip, copyRich, dayLabel, dot, dotted, dur, effortName, hhmm, home, ic, kilo, llmName, modelName, num, plainField, queueChip, sendKey, tagChips, toDate, useNow, workChip } from "../ui/kit.js";
+import { Dots, Loading, ModelPick, Sheet, SwipeRow, avatar, bgChip, copyRich, dayLabel, dot, dotted, dur, effortName, hhmm, home, ic, kilo, llmName, modelName, num, pauseChip, plainField, queueChip, sendKey, tagChips, toDate, useNow, workChip } from "../ui/kit.js";
 import { BgSheet, bgLine } from "../ui/load.js";
 import { Attach, Pic, Thumbs, Viewer, useAttach, useNoFold } from "../ui/pics.js";
 
@@ -288,6 +288,8 @@ function FileView({ job }) {
   </div>`;
 }
 
+// the session's last outcome at the end of the chat; how long Claude worked — the task's clock at the top, stopped
+// (2026-10-30); a computer before 0.18.34 says here how long the last turn took
 function Outcome({ sid, out, state, now, second }) {
   const [resume, setResume] = useState(out.resume);
   const [got, setGot] = useState(false);
@@ -297,7 +299,7 @@ function Outcome({ sid, out, state, now, second }) {
   };
   const head = state === "fail" ? html`${ic("alert", 14)} ${out.line || t("out.failed")}` : state === "you" ? html`${dot("attn")}${t("out.waits", { dur: dur(now - out.ts) })}` : html`${ic("check", 14)} ${t("out.done")}`;
   return html`<div class=${"card outcome" + (mine ? " mine" : "") + (state === "fail" ? " fail" : "")}>
-    <div class="k">${head}${out.dur ? " · " + t("home.took", { dur: dur(out.dur) }) : ""}</div>
+    <div class="k">${head}${out.work == null && out.dur ? " · " + t("home.took", { dur: dur(out.dur) }) : ""}</div>
     ${state !== "fail" && out.line && html`<div class="o-l"><b>${t("out.line")}</b> ${out.line}</div>`}
     ${out.need && html`<div class="o-l"><b>${t("out.need")}</b> ${out.need}</div>`}
     ${out.fail === "rate_limit" ? html`<${ResumeAt} sid=${sid} resume=${resume} reset=${out.reset} onSet=${setResume}/>` : html`<${Replies} sid=${sid} replies=${out.replies}/>`}
@@ -309,8 +311,9 @@ function Outcome({ sid, out, state, now, second }) {
 
 // a second opinion (stage M, step 1): Codex — OpenAI's agent, on your ChatGPT subscription — read what the task changed
 // and changed nothing. While it reads: how long and how many commands; then its findings, each with its place in the
-// project (a tap opens the file at that line) — "Send to Claude" puts them into this session as your message, "Got it"
-// puts the card away. A project goes to another vendor only once you allowed it, asked once (Q105)
+// project (a tap opens the file at that line) — "Send to Claude" puts them into this session as your message (it names
+// the doer: "Send to DeepSeek" when another vendor's model did the task, Q116), "Got it" puts the card away. A project
+// goes to another vendor only once you allowed it, asked once (Q105)
 const vendorModel = (m) => String(m || "").replace(/^gpt/i, "GPT").replace(/-([a-z])/g, (x, c) => "-" + c.toUpperCase());
 function SecondItem({ it }) {
   const body = useMemo(() => md(it.body || ""), [it.body]);
@@ -320,7 +323,7 @@ function SecondItem({ it }) {
       : html`<a class="flink" role="link" tabindex="0" data-file=${it.file + (it.line != null ? "#L" + it.line : "")}>${at}</a>`}</div>`}
     ${it.body && html`<div class="md" dangerouslySetInnerHTML=${{ __html: body }}/>`}</li>`;
 }
-function Second({ sid, job, now, onAgain }) {
+function Second({ sid, job, now, onAgain, who }) {
   const [busy, setBusy] = useState(false);
   const act = async (a, fork) => {
     setBusy(true);
@@ -354,7 +357,7 @@ function Second({ sid, job, now, onAgain }) {
     <div class="o-l">${items.length ? html`<b>${items.length} ${plural(items.length, "finding")}</b>` : html`<b>${t("sec.none")}</b>`}${job.summary ? html` <span class="dim">${job.summary}</span>` : ""}</div>
     ${items.length > 0 && html`<ol class="sec-list">${items.map((it, k) => html`<${SecondItem} key=${k} it=${it}/>`)}</ol>`}
     ${l && l.mins && html`<div class="dim small">${t("sec.limit", { pct: Math.round(l.pct), h: Math.round(l.mins / 60) })}</div>`}
-    ${items.length > 0 ? html`<div class="foot"><button class="link" disabled=${busy} onClick=${() => act("away")}>${t("mine.got")}</button><button class="btn" disabled=${busy} onClick=${() => act("send")}>${t("sec.send")}</button></div>`
+    ${items.length > 0 ? html`<div class="foot"><button class="link" disabled=${busy} onClick=${() => act("away")}>${t("mine.got")}</button><button class="btn" disabled=${busy} onClick=${() => act("send")}>${t("sec.send", { who })}</button></div>`
       : html`<div class="foot quiet"><span></span><button class="link" disabled=${busy} onClick=${() => act("away")}>${ic("check", 15)} ${t("mine.got")}</button></div>`}</div>`;
 }
 
@@ -554,7 +557,8 @@ function Session({ sid }) {
   const st = lv.state === "ask" ? html`<span class="chip warn">${t("st.ask")}</span>`
     : lv.state === "work" ? workChip(lv.run || lv.started, now)
     : lv.state === "queue" ? queueChip(lv.queued, now)
-    : lv.bg && lv.bg.length > 0 ? bgChip(lv.bg_since || (out && out.ts), now, openBgs) : "";
+    : lv.bg && lv.bg.length > 0 ? bgChip(lv.bg_since || (out && out.ts), now, openBgs)
+    : pauseChip(lv.work);                          // the task's clock, stopped: "working N" goes on from it (2026-10-30)
   const ts = info.stats && info.stats.turn;
   // the context gauge, the same number VS Code shows: used ÷ (window − the reserve for the answer)
   const used = info.ctx && info.stats ? Math.min(100, Math.round(info.stats.context * 100 / info.ctx.usable)) : null;   // not pct(): that is the helper
@@ -612,7 +616,7 @@ function Session({ sid }) {
       <div class="foot"><span></span><button class="btn" onClick=${jump}>${t("queue.jump")}</button></div></div>`}
     ${out && lv.state !== "work" && lv.state !== "queue" && !info.pending.length && (outState === "you" || outState === "fail" || out.need || (out.replies && out.replies.length) || out.resume || out.turn_files || canSecond)
       && html`<${Outcome} key=${out.ts} sid=${sid} out=${out} state=${outState} now=${now} second=${canSecond ? () => askSecond() : null}/>`}
-    ${sec && sec.job && html`<${Second} sid=${sid} job=${sec.job} now=${now} onAgain=${() => askSecond()}/>`}
+    ${sec && sec.job && html`<${Second} sid=${sid} job=${sec.job} now=${now} who=${vend ? vend.name : "Claude"} onAgain=${() => askSecond()}/>`}
     ${pending.map((r) => html`<${Req} key=${r.rid} r=${r} showWhere=${false}/>`)}
     <div ref=${bottom}></div>
     ${(unread || far) && html`<button class=${"tobottom" + (unread ? " fresh" : "")} aria-label=${t("to.bottom")} onClick=${() => { toBottom(); setUnread(false); }}>${unread ? t("new.msgs") : "↓"}</button>`}

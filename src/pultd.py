@@ -64,6 +64,7 @@ TICK = 60                # s; refresh "working N min" this often, even without e
 NOW_LEN = 300            # characters of Claude's reply in the "now" line
 YOU_LEN = 160            # characters of the owner's prompt in a result's head (one message per turn)
 STALE = 20 * 60          # s without events: check whether the session is alive (a tab may close without SessionEnd)
+WORK_GAP = 10            # s: a transcript turn this close before the first turn Pult counted is that turn (work_ready)
 OUT_READ = 30            # s a message just read stays in the outbox: the app shows it until the transcript has it
 OUT_GONE = 10 * 60       # s a message that didn't reach Claude stays in the outbox: the app shows it crossed out
 OUT_SENT = 6 * 3600      # s a message may wait to be read; never read by then (its hook never came) — crossed out (A8)
@@ -82,7 +83,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.33"
+VERSION = "0.18.34"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -241,11 +242,10 @@ def model_key(model):
 image_kind = F.image_kind                # png / jpg / gif / webp by the first bytes, else None
 
 
-def prompt_started(path, owner=False, tail=512 * 1024):
+def prompt_started(path, tail=512 * 1024):
     """When the turn in progress began: the time of the last prompt in the transcript. For a turn Pult learns about
-    from its steps (Pult restarted mid-turn, a tab opened before Pult) — otherwise "working 14 s" after a restart.
-    Messages absorbed mid-turn (queued_command) and tool results don't count. owner=True — the owner's own prompt
-    only, not a turn Claude Code started itself (a background task or subagent reported back: an origin)."""
+    from its steps (Pult restarted mid-turn, a tab opened before Pult) — otherwise its clock would start late.
+    Messages absorbed mid-turn (queued_command) and tool results don't count."""
     try:
         with open(path, "rb") as f:
             f.seek(0, 2)
@@ -265,8 +265,6 @@ def prompt_started(path, owner=False, tail=512 * 1024):
         content = (e.get("message") or {}).get("content")
         blocks = content if isinstance(content, list) else [{"type": "text", "text": content or ""}]
         if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in blocks):
-            continue
-        if owner and e.get("origin"):
             continue
         if any(isinstance(b, dict) and b.get("type") == "text" and b.get("text", "").strip() for b in blocks):
             return _ts(e.get("timestamp")) or None
@@ -865,8 +863,9 @@ class Pult(Api, Parts):
 
     def render_turn(self, lv, t):
         """"⏳ title · working 6 min" → "✔️ title · done in 6 min" (or ⏹ interrupted). The icon comes first, so the
-        state is readable in a topic full of messages; under a minute the seconds are not counted aloud."""
-        secs = (time.time() if not t.done else t.done[1]) - t.started
+        state is readable in a topic full of messages; under a minute the seconds are not counted aloud. The time is
+        Claude's work in this turn: a wait for the owner's answer doesn't count."""
+        secs = t.work()
         dur = R.human_dur(secs)
         if t.done:
             icon, state = t.done[0], self.t({"✔️": "turn.done", "⚠️": "turn.failed"}.get(t.done[0], "turn.stopped"), dur=dur)
@@ -884,6 +883,9 @@ class Pult(Api, Parts):
     def start_turn(self, lv, prompt=None, reply_to=None, note=None, pid=None):
         t = lv.turn = Turn(prompt, reply_to)
         t.note, t.prompt_id = note, pid
+        waiting = [r.ts for r in lv.pending.values() if not r.fut.done()]
+        if waiting:
+            t.wait_start(min(waiting))       # a request older than the turn (a restart mid-turn): its wait is no work
         asyncio.create_task(self.turn_updater(lv, t))
         t.vehi = asyncio.create_task(self.vehi(lv, t))
         self.changed(lv.sid)
@@ -988,9 +990,12 @@ class Pult(Api, Parts):
         t = t or lv.turn
         if t and not t.done:
             t.done = (mark, time.time())
+            t.wait_end(t.done[1])
             t.changed.set()
             if t.vehi:
                 t.vehi.cancel()
+            if lv.turn is t:              # a turn another took the place of ran beside it: its time is that one's
+                self.store.add_work(lv.sid, t.work(), t.started)
         if lv.turn is t:
             lv.turn = None
         self.changed(lv.sid)
@@ -1076,8 +1081,7 @@ class Pult(Api, Parts):
                                                    if b.get("id") == n["id"]), None) or self.t("task.default")
                 ended = {n["id"] for n in notes}
                 lv.bg = [b for b in lv.bg if b.get("id") not in ended]
-                t = self.start_turn(lv, note=R.task_notes_text(notes), pid=ev.get("prompt_id"))
-                lv.run = lv.run or t.started
+                self.start_turn(lv, note=R.task_notes_text(notes), pid=ev.get("prompt_id"))
             else:
                 origin = self.expect.get(sid)
                 sent = self.tab_expect.get(sid)
@@ -1089,7 +1093,6 @@ class Pult(Api, Parts):
                 t = self.start_turn(lv, None if origin else ev.get("prompt"), reply_to=origin, pid=ev.get("prompt_id"))
                 t.here = not origin and not lv.driven
                 t.ask = ev.get("prompt")
-                lv.run = t.started
                 self.out_set(sid, "read", ev.get("prompt"))
                 self.tags_on_prompt(lv, ev.get("prompt"))
         elif name in ("PostToolUse", "PostToolUseFailure"):
@@ -1102,15 +1105,12 @@ class Pult(Api, Parts):
             if lv.turn is None:
                 if lv.title is None:
                     await self.refresh_title(lv)
-                # read before the turn appears, so the app never sees it without its start and its run's
-                began, own = await asyncio.to_thread(
-                    lambda p: (prompt_started(p), prompt_started(p, owner=True)), lv.transcript) \
-                    if lv.transcript else (None, None)
+                # read before the turn appears, so the app never sees it without its start
+                began = await asyncio.to_thread(prompt_started, lv.transcript) if lv.transcript else None
                 t = self.start_turn(lv, pid=ev.get("prompt_id"))
                 if began and began < t.started:
                     t.started = began              # the turn began before Pult saw it (a restart mid-turn)
                     t.changed.set()
-                lv.run = lv.run or min(own or t.started, t.started)
             t = lv.turn
             t.n += 1
             t.last = time.time()
@@ -1149,7 +1149,7 @@ class Pult(Api, Parts):
         files, n = await self.files_of_turn(lv, t)
         tf = None
         if files:                                  # kept: the files stay viewable after the next turn (stage F4)
-            tid = self.store.add_turn(lv.sid, lv.pkey, t.started, (t.done[1] - t.started) if t.done else None, files, n)
+            tid = self.store.add_turn(lv.sid, lv.pkey, t.started, t.work() if t.done else None, files, n)
             tf = {"id": tid, "n": n, "size": sum(f["size"] for f in files)}
         self.outcome(lv, t, text, fail, watched=bool(t and t.here) and not await self.away(), files=tf)
         # what follows is Telegram's: it needs the turn's own message (its id to reply to) — the outcome above doesn't
@@ -1165,11 +1165,11 @@ class Pult(Api, Parts):
             reply_to = sent[0]
         if not text.strip():
             text = self.t("result.empty")
-        when = self.t("result.done_in", dur=R.human_dur(t.done[1] - t.started)) if t and t.done else self.t("result.done")
+        when = self.t("result.done_in", dur=R.human_dur(t.work())) if t and t.done else self.t("result.done")
         if fail:
             when = " · " + R.esc(self.fail_text(fail))
         self.recent.appendleft({"sid": lv.sid, "title": self.title(lv), "project": self.project_label(lv.pkey),
-                                "ts": time.time(), "dur": (t.done[1] - t.started) if t and t.done else None,
+                                "ts": time.time(), "dur": t.work() if t and t.done else None,
                                 "text": R.plain(text, 400)})
         self.changed(lv.sid)
         if self.pager():
@@ -1222,7 +1222,7 @@ class Pult(Api, Parts):
         turn's files as kept ({id, n, size}), or None."""
         waits = not lv.bg                                  # nothing else runs: the next step is the owner's
         line = self.fail_text(fail) if fail else B.first_sentence(text)
-        dur = (t.done[1] - t.started) if t and t.done else None
+        dur = t.work() if t and t.done else None              # Claude's work in the turn, without its waits
         rec = self.attn.finished(lv.sid, lv.pkey, dur, R.plain(text, 600), line, waits, fail=fail, watched=watched)
         if files:
             rec["turn_files"] = files                      # {id, n, size}: the app's line to the turn's files (stage F4)
@@ -1644,6 +1644,8 @@ class Pult(Api, Parts):
         req = Req(lv.sid, ev.get("tool_name"), ev.get("tool_input"), ev.get("permission_suggestions"))
         lv.pending[req.rid] = req
         self.req_by_rid[req.rid] = req
+        if lv.turn:
+            lv.turn.wait_start(req.ts)                 # the task waits for the owner: its clock stops
         notify = await self.loud(lv.driven)
         self.changed(lv.sid)
         try:
@@ -1662,6 +1664,8 @@ class Pult(Api, Parts):
         finally:
             lv.pending.pop(req.rid, None)
             self.req_by_rid.pop(req.rid, None)
+            if lv.turn and all(r.fut.done() for r in lv.pending.values()):
+                lv.turn.wait_end()                     # answered: the clock goes on from where it stopped
             for m, _ in req.msgs:
                 self.req_by_msg.pop(m, None)
 
@@ -2676,8 +2680,11 @@ class Pult(Api, Parts):
                 lv = self.live.get(sid)
                 if lv and lv.pending:
                     st = self.t("status.ask")
-                elif a.get("status") == "busy" or (lv and lv.turn):
-                    st = self.t("status.work") + (" %s" % R.human_dur(time.time() - lv.turn.started) if lv and lv.turn else "")
+                elif lv and lv.turn:                   # the task's clock, as in the app
+                    await self.work_ready(sid)
+                    st = self.t("status.work") + " " + R.human_dur(self.work_total(sid))
+                elif a.get("status") == "busy":
+                    st = self.t("status.work")
                 else:
                     st = self.t("status.idle_sess")
                 row = self.store.session(sid)
@@ -2898,6 +2905,42 @@ class Pult(Api, Parts):
         dr = self.driven.get(sid)
         return dr.queued if dr else None
 
+    # ----- how long Claude has worked on a session: one clock for the whole task (the owner, 2026-10-30) — its turns
+    # from the first, without their waits for the owner; a question, a permission or the turn's end stops it, the
+    # next step goes on from there. A background task after the turn isn't counted: the turn its end starts is -----
+
+    def work_total(self, sid):
+        """Seconds of Claude's work on the session: the turns counted (finish_turn) — and its transcript's from before
+        Pult counted them, once work_ready has added them — and the running one so far."""
+        row = self.store.work_of(sid)
+        lv = self.live.get(sid)
+        t = lv.turn if lv else None
+        return (row[0] if row else 0.0) + (t.work() if t and not t.done else 0.0)
+
+    async def work_ready(self, sid, path=None):
+        """Once per session: the turns its transcript has from before Pult counted them — a session Pult had before
+        0.18.34, or one it never saw — as Stats estimates them; the one running now Pult counts itself."""
+        row = self.store.work_of(sid)
+        if row is not None and row[1] is None:
+            return
+        if path is None:
+            try:
+                path, _ = self.transcript_of(sid)
+            except ValueError:
+                return
+        busy = any(a.get("sessionId") == sid and a.get("status") == "busy" for a in await self.agents())
+        await asyncio.to_thread(self.stats.get, path)
+        row = self.store.work_of(sid)                # again: a turn may have ended while the transcript was read
+        if row is not None and row[1] is None:
+            return
+        lv = self.live.get(sid)
+        t = lv.turn if lv else None
+        # up to the first turn Pult counted; else up to the one running — its own, or one in a tab Pult hasn't heard
+        # from since a restart (a step will start it from its prompt, prompt_started); else every turn
+        before = row[1] if row is not None else t.started if t and not t.done else \
+            (busy and self.stats.last_start(path)) or time.time() + WORK_GAP
+        self.store.seed_work(sid, self.stats.worked(path, before - WORK_GAP))
+
     def transcript_of(self, sid):
         if not SID_RE.fullmatch(sid or ""):
             raise ValueError(self.t("err.bad_sid"))
@@ -2939,7 +2982,9 @@ class Pult(Api, Parts):
             pending = [r for r in lv.pending.values() if not r.fut.done()]
             q = self.queued(sid)
             st = A.state(pending, t is not None, lv.bg or (sid in self.driven and self.driven[sid].bg), rec or None, q)
-            since = min(getattr(r, "ts", 0) or time.time() for r in pending) if pending else (lv.run or t.started) if t \
+            # at work — when its clock would have started, had it never stopped: "working N" is the whole task's work
+            work = self.work_total(sid)
+            since = min(getattr(r, "ts", 0) or time.time() for r in pending) if pending else time.time() - work if t \
                 else q if st == "queue" else (st == "bg" and self.bg_since(lv)) or rec.get("ts")
             line = (R.plain(t.now, NOW_LEN) if t.now else R.short(R.prompt_text(t.prompt), 160) if t.prompt
                     else t.note or "") if t else R.short(self.driven[sid].waiting or "", 160) if st == "queue" \
@@ -2950,7 +2995,8 @@ class Pult(Api, Parts):
                     "now": R.plain(t.now, NOW_LEN) if t.now else "", "note": t.note or ""} if t else {}
             # on the board a session sits under its project: its own title, or its first prompt, never the project again
             rows.append({"sid": sid, "pkey": lv.pkey, "title": lv.title or self.title(lv), "state": st, "since": since,
-                         "ts": rec.get("ts"), "line": line, "need": rec.get("need") or "", "replies": rec.get("replies") or [],
+                         "work": work, "ts": rec.get("ts"), "line": line, "need": rec.get("need") or "",
+                         "replies": rec.get("replies") or [],
                          "fail": rec.get("fail"), "resume": self.attn.resume.get(sid),
                          "dur": rec.get("dur"), "driven": sid in self.driven, "tab": bool(self.tab_for(sid)),
                          "open": sid in opened, "model": bool(rec.get("model")),

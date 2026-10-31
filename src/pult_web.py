@@ -404,10 +404,18 @@ def simplify_usage(r):
             "week_by": [{"name": x.get("display_name"), "percent": x.get("percent")} for x in rows if x.get("percent")]}
 
 
-# ---------- session model, thinking, tokens ----------
+# ---------- session model, thinking, tokens; how long Claude worked ----------
+
+# tools whose wait is the owner's: Claude asks and stops until they answer
+ASKS = ("AskUserQuestion", "ExitPlanMode")
+# who decided a permission without the owner (the transcript's permissionDecision.source): settings, the mode, the
+# classifier, a rule kept earlier; any other — "hook" (Pult's buttons), the dialog — waited for a person
+AUTO_DECIDED = ("config", "user_permanent")
+
 
 class Stats:
-    """Session model, effort, context and tokens from the transcript — reading only new data (the files are big)."""
+    """Session model, effort, context and tokens from the transcript — reading only new data (the files are big) — and
+    an estimate of how long Claude worked in each turn there, for the turns Pult didn't count itself (worked)."""
 
     def __init__(self):
         self.files = {}
@@ -417,6 +425,41 @@ class Stats:
         with self.lock:
             return self._get(path)
 
+    def worked(self, path, before):
+        """Claude's work in the transcript's turns that began before `before` (as last read by get), s."""
+        with self.lock:
+            st = self.files.get(path)
+            if not st:
+                return 0.0
+            return sum(w for s, w in self.segs(st["wk"]) if s < before)
+
+    def last_start(self, path):
+        """When the transcript's last turn began (as last read by get), or None."""
+        with self.lock:
+            st = self.files.get(path)
+            cur = st and st["wk"]["cur"]
+            return cur["start"] if cur else None
+
+    @staticmethod
+    def segs(wk):
+        """[(start, seconds of work)] — the finished turns and the last one so far."""
+        cur = wk["cur"]
+        return wk["segs"] + ([(cur["start"], Stats.seg_work(cur))] if cur else [])
+
+    @staticmethod
+    def seg_work(cur):
+        """A turn by its transcript: from the owner's prompt to Claude's last line, less the waits for the owner —
+        a question, a plan, a permission a person decided — merged where they overlap (several at once)."""
+        waited, end = 0.0, None
+        for a, b in sorted(cur["waits"]):
+            if end is None or a > end:
+                waited += b - a
+                end = b
+            elif b > end:
+                waited += b - end
+                end = b
+        return max(0.0, cur["last"] - cur["start"] - waited)
+
     def _get(self, path):
         st = self.files.get(path)
         try:
@@ -425,7 +468,8 @@ class Stats:
             return None
         if st is None or size < st["off"]:
             st = self.files[path] = {"off": 0, "model": None, "effort": None, "context": 0, "last_id": None,
-                                     "turn": {"req": 0, "out": 0, "think": 0}, "sess": {"req": 0, "out": 0}}
+                                     "turn": {"req": 0, "out": 0, "think": 0}, "sess": {"req": 0, "out": 0},
+                                     "wk": {"segs": [], "cur": None}}
         if size > st["off"]:
             with open(path, "rb") as f:
                 f.seek(st["off"])
@@ -445,9 +489,12 @@ class Stats:
             e = json.loads(line)
         except ValueError:
             return
-        if e.get("isSidechain") or e.get("isMeta"):
+        if e.get("isSidechain"):
             return
         m = e.get("message") or {}
+        Stats.feed_work(st["wk"], e, m)
+        if e.get("isMeta"):
+            return
         if e.get("type") == "user":
             if _NOISE.sub("", _text_of(m.get("content"))).strip():      # a new prompt starts a new turn
                 st["turn"] = {"req": 0, "out": 0, "think": 0}
@@ -469,6 +516,45 @@ class Stats:
             st[k]["req"] += 1
             st[k]["out"] += out
         st["turn"]["think"] += think
+
+    @staticmethod
+    def feed_work(wk, e, m):
+        """One line for the estimate of Claude's work: a prompt opens a turn, each line of Claude's and each tool's
+        result moves its end; a question, a plan or a permission a person decided — from the tool's call to its
+        result — is a wait. The gap to the next prompt is the owner's; a background task's time too: its end starts
+        a turn of its own. A turn is Claude Code's promptId (2.1.300): a message absorbed into a running turn, a
+        picture's note carry the turn's own, another session's message starting a turn — a new one, though isMeta;
+        a line without it — a prompt by its words, as before."""
+        ts = _iso(e.get("timestamp"))
+        if ts is None:
+            return
+        cur, content = wk["cur"], m.get("content")
+        if e.get("type") == "user":
+            results = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"] \
+                if isinstance(content, list) else []
+            pid = e.get("promptId")
+            if results:
+                if cur:
+                    person = (e.get("permissionDecision") or {}).get("source") not in AUTO_DECIDED + (None,)
+                    for b in results:
+                        call = cur["calls"].pop(b.get("tool_use_id"), None)
+                        if call and (call[1] or person):
+                            cur["waits"].append((call[0], ts))
+                    cur["last"] = max(cur["last"], ts)
+            elif (pid != cur["pid"] if pid and cur else bool(pid)) or not pid and not e.get("isMeta") and (
+                    _NOISE.sub("", _text_of(content)).strip() or isinstance(content, list) and any(
+                        isinstance(b, dict) and b.get("type") in ("image", "document") for b in content)):
+                if cur:                                  # a picture alone is a prompt too
+                    wk["segs"].append((cur["start"], Stats.seg_work(cur)))
+                wk["cur"] = {"start": ts, "last": ts, "waits": [], "calls": {}, "pid": pid}
+            elif cur and pid:                            # the turn's own: absorbed, a picture's note
+                cur["last"] = max(cur["last"], ts)
+            return
+        if e.get("type") == "assistant" and cur:
+            for b in content if isinstance(content, list) else []:
+                if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id"):
+                    cur["calls"][b["id"]] = (ts, b.get("name") in ASKS)
+            cur["last"] = max(cur["last"], ts)
 
 
 # ---------- connection to the relay ----------

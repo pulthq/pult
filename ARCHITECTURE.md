@@ -2,10 +2,12 @@
 
 [Русский](ARCHITECTURE.ru.md) · back to the [README](README.md)
 
-Pult is one small daemon on your computer, **next to** Claude Code rather than in front of it. It hears every session
-through Claude Code's hooks, starts sessions of its own through the Agent SDK, and, optionally, writes into open
-VS Code tabs through a process wrapper. Outward it talks only to Telegram's Bot API and to an optional relay on
-your own server, and both of those connections go out from the computer. **Nothing on the computer listens on the
+Pult is one small daemon on your computer, **next to** the AI agents rather than in front of them. It hears every
+Claude Code session through Claude Code's hooks; starts sessions of its own through the Agent SDK — on Claude's
+models, or on another vendor's with your key; asks Codex for a second opinion over Codex's own protocol; and,
+optionally, writes into open VS Code tabs through a process wrapper. Every agent keeps its own program, its own
+sign-in and its own line to its vendor. Pult itself talks only to Telegram's Bot API and to an optional relay on your
+own server, and both of those connections go out from the computer. **Nothing on the computer listens on the
 network.**
 
 ## The big picture
@@ -19,6 +21,7 @@ flowchart LR
     D <-->|"local socket"| WRAP["tab wrapper<br/>pult_tab.py"]
     WRAP <-->|"stream-json, byte for byte"| CCT["Claude Code<br/>in a VS Code tab"]
     D -->|"Agent SDK"| CCS["Claude Code<br/>sessions from the phone"]
+    D <-->|"app-server, read-only"| CX["Codex<br/>a second opinion"]
     LOGS[("transcripts<br/>~/.claude/projects")] -.->|"read only"| D
     D --- DB[("state.db")]
   end
@@ -35,6 +38,8 @@ flowchart LR
   D -->|"wss /pult/agent, outbound"| R
   CCT --> ANT["Anthropic<br/>your plan"]
   CCS --> ANT
+  CCS -.->|"another vendor's model"| VEN["DeepSeek · GLM · Kimi<br/>your key"]
+  CX --> OAI["OpenAI<br/>your ChatGPT sign-in"]
 ```
 
 | Part | What it is | Why it's built this way |
@@ -43,6 +48,8 @@ flowchart LR
 | **pult_hook.py** | the command Claude Code runs on `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure`, `SessionEnd` and `PermissionRequest`; standard library only. A unix socket, or on Windows 127.0.0.1 with a key in a file only you can read | it runs inside *every* session on the computer, so it must be tiny and can never fail loudly |
 | **pult_tab.py** | an optional `claudeCode.claudeProcessWrapper` between the VS Code extension and Claude Code | the only way to put a message into a tab that is already open |
 | **Agent SDK** | sessions started from Telegram or the app run your own Claude Code in the project's folder, by default in its `auto` permission mode (`PULT_PERMISSION_MODE`) | same settings, same system prompt, same plan as a terminal |
+| **another vendor's model** | DeepSeek, GLM and Kimi answer Claude Code's own protocol at an address of theirs: a session Pult starts gets that address, your key and the vendor's models by role (`pult_vendors.py`) | the same Claude Code, hooks and cards — only the model differs; only in a project you allowed, never without a key |
+| **Codex** | OpenAI's agent, found where ChatGPT for Mac or the `codex` command is; driven over its `app-server` protocol (JSON-RPC), in a read-only sandbox that asks nothing, one review at a time (`pult_codex.py`) | a second opinion from another vendor, on your own ChatGPT sign-in; Pult gives it none of its keys |
 | **relay.py** | a WebSocket relay on a small Linux server (~50 MB of memory) | Telegram opens Mini Apps only from public HTTPS; the computer stays closed |
 | **Mini App** | Preact + htm, no build step, served by the relay | a full screen on the phone: transcripts, answers, new tasks, usage |
 
@@ -97,6 +104,42 @@ The wrapper passes everything else through byte for byte. It acts only on Claude
 and only in the folders you chose. In every other case (an off switch, an unknown version, any error before the
 start) it simply runs the real `claude` in its own place and is gone. A tab busy with a turn gets your message in
 the middle of that turn: the tab doesn't show it as a separate message, and the answer comes with that turn's result.
+
+## One model does it, another checks it
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor You as You, on the phone
+  participant D as pultd
+  participant CC as Claude Code<br/>(a session from the phone)
+  participant V as the doer's vendor<br/>(Anthropic, DeepSeek…)
+  participant CX as Codex<br/>(app-server)
+  You->>D: New task · who does it: DeepSeek
+  Note over D: the project allowed for other vendors?<br/>the key there? Else nothing starts
+  D->>CC: Agent SDK, with the vendor's address,<br/>your key and its models
+  CC->>V: the turns, in Claude Code's own protocol
+  CC-->>D: hooks as usual: steps, Stop with the result
+  D-->>You: the outcome, with Second opinion · Codex
+  You->>D: Second opinion
+  Note over D: your words, the report, the files,<br/>the commit the task began on
+  D->>CX: thread/start (read-only, asks nothing),<br/>review/start with what changed
+  CX-->>D: findings: priority, place, what to do
+  D-->>You: Codex's card at the end of the session
+  You->>D: Send to DeepSeek
+  D->>CC: the findings, as your message in the same session
+```
+
+A vendor's session is an ordinary Claude Code session with its environment changed: the vendor's address, your key,
+its models by role (the main one, and the fast one for titles and subagents). The hooks, the transcript, the cards
+and whose move work as they do with Claude. It starts only in a project you allowed, and never without a key: with
+the address and no key, Claude Code would send your Claude sign-in there (checked on a real Claude Code).
+
+The second opinion is Codex's own review. Pult tells it what the task changed — in git, everything since the commit
+the folder was on when the task began, new files too; without git, the files Claude's edits wrote — and adds your
+words and Claude's report, so that what was done on purpose isn't taken for a bug. Codex reads in a read-only sandbox,
+asks nothing and keeps the review in its own history; Pult checks a Codex version it wasn't tested on against
+Codex's own protocol schema before the first review.
 
 ## The web app: a relay that stores nothing
 
@@ -156,6 +199,8 @@ flowchart LR
 | The wrapper never gets in the way | any doubt: run the real `claude` in its place; data passes byte for byte |
 | A Claude Code update can't break tabs | writing into tabs turns itself off on an unchecked version, and Pult tells you |
 | Answers don't get stuck | permission hook and dialog race; the first answer wins |
+| A project's code goes to another vendor only where you allowed it | asked once per project, at the first pick of a vendor or the first second opinion; **Disallow** on the project's screen takes it back and stops its vendor sessions and reviews |
+| No key, no vendor session | Claude Code with a vendor's address and no key would send your Claude sign-in there, so Pult never builds that environment |
 | A restart doesn't kill work | `pult restart` / `stop` / `install.sh` refuse while sessions from the phone are busy (`pult busy`) |
 | The computer stays closed | Telegram: long polling; relay: an outbound WebSocket; no listening ports |
 | Settings stay yours | the hooks go into `~/.claude/settings.json` with a backup; `pult hooks off` and `pult uninstall` undo it |
@@ -199,7 +244,8 @@ flowchart LR
 |---|---|
 | code and its Python environment | `~/.local/share/pult/` (the installer copies it there) |
 | state: topics, sessions, outcomes, the turns' files, usage readings | `~/.local/share/pult/state.db` (SQLite) |
-| secrets: bot token, your ID, relay secret, voice key | `~/.config/pult/env`, mode 600 |
+| secrets: bot token, your ID, relay secret, voice key, vendors' keys | `~/.config/pult/env`, mode 600; the app sets or removes a vendor's key, never reads it back |
+| Codex's reviews | Codex's own history (`~/.codex/sessions`), as with any task of yours |
 | hooks | `~/.claude/settings.json`, entries that name `pult_hook.py` |
 | the tab wrapper | the VS Code setting `claudeCode.claudeProcessWrapper` (you add the line) |
 | logs | `~/Library/Logs/pult.log` (macOS), `~/.local/state/pult/pult.log` (Linux, Windows) |
@@ -209,6 +255,8 @@ flowchart LR
 - `tests/test_pult.py`, `test_setup.py`, `test_web.py`, `test_relay.py` run without Telegram or Claude: a fake Bot
   API, a real relay, made-up transcripts. GitHub Actions runs them on macOS, Ubuntu and Windows.
 - `tests/e2e_live.py` drives a real Claude (haiku) through the whole chain; it uses a little of your plan.
+- `tests/fake_codex.py` stands in for Codex in the tests and on the stand: it speaks the `app-server` protocol and
+  finds two things.
 - `tests/probe_*.py` re-check facts about Claude Code that Pult relies on (the hook-and-dialog race, the wrapper's
-  stream, background tasks…). They are re-run after every Claude Code update, and writing into tabs is allowed on a
+  stream, background tasks, what goes to a vendor's address…). They are re-run after every Claude Code update, and writing into tabs is allowed on a
   new version only after they pass.

@@ -12,6 +12,8 @@
   [python.org](https://www.python.org/downloads/windows/) / `winget install Python.Python.3.12` (not the Microsoft
   Store one).
 - Telegram and a bot of your own, created in @BotFather; the setup walks you through it.
+- Optional, for a second opinion: Codex signed in with ChatGPT — ChatGPT for Mac carries it, or the `codex` command.
+- Optional, for other vendors' models: a key of DeepSeek, GLM (Z.ai) or Kimi (Moonshot AI).
 
 ## Install
 
@@ -34,13 +36,14 @@ Then **Developer: Reload Window** in VS Code, so open tabs pick up the hooks. Op
 
 - `pult tab setup` — writing into open tabs: one line for the VS Code settings;
 - `pult app` — the web app (below);
-- `pult stt` — voice messages as text, with a free Groq key.
+- `pult stt` — voice messages as text, with a free Groq key;
+- in the app, Settings → Other vendors — a vendor's key, checked with one tiny request; Codex needs nothing there.
 
 ## The web app (optional)
 
 A Telegram Mini App on a small server of yours, one tap from any topic — the comfortable way to work from the
 phone. It needs a Linux server with a domain and HTTPS: [deploy/relay/README.md](../deploy/relay/README.md). The
-server only relays: it stores nothing. Without it, everything else works in the chat alone.
+server only relays: it stores nothing. Without it, the chat still carries the calls, your answers and new tasks.
 
 ## On Linux
 

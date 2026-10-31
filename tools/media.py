@@ -3,12 +3,14 @@
   ~/.local/share/pult/venv/bin/python tools/media.py          # both languages, both themes, a few minutes
   ~/.local/share/pult/venv/bin/python tools/media.py glance steps   # only these kinds (glance, steps, screens, hero, social)
 
-  media/hero.{en,ru}[.dark].gif     the opening picture: the computer's Claude Code tab and the phone's topic side by
-                                    side — a question on both, Allow on the phone, the tab goes on (tools/hero.py)
-  media/glance.{en,ru}[.dark].png   what the phone can do, in twelve tiles — the whole of Pult in one look
+  media/hero.{en,ru}[.dark].gif     the opening picture: one model does a task, another checks it — the app's own
+                                    screens on the stand, the three steps above the phone (tools/hero.py)
+  media/glance.{en,ru}[.dark].png   the whole of Pult in one look: its three sides — an app inside Telegram, any agent
+                                    and model, models that work together — four tiles each
   media/steps.{en,ru}[.dark].png    how it works in three steps
-  media/f-<name>.{en,ru}[.dark].png one phone screen per feature: home, session, tags, pace, files, newproject, parts
-                                    (tags and parts come from a second stand: STAND_TAGS=1 STAND_PARTS=now)
+  media/f-<name>.{en,ru}[.dark].png one phone screen per feature: home, who, second, session, tags, pace, files,
+                                    newproject, parts (each from its stand — STANDS; MEDIA_PORT=<port> moves them all,
+                                    beside a stand someone else runs)
   media/social.png                  1280×640, the link preview: GitHub takes it only in the repository's settings
                                     (Settings → General → Social preview); there is no API for it
   media/logo.svg, logo-512.png      the mark — tools/brand.py draws them
@@ -17,7 +19,7 @@ One picture says one thing and holds one phone, readable on GitHub's phone app; 
 <picture> for GitHub's dark theme. The stand (tools/stand.py) runs with a VS Code tab on its session; the screens are
 drawn by tools/shot.py.
 """
-import os, shutil, subprocess, sys, tempfile, time
+import os, re, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -26,75 +28,96 @@ PY = sys.executable
 TMP = Path(tempfile.mkdtemp(prefix="pult-media-"))
 FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
 
-# a feature's screen: the stand's link, the window's height (CSS px at 412 wide), what to do before the picture, and
-# which stand it comes from — the plain one, or the one with a third project full of tagged tasks and every part of
-# Pult in Settings' table ("tags": STAND_TAGS=1 STAND_PARTS=now, on a port of its own)
+# a feature's screen: the stand's link, the window's height (CSS px at 412 wide), what to do before the picture, which
+# stand it comes from, and how long to wait after that (a second opinion takes the stand's Codex about five seconds)
 TO_BOTTOM = "window.scrollTo(0, document.documentElement.scrollHeight)"
+WHO = ("[...document.querySelectorAll('.form .field')].find((b) => b.previousElementSibling"
+       " && /^(Who does it|Кто делает)$/.test(b.previousElementSibling.textContent.trim())).click()")
+# the first picture asks Codex; the second (the dark one) finds its card already there, kept till Reviewed
+SECOND = ("(() => { const b = document.querySelector('.card.outcome .sec-ask'); if (b) b.click();"
+          " setTimeout(() => window.scrollTo(0, document.documentElement.scrollHeight), b ? 11000 : 300); })()")
 FEATURES = [
-    ("home", "HOME", 760, "", "main"),
-    ("session", "SESS4", 760, TO_BOTTOM, "main"),
-    ("tags", "PROJT", 760, "", "tags"),
-    ("pace", "USAGE", 700, "document.querySelector('.spend-seg button').click()", "main"),
-    ("files", "SESS4", 700, "document.querySelector('.tfline').click()", "main"),
-    ("newproject", "NEWPROJ", 640, "", "main"),
-    ("parts", "SETTINGS", 700, "", "tags"),
+    ("home", "HOME", 760, "", "vendors", 1),
+    ("who", "NEW", 760, WHO, "vendors", 1),
+    ("second", "SESS4", 760, SECOND, "second", 14),
+    ("session", "SESS4", 760, TO_BOTTOM, "main", 1),
+    ("tags", "PROJT", 760, "", "tags", 1),
+    ("pace", "USAGE", 700, "document.querySelector('.spend-seg button').click()", "main", 1),
+    ("files", "SESS4", 700, "document.querySelector('.tfline').click()", "main", 1),
+    ("newproject", "NEWPROJ", 640, "", "main", 1),
+    ("parts", "SETTINGS", 700, "", "tags", 1),
 ]
-STANDS = {"main": ("18097", {}), "tags": ("18099", {"STAND_TAGS": "1", "STAND_PARTS": "now"})}
+# the plain stand; a third project full of tagged tasks and every part of Pult in Settings' table; a task on DeepSeek
+# running beside one on Opus, and other vendors in New task; Codex's second opinion on the shop's search
+PORT = int(os.environ.get("MEDIA_PORT") or 18097)
+STANDS = {"main": (str(PORT), {}), "tags": (str(PORT + 2), {"STAND_TAGS": "1", "STAND_PARTS": "now"}),
+          "vendors": (str(PORT + 4), {"STAND_VENDORS": "1", "STAND_HOMES": "1"}),
+          "second": (str(PORT + 6), {"STAND_SECOND": "allowed"})}
 
 STEPS = {
-    "en": [("Work as usual", "VS Code or a terminal: Pult picks up every session"),
-           ("Your phone rings only when needed", "a permission, a question, a turn that waits for you"),
-           ("Answer — the tab goes on", "allow, pick, reply: it lands in the open tab")],
-    "ru": [("Работаешь как обычно", "VS Code или терминал: Пульт подхватит каждую сессию"),
-           ("Телефон зовёт, только когда нужен ты", "разрешение, вопрос, ход, который ждёт тебя"),
-           ("Ответил — во вкладке пошло дальше", "разрешить, выбрать, ответить — прямо в открытую вкладку")],
+    "en": [("Give the task to any model", "from the phone, or as usual in VS Code or a terminal: Pult picks up every session"),
+           ("Your phone rings only when needed", "a permission, a question, a result to check — your answer reaches even the open tab"),
+           ("Another model checks it", "Codex reads what the task changed; its findings go back to the doer in one tap")],
+    "ru": [("Дай задачу любой модели", "с телефона или как обычно — в VS Code, в терминале: Пульт подхватит каждую сессию"),
+           ("Телефон зовёт, только когда нужен ты", "разрешение, вопрос, итог на проверку — ответ дойдёт и до открытой вкладки"),
+           ("Другая модель проверит", "Codex читает, что изменила задача; замечания — исполнителю одним касанием")],
 }
-# what the phone can do: a title of a few words and a line under it — the app's own line icons (IC in app.js)
+# Pult's three sides, each a title, a line, and four tiles: an icon, a title of a few words and a line under it — the
+# app's own line icons (IC in ui/kit.js)
 GLANCE = {
-    "en": [("Allow or deny", "a permission, from the phone"),
-           ("Answer a question", "an option, or your own words"),
-           ("Say what's next", "lands in the open VS Code tab"),
-           ("Whose move", "what runs, what waits for you"),
-           ("The whole session", "live, with ready replies"),
-           ("Voice", "speak — it arrives as text"),
-           ("Files both ways", "to the project and back"),
-           ("A new project", "a folder, a CLAUDE.md, a clone"),
-           ("Your plan's pace", "each limit, with a forecast"),
-           ("Tags on every task", "section and topic, by Claude"),
-           ("Model and effort", "per session, and a default"),
-           ("Keeps itself current", "a release in one tap; new Claude Code checked")],
-    "ru": [("Разрешить или нет", "запрос разрешения — с телефона"),
-           ("Ответить на вопрос", "вариант или свои слова"),
-           ("Сказать, что дальше", "в открытую вкладку VS Code"),
-           ("Чей ход", "что идёт, что ждёт тебя"),
-           ("Вся сессия", "вживую, с готовыми ответами"),
-           ("Голосом", "скажи — придёт текстом"),
-           ("Файлы в обе стороны", "в проект и обратно"),
-           ("Новый проект", "папка, CLAUDE.md или клон"),
-           ("Темп твоего плана", "каждый лимит, с прогнозом"),
-           ("Теги у каждой задачи", "раздел и тема, от Claude"),
-           ("Модель и раздумья", "на сессию и по умолчанию"),
-           ("Обновляется сам", "выпуск одной кнопкой; новый Claude Code проверен")],
+    "en": [("A Telegram app", "the main screen, on any phone", [
+               ("home", "Whose move", "what runs, what waits for you"),
+               ("msg", "The whole session", "live, with ready replies"),
+               ("shield", "Allow or answer", "a permission, a question"),
+               ("mic", "Voice and files", "speak — it arrives as text; files both ways")]),
+           ("Any agent, any model", "on macOS, Linux or Windows", [
+               ("tabs", "Every session", "VS Code tabs, a terminal, the phone"),
+               ("spark", "Who does it", "Claude, DeepSeek, GLM or Kimi"),
+               ("gauge", "Model and effort", "per task, and a default"),
+               ("tag", "Who did what", "the model on every card")]),
+           ("Models work together", "one does the task, another checks it", [
+               ("eye", "A second opinion", "Codex reads what changed"),
+               ("send", "Back to the doer", "its findings in one tap"),
+               ("pin", "A doer per project", "who does its new tasks"),
+               ("lock", "Only where you allow", "asked once per project")])],
+    "ru": [("Приложение в Telegram", "главный экран — на любом телефоне", [
+               ("home", "Чей ход", "что идёт, что ждёт тебя"),
+               ("msg", "Вся сессия", "вживую, с готовыми ответами"),
+               ("shield", "Разрешить, ответить", "запрос и вопрос — с телефона"),
+               ("mic", "Голос и файлы", "скажи — придёт текстом; файлы в обе стороны")]),
+           ("Любой агент и модель", "на macOS, Linux или Windows", [
+               ("tabs", "Каждая сессия", "вкладки VS Code, терминал, телефон"),
+               ("spark", "Кто делает", "Claude, DeepSeek, GLM или Kimi"),
+               ("gauge", "Модель и раздумья", "на задачу и по умолчанию"),
+               ("tag", "Кто что сделал", "модель на каждой карточке")]),
+           ("Модели работают вместе", "одна делает задачу, другая проверяет", [
+               ("eye", "Второе мнение", "Codex читает, что изменилось"),
+               ("send", "Обратно исполнителю", "замечания одним касанием"),
+               ("pin", "Исполнитель проекта", "кто делает его новые задачи"),
+               ("lock", "Только где разрешишь", "спрашивает раз на проект")])],
 }
-GLANCE_ICONS = [
-    '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/>',                                    # shield
-    '<circle cx="12" cy="12" r="9.5"/><path d="M9.2 9.2a3 3 0 0 1 5.7 1.1c0 2-2.9 2.7-2.9 2.7"/><path d="M12 17h.01"/>',    # help
-    '<path d="M20.5 14.5a2 2 0 0 1-2 2H8l-4.5 4v-15a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z"/>',                                     # msg
-    '<path d="M3.5 10.5 12 3.5l8.5 7"/><path d="M5.5 9v11a1 1 0 0 0 1 1h3.5v-6h4v6h3.5a1 1 0 0 0 1-1V9"/>',               # home
-    '<rect x="8" y="2.5" width="8" height="4" rx="1"/><path d="M16 4.5h2a2 2 0 0 1 2 2V20a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6.5a2 2 0 0 1 2-2h2"/><path d="M9 12h6M9 16h4"/>',  # plan
-    '<rect x="9" y="2.5" width="6" height="12" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5v4"/>',                 # mic
-    '<path d="m20.5 11.5-8.6 8.6a5.3 5.3 0 0 1-7.5-7.5l8.6-8.6a3.5 3.5 0 0 1 5 5l-8.6 8.6a1.8 1.8 0 0 1-2.5-2.5l7.9-7.9"/>',  # clip
-    '<path d="M3 7.5V18a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9.5a2 2 0 0 0-2-2h-7l-2-3H5a2 2 0 0 0-2 2z"/>',                   # folder
-    '<path d="M4.2 18.5a9 9 0 1 1 15.6 0"/><path d="m12 13.5 4-4.5"/><circle cx="12" cy="13.5" r="1.2"/>',               # gauge
-    '<path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><path d="M7.5 7.5h.01"/>',        # tag
-    '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8"/>',     # spark
-    '<path d="M20.5 12a8.5 8.5 0 0 1-14.6 5.9L3.5 15.5"/><path d="M3.5 12a8.5 8.5 0 0 1 14.6-5.9l2.4 2.4"/><path d="M20.5 3.5v5h-5M3.5 20.5v-5h5"/>',  # auto
-]
-ICONS = [  # computer, phone with the warm dot, check — the app's own line icons
-    '<rect x="2.5" y="3.5" width="19" height="13" rx="2"/><path d="M8 21h8M12 16.5V21"/>',
-    '<rect x="6" y="2" width="12" height="20" rx="2.6"/><path d="M11 18h2"/>',
-    '<path d="M20 6 9 17l-5-5"/>',
-]
+IC = {  # the app's own line icons (ui/kit.js), the ones the pictures use
+    "home": '<path d="M3.5 10.5 12 3.5l8.5 7"/><path d="M5.5 9v11a1 1 0 0 0 1 1h3.5v-6h4v6h3.5a1 1 0 0 0 1-1V9"/>',
+    "msg": '<path d="M20.5 14.5a2 2 0 0 1-2 2H8l-4.5 4v-15a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z"/>',
+    "shield": '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/>',
+    "mic": '<rect x="9" y="2.5" width="6" height="12" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5v4"/>',
+    "tabs": '<rect x="2.5" y="4" width="19" height="16" rx="2.5"/><path d="M2.5 9h19M9 4v5"/>',
+    "spark": '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8"/>',
+    "gauge": '<path d="M4.2 18.5a9 9 0 1 1 15.6 0"/><path d="m12 13.5 4-4.5"/><circle cx="12" cy="13.5" r="1.2"/>',
+    "tag": '<path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><path d="M7.5 7.5h.01"/>',
+    "eye": '<path d="M2.5 12c1.2-2.6 5-7 9.5-7s8.3 4.4 9.5 7c-1.2 2.6-5 7-9.5 7s-8.3-4.4-9.5-7z"/><circle cx="12" cy="12" r="3"/>',
+    "send": '<path d="M21.5 2.5 10.5 13.5"/><path d="m21.5 2.5-7 19-4-8-8-4z"/>',
+    "pin": '<path d="M8.5 2.5h7"/><path d="M9.5 2.5v6.3L6.5 12v2h11v-2l-3-3.2V2.5"/><path d="M12 14v7.5"/>',
+    "lock": '<rect x="4.5" y="10.5" width="15" height="11" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>',
+    "plus": '<path d="M12 5v14M5 12h14"/>',
+    "phone": '<rect x="6" y="2" width="12" height="20" rx="2.6"/><path d="M11 18h2"/>',
+}
+ICONS = [IC["plus"], IC["phone"], IC["eye"]]   # the steps: a new task, the phone that rings, the second look
+
+
+def nb(text):
+    """A word of one or two letters ("с", "по", "a", "to") stays with the next one: no line of a tile ends on it."""
+    return re.sub(r"(?<=\s)(\w{1,2}) ", "\\1\u00a0", text)
 
 
 def shot(url, out, width=412, wait=6, dark=False, **env):
@@ -126,10 +149,11 @@ def screens(lang):
                     break
                 time.sleep(0.5)
         out = {}
-        for name, key, height, js, which in FEATURES:
+        for name, key, height, js, which, after in FEATURES:
             for dark in (False, True):
                 png = TMP / ("%s.%s%s.png" % (name, lang, ".dark" if dark else ""))
-                shot(urls[which][key], png, dark=dark, SHOT_HEIGHT=str(height), **({"SHOT_JS": js} if js else {}))
+                shot(urls[which][key], png, dark=dark, SHOT_HEIGHT=str(height), SHOT_AFTER=str(after),
+                     **({"SHOT_JS": js} if js else {}))
                 out[(name, dark)] = png
         return out
     finally:
@@ -152,12 +176,13 @@ def steps(lang, dark, out):
     """How it works in three steps, one under another — so its words stay readable in GitHub's phone app too: an
     icon, a few words, a line under them; a thin line joins them."""
     ink, mute, card, line = ("#e9ebef", "#9aa3b0", "#1a1e25", "rgba(255,255,255,.10)") if dark else ("#171a21", "#626a77", "#ffffff", "rgba(15,23,42,.10)")
-    tones = ["#6ea2f0", "#f3a64a", "#58c088"] if dark else ["#4f8be8", "#e8892b", "#2c9a63"]
+    # blue — what you do, warm — what waits for you, violet — the second opinion: the app's own colours for them
+    tones = ["#6ea2f0", "#f3a64a", "#b48cf0"] if dark else ["#4f8be8", "#e8892b", "#8b5cf6"]
     cells = []
     for i, ((title, sub), path) in enumerate(zip(STEPS[lang], ICONS)):
         cells.append('<div class="c"><div class="i" style="color:%s;background:%s"><svg viewBox="0 0 24 24" width="30" height="30" fill="none" '
                      'stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">%s</svg></div>'
-                     '<div class="w"><b><span class="n">%d</span>%s</b><span>%s</span></div></div>' % (tones[i], tones[i] + "1f", path, i + 1, title, sub))
+                     '<div class="w"><b><span class="n">%d</span>%s</b><span>%s</span></div></div>' % (tones[i], tones[i] + "1f", path, i + 1, nb(title), nb(sub)))
     body = '<div class="s">%s</div>' % '<div class="j"></div>'.join(cells)
     css = (".s { width: 560px; padding: 6px; }"
            ".c { display: flex; align-items: center; gap: 18px; background: %s; border: 1.5px solid %s; border-radius: 22px; padding: 18px 22px; }"
@@ -170,44 +195,54 @@ def steps(lang, dark, out):
 
 
 def glance(lang, dark, out):
-    """What the phone can do, twelve tiles in two columns — the width of the README, and still readable in GitHub's
-    phone app: an icon, a title of a few words, a line under it."""
+    """The whole of Pult in one look: its three sides one under another, each a title with a line and four tiles in
+    two columns — the width of the README, and still readable in GitHub's phone app: an icon, a title of a few words,
+    a line under it. A side keeps one colour: blue — the app, green — the agents and models, violet — models that
+    check each other (the second opinion's own colour in the app)."""
     ink, mute, card, line = ("#e9ebef", "#9aa3b0", "#1a1e25", "rgba(255,255,255,.10)") if dark else ("#171a21", "#626a77", "#ffffff", "rgba(15,23,42,.10)")
-    tones = ["#6ea2f0", "#f3a64a", "#58c088", "#b48cf0"] if dark else ["#4f8be8", "#e8892b", "#2c9a63", "#8b5cf6"]
-    cells = []
-    for i, ((title, sub), path) in enumerate(zip(GLANCE[lang], GLANCE_ICONS)):
-        tone = tones[(i // 2 + i) % 4]
-        cells.append('<div class="c"><div class="i" style="color:%s;background:%s"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" '
-                     'stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">%s</svg></div>'
-                     '<div class="w"><b>%s</b><span>%s</span></div></div>' % (tone, tone + "1f", path, title, sub))
-    body = '<div class="g">%s</div>' % "".join(cells)
+    tones = ["#6ea2f0", "#58c088", "#b48cf0"] if dark else ["#4f8be8", "#2c9a63", "#8b5cf6"]
+    sides = []
+    for (head, sub, tiles), tone in zip(GLANCE[lang], tones):
+        cells = "".join('<div class="c"><div class="i" style="color:%s;background:%s"><svg viewBox="0 0 24 24" width="24" height="24" '
+                        'fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">%s</svg></div>'
+                        '<div class="w"><b>%s</b><span>%s</span></div></div>' % (tone, tone + "1f", IC[icon], nb(title), nb(line_))
+                        for icon, title, line_ in tiles)
+        sides.append('<div class="side"><div class="h"><i style="background:%s"></i><b>%s</b><span>%s</span></div>'
+                     '<div class="t">%s</div></div>' % (tone, nb(head), nb(sub), cells))
+    body = '<div class="g">%s</div>' % "".join(sides)
     # the type is sized for GitHub's phone app, where the picture is about two thirds of this: as in steps()
-    css = (".g { width: 560px; padding: 6px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }"
+    css = (".g { width: 560px; padding: 6px; display: flex; flex-direction: column; gap: 22px; }"
+           ".h { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 10px; margin: 0 4px 11px; }"
+           ".h i { flex: none; width: 11px; height: 11px; border-radius: 50%%; align-self: center; }"
+           ".h b { font-size: 22px; line-height: 1.2; color: %s; letter-spacing: -.015em; }"
+           ".h span { flex-basis: 100%%; font-size: 16px; line-height: 1.3; color: %s; }"
+           ".t { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }"
            ".c { display: flex; align-items: flex-start; gap: 12px; background: %s; border: 1.5px solid %s; border-radius: 18px; padding: 14px 13px 14px 14px; }"
            ".i { flex: none; width: 42px; height: 42px; border-radius: 13px; display: flex; align-items: center; justify-content: center; }"
            ".w { min-width: 0; padding-top: 1px; }"
-           "b { display: block; font-size: 18.5px; line-height: 1.2; color: %s; letter-spacing: -.012em; }"
-           ".w > span { display: block; margin-top: 4px; font-size: 15px; line-height: 1.3; color: %s; }" % (card, line, ink, mute))
+           ".w b { display: block; font-size: 18.5px; line-height: 1.2; color: %s; letter-spacing: -.012em; }"
+           ".w > span { display: block; margin-top: 4px; font-size: 15px; line-height: 1.3; color: %s; }" % (ink, mute, card, line, ink, mute))
     shot(page(out.stem + ".html", body, css), out, width=572, wait=1, SHOT_FIT=".g", SHOT_CLEAR="1")
 
 
 def social(still, out):
-    """The link preview: the mark, the name and what it does on the left; the opening picture's first frame on the right."""
+    """The link preview: the mark, the name and what it does on the left; the opening picture's first frame — a phone
+    with the three steps above it — on the right."""
     logo = (MEDIA / "logo.svg").read_text(encoding="utf-8").replace("<svg ", '<svg width="96" height="96" ', 1)
     body = """<div class="card"><div class="text"><div class="mk">%s<div class="name">Pult</div></div>
-      <div class="tag">Every Claude Code session on your computer — in Telegram.</div>
-      <div class="chips"><span>macOS · Linux · Windows</span><span>Telegram + web app</span><span>MIT</span></div>
+      <div class="tag">The universal remote for AI agents — in Telegram.</div>
+      <div class="chips"><span>Claude Code · Codex · DeepSeek</span><span>macOS · Linux · Windows</span><span>MIT</span></div>
       <div class="url">github.com/pulthq/pult</div></div><img class="hero" src="%s"></div>""" % (logo, still.as_uri())
     css = """.card { position: relative; width: 1280px; height: 640px; overflow: hidden;
         background: radial-gradient(circle at 80% 30%, #dbe7fb 0, #eef3fa 45%, #f6f8fb 100%); }
-      .text { position: absolute; left: 70px; top: 112px; width: 470px; color: #14213d; }
+      .text { position: absolute; left: 70px; top: 104px; width: 640px; color: #14213d; }
       .mk { display: flex; align-items: center; gap: 22px; }
       .name { font-size: 92px; font-weight: 800; letter-spacing: -2px; line-height: 1; }
       .tag { margin-top: 30px; font-size: 36px; line-height: 1.25; font-weight: 600; color: #26344f; }
       .chips { margin-top: 32px; display: flex; flex-wrap: wrap; gap: 10px; }
       .chips span { padding: 6px 12px; border-radius: 999px; background: #fff; border: 1px solid #d5deea; font-size: 16px; color: #3a4a66; font-weight: 600; }
       .url { margin-top: 34px; font-size: 21px; color: #5d6b82; }
-      .hero { position: absolute; left: 570px; top: 120px; width: 690px; border-radius: 18px; }"""
+      .hero { position: absolute; right: 96px; top: 24px; height: 592px; border-radius: 22px; }"""
     big = TMP / "social-2x.png"
     shot(page("social.html", body, css), big, width=1280, wait=2, SHOT_HEIGHT="640")
     subprocess.run(["sips", "-z", "640", "1280", str(big), "--out", str(out)], check=True, stdout=subprocess.DEVNULL)

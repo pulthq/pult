@@ -96,6 +96,7 @@ class Api:
         pending = [self.req_item(r) for r in self.req_by_rid.values() if not r.fut.done()]
         for x in pending:                            # which model asks: a question's card says it too (Q108)
             _, x["llm"] = await self.row_stats(x["sid"])
+            x["work"] = self.work_total(x["sid"])     # and the task's clock, stopped while it waits
         return {"mac": {"idle": idle, "away": await self.away(), "mode": self.mode()}, "now": time.time(),
                 "lang": self.lang(), "load": self.load_sum(load[2], load[3]) if load else None,
                 # a session may end while this waited for the process snapshot (SessionEnd drops it): it is just gone
@@ -116,15 +117,18 @@ class Api:
         return {"sid": lv.sid, "title": self.title(lv), "project": self.project_label(lv.pkey), "pkey": lv.pkey,
                 "driven": lv.driven, "state": "ask" if lv.pending else "work" if t else "queue" if q else "idle",
                 "queued": q, "waiting": self.driven[lv.sid].waiting if q else None, "slots": MAX_RUNNING,
-                "started": t.started if t else None, "run": (lv.run or t.started) if t else None, "prompt": R.short(R.prompt_text(t.prompt), 300) if t and t.prompt else None,
+                # run: when the task's clock would have started, had it never stopped — "working N" is all its work
+                "started": t.started if t else None, "run": time.time() - self.work_total(lv.sid) if t else None,
+                "prompt": R.short(R.prompt_text(t.prompt), 300) if t and t.prompt else None,
                 "note": t.note if t else None, "now": R.plain(t.now, self.D.NOW_LEN) if t and t.now else None,
                 "bg": [R.short(b.get("description") or b.get("command") or self.t("task.default"), 80) for b in lv.bg],
-                "bg_since": self.bg_since(lv), "tab": bool(self.tab_for(lv.sid))}
+                "bg_since": self.bg_since(lv), "tab": bool(self.tab_for(lv.sid)), "work": self.work_total(lv.sid)}
 
     def req_item(self, req):
         lv = self.live.get(req.sid) or self.stub(req.sid)
         d = {"rid": req.rid, "sid": req.sid, "kind": req.kind, "tool": req.tool, "title": self.title(lv),
-             "project": self.project_label(lv.pkey), "suggest": bool(req.suggestions), "since": req.ts}
+             "project": self.project_label(lv.pkey), "suggest": bool(req.suggestions), "since": req.ts,
+             "work": self.work_total(req.sid)}
         if req.kind == "ask":
             d["questions"] = req.inp.get("questions") or []
             d["chosen"] = {str(i): v for i, v in req.chosen.items()}
@@ -147,9 +151,16 @@ class Api:
         except ValueError:
             return None, self.llm_view(sid, None)
         st = await asyncio.to_thread(self.stats.get, path)
+        await self.work_ready(sid, path)             # the clock has the turns from before Pult counted them (work_into)
         ctx = self.ctx_of(sid, (st or {}).get("model"))
         pct = min(100, round(st["context"] * 100 / ctx_usable(ctx[0], ctx[1]))) if st and st.get("context") and ctx else None
         return pct, self.llm_view(sid, st)
+
+    def work_into(self, r):
+        """A row's clock, again after row_stats: the turns from before Pult counted them are in it now."""
+        r["work"] = self.work_total(r["sid"])
+        if r["state"] == "work":
+            r["since"] = time.time() - r["work"]
 
     def llm_view(self, sid, stats):
         """Which model does a session's work, for its row (the owner, 2026-10-30: two tasks running, one of them on
@@ -177,13 +188,15 @@ class Api:
             shown = [r for r in A.sort_rows(rs) if r["state"] not in A.MINE and not A.resting(r, now)]
             for r in shown:
                 r["ctx"], r["llm"] = await self.row_stats(r["sid"])
+                self.work_into(r)
             projects.append({"pkey": pkey, "name": self.name_of(pkey, rs), "rows": shown, "rows_all": rs,
                              "resting": sum(1 for r in rs if A.resting(r, now)),
                              "work": sum(1 for r in rs if r["state"] in ("work", "bg", "queue")),
                              "mine": sum(1 for r in rs if r["state"] in A.MINE), "turns": turns, "secs": secs})
         mine = A.sort_rows([dict(r, project=p["name"]) for p in projects for r in p["rows_all"] if r["state"] in ("you", "fail")])
-        for r in mine:                               # which model did the work: its card says it too (Q108)
+        for r in mine:                               # which model did the work and how long: its card says it too (Q108)
             _, r["llm"] = await self.row_stats(r["sid"])
+            self.work_into(r)
         projects = A.sort_projects(projects)
         pins, hides = self.store.pins(), self.store.hides()
         projects.sort(key=lambda p: -pins.get(p["pkey"], 0))      # the pinned first, the newest pin on top; the rest keep their order (stage Zh)
@@ -478,8 +491,10 @@ class Api:
                        key=lambda r: -(r["ts"] or 0))
         for r in live + today:
             r["ctx"], r["llm"] = await self.row_stats(r["sid"])
+            self.work_into(r)
         for r in mine + pending:                     # the cards that wait for the owner name the model too (Q108)
             _, r["llm"] = await self.row_stats(r["sid"])
+            r["work"] = self.work_total(r["sid"])
         shown = {r["sid"] for r in mine + live + today} | {r["sid"] for r in pending}
         earlier = []
         if path and os.path.isdir(path):
@@ -901,6 +916,9 @@ class Api:
         # before, a look put a report away, and so did the model's "only a report" — and a task went by unnoticed)
         page = await asyncio.to_thread(PW.transcript_page, path, before, after, lv.cwd)
         stats = await asyncio.to_thread(self.stats.get, path)
+        await self.work_ready(sid, path)
+        if outcome:
+            outcome["work"] = self.work_total(sid)       # the task's clock, stopped: all its work so far
         live = self.live_item(lv)
         # open on the computer without Pult's wrapper: a message from here goes as a copy — the app says so up front
         seen = sid in self.live and not lv.driven and lv.turn is not None
