@@ -21,7 +21,8 @@ Claude Code, Codex, DeepSeek in one app: one model does the task, another checks
 </p>
 
 Pult is an app inside Telegram for the AI agents on your computer. From your phone, give a task to Claude Code — on
-Claude's models, or on DeepSeek, GLM or Kimi with a key of yours — and when it's done, let Codex read what it changed:
+Claude's models, or on DeepSeek, GLM or Kimi with a key of yours — or to Codex on your ChatGPT plan, and when it's done,
+let Codex read what Claude changed:
 its findings go back to the session in one tap. When an agent stops to ask, your phone rings, and your answer reaches
 the session — even the tab open in VS Code. Pult runs on your computer, macOS, Linux or Windows, and opens no port to
 the network. *Pult* is Russian for a remote control.
@@ -61,8 +62,8 @@ Every agent works in its own program, signed in as you: Claude Code with your Cl
 sign-in. Pult doesn't stand in front of them — it drives them. Claude Code's hooks bring every session to Pult, the
 ones you opened before leaving too, so there is nothing to start; a permission request races the dialog on the
 computer, and whichever answer comes first decides. Another vendor's model works inside Claude Code, in the sessions
-Pult starts; Codex reads a task's changes in a read-only sandbox. If Pult isn't running, they all behave as if it
-weren't there. The paths, with diagrams: [ARCHITECTURE.md](ARCHITECTURE.md).
+Pult starts; Codex does a task in a sandbox of the project's folder, and reads a task's changes in a read-only one.
+If Pult isn't running, they all behave as if it weren't there. The paths, with diagrams: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## What you get
 
@@ -78,9 +79,10 @@ there. A finished task stays until you mark it **Reviewed**.
 
 ### Any model does the task
 
-New task asks **who does it**: Claude, or DeepSeek, GLM or Kimi with your key. They work inside Claude Code, so the
-turns, the cards and the outcome are the same as Claude's. A project can keep its own default, and every card names
-the model that did the work.
+New task asks **who does it**: Claude, Codex on your ChatGPT plan, or DeepSeek, GLM or Kimi with your key. DeepSeek,
+GLM and Kimi work inside Claude Code; Codex works in its own program, in a sandbox of the project's folder, and asks
+only to leave it. The turns, the cards, the permissions and the outcome are the same for all of them. A project can
+keep its own default, and every card names the model that did the work.
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="media/f-who.en.dark.png"><img src="media/f-who.en.png" width="330" alt="New task in the app with the sheet Who does it open: Claude on your plan, DeepSeek with its main model, GLM and Kimi grey until their key is in Settings"></picture></p>
 
@@ -148,7 +150,6 @@ And:
 
 The next steps of the universal remote, one release each:
 
-- **Codex as a doer** — a task done by Codex itself, with the same cards, questions and permissions.
 - **Spend by vendor** — Resources shows what each vendor took: Codex's windows, the dollars of each key, beside your
   Claude plan's limits.
 - **Hand a task over** — midway, to another vendor: what you asked, what is done, the changes and what is left.

@@ -4,6 +4,16 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.36 — 2026-10-31
+
+- **Codex does tasks.** New task's **Who does it** has Codex, right after Claude: OpenAI's own agent on your ChatGPT
+  plan, in its own program. It works in the project's folder — a sandbox that writes only there — and asks only to
+  leave it, for the network or a write outside; its permission comes as the same card, with **Allow in this task**.
+  Its steps, its words and its outcome are a task's like any other: Home, Your move, the project's topic, the clock;
+  a message mid-turn goes into the turn, Stop interrupts it, and the task goes on after a pause or a restart of Pult.
+  The session's screen reads Codex's own history; the project's rules from CLAUDE.md reach Codex, which reads only
+  AGENTS.md. A project goes to Codex only once you allow it, as for the second opinion.
+
 ## 0.18.35 — 2026-10-31
 
 - **A second opinion on one big project made of repositories.** When parts of a project's folder are git repositories

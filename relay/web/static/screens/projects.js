@@ -8,7 +8,7 @@ import { plural, q, t } from "../i18n.js";
 import { html, useEffect, useRef, useState } from "../vendor/htm-preact-3.1.1.js";
 import { BoardRow, Mine, RunRow, moveKey, moves } from "./home.js";
 import { Req, TagPick, useRcpt } from "../ui/cards.js";
-import { ChoicePick, Loading, SwipeRow, agoShort, avatar, choiceText, dot, dotted, dur, ic, keyTap, plainField, sendKey, tagChips, tagJob, tagSt, useNow } from "../ui/kit.js";
+import { ChoicePick, Loading, SwipeRow, agoShort, avatar, choiceText, codexModel, dot, dotted, dur, ic, keyTap, plainField, sendKey, tagChips, tagJob, tagSt, useNow } from "../ui/kit.js";
 import { BgSheet } from "../ui/load.js";
 import { Attach, Thumbs, useAttach } from "../ui/pics.js";
 
@@ -149,7 +149,8 @@ function VendorPick({ vendors, cur, proj, onPick, onDefault, onClose }) {
   return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick tall fixed who">
     <div class="q-t pick-h">${t("who.title")}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
     ${row("claude", "Claude", t("who.claude"), false)}
-    ${vendors.map((v) => row(v.id, v.name, v.key ? t("who.inside", { m: v.models[0] }) : t("who.nokey"), !v.key))}
+    ${vendors.map((v) => row(v.id, v.name, v.own ? (v.key ? t("who.codex.row", { m: codexModel(v.models[0]) || t("who.codex.model") })
+      : t(v.why === "version" ? "who.codex.version" : "who.codex.missing")) : v.key ? t("who.inside", { m: v.models[0] }) : t("who.nokey"), !v.key))}
     ${proj && (def === cur ? html`<div class="who-def dim">${ic("check", 15)} ${t("who.default", { p: q(proj.name) })}</div>`
       : html`<button class="link who-def" onClick=${() => onDefault(cur)}>${t("who.default.make", { p: q(proj.name) })}</button>`)}
     <div class="dim small">${t("who.about")}</div>
@@ -179,7 +180,9 @@ function NewTask({ pkey }) {
   }, [d]);
   if (!d) return html`<${Loading} err=${err}/>`;
   const cur = d.projects.find((x) => x.pkey === p);
-  const vendors = d.vendors || [];                  // a computer before stage M, step 2 sends none: Claude only
+  // a computer before stage M, step 2 sends none: Claude only. Codex (M4.1) — its own agent, no key: right after Claude
+  const cx = d.codex && { id: "codex", name: "Codex", own: true, key: d.codex.ok, why: d.codex.why, models: d.codex.models || [] };
+  const vendors = (cx ? [cx] : []).concat(d.vendors || []);
   const byId = (id) => vendors.find((v) => v.id === id);
   // with nothing picked: what the computer says this project's new task goes to — its own default, else the common one
   const dv = cur && byId(cur.who || cur.vendor);
@@ -201,7 +204,7 @@ function NewTask({ pkey }) {
   // a vendor without a key says where to add one; a project not yet allowed asks once (Q105)
   const pickWho = async (id) => {
     const v = byId(id);
-    if (v && !v.key) return alertBox(t("who.nokey.go", { name: v.name }));
+    if (v && !v.key) return alertBox(v.own ? t(v.why === "version" ? "who.codex.go.version" : "who.codex.go") : t("who.nokey.go", { name: v.name }));
     if (v && cur && !cur.vok) {
       if (!(await confirmBox(t("who.allow", { name: v.name, p: q(cur.name) })))) return;
       try { await api("vendors_ok", { pkey: p, on: true }); keep(Object.assign({}, cur, { vok: true })); }
@@ -218,18 +221,18 @@ function NewTask({ pkey }) {
     <button class=${"field" + (p ? "" : " empty")} onClick=${() => setSheet({ k: "project", list: d.projects.filter((x) => !x.hidden) })}>
       <span>${p ? (cur ? cur.name : p) : t("new.pick")}</span><span class="dim">${ic("down", 18)}</span></button>
     <label class="lbl">${t("new.what")}</label>
-    <textarea ref=${plainField} rows="6" placeholder=${t("new.placeholder")} value=${text} onKeyDown=${sendKey(() => { if (!busy && p && (text.trim() || a.files.length)) send(); }, setText)} onInput=${(e) => setText(e.target.value)}/>
+    <textarea ref=${plainField} rows="6" placeholder=${vend ? t("new.placeholder.who", { name: vend.name }) : t("new.placeholder")} value=${text} onKeyDown=${sendKey(() => { if (!busy && p && (text.trim() || a.files.length)) send(); }, setText)} onInput=${(e) => setText(e.target.value)}/>
     <${Thumbs} a=${a}/>
     <${Attach} a=${a} disabled=${busy} wide=${true} keep=${{ k: "new", text }}/>
     ${d.stt ? html`<${Mic} v=${v} disabled=${busy} wide=${true}/>` : ""}
     ${vendors.length > 0 && html`<label class="lbl">${t("who.title")}</label>
     <button class="field" onClick=${() => setSheet({ k: "who" })}>
-      <span>${vend ? vend.name : "Claude"}<i class="dim vf-sub"> · ${vend ? t("who.inside.short") : t("who.claude")}</i></span><span class="dim">${ic("down", 18)}</span></button>`}
+      <span>${vend ? vend.name : "Claude"}<i class="dim vf-sub"> · ${vend ? t(vend.own ? "who.codex.short" : "who.inside.short") : t("who.claude")}</i></span><span class="dim">${ic("down", 18)}</span></button>`}
     <label class="lbl">${vend ? t("vend.model.pick", { name: vend.name }) : t("model.pick")}</label>
     <button class="field" onClick=${() => setSheet({ k: "model" })}>
-      <span>${vend ? model || vend.models[0] : choiceText(model, effort, d.choice)}</span><span class="dim">${ic("down", 18)}</span></button>
+      <span>${vend ? model || vend.models[0] || t("who.codex.model") : choiceText(model, effort, d.choice)}</span><span class="dim">${ic("down", 18)}</span></button>
     <button class="btn wide" disabled=${busy || !p || (!text.trim() && !a.files.length)} onClick=${send}>${t("new.start")}</button>
-    <div class="dim small">${vend ? t("new.about.vendor", { name: vend.name }) : t("new.about")}</div>
+    <div class="dim small">${vend ? (vend.own ? t("new.about.codex") : t("new.about.vendor", { name: vend.name })) : t("new.about")}</div>
     ${sheet && sheet.k === "who" && html`<${VendorPick} vendors=${vendors} cur=${whoNow} proj=${cur} onPick=${pickWho} onDefault=${makeDefault} onClose=${close}/>`}
     ${sheet && sheet.k === "project" && html`<${ProjectPick} projects=${sheet.list} cur=${p} create=${d.create} onClose=${close} onPick=${(k) => { if (k !== p) { setWho(""); setModel(""); } setP(k); haptic("success"); close(); }}/>`}
     ${sheet && sheet.k === "model" && (vend ? html`<${VendorModels} v=${vend} cur=${model} onClose=${close} onPick=${(m) => { setModel(m); haptic("success"); close(); }}/>`

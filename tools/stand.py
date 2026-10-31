@@ -40,7 +40,7 @@ offers "Second opinion · Codex" under its outcome (tools/second_check.py). STAN
 STAND_VENDORS=1 (stage M, step 2): DeepSeek has a made-up key (GLM and Kimi none), a key's check passes "sk-…" without any
 network, and a session ran on DeepSeek's model (SESSV) — its next turn runs now, from the app, on deepseek-v4-pro[1m];
 the session that waits for you (SESS4) ran on DeepSeek too, the weekly report on Fable — the cards and rows name the model;
-"Who does it" in New task, Settings → Other vendors (tools/vendors_check.py). STAND_REPORT=1: the weekly report hasn't
+"Who does it" in New task — Codex a stand-in that can do a task (M4.1) — Settings → Other vendors (tools/vendors_check.py). STAND_REPORT=1: the weekly report hasn't
 been put away — a plain report waits in "Your move" for "Got it" like any other (tools/gotit_check.py); without it (and
 without STAND_ASK2) the owner has put it away. VS Code's settings and the tab switch are made up on every stand: the app
 never reads this computer's."""
@@ -571,6 +571,12 @@ async def main():
         codex = fake_codex.launcher(str(T.TMP), str(conf))
         if second == "allowed":
             store.put("vendors.ok", {T.PKEY: time.time()})
+    if os.environ.get("STAND_VENDORS") == "1" and not second:   # stage M, M4.1: a stand-in Codex that can do a task
+        import fake_codex
+        conf = T.TMP / "stand-codex.json"
+        conf.write_text(json.dumps({"doer": {"wait": 3}, "sessions": str(T.TMP / "codex-sessions")}))
+        codex = fake_codex.launcher(str(T.TMP), str(conf))
+        second = "doer"
     p = pultd.Pult({"PULT_ALLOWED_USER_IDS": str(T.OWNER), "PULT_FORCE_AWAY": "1"}, tg, store)
     # Codex is the stand-in or none: this computer's own (ChatGPT.app) is never read here, as VS Code's settings aren't
     p.env["PULT_CODEX"] = codex if second else str(T.TMP / "no-codex")

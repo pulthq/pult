@@ -263,10 +263,9 @@ def inbox_name(path):
     return out
 
 
-def transcript_page(path, before=None, after=None, cwd=None, page=PAGE):
-    """A chunk of the chat: from the end of the file, up to byte `before` (older) or from byte `after` (newer).
-    → {"items": [...], "before": where to read older from, or None, "end": where to read newer from}.
-    The last unfinished line is skipped: it will be completed and come with the next `after`."""
+def _chunk(path, before, after, page):
+    """A chunk of a JSON-lines file for the chat: from its end, up to byte `before` (older) or from byte `after` (newer),
+    whole lines only. → (data, start, end) or a finished answer (a dict): nothing to read, or too much new to send."""
     try:
         with open(path, "rb") as f:
             f.seek(0, 2)
@@ -288,6 +287,17 @@ def transcript_page(path, before=None, after=None, cwd=None, page=PAGE):
     if start > 0 and after is None:
         cut = data.find(b"\n")
         start, data = start + cut + 1, data[cut + 1:]
+    return data, start, end
+
+
+def transcript_page(path, before=None, after=None, cwd=None, page=PAGE):
+    """A chunk of the chat: from the end of the file, up to byte `before` (older) or from byte `after` (newer).
+    → {"items": [...], "before": where to read older from, or None, "end": where to read newer from}.
+    The last unfinished line is skipped: it will be completed and come with the next `after`."""
+    got = _chunk(path, before, after, page)
+    if isinstance(got, dict):
+        return got
+    data, start, end = got
     items, tools = [], {}
     for line in data.split(b"\n"):
         if not line.strip():
@@ -354,6 +364,92 @@ def transcript_page(path, before=None, after=None, cwd=None, page=PAGE):
                      "input": _short(json.dumps(inp, ensure_ascii=False, indent=1), IO_MAX)}
                 tools[b.get("id")] = t
                 items.append(t)
+    return {"items": items, "before": (start if start > 0 else None) if after is None else None, "end": end}
+
+
+# ---------- a task Codex does (stage M, step M4.1): its history from its own file ----------
+
+CODEX_SESSIONS = os.path.join(os.path.expanduser("~"), ".codex", "sessions")
+_CX_CMD = re.compile(r"exec_command\((\{.*?\})\)", re.S)
+_CX_FILE = re.compile(r"\*\*\* (?:Add|Update|Delete) File: (.+)")
+_CX_HEAD = re.compile(r"^Script completed\nWall time [\d.]+ seconds\nOutput:\n")
+
+
+def is_codex(path):
+    """A task's history kept by Codex (rollout-….jsonl under its sessions), not a Claude Code transcript."""
+    return bool(path) and os.path.basename(str(path)).startswith("rollout-")
+
+
+def codex_step(inp):
+    """What a step of Codex's own `exec` tool did → (tool, input) in Claude Code's words, so the app and the turn's
+    lines show it the same way: a command ("Bash", its cmd) or a patch ("Edit", the first file; "files" — all of them).
+    Codex 0.148 writes both as a script: tools.exec_command({...}) or tools.apply_patch("*** Add File: …")."""
+    s = str(inp or "")
+    m = _CX_CMD.search(s)
+    if m:
+        try:
+            args = json.loads(m.group(1))
+        except ValueError:
+            args = {}
+        if isinstance(args, dict) and args.get("cmd"):
+            return "Bash", {"command": str(args["cmd"])}
+    if "apply_patch" in s:
+        body = s.replace("\\n", "\n")            # the patch is a string in the script: its lines are escaped
+        files = list(dict.fromkeys(f.strip() for f in _CX_FILE.findall(body)))
+        if files:
+            return "Edit", {"file_path": files[0], "files": files}
+    return "exec", {"script": s}
+
+
+def codex_page(path, before=None, after=None, cwd=None, page=PAGE):
+    """A chunk of a Codex task's chat from its history file, as transcript_page gives Claude's: the owner's words (a
+    message in the middle of a turn too), Codex's own, its steps — commands and patches — with what they printed, and a
+    stop. Codex keeps the same turn in several records: only the ones the chat needs are read."""
+    got = _chunk(path, before, after, page)
+    if isinstance(got, dict):
+        return got
+    data, start, end = got
+    cwd = os.path.realpath(cwd) if cwd else cwd        # Codex names files by the folder's real path (/private/var/…)
+    items, tools, turn = [], {}, None         # turn: the owner's messages in the turn that runs (None — none runs)
+    for line in data.split(b"\n"):
+        if not line.strip():
+            continue
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        p = e.get("payload") if isinstance(e, dict) and isinstance(e.get("payload"), dict) else {}
+        ts, kind, what = e.get("timestamp"), e.get("type"), p.get("type")
+        if kind == "event_msg" and what == "task_started":
+            turn = 0
+        elif kind == "event_msg" and what == "task_complete":
+            turn = None
+        if kind == "event_msg" and what == "user_message":
+            text = str(p.get("message") or "")
+            if text.strip():
+                items.append(user_item(text, ts, mid=bool(turn)))       # a second one in a turn came mid-turn (steer)
+            if turn is not None:
+                turn += 1
+        elif kind == "event_msg" and what == "agent_message":
+            text = str(p.get("message") or "")
+            if text.strip():
+                items.append({"k": "text", "text": _short(text, TEXT_MAX), "ts": ts})
+        elif kind == "event_msg" and what == "turn_aborted":
+            turn = None
+            items.append({"k": "note", "text": T("cx.stopped"), "ts": ts})
+        elif kind == "response_item" and what == "custom_tool_call":
+            name, inp = codex_step(p.get("input"))
+            t = {"k": "tool", "id": p.get("call_id"), "name": name, "ts": ts, "step": R.tool_step(name, inp, cwd) or name,
+                 "input": _short(inp.get("command") or "\n".join(inp.get("files") or []) or inp.get("script") or "", IO_MAX)}
+            tools[p.get("call_id")] = t
+            items.append(t)
+        elif kind == "response_item" and what == "custom_tool_call_output":
+            t = tools.get(p.get("call_id"))
+            out = p.get("output")
+            text = out if isinstance(out, str) else "\n".join(
+                str(b.get("text") or "") for b in out or [] if isinstance(b, dict))
+            if t is not None:
+                t.update(ok=True, out=_short(_CX_HEAD.sub("", text).strip(), IO_MAX))
     return {"items": items, "before": (start if start > 0 else None) if after is None else None, "end": end}
 
 

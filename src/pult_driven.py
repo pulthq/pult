@@ -16,6 +16,7 @@ import sys
 import time
 from pathlib import Path
 
+import pult_codex as CX
 import pult_hook
 import pult_render as R
 import pult_vendors as V
@@ -199,19 +200,25 @@ class Driven:
         lv = self.d.live.get(self.sid)
         return self.asking or bool(lv and lv.turn)
 
+    limit = MAX_RUNNING           # turns of this kind at once (Codex's tasks have their own, CODEX_RUNNING)
+
+    @property
+    def sem(self):
+        return self.d.run_sem
+
     async def slot(self, text, origin):
         """A place among the MAX_RUNNING turns from Telegram and the app → True (taken: give it back), False (over the
         limit: "Start now"), None (Stop while it waited: the message is dropped). While it waits the session is "in
         the queue" — in the app, and in the topic when the message came from Telegram. A queue nobody could see made
         a 4th question look dead: it waited 4 minutes, the owner sent it again, it ran twice (2026-10-23)."""
-        sem = self.d.run_sem
+        sem = self.sem
         if not sem.locked():
             await sem.acquire()
             return True
         self.queued, self.waiting = time.time(), R.short(R.prompt_text(text), 300)
         self.jump.clear()
         self.dropped.clear()
-        log("Telegram session %s: in the queue, %d turns run" % (self.sid[:8], MAX_RUNNING))
+        log("Telegram session %s: in the queue, %d turns run" % (self.sid[:8], self.limit))
         await self.d.queue_shown(self, origin)
         take = asyncio.ensure_future(sem.acquire())
         jump, drop = asyncio.ensure_future(self.jump.wait()), asyncio.ensure_future(self.dropped.wait())
@@ -273,8 +280,11 @@ class Driven:
             if not (lv and lv.turn):
                 return dropped                   # no turn runs: nothing to interrupt
         if self.client:
-            await self.client.interrupt()
+            await self.interrupt()
         return dropped
+
+    async def interrupt(self):
+        await self.client.interrupt()
 
     async def _wait_hook(self, tool, inp, ctx):
         # The decision arrives via the PermissionRequest hook (buttons in Telegram) and cancels this call.
@@ -381,7 +391,7 @@ class Driven:
                                 self.d.expect.pop(self.sid, None)
                         finally:
                             if took:
-                                self.d.run_sem.release()
+                                self.sem.release()
                 finally:
                     self.closing = True
                     reader.cancel()
@@ -396,5 +406,263 @@ class Driven:
             self.closing = True
             self.client = None
             if self.d.driven.get(self.sid) is self:      # a message may have started a new one for the session meanwhile
+                self.d.driven.pop(self.sid, None)
+                self.d.out_gone_all(self.sid)
+
+
+# ---------- a task Codex does (stage M, step M4.1; Q121–Q123) ----------
+
+CODEX_RUNNING = 2        # Codex's turns at once: its app-server takes ~200 MB (tests/probe_codex_doer.py), more with its MCP servers
+
+
+class _Open:
+    """The hook's connection a permission request watches for "answered on the computer": Codex has none — it waits."""
+
+    async def read(self):
+        await asyncio.Event().wait()
+
+
+class CodexDriven(Driven):
+    """A task Codex does — OpenAI's own agent through `codex app-server`, on the owner's ChatGPT plan, in the project's
+    folder: a sandbox that writes only there, asking only to leave it (the owner, Q121). Its events go into the daemon
+    the way a Claude Code session's hooks do — a turn's start, its steps, a permission, its end — so the cards, whose
+    move, the topic, the clock, the tags and the turn's files work as they are. Pult's session id stays its own; Codex's
+    thread and its history file are kept beside it ("codex.<sid>" in the store). A message in the middle of a turn
+    goes into that turn (turn/steer), Stop interrupts it (turn/interrupt), a continuation resumes the thread — after
+    Pult's restart too (probe 2026-10-31, Codex 0.148)."""
+
+    limit = CODEX_RUNNING
+
+    def __init__(self, d, sid, path, resume=None, fork=False, model=None, effort=None):
+        self.server = None
+        self.thread = None
+        self.turn_id = None           # Codex's id of the turn that runs
+        self.prompt_id = None         # the turn's id for the daemon: a message steered into it comes with the same one
+        self.n = 0
+        self.said = ""                # Codex's latest words in the turn: its outcome
+        self.changes = {}             # a file change's item → its files, for the approval Codex asks for it
+        super().__init__(d, sid, path, resume=resume, fork=fork, model=model, effort=effort)
+
+    @property
+    def sem(self):
+        if getattr(self.d, "codex_sem", None) is None:
+            self.d.codex_sem = asyncio.Semaphore(CODEX_RUNNING)
+        return self.d.codex_sem
+
+    def pkey(self):
+        lv = self.d.live.get(self.sid)
+        row = self.d.store.session(self.sid)
+        return (lv and lv.pkey) or (row["pkey"] if row else None)
+
+    async def hook(self, name, **ev):
+        """An event of the task, as the daemon takes a Claude Code session's hook (pultd.on_hook): its project given,
+        since Codex's history file lives in no project's folder. → the answer — a permission's decision."""
+        ev.update(hook_event_name=name, session_id=self.sid, cwd=self.path, transcript_path="")
+        return await self.d.on_hook({"event": ev, "driven": True, "pkey": self.pkey(),
+                                     "pid": self.server.p.pid if self.server else None}, _Open(), None)
+
+    async def answer(self, m):
+        """Codex asks — to run a command outside its sandbox, to change files there: the same card as Claude's
+        permission request, the owner's decision back as Codex's own ("acceptForSession" for "in this task"); a refusal
+        with the owner's words goes into the turn as well. Anything else it asks is declined: in its default mode it
+        has no questions of its own (it asks in words), and Pult offers no tools."""
+        meth, prm = m.get("method"), m.get("params") if isinstance(m.get("params"), dict) else {}
+        try:
+            if meth in ("item/commandExecution/requestApproval", "execCommandApproval"):
+                tool, inp = "Bash", {"command": CX.shell_of(prm.get("command")), "description": prm.get("reason") or ""}
+            elif meth in ("item/fileChange/requestApproval", "applyPatchApproval"):
+                files = self.changes.get(prm.get("itemId")) or []
+                tool, inp = "Edit", {"file_path": files[0] if files else str(prm.get("grantRoot") or ""),
+                                     "description": prm.get("reason") or ""}
+            else:
+                log("Codex task %s: declined its %s" % (self.sid[:8], meth))
+                await self.server.send({"id": m["id"], "error": {"code": -32601, "message": "Pult doesn't answer " + str(meth)}})
+                return
+            res = await self.hook("PermissionRequest", tool_name=tool, tool_input=inp,
+                                  permission_suggestions=[{"type": "codexSession"}])
+            dec = (((res or {}).get("output") or {}).get("hookSpecificOutput") or {}).get("decision") or {}
+            if dec.get("behavior") == "allow":
+                said = "acceptForSession" if dec.get("updatedPermissions") else "accept"
+            else:
+                said = "decline"
+            await self.server.send({"id": m["id"], "result": {"decision": said}})
+            words = str(dec.get("message") or "")
+            if said == "decline" and " replied " in words and self.turn_id:     # "Deny with a note": the owner's words
+                await self.server.request("turn/steer", {"threadId": self.thread, "expectedTurnId": self.turn_id,
+                                                         "input": [{"type": "text", "text": words}]})
+        except (CX.CodexError, ConnectionError) as e:
+            log("Codex task %s: its %s — %r" % (self.sid[:8], meth, e))
+
+    async def read(self):
+        """Codex's events → the daemon's: a step done (a command, a change of files), its words, how full its context
+        is, the turn's end — finished, failed, or stopped (then without an outcome, as Claude's interrupted turn)."""
+        s = self.server
+        try:
+            while True:
+                m = await s.events.get()
+                if m is None:
+                    break
+                meth = m.get("method")
+                prm = m.get("params") if isinstance(m.get("params"), dict) else {}
+                if prm.get("threadId") not in (None, self.thread):
+                    continue
+                it = prm.get("item") if isinstance(prm.get("item"), dict) else {}
+                if meth == "item/started" and it.get("type") == "fileChange":
+                    self.changes[it.get("id")] = [c.get("path") for c in it.get("changes") or []
+                                                  if isinstance(c, dict) and c.get("path")]
+                elif meth == "item/completed" and it.get("type") == "agentMessage" and (it.get("text") or "").strip():
+                    self.said = it["text"]
+                    lv = self.d.live.get(self.sid)
+                    if lv and lv.turn:
+                        lv.turn.now = self.said
+                        lv.turn.changed.set()
+                    self.d.changed(self.sid)
+                elif meth == "item/completed" and it.get("type") == "commandExecution":
+                    await self.hook("PostToolUse", tool_name="Bash", tool_input={"command": CX.shell_of(it.get("command"))})
+                elif meth == "item/completed" and it.get("type") == "fileChange":
+                    files = [c.get("path") for c in it.get("changes") or [] if isinstance(c, dict) and c.get("path")]
+                    await self.hook("PostToolUse", tool_name="Edit", tool_input={"file_path": files[0] if files else ""})
+                elif meth == "thread/tokenUsage/updated":
+                    window = (prm.get("tokenUsage") or {}).get("modelContextWindow")
+                    if window:
+                        keep = self.d.store.get("codex." + self.sid) or {}
+                        self.d.set_ctx(self.sid, int(window), 0, model=keep.get("model"))
+                elif meth == "turn/completed":
+                    tr = prm.get("turn") if isinstance(prm.get("turn"), dict) else {}
+                    status = tr.get("status")
+                    if status == "failed":
+                        await self.hook("StopFailure", error=CX.fail_of(tr.get("error")), last_assistant_message=self.said)
+                    elif status == "interrupted":
+                        self.d.result_seen(self.sid)
+                    else:
+                        await self.hook("Stop", last_assistant_message=self.said, background_tasks=[])
+                    self.turn_id = None
+                    self.result.set()
+        finally:
+            self.result.set()
+            self.q.put_nowait(None)
+
+    async def say(self, text, origin):
+        """A message for this task: into the turn that runs (turn/steer — Codex reads it at its next step, probe
+        2026-10-31), else the next turn."""
+        if self.server and self.asking and self.turn_id:
+            try:
+                await self.server.request("turn/steer", {"threadId": self.thread, "expectedTurnId": self.turn_id,
+                                                         "input": [{"type": "text", "text": text}]})
+                if origin:
+                    self.d.expect[self.sid] = origin
+                await self.hook("UserPromptSubmit", prompt=text, prompt_id=self.prompt_id)    # the turn's: absorbed
+                return
+            except CX.CodexError as e:
+                log("Codex task %s: a message mid-turn: %r" % (self.sid[:8], e))
+        self.q.put_nowait((text, origin))
+
+    async def interrupt(self):
+        if self.server and self.turn_id:
+            await self.server.request("turn/interrupt", {"threadId": self.thread, "turnId": self.turn_id})
+
+    async def start(self):
+        """Codex's app-server, signed in; the task's thread — a new one, or the one it had (resume). → its id."""
+        info = await self.d.codex_state()
+        if not info["ok"]:
+            raise CX.CodexError(info["why"] or "missing", "Codex %s can't do tasks here" % (info["v"] or ""))
+        env = {k: v for k, v in os.environ.items() if not k.startswith("PULT_")}
+        s = self.server = await CX.AppServer.start(info["path"], self.path, env, on_request=self.answer)
+        await s.request("initialize", {"clientInfo": {"name": "pult", "title": "Pult", "version": self.d.D.VERSION}})
+        await s.send({"method": "initialized"})
+        if not (await s.request("account/read", {})).get("account"):
+            raise CX.CodexError("login", "Codex is not signed in to ChatGPT")
+        keep = self.d.store.get("codex." + self.sid) or {}
+        params = {"cwd": self.path, "sandbox": CX.SANDBOX, "approvalPolicy": CX.APPROVAL}
+        if os.path.isfile(os.path.join(self.path, "CLAUDE.md")):
+            params["developerInstructions"] = CX.RULES
+        if self.resume and keep.get("thread"):
+            r = await s.request("thread/resume", dict(params, threadId=keep["thread"]))
+        else:
+            if self.want_model:
+                params["model"] = self.want_model
+            r = await s.request("thread/start", params)
+        th = r.get("thread") if isinstance(r.get("thread"), dict) else {}
+        keep = {"thread": th.get("id") or keep.get("thread"), "path": th.get("path") or keep.get("path"),
+                "model": r.get("model") or keep.get("model"), "effort": r.get("reasoningEffort") or keep.get("effort")}
+        if not keep["thread"]:
+            raise CX.CodexError("failed", "Codex gave no thread")
+        self.d.store.put("codex." + self.sid, keep)
+        lv = self.d.live.get(self.sid)
+        if lv:
+            lv.transcript = keep["path"] or lv.transcript
+        self.thread = keep["thread"]
+        log("Codex task %s: thread %s · %s" % (self.sid[:8], self.thread[:13], keep["model"]))
+        return self.thread
+
+    async def turn(self, text):
+        """One turn: the daemon hears of it first (as Claude Code's UserPromptSubmit), then Codex gets it; the owner's
+        choice of model and effort for this task goes with every turn."""
+        self.n += 1
+        self.prompt_id, self.said, self.changes = "cx-%s-%d" % (self.sid[:8], self.n), "", {}
+        await self.hook("UserPromptSubmit", prompt=text, prompt_id=self.prompt_id)
+        choice = self.d.choice.get(self.sid) or {}
+        tp = {"threadId": self.thread, "input": [{"type": "text", "text": text}]}
+        if choice.get("model"):
+            tp["model"] = choice["model"]
+        if choice.get("effort") in CX.EFFORTS:
+            tp["effort"] = choice["effort"]
+        r = await self.server.request("turn/start", tp)
+        self.turn_id = (r.get("turn") or {}).get("id")
+
+    async def run(self):
+        reader = None
+        try:
+            await self.start()
+            self.client = self                       # alive: Stop and the app reach it
+            await self.hook("SessionStart", source="resume" if self.resume else "startup")
+            reader = asyncio.create_task(self.read())
+            while True:
+                try:
+                    item = await asyncio.wait_for(self.q.get(), timeout=DRIVEN_IDLE)
+                except asyncio.TimeoutError:
+                    if self.busy:
+                        continue
+                    break
+                if item is None:
+                    break
+                text, origin = item
+                took = await self.slot(text, origin)
+                if took is None:
+                    self.d.out_set(self.sid, "gone", text)
+                    continue
+                try:
+                    self.result.clear()
+                    self.d.expect[self.sid] = origin
+                    try:
+                        self.asking = True
+                        await self.turn(text)
+                        await self.result.wait()
+                    finally:
+                        self.asking = False
+                        self.d.expect.pop(self.sid, None)
+                finally:
+                    if took:
+                        self.sem.release()
+        except Exception as e:
+            log("Codex task %s crashed: %r" % (self.sid[:8], e))
+            why = e.text if isinstance(e, CX.CodexError) else repr(e)
+            await self.d.notice(self.sid, self.d.t("err.session", err=R.esc(R.short(why, 600))))
+        finally:
+            self.closing = True
+            self.client = None
+            if reader:
+                reader.cancel()
+            if self.server:
+                try:
+                    await self.server.close()
+                except Exception as e:
+                    log("Codex task %s: closing its app-server — %r" % (self.sid[:8], e))
+            if self.thread:
+                try:
+                    await self.hook("SessionEnd")
+                except Exception as e:
+                    log("Codex task %s: its end — %r" % (self.sid[:8], e))
+            if self.d.driven.get(self.sid) is self:
                 self.d.driven.pop(self.sid, None)
                 self.d.out_gone_all(self.sid)

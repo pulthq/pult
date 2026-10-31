@@ -128,7 +128,7 @@ class Api:
         lv = self.live.get(req.sid) or self.stub(req.sid)
         d = {"rid": req.rid, "sid": req.sid, "kind": req.kind, "tool": req.tool, "title": self.title(lv),
              "project": self.project_label(lv.pkey), "suggest": bool(req.suggestions), "since": req.ts,
-             "work": self.work_total(req.sid)}
+             "work": self.work_total(req.sid), "who": "codex" if self.store.vendor_of(req.sid) == "codex" else None}
         if req.kind == "ask":
             d["questions"] = req.inp.get("questions") or []
             d["chosen"] = {str(i): v for i, v in req.chosen.items()}
@@ -150,6 +150,8 @@ class Api:
             path, _ = self.transcript_of(sid)
         except ValueError:
             return None, self.llm_view(sid, None)
+        if PW.is_codex(path):
+            return None, self.llm_view(sid, None)             # Codex's own figures aren't Claude Code's (stage M, M4.1)
         st = await asyncio.to_thread(self.stats.get, path)
         await self.work_ready(sid, path)             # the clock has the turns from before Pult counted them (work_into)
         ctx = self.ctx_of(sid, (st or {}).get("model"))
@@ -169,6 +171,10 @@ class Api:
         known yet (no answer so far, nothing picked)."""
         model, chosen = (stats or {}).get("model"), (self.choice.get(sid) or {}).get("model")
         vid = self.store.vendor_of(sid)
+        if vid == "codex":
+            keep = self.store.get("codex." + sid) or {}
+            got = chosen or keep.get("model") or next(iter(self.codex_models()), None)
+            return {"vendor": "Codex", "model": got} if got else {"vendor": "Codex", "model": "Codex"}
         p = self.vendor_profiles().get(vid) if vid else None
         if p:
             return {"vendor": p["name"], "model": chosen or model or p["models"][0]}
@@ -389,6 +395,7 @@ class Api:
         return {k: {n: len(v[n]) for n in ("open", "work", "ask")} for k, v in by.items()}
 
     async def api_projects(self):
+        await self.codex_state()                    # Codex for "Who does it" (stage M, M4.1): looked up, kept a while
         known = {r["pkey"]: r["path"] for r in self.store.db.execute("SELECT pkey, path FROM topics") if r["path"]}
         counts = await self.project_counts()
         pins, hides = self.store.pins(), self.store.hides()
@@ -414,7 +421,7 @@ class Api:
         # vendors: who else can do a task (stage M, step 2) — each with its key's state and models
         return {"projects": out, "stt": self.stt_state()["on"], "create": True,
                 "choice": {"model": p["model"], "effort": p["effort"]}, "vendors": self.vendors_list(),
-                "vendor_all": self.vendor_all()}
+                "vendor_all": self.vendor_all(), "codex": self.codex_view()}
 
     async def known_project(self, pkey):
         """A project the computer knows — with a topic, or with transcripts: the only ones the app's lists show."""
@@ -914,8 +921,9 @@ class Api:
         # opening it puts nothing away: the outcome stays "your move" until the owner presses "Got it" or answers —
         # a report too (the owner, 2026-10-30: "I want to send every session I start to the checked ones myself";
         # before, a look put a report away, and so did the model's "only a report" — and a task went by unnoticed)
-        page = await asyncio.to_thread(PW.transcript_page, path, before, after, lv.cwd)
-        stats = await asyncio.to_thread(self.stats.get, path)
+        codex = PW.is_codex(path)
+        page = await asyncio.to_thread(PW.codex_page if codex else PW.transcript_page, path, before, after, lv.cwd)
+        stats = None if codex else await asyncio.to_thread(self.stats.get, path)
         await self.work_ready(sid, path)
         if outcome:
             outcome["work"] = self.work_total(sid)       # the task's clock, stopped: all its work so far
@@ -1032,6 +1040,8 @@ class Api:
         path = self.project_path(pkey)
         if not (text or files) or not path or not os.path.isdir(path):
             raise ValueError(self.t("err.need_project_text"))
+        if vendor in ("codex", None):
+            await self.codex_state()
         vid = self.vendor_for_new(pkey, vendor)
         if vid:
             model, effort = self.vendor_model(vid, model), None    # a vendor's model; the effort is Claude's own
@@ -1107,7 +1117,7 @@ class Api:
         """The project's own choice for its new tasks: a vendor's id, "claude" (Claude, whatever the common default
         says), or None — it follows the common one."""
         vid = (self.store.get("vendors.default") or {}).get(pkey)
-        return vid if vid in V.PRESETS or vid == "claude" else None
+        return vid if vid in V.PRESETS or vid in ("claude", "codex") else None
 
     def vendor_all(self):
         """Who does new tasks by default everywhere (Settings → Other vendors; the owner, 2026-10-30: one tap if
@@ -1120,7 +1130,27 @@ class Api:
         — a vendor only while its key is here and the project allowed — → a vendor's id, or "claude"."""
         own = self.vendor_default(pkey)
         vid = own or self.vendor_all()
-        return vid if vid and vid != "claude" and self.vendor_key(vid) and self.vendors_ok(pkey) else "claude"
+        return vid if vid and vid != "claude" and self.vendor_ready(vid) and self.vendors_ok(pkey) else "claude"
+
+    def vendor_ready(self, vid):
+        """A vendor can take a task now: its key is here — or, Codex, it is here and Pult can use it."""
+        return self.codex_ready() if vid == "codex" else bool(self.vendor_key(vid))
+
+    def codex_ready(self, sure=False):
+        """Codex here and usable, as last looked up (codex_state). Not looked up yet — yes, unless sure: a task's own
+        start looks again (pult_driven.CodexDriven.start)."""
+        got = self._codex[1]
+        return bool(got.get("ok")) if got is not None else not sure
+
+    def codex_models(self):
+        """Codex's models, its default first (its own list, kept per version); [] — not known yet."""
+        got = self._codex[1] or {}
+        return (self.store.get("codex.models") or {}).get(got.get("v") or "", [])
+
+    def codex_view(self):
+        """Codex for "Who does it" (stage M, M4.1): whether it can take a task, why not, its models."""
+        got = self._codex[1] or {}
+        return {"ok": bool(got.get("ok")), "why": got.get("why"), "v": got.get("v"), "models": self.codex_models()}
 
     def vendors_list(self):
         """For the app: each vendor — its name, whether its key is here, its models (the main one first)."""
@@ -1130,6 +1160,10 @@ class Api:
     def vendor_view(self, sid):
         """The vendor a session runs on, for its screen: {"id", "name", "models"}, or None — Claude."""
         vid = self.store.vendor_of(sid)
+        if vid == "codex":
+            keep = self.store.get("codex." + sid) or {}
+            models = list(dict.fromkeys([m for m in [keep.get("model")] if m] + self.codex_models()))   # its own first
+            return {"id": "codex", "name": "Codex", "models": models, "key": self.codex_ready(), "own": True}
         p = self.vendor_profiles().get(vid) if vid else None
         return {"id": vid, "name": p["name"], "models": p["models"], "key": bool(self.vendor_key(vid))} if p else None
 
@@ -1140,8 +1174,11 @@ class Api:
         if not vid:
             return None
         p = self.vendor_profiles().get(vid)
-        name = p["name"] if p else vid
-        if not self.vendor_key(vid):
+        name = "Codex" if vid == "codex" else p["name"] if p else vid
+        if vid == "codex":
+            if not self.codex_ready():
+                return self.t("vendor.err.codex")
+        elif not self.vendor_key(vid):
             return self.t("vendor.err.gone", name=name)
         row = self.store.session(sid)
         pkey = pkey or (row["pkey"] if row else None)
@@ -1156,6 +1193,12 @@ class Api:
         if vendor is None:
             vid = self.vendor_who(pkey)
             return None if vid == "claude" else vid
+        if vendor == "codex":
+            if not self.vendors_ok(pkey):
+                raise ValueError(self.t("vendor.err.allow", name="Codex"))
+            if not self.codex_ready():
+                raise ValueError(self.t("vendor.err.codex"))
+            return vendor
         p = self.vendor_profiles().get(vendor)
         if not p:
             raise ValueError("bad vendor")
@@ -1282,6 +1325,12 @@ class Api:
                 got["ok"] = bool(seen[v]["ok"])
             if not got["ok"]:
                 got["why"] = "version"
+            known = self.store.get("codex.models") or {}
+            if got["ok"] and v not in known:
+                known[v] = await CX.models(path, env={k: x for k, x in env.items() if not k.startswith("PULT_")},
+                                           client=self.D.VERSION)
+                self.store.put("codex.models", known)
+                log("codex %s: models %s" % (v, ", ".join(known[v]) or "unknown"))
         self._codex = (time.monotonic(), got)
         return got
 
@@ -1309,7 +1358,8 @@ class Api:
         review while it runs and once done, until the owner puts it away, else None."""
         info = await self.codex_state()
         job = self.second_job(sid)
-        return {"can": bool(info["path"] and rec and lv.turn is None and self.store.turn(sid)),
+        mine = self.store.vendor_of(sid) == "codex"            # Codex did it: Claude's second opinion is step 4.2 (Q122)
+        return {"can": bool(info["path"] and rec and lv.turn is None and self.store.turn(sid)) and not mine,
                 "why": info["why"] if info["path"] else None, "v": info["v"],
                 "job": {k: job.get(k) for k in ("st", "ts", "t0", "dur", "steps", "model", "summary", "items", "why",
                                                 "text", "limits")} if job and not job.get("away") else None}

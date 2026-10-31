@@ -88,11 +88,14 @@ const modelName = (m) => {
 // which model does a session's work, in a word or two (the owner, 2026-10-30): Claude's by its name — "Opus 5.5";
 // another vendor's by the vendor, then its model without the vendor's name again — "DeepSeek · v4-pro". "[1m]" goes:
 // the window is the context gauge's to say
+// Codex's models as OpenAI writes them: gpt-5.6-sol → GPT-5.6-Sol (the second opinion's card does the same)
+const codexModel = (m) => String(m || "").replace(/^gpt/i, "GPT").replace(/-([a-z])/g, (x, c) => "-" + c.toUpperCase());
 const llmName = (l) => {
   if (!l || !l.model) return "";
   const m = String(l.model).replace(/\[1m\]$/i, "");
   if (!l.vendor) return modelName(m);
   const own = m.toLowerCase().startsWith(l.vendor.toLowerCase() + "-") ? m.slice(l.vendor.length + 1) : m;
+  if (l.vendor === "Codex") return "Codex · " + codexModel(own);
   return l.vendor + " · " + own;
 };
 // a block of code — in Claude's words, a plan, a markdown file, the command a permission asks about — is copied whole
@@ -452,4 +455,4 @@ function Loading({ err }) {
   return html`<div class="empty">${err || (c.state === "nomac" ? t("loading.nomac") : c.state === "denied" ? "" : t("loading"))}</div>`;
 }
 
-export { About, ChoicePick, Dots, GEAR, GLYPH, Loading, MODES, ModePick, ModelPick, Sheet, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, bytes, choiceText, copyRich, dayLabel, dot, dotted, dur, durShort, effortName, hhmm, home, hue, ic, keyTap, kilo, level, llmName, modelName, nb, num, pauseChip, pct, plainField, queueChip, quiet, resetText, sendKey, TAG_H, tagChips, tagJob, tagSt, toDate, useNow, workChip };
+export { About, ChoicePick, Dots, GEAR, GLYPH, Loading, MODES, ModePick, ModelPick, Sheet, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, bytes, choiceText, codexModel, copyRich, dayLabel, dot, dotted, dur, durShort, effortName, hhmm, home, hue, ic, keyTap, kilo, level, llmName, modelName, nb, num, pauseChip, pct, plainField, queueChip, quiet, resetText, sendKey, TAG_H, tagChips, tagJob, tagSt, toDate, useNow, workChip };

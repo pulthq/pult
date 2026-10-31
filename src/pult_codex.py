@@ -437,10 +437,11 @@ def window(limits):
 
 class AppServer:
     """One `codex app-server` process: requests with their answers, notifications in a queue (None — it ended). A
-    request of the server's own — an approval, a question — is declined: a review asks nothing, and nothing may hang
-    waiting for an answer that never comes."""
+    request of the server's own — an approval, a question — goes to on_request (a task Codex does, M4.1: answered with
+    the owner's decision, however long it takes); without one it is declined: a review asks nothing, and nothing may
+    hang waiting for an answer that never comes."""
 
-    def __init__(self, proc):
+    def __init__(self, proc, on_request=None):
         self.p = proc
         self.n = 0
         self.wait = {}
@@ -448,16 +449,17 @@ class AppServer:
         self.asked = []                    # the server's own requests, declined (the journal says which)
         self.err = collections.deque(maxlen=12)
         self.tasks = []
+        self.on_request = on_request
 
     @classmethod
-    async def start(cls, path, cwd, env):
+    async def start(cls, path, cwd, env, on_request=None):
         try:
             p = await asyncio.create_subprocess_exec(path, "app-server", stdin=asyncio.subprocess.PIPE,
                                                      stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                                                      cwd=cwd, env=env, limit=LINE_MAX)
         except OSError as e:
             raise CodexError("start", str(e))
-        s = cls(p)
+        s = cls(p, on_request)
         s.tasks = [asyncio.create_task(s._read()), asyncio.create_task(s._read_err())]
         return s
 
@@ -477,6 +479,9 @@ class AppServer:
                 if not isinstance(m, dict):
                     continue
                 if "method" in m and "id" in m:
+                    if self.on_request:
+                        self.tasks.append(asyncio.create_task(self.on_request(m)))     # may wait for the owner for hours
+                        continue
                     self.asked.append(str(m.get("method")))
                     try:
                         await self.send({"id": m["id"], "error": {"code": -32601, "message": "Pult's review asks nothing"}})
@@ -588,6 +593,52 @@ def kind_of(err):
     if re.search(r"usage limit|rate limit|\b429\b", words, re.I):
         return "limit"
     return "failed"
+
+
+# ---------- a task Codex does (stage M, step M4.1; Q121–Q123) — pult_driven.CodexDriven drives it ----------
+
+SANDBOX = "workspace-write"     # it writes in the project's folder only
+APPROVAL = "on-request"         # it asks only to leave that sandbox — the network, a write outside (the owner, Q121)
+EFFORTS = ("low", "medium", "high", "xhigh")
+# Codex reads AGENTS.md, never CLAUDE.md (tests/probe_codex_doer.py): the project's rules reach it this way
+RULES = ("This project's rules for coding agents are in CLAUDE.md at the root of this folder, and in CLAUDE.md files in "
+         "the folders under it: read the root one before you start, the others when you work in their folders, and "
+         "follow them as you would AGENTS.md.")
+FAILS = {"limit": "codex_limit", "login": "codex_login"}
+
+
+def shell_of(command):
+    """A command Codex asks to run, as a person reads it: Codex 0.148 wraps it as `/bin/zsh -lc "…"`."""
+    s = str(command or "")
+    try:
+        a = shlex.split(s)
+    except ValueError:
+        return s
+    if len(a) == 3 and a[1] in ("-lc", "-c") and os.path.basename(a[0]) in ("zsh", "bash", "sh"):
+        return a[2]
+    return s
+
+
+def fail_of(err):
+    """A turn Codex couldn't finish → the code Pult tells a turn's failure by (pultd.fail_text)."""
+    return FAILS.get(kind_of(err), "codex_error")
+
+
+async def models(path, env=None, client="0"):
+    """Codex's models for "Who does it" — its own list (model/list), the default first, hidden ones left out:
+    [model id]; [] when it can't say. One app-server for a moment (~2–4 s): Pult asks once per Codex version."""
+    s = await AppServer.start(path, tempfile.gettempdir(), env)
+    try:
+        await s.request("initialize", {"clientInfo": {"name": "pult", "title": "Pult", "version": client}})
+        await s.send({"method": "initialized"})
+        got = await s.request("model/list", {})
+        rows = [m for m in got.get("data") or [] if isinstance(m, dict) and not m.get("hidden") and m.get("model")]
+        rows.sort(key=lambda m: not m.get("isDefault"))
+        return [m["model"] for m in rows]
+    except CodexError:
+        return []
+    finally:
+        await s.close()
 
 
 async def review(path, cwd, instructions_text, env=None, on_step=None, timeout=TIMEOUT, client="0"):

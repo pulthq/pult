@@ -4,7 +4,8 @@
 
 Pult is one small daemon on your computer, **next to** the AI agents rather than in front of them. It hears every
 Claude Code session through Claude Code's hooks; starts sessions of its own through the Agent SDK — on Claude's
-models, or on another vendor's with your key; asks Codex for a second opinion over Codex's own protocol; and,
+models, or on another vendor's with your key; gives Codex a task, or asks it for a second opinion, over Codex's own
+protocol; and,
 optionally, writes into open VS Code tabs through a process wrapper. Every agent keeps its own program, its own
 sign-in and its own line to its vendor. Pult itself talks only to Telegram's Bot API and to an optional relay on your
 own server, and both of those connections go out from the computer. **Nothing on the computer listens on the
@@ -141,6 +142,14 @@ words and Claude's report, so that what was done on purpose isn't taken for a bu
 asks nothing and keeps the review in its own history; Pult checks a Codex version it wasn't tested on against
 Codex's own protocol schema before the first review.
 
+A task Codex does runs the same way, on its own program: Pult starts Codex's `app-server` in the project's folder with
+a sandbox that writes only there and asks only to leave it — the network, a write outside (`workspace-write`,
+`on-request`). Codex's events become the ones Claude Code's hooks bring — a turn's start, a step, a permission, the
+outcome — so the cards, whose move, the topic and the clock are the same; a message mid-turn goes into the turn
+(`turn/steer`), Stop interrupts it, a continuation resumes Codex's thread. Its history is Codex's own file, which the
+app reads for the session's screen; the project's rules from CLAUDE.md go to Codex in its developer instructions, since
+it reads only AGENTS.md (`pult_driven.CodexDriven`).
+
 ## The web app: a relay that stores nothing
 
 ```mermaid
@@ -216,7 +225,7 @@ flowchart LR
 | `src/pultd.py` | the daemon: events, sessions, Telegram, warnings |
 | `src/pult_api.py` | what the app's screens ask — Home, projects, a session, a new project, files, voice, spend, settings: the handlers of their requests, a part of the daemon itself (a mixin of its class), reading the daemon's own settings through the daemon |
 | `src/pult_parts.py` | Pult's parts and its updates — the Settings screen "Pult and its parts" and what keeps Pult current: an update installed from the app, the relay's server following this computer, releases on GitHub, every part against what is installed, the check of a Claude Code version VS Code has downloaded; a mixin of the daemon's class, like `pult_api` |
-| `src/pult_driven.py` | the sessions Pult runs itself through the Agent SDK — new, continued or a copy, their place among the turns that run at once, the hooks put into them — and what Pult keeps of every live session |
+| `src/pult_driven.py` | the sessions Pult runs itself through the Agent SDK — new, continued or a copy, their place among the turns that run at once, the hooks put into them — the tasks Codex does over its `app-server`, and what Pult keeps of every live session |
 | `src/pult_tg.py` | the daemon's line to Telegram — the Bot API client (through the proxy first, directly when that fails) and the queue every message goes through within Telegram's limits — and its state database |
 | `src/pult_hook.py` | the hook: an event to the daemon, a decision back; standard library only |
 | `src/pult_tab.py`, `src/pult-tab.sh` | the tab wrapper and its launcher |
