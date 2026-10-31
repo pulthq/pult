@@ -371,6 +371,7 @@ def transcript_page(path, before=None, after=None, cwd=None, page=PAGE):
 
 CODEX_SESSIONS = os.path.join(os.path.expanduser("~"), ".codex", "sessions")
 _CX_CMD = re.compile(r"exec_command\((\{.*?\})\)", re.S)
+_CX_ARG = re.compile(r'"cmd"\s*:\s*"((?:[^"\\]|\\.)*)"')
 _CX_FILE = re.compile(r"\*\*\* (?:Add|Update|Delete) File: (.+)")
 _CX_HEAD = re.compile(r"^Script completed\nWall time [\d.]+ seconds\nOutput:\n")
 
@@ -393,6 +394,12 @@ def codex_step(inp):
             args = {}
         if isinstance(args, dict) and args.get("cmd"):
             return "Bash", {"command": str(args["cmd"])}
+    m = _CX_ARG.search(s)                     # the script's arguments aren't strict JSON: its cmd alone
+    if m:
+        try:
+            return "Bash", {"command": json.loads('"%s"' % m.group(1))}
+        except ValueError:
+            return "Bash", {"command": m.group(1)}
     if "apply_patch" in s:
         body = s.replace("\\n", "\n")            # the patch is a string in the script: its lines are escaped
         files = list(dict.fromkeys(f.strip() for f in _CX_FILE.findall(body)))
@@ -439,6 +446,8 @@ def codex_page(path, before=None, after=None, cwd=None, page=PAGE):
             items.append({"k": "note", "text": T("cx.stopped"), "ts": ts})
         elif kind == "response_item" and what == "custom_tool_call":
             name, inp = codex_step(p.get("input"))
+            if cwd and inp.get("file_path"):              # as the folder: by the real path (Windows: RUNNER~1 → runneradmin)
+                inp["file_path"] = os.path.realpath(inp["file_path"])
             t = {"k": "tool", "id": p.get("call_id"), "name": name, "ts": ts, "step": R.tool_step(name, inp, cwd) or name,
                  "input": _short(inp.get("command") or "\n".join(inp.get("files") or []) or inp.get("script") or "", IO_MAX)}
             tools[p.get("call_id")] = t

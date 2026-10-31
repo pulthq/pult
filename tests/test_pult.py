@@ -6660,7 +6660,7 @@ class CodexTest(unittest.TestCase):
                 row("event_msg", "user_message", 2, message="Создай hello.txt"),
                 row("event_msg", "agent_message", 3, message="Делаю."),
                 row("response_item", "custom_tool_call", 4, call_id="c1", name="exec",
-                    input='const r = await tools.exec_command({"cmd":"ls -la","workdir":"%s"});\ntext(r.output);\n' % cwd),
+                    input='const r = await tools.exec_command(%s);\ntext(r.output);\n' % json.dumps({"cmd": "ls -la", "workdir": cwd})),
                 row("response_item", "custom_tool_call_output", 5, call_id="c1",
                     output=[{"type": "input_text", "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"},
                             {"type": "input_text", "text": "total 0\n"}]),
@@ -6682,6 +6682,8 @@ class CodexTest(unittest.TestCase):
         self.assertEqual(got["items"][2]["out"], "total 0")
         self.assertEqual(PW.codex_page(str(d / "none.jsonl")), {"items": [], "before": None, "end": None})
         self.assertEqual(PW.codex_step("something else"), ("exec", {"script": "something else"}))
+        # a script whose arguments aren't strict JSON still gives its command (a Windows path, unescaped)
+        self.assertEqual(PW.codex_step('tools.exec_command({"cmd":"dir","workdir":"C:\\Users\\x"})'), ("Bash", {"command": "dir"}))
         self.assertEqual(CX.shell_of("/bin/zsh -lc \"npm test -- --watch=false\""), "npm test -- --watch=false")
         self.assertEqual(CX.shell_of("git status"), "git status")
         self.assertEqual([CX.fail_of(e) for e in ({"codexErrorInfo": "usageLimitExceeded"}, {"message": "401 unauthorized"},
