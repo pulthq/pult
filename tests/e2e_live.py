@@ -15,7 +15,8 @@ A new project "with a description" (stage S): git, its topic by the title, a fir
 A file made in a session goes to the project's topic with `pult send`, and the turn's outcome lists it (stage F).
 With the model on, a new task gets its section and topic as soon as its request is in, and again with the result (stage T);
 the first open of the project sorts its earlier tasks without tags, in a batch (T2).
-A task on another vendor's model (stage M, step 2): a stand-in for DeepSeek on this computer gets the session's requests with
+A task Codex does (stage M, M4.1): the real Codex of this computer writes a file in the project, its outcome and history come
+as a session's (skipped without Codex). A task on another vendor's model (stage M, step 2): a stand-in for DeepSeek on this computer gets the session's requests with
 Pult's key and never the subscription's token; the outcome comes; the transcript names the vendor's model, and so does its
 row — Claude's session's row its real model, and so does the owner's move on Home.
 """
@@ -379,6 +380,27 @@ async def main():
     log("модель в строке:", llm11)
     assert llm11 and llm11.get("vendor") == "DeepSeek" and llm11["model"].startswith("deepseek-flash"), "the row doesn't say the vendor's model"
     await runner.cleanup()
+    # Codex doing a task (stage M, M4.1): the real Codex of this computer, on the owner's ChatGPT plan — a file in the
+    # project's folder, written without asking (its sandbox is that folder, Q121); the outcome as Claude's, its own
+    # history on the session's screen, its mark on the row. Skipped where there is no Codex
+    import pult_codex as CX
+    if not CX.find(os.environ):
+        log("Codex: нет на этом компьютере — шаг пропущен")
+    elif not (await p.codex_state())["ok"]:
+        log("Codex: есть, но Пульт не может работать с его версией — шаг пропущен")
+    else:
+        sid12 = (await p.api_new(pkey5, "Create the file codex.txt containing the word hi. Reply in one short sentence.",
+                                 vendor="codex"))["sid"]
+        await until(lambda: (p.attn.rec.get(sid12) or {}).get("ts"), what="итог задачи Codex")
+        made = os.path.join(p.project_path(pkey5), "codex.txt")
+        items = (await p.api_session(sid12))["page"]["items"]
+        llm12 = (await p.row_stats(sid12))[1]
+        log("Codex %s: итог «%s» · файл %s · шаги %s · строка %s" % (
+            (await p.codex_state())["v"], p.attn.rec[sid12]["line"], os.path.isfile(made),
+            [i.get("step") for i in items if i["k"] == "tool"][:4], llm12))
+        assert os.path.isfile(made) and open(made).read().strip() == "hi", "Codex didn't write the file"
+        assert [i["k"] for i in items].count("user") == 1 and any(i["k"] == "text" for i in items), "the screen lacks the chat"
+        assert llm12 and llm12["vendor"] == "Codex", "the row doesn't say Codex"
     log("тем создано:", len([1 for m, _ in calls if m == "createForumTopic"]), "· вызовов Telegram:", len(calls))
     for d in list(p.driven.values()):
         d.task.cancel()

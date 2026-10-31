@@ -101,14 +101,14 @@ function Req({ r, onDone, showWhere = true, showProject = true }) {
   }
   const isPlan = r.kind === "plan";
   return html`<div class="card perm">${where}
-    <div class="kind">${ic(isPlan ? "plan" : "shield", 16)} ${isPlan ? t("req.plan") : t("req.perm")}</div>
+    <div class="kind">${ic(isPlan ? "plan" : "shield", 16)} ${isPlan ? t("req.plan") : t(r.who === "codex" ? "req.perm.codex" : "req.perm")}</div>
     ${isPlan ? html`<details class="plan"><summary>${t("plan")}</summary><div class="md" data-sid=${r.sid} dangerouslySetInnerHTML=${{ __html: md(r.plan) }}/></details>`
       : html`<div class="perm-b" dangerouslySetInnerHTML=${{ __html: r.html }}/>`}
     <div class="row">
       <button class="btn" disabled=${busy} onClick=${() => send({ act: "y" })}>${isPlan ? t("approve") : t("allow")}</button>
       <button class="btn danger" disabled=${busy} onClick=${() => send({ act: "n" })}>${isPlan ? t("reject.plan") : t("deny")}</button>
     </div>
-    <div class="foot quiet">${r.suggest ? html`<button class="link" disabled=${busy} onClick=${() => send({ act: "a" })}>${t("always.short")}</button>` : html`<span></span>`}
+    <div class="foot quiet">${r.suggest ? html`<button class="link" disabled=${busy} onClick=${() => send({ act: "a" })}>${t(r.who === "codex" ? "always.task" : "always.short")}</button>` : html`<span></span>`}
     ${why === null ? html`<button class="link" onClick=${() => setWhy("")}>${isPlan ? t("plan.notes") : t("deny.note.short")}</button>` : ""}</div>
     ${why === null ? "" : html`
       <div class="own"><input placeholder=${t("tell.claude")} value=${why} onInput=${(e) => setWhy(e.target.value)}/>

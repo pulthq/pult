@@ -50,6 +50,7 @@ import pult_render as R  # noqa: E402
 import pult_stt as STT  # noqa: E402
 import pult_tags as G  # noqa: E402
 import pult_tg  # noqa: E402
+import pult_web as PW  # noqa: E402
 import pult_update as U  # noqa: E402
 import pultd  # noqa: E402
 sys.path.insert(1, str(Path(__file__).resolve().parent))
@@ -3235,6 +3236,86 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(next(r for r in got if not r["ok"]), {"ok": False, "note": I.T("note.decided")})
         self.assertEqual(len(said), 2)                                                # the failed one and one of the pair
 
+    async def test_codex_task(self):
+        # stage M, M4.1 (Q121–Q123): a task Codex does — its own agent on the owner's ChatGPT plan, in the project's
+        # folder (a stand-in Codex here): in "Who does it" only where the project is allowed and Codex is here; its
+        # events are the daemon's — a turn, a permission card said as Codex's, its outcome, the turn's files — its own
+        # history the session's screen; a message mid-turn goes into that turn, Stop interrupts it, and a continuation
+        # after its process went resumes the same thread
+        proj = TMP / ("proj-" + self._testMethodName)
+        proj.mkdir()
+        (proj / "CLAUDE.md").write_text("rules")
+        os.utime(proj / "CLAUDE.md", (time.time() - 3600, time.time() - 3600))      # the project's, from before the task
+        self.store.set_topic(PKEY, str(proj), "proj", 77)
+        log = TMP / ("codex-%s.jsonl" % self._testMethodName)
+        cmd, conf = codex_conf(TMP / ("codex-" + self._testMethodName), log=str(log),
+                               sessions=str(TMP / ("cx-sessions-" + self._testMethodName)), doer={"approve": "file", "wait": 0.3})
+        self.p.env["PULT_CODEX"] = cmd
+
+        def sent():
+            return [json.loads(x) for x in log.read_text().splitlines()] if log.exists() else []
+
+        def doer(**d):
+            c = json.loads(conf.read_text())
+            c["doer"] = d
+            conf.write_text(json.dumps(c))
+        got = (await self.p.api_projects())["codex"]
+        self.assertEqual((got["ok"], got["models"]), (True, ["gpt-5.6-sol", "gpt-5.6-mini"]))     # its default first
+        with self.assertRaises(ValueError) as e:                    # the project doesn't go to other vendors yet
+            await self.p.api_new(PKEY, "Создай hello.txt", vendor="codex")
+        self.assertIn("Codex", str(e.exception))
+        await self.p.api_vendors_ok(PKEY, True)
+        sid = (await self.p.api_new(PKEY, "Создай hello.txt", vendor="codex"))["sid"]
+        self.assertEqual(self.store.vendor_of(sid), "codex")
+        # it asks to write the file: the same card as Claude's permission, said as Codex's; "always" is "in this task"
+        await until(lambda: any(lv.pending for lv in self.p.live.values()))
+        req = next(r for lv in self.p.live.values() for r in lv.pending.values())
+        item = self.p.req_item(req)
+        self.assertEqual((item["kind"], item["tool"], item["who"], item["suggest"]), ("perm", "Edit", "codex", True))
+        self.assertIn("hello.txt", item["html"])
+        start = next(m for m in sent() if m.get("method") == "thread/start")["params"]
+        self.assertEqual((start["sandbox"], start["approvalPolicy"], os.path.realpath(start["cwd"])),
+                         ("workspace-write", "on-request", os.path.realpath(str(proj))))
+        self.assertIn("CLAUDE.md", start["developerInstructions"])          # Codex reads AGENTS.md only
+        await self.p.api_answer(req.rid, act="y")
+        await until(lambda: any((m.get("result") or {}).get("decision") == "accept" for m in sent()))
+        # its outcome: whose move, the turn's files, the session's screen from Codex's own history
+        await until(lambda: "Готово" in str((self.p.attn.rec.get(sid) or {}).get("line")))
+        self.assertTrue((proj / "hello.txt").exists())
+        self.assertEqual([f["p"] for f in self.store.turn(sid)["files"]], ["hello.txt"])
+        s = await self.p.api_session(sid)
+        steps = [(i["k"], i.get("step") or i.get("text")) for i in s["page"]["items"]]
+        self.assertIn(("user", "Создай hello.txt"), steps)
+        self.assertIn(("tool", "✏️ hello.txt"), steps)
+        self.assertEqual((s["vendor"]["id"], s["vendor"]["models"][0]), ("codex", "gpt-5.6-sol"))
+        self.assertFalse(s["second"]["can"])                 # Codex doesn't review its own work (Claude's — step 4.2)
+        self.assertEqual(self.p.llm_view(sid, None), {"vendor": "Codex", "model": "gpt-5.6-sol"})
+        # a message mid-turn goes into the turn that runs (turn/steer); Codex's words say it took it
+        doer(wait=1.5)
+        self.assertEqual((await self.p.api_send(sid, "Ещё строку"))["how"], "session")
+        await until(lambda: self.p.live[sid].turn is not None and self.p.driven[sid].turn_id)
+        self.assertEqual((await self.p.api_send(sid, "и bye в конце"))["how"], "session")
+        await until(lambda: any(m.get("method") == "turn/steer" for m in sent()))
+        await until(lambda: "Учёл: и bye в конце" in str(self.p.attn.rec[sid].get("text") or self.p.attn.rec[sid].get("line")))
+        # Stop interrupts a turn: it ends as Claude's interrupted one does — no outcome of its own
+        doer(wait=30)
+        with mock.patch.object(pultd, "RESULT_GRACE", 0.1):
+            await self.p.api_send(sid, "Долгая работа")
+            await until(lambda: self.p.driven[sid].turn_id)
+            self.assertTrue((await self.p.api_stop(sid))["ok"])
+            await until(lambda: any(m.get("method") == "turn/interrupt" for m in sent()))
+            await until(lambda: self.p.live[sid].turn is None, 10)
+        # its process gone (idle): a continuation resumes the same thread
+        thread = (self.store.get("codex." + sid) or {})["thread"]
+        doer(wait=0.2)
+        self.p.driven[sid].task.cancel()
+        await until(lambda: sid not in self.p.driven)
+        self.assertEqual((await self.p.api_send(sid, "После перерыва"))["how"], "resume")
+        await until(lambda: any(m.get("method") == "thread/resume" for m in sent()))
+        self.assertEqual(next(m for m in sent() if m.get("method") == "thread/resume")["params"]["threadId"], thread)
+        await until(lambda: any(m.get("method") == "turn/start" and "После перерыва" in json.dumps(m, ensure_ascii=False)
+                                for m in sent()))
+
     async def test_second_opinion_nested_repos(self):
         # one big project whose parts are repositories of their own (2026-10-31): the folder's own history doesn't
         # show their changes, so Codex gets each part's, found by the files the task's turns made or changed
@@ -3434,7 +3515,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         # the app shows the microphone only when there is a key: the flag rides with the projects (and the session)
         with mock.patch.object(self.p, "list_projects", lambda known: []):
             got = await self.p.api_projects()
-            self.assertEqual({k: v for k, v in got.items() if k not in ("vendors", "vendor_all")},
+            self.assertEqual({k: v for k, v in got.items() if k not in ("vendors", "vendor_all", "codex")},
                              {"projects": [], "stt": False, "create": True, "choice": {"model": None, "effort": None}})
             self.assertEqual([v["id"] for v in got["vendors"]], ["deepseek", "glm", "kimi"])   # stage M, step 2
             self.p.stt = FakeStt()
@@ -3563,6 +3644,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             busy=True, asking=False, queued=None, sid=SID, d=self.p, bg=set(), q=asyncio.Queue(), task=SimpleNamespace(cancel=lambda: None),
             client=SimpleNamespace(interrupt=mock.AsyncMock(side_effect=lambda: stopped.append(1))))
         dr.say, dr.stop = types.MethodType(pultd.Driven.say, dr), types.MethodType(pultd.Driven.stop, dr)
+        dr.interrupt = types.MethodType(pultd.Driven.interrupt, dr)
         self.p.set_focus(PKEY, SID)
         await self.p.on_message(dict(base, message_id=5, text="/stop"))
         self.assertEqual(stopped, [1])
@@ -6563,6 +6645,50 @@ class CodexTest(unittest.TestCase):
         self.assertIn("read them as they are now: search/index.py", CX.instructions(facts, None, "en"))
         long = CX.instructions(dict(facts, asks=["я" * 9000]), first, "ru")
         self.assertLess(len(long), 9000)
+
+    def test_codex_history_and_helpers(self):
+        # a task Codex does (stage M, M4.1): its own history file read as a chat — the owner's words (one mid-turn), its
+        # words, its steps (a command, a patch) with what they printed, a stop; its command as a person reads it;
+        # its failures as Pult's codes
+        d = TMP / "cx-history"
+        d.mkdir(exist_ok=True)
+        cwd = os.path.realpath(str(d))
+
+        def row(kind, what, ts=0, **p):
+            return json.dumps({"timestamp": "2026-10-31T17:28:%02d.000Z" % ts, "type": kind, "payload": dict(p, type=what)})
+        rows = [row("session_meta", None, id="th"), row("event_msg", "task_started", 1, turn_id="t1"),
+                row("event_msg", "user_message", 2, message="Создай hello.txt"),
+                row("event_msg", "agent_message", 3, message="Делаю."),
+                row("response_item", "custom_tool_call", 4, call_id="c1", name="exec",
+                    input='const r = await tools.exec_command(%s);\ntext(r.output);\n' % json.dumps({"cmd": "ls -la", "workdir": cwd})),
+                row("response_item", "custom_tool_call_output", 5, call_id="c1",
+                    output=[{"type": "input_text", "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"},
+                            {"type": "input_text", "text": "total 0\n"}]),
+                row("event_msg", "user_message", 6, message="и bye в конце"),
+                row("response_item", "custom_tool_call", 7, call_id="c2", name="exec",
+                    input='const patch = "*** Begin Patch\\n*** Add File: %s/hello.txt\\n+hi\\n*** End Patch";\ntext(await tools.apply_patch(patch));' % cwd),
+                row("event_msg", "task_complete", 8, turn_id="t1"),
+                row("event_msg", "task_started", 9, turn_id="t2"), row("event_msg", "user_message", 10, message="Долгая"),
+                row("event_msg", "turn_aborted", 11, turn_id="t2", reason="interrupted"), "{broken"]
+        f = d / "rollout-2026-10-31T20-28-30-th.jsonl"
+        f.write_text("\n".join(rows) + "\n")
+        self.assertTrue(PW.is_codex(str(f)))
+        self.assertFalse(PW.is_codex(str(d / "abc.jsonl")))
+        got = PW.codex_page(str(f), cwd=str(d))
+        self.assertEqual([(i["k"], i.get("step") or i.get("text"), i.get("mid", False)) for i in got["items"]],
+                         [("user", "Создай hello.txt", False), ("text", "Делаю.", False), ("tool", "⌘ ls -la", False),
+                          ("user", "и bye в конце", True), ("tool", "✏️ hello.txt", False), ("user", "Долгая", False),
+                          ("note", I.T("cx.stopped"), False)])
+        self.assertEqual(got["items"][2]["out"], "total 0")
+        self.assertEqual(PW.codex_page(str(d / "none.jsonl")), {"items": [], "before": None, "end": None})
+        self.assertEqual(PW.codex_step("something else"), ("exec", {"script": "something else"}))
+        # a script whose arguments aren't strict JSON still gives its command (a Windows path, unescaped)
+        self.assertEqual(PW.codex_step('tools.exec_command({"cmd":"dir","workdir":"C:\\Users\\x"})'), ("Bash", {"command": "dir"}))
+        self.assertEqual(CX.shell_of("/bin/zsh -lc \"npm test -- --watch=false\""), "npm test -- --watch=false")
+        self.assertEqual(CX.shell_of("git status"), "git status")
+        self.assertEqual([CX.fail_of(e) for e in ({"codexErrorInfo": "usageLimitExceeded"}, {"message": "401 unauthorized"},
+                                                  {"message": "boom"})], ["codex_limit", "codex_login", "codex_error"])
+        self.assertTrue(all(I.T("fail." + k) for k in ("codex_limit", "codex_login", "codex_error")))
 
     def test_nested_repos(self):
         # one big project whose parts are repositories of their own (2026-10-31): the parts the task changed files in,

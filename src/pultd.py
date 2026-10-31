@@ -33,7 +33,7 @@ import httpx
 from pult_api import EFFORTS, MODEL_RE, Api   # the app's screens: handlers of their requests (review 2026-10-27, 6.2)
 import pult_attn as A
 import pult_brief as B
-from pult_driven import MAX_RUNNING, Driven, Job, Live, Req, Turn   # sessions Pult runs (review 2026-10-27, 6.2)
+from pult_driven import MAX_RUNNING, CodexDriven, Driven, Job, Live, Req, Turn   # sessions Pult runs (review 2026-10-27, 6.2)
 import pult_files as F
 import pult_i18n as I
 import pult_new as N
@@ -84,7 +84,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.35"
+VERSION = "0.18.36"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -1024,7 +1024,8 @@ class Pult(Api, Parts):
         ev = msg.get("event") or {}
         name = ev.get("hook_event_name")
         sid = ev.get("session_id")
-        pkey = Path(ev.get("transcript_path") or "").parent.name or sanitize(ev.get("cwd") or "")
+        # the project: Claude Code's folder of the transcript; a Codex task says it (its history lives elsewhere)
+        pkey = msg.get("pkey") or Path(ev.get("transcript_path") or "").parent.name or sanitize(ev.get("cwd") or "")
         if not sid or skip_pkey(pkey) or not self.chat:
             return None
         self.activity = time.time()
@@ -1697,13 +1698,14 @@ class Pult(Api, Parts):
             if len(plan) > 3000:
                 await self.send_doc(lv.pkey, plan, "plan-%s.md" % lv.sid[:8], self.t("plan.full"), sid=lv.sid)
         else:
-            text = self.req_head(req, "✋", self.t("req.perm")) + \
+            codex = self.store.vendor_of(lv.sid) == "codex"
+            text = self.req_head(req, "✋", self.t("req.perm.codex" if codex else "req.perm")) + \
                 R.permission_text(req.tool, req.inp, lv.cwd)
             row = [{"text": self.t("btn.allow"), "callback_data": "p:%s:y" % rid},
                    {"text": self.t("btn.deny"), "callback_data": "p:%s:n" % rid}]
             buttons = [row]
             if req.suggestions:
-                buttons.append([{"text": self.t("btn.always"), "callback_data": "p:%s:a" % rid}])
+                buttons.append([{"text": self.t("btn.always_task" if codex else "btn.always"), "callback_data": "p:%s:a" % rid}])
         text += self.t("perm.reply_hint")
         buttons = self.with_app(buttons, lv.sid)
         m = await self.send(lv.pkey, text, buttons=buttons, notify=notify, prio=0, sid=lv.sid, kind="perm")
@@ -2561,8 +2563,9 @@ class Pult(Api, Parts):
         lv.driven, lv.cwd = True, path
         lv.title = lv.title or R.short(R.attachments(text)[0], 60) or None
         self.out_add(sid, text, tg=origin, react="👀")
-        dr = self.driven[sid] = Driven(self, sid, path, resume=resume, fork=fork,
-                                       model=choice.get("model"), effort=choice.get("effort"))
+        kind = CodexDriven if vid == "codex" else Driven          # who does it: Codex itself (stage M, M4.1) or Claude Code
+        dr = self.driven[sid] = kind(self, sid, path, resume=resume, fork=fork,
+                                     model=choice.get("model"), effort=choice.get("effort"))
         dr.q.put_nowait((text, origin if quote else None))
         await self.react(origin, "👀")
         log("Telegram session:", sid[:8], "fork" if fork else "resume" if resume else "new", path,
@@ -2948,6 +2951,9 @@ class Pult(Api, Parts):
         lv = self.live.get(sid)
         if lv and lv.transcript:
             return lv.transcript, lv
+        keep = self.store.get("codex." + sid)          # a task Codex does: its own history file (stage M, M4.1)
+        if keep and keep.get("path") and os.path.isfile(keep["path"]):
+            return keep["path"], lv
         row = self.store.session(sid)
         if row and row["pkey"]:
             p = CLAUDE_PROJECTS / row["pkey"] / (sid + ".jsonl")
