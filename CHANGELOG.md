@@ -4,6 +4,16 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.37 — 2026-10-31
+
+- **Codex's effort, like Claude's.** Picking Codex in New task, or a Codex task's model on its screen, opens the same
+  two columns: its models, and the levels of effort its model has — up to Max and Ultra, as Codex lists them — with
+  the model's own default. The level goes with every turn; a model that doesn't have the level picked goes back to its
+  default.
+- **Codex's steps name files from the project's folder.** A file Codex patched by a path inside the project showed as a
+  path from Pult's own folder.
+- A Codex task's model, switched on its screen while it runs, no longer fails: it goes with its next turn.
+
 ## 0.18.36 — 2026-10-31
 
 - **Codex does tasks.** New task's **Who does it** has Codex, right after Claude: OpenAI's own agent on your ChatGPT

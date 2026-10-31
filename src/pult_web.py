@@ -446,8 +446,9 @@ def codex_page(path, before=None, after=None, cwd=None, page=PAGE):
             items.append({"k": "note", "text": T("cx.stopped"), "ts": ts})
         elif kind == "response_item" and what == "custom_tool_call":
             name, inp = codex_step(p.get("input"))
-            if cwd and inp.get("file_path"):              # as the folder: by the real path (Windows: RUNNER~1 → runneradmin)
-                inp["file_path"] = os.path.realpath(inp["file_path"])
+            if cwd and inp.get("file_path"):              # as the folder: by the real path (Windows: RUNNER~1 → runneradmin);
+                # a patch may name it from the project's folder ("codex.txt"), not from Pult's own
+                inp["file_path"] = os.path.realpath(os.path.join(cwd, inp["file_path"]))
             t = {"k": "tool", "id": p.get("call_id"), "name": name, "ts": ts, "step": R.tool_step(name, inp, cwd) or name,
                  "input": _short(inp.get("command") or "\n".join(inp.get("files") or []) or inp.get("script") or "", IO_MAX)}
             tools[p.get("call_id")] = t

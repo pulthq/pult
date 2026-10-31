@@ -1043,7 +1043,10 @@ class Api:
         if vendor in ("codex", None):
             await self.codex_state()
         vid = self.vendor_for_new(pkey, vendor)
-        if vid:
+        if vid == "codex":                                   # its own model and level of effort, checked against its list
+            model = self.vendor_model(vid, model)
+            effort = self.codex_effort(model or next(iter(self.codex_models()), None), effort)
+        elif vid:
             model, effort = self.vendor_model(vid, model), None    # a vendor's model; the effort is Claude's own
         else:
             model, effort = self.check_choice(model, effort)
@@ -1063,6 +1066,8 @@ class Api:
             raise ValueError(self.t("err.bad_sid"))
         if model is KEEP and effort is KEEP:
             raise ValueError("no model or effort")
+        if self.store.vendor_of(sid) == "codex":         # Codex's own models and levels (stage M, M4.1)
+            return await self.codex_choice(sid, model, effort)
         m, e = self.check_choice(None if model is KEEP else model, None if effort is KEEP else effort)
         if self.store.vendor_of(sid) and effort is not KEEP:
             raise ValueError(self.t("vendor.err.effort"))         # how hard it thinks is Claude's own setting
@@ -1142,15 +1147,69 @@ class Api:
         got = self._codex[1]
         return bool(got.get("ok")) if got is not None else not sure
 
-    def codex_models(self):
-        """Codex's models, its default first (its own list, kept per version); [] — not known yet."""
+    def codex_catalog(self):
+        """Codex's models with their levels of effort, its default first (its own list, kept per version):
+        [{"model", "efforts", "effort"}]; [] — not known yet."""
         got = self._codex[1] or {}
-        return (self.store.get("codex.models") or {}).get(got.get("v") or "", [])
+        rows = (self.store.get("codex.catalog") or {}).get(got.get("v") or "")
+        if rows is None:                              # kept before the levels (0.18.36): names only
+            rows = [{"model": m, "efforts": [], "effort": None}
+                    for m in (self.store.get("codex.models") or {}).get(got.get("v") or "", [])]
+        return [r for r in rows if isinstance(r, dict) and r.get("model")]
+
+    def codex_models(self):
+        """Codex's models, its default first; [] — not known yet."""
+        return [r["model"] for r in self.codex_catalog()]
+
+    def codex_efforts(self, model=None):
+        """A Codex model's own levels of effort and its default → (levels, default); the default model's when none is
+        named or it isn't in the list; ([], None) — not known."""
+        rows = self.codex_catalog()
+        row = next((r for r in rows if r["model"] == model), None) or next(iter(rows), None)
+        return (list(row.get("efforts") or []), row.get("effort")) if row else ([], None)
+
+    def codex_levels(self):
+        """For the app: each model's levels and its default → ({model: levels}, {model: default})."""
+        rows = self.codex_catalog()
+        return {r["model"]: list(r.get("efforts") or []) for r in rows}, {r["model"]: r.get("effort") for r in rows}
 
     def codex_view(self):
-        """Codex for "Who does it" (stage M, M4.1): whether it can take a task, why not, its models."""
+        """Codex for "Who does it" (stage M, M4.1): whether it can take a task, why not, its models and their levels
+        of effort (the owner, 2026-10-31: "selectable effort, like Claude's")."""
         got = self._codex[1] or {}
-        return {"ok": bool(got.get("ok")), "why": got.get("why"), "v": got.get("v"), "models": self.codex_models()}
+        efforts, dflt = self.codex_levels()
+        return {"ok": bool(got.get("ok")), "why": got.get("why"), "v": got.get("v"), "models": self.codex_models(),
+                "efforts": efforts, "effort": dflt}
+
+    def codex_effort(self, model, effort):
+        """A level of effort the owner picked for a Codex task, checked against its model's own → it, or None (its
+        default); a level the model doesn't have is refused."""
+        effort = (effort or "").strip() or None
+        if effort is None:
+            return None
+        levels, _ = self.codex_efforts(model)
+        if not CX.EFFORT_RE.fullmatch(effort) or levels and effort not in levels:
+            raise ValueError(self.t("vendor.err.cx_effort", e=effort, m=model or "Codex"))
+        return effort
+
+    async def codex_choice(self, sid, model, effort):
+        """A Codex task's model and effort, from its screen: its own lists; Codex takes both with every turn, so they
+        go with the next one. A level the new model doesn't have goes back to its default."""
+        cur = self.choice.get(sid) or {}
+        keep = self.store.get("codex." + sid) or {}
+        m = cur.get("model") if model is KEEP else (model or "").strip() or None
+        if m and not V.MODEL_RE.fullmatch(m):
+            raise ValueError("bad model")
+        e = cur.get("effort") if effort is KEEP else (effort or "").strip() or None
+        target = m or keep.get("model") or next(iter(self.codex_models()), None)
+        if e and effort is KEEP and e not in (self.codex_efforts(target)[0] or [e]):
+            e = None                                  # the new model hasn't the level picked for the old one
+        else:
+            e = self.codex_effort(target, e)
+        self.set_choice(sid, m or "", e or "")
+        log("choice for %s: Codex %s, effort %s (next turn)" % (sid[:8], m or "default", e or "default"))
+        self.changed(sid)
+        return {"ok": True, "live": False, "choice": self.choice.get(sid) or {}}
 
     def vendors_list(self):
         """For the app: each vendor — its name, whether its key is here, its models (the main one first)."""
@@ -1163,7 +1222,9 @@ class Api:
         if vid == "codex":
             keep = self.store.get("codex." + sid) or {}
             models = list(dict.fromkeys([m for m in [keep.get("model")] if m] + self.codex_models()))   # its own first
-            return {"id": "codex", "name": "Codex", "models": models, "key": self.codex_ready(), "own": True}
+            efforts, dflt = self.codex_levels()
+            return {"id": "codex", "name": "Codex", "models": models, "key": self.codex_ready(), "own": True,
+                    "efforts": efforts, "effort": dflt}
         p = self.vendor_profiles().get(vid) if vid else None
         return {"id": vid, "name": p["name"], "models": p["models"], "key": bool(self.vendor_key(vid))} if p else None
 
@@ -1325,12 +1386,13 @@ class Api:
                 got["ok"] = bool(seen[v]["ok"])
             if not got["ok"]:
                 got["why"] = "version"
-            known = self.store.get("codex.models") or {}
+            known = self.store.get("codex.catalog") or {}
             if got["ok"] and v not in known:
                 known[v] = await CX.models(path, env={k: x for k, x in env.items() if not k.startswith("PULT_")},
                                            client=self.D.VERSION)
-                self.store.put("codex.models", known)
-                log("codex %s: models %s" % (v, ", ".join(known[v]) or "unknown"))
+                self.store.put("codex.catalog", known)
+                log("codex %s: models %s" % (v, ", ".join("%s (%s)" % (r["model"], "/".join(r["efforts"])) for r in known[v])
+                                             or "unknown"))
         self._codex = (time.monotonic(), got)
         return got
 

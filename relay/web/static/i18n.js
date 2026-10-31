@@ -579,6 +579,8 @@ const S = {
   "effort.high": { en: "High", ru: "Много" },
   "effort.xhigh": { en: "Extra high", ru: "Очень много" },
   "effort.max": { en: "Max", ru: "Максимум" },
+  "effort.ultra": { en: "Ultra", ru: "Ультра" },
+  "cx.model.next": { en: "Codex's own models and levels: they go with its next turn.", ru: "Модели и уровни самого Codex: они уйдут со следующим ходом." },
   "effort.is": { en: "{e} effort", ru: "раздумья: {e}" },
   "effort.reload": { en: "Effort can be switched from here after Reload Window in VS Code: this tab runs an older Pult wrapper.",
     ru: "Раздумья можно будет менять отсюда после Reload Window в VS Code: во вкладке старая обёртка Пульта." },
