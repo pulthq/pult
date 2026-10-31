@@ -246,10 +246,11 @@ def rel_path(p, root):
     return os.path.relpath(real, root).replace("\\", "/")
 
 
-def turn_paths(transcript, since=0.0, root=None, tail=2 * 1024 * 1024):
+def turn_paths(transcript, since=0.0, root=None, tail=2 * 1024 * 1024, limit=PATHS_MAX):
     """The files and folders the session's own steps read or changed since `since` (its turn's start), as paths inside
     the project, each once, the latest last — from the session's transcript (only its end is read), not from the
-    files' times: with several tasks in one project those mix (stage T). [] when unknown."""
+    files' times: with several tasks in one project those mix (stage T). The latest `limit` of them, all with None
+    (a turn's files, pultd.files_of_turn). [] when unknown."""
     try:
         with open(transcript, "rb") as f:
             f.seek(0, 2)
@@ -278,7 +279,7 @@ def turn_paths(transcript, since=0.0, root=None, tail=2 * 1024 * 1024):
                     if rel in seen:
                         seen.remove(rel)
                     seen.append(rel)
-    return seen[-PATHS_MAX:]
+    return seen if limit is None else seen[-limit:]
 
 
 def examples_text(examples):

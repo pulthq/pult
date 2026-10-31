@@ -954,6 +954,7 @@ button.tagc { border: 0; font-family: inherit; cursor: pointer; }
 .who .opt .dim { display: block; font-size: var(--fs-sec); font-weight: 400; }
 .who-def { display: flex; align-items: center; gap: 6px; margin: 10px 2px 2px; font-size: var(--fs-sec); }
 .who-def .ic { color: var(--ok); }
+.who-codex { margin-top: 6px; }
 .vend-h { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .vend-st { font-size: var(--fs-sec); color: var(--muted); }
 .vend-st.on { color: var(--ok); }

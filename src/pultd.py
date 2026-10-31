@@ -58,6 +58,7 @@ AWAY_IDLE = 120          # idle here for longer than this (Pult.idle): the owner
 EDIT_EVERY = 12          # s; edit a turn message no more often than this (Telegram's per-group limit)
 MAX_DRIVEN = 5           # sessions from Telegram that hold a process
 RESULT_GRACE = 3.0       # s after a turn's result for its Stop hook; an interrupted turn gets none and is closed then
+TURN_TAIL = 8 << 20      # bytes of a transcript's end read for the paths a turn's tools gave (its files, stage F4)
 FOCUS_IDLE = 2 * 3600   # a topic forgets its current session after this long without the owner's text there
 VEHI = (10 * 60, 30 * 60, 60 * 60)   # long-turn milestones; with sound if the owner is away (decision 2026-10-16)
 TICK = 60                # s; refresh "working N min" this often, even without events
@@ -83,7 +84,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.34"
+VERSION = "0.18.35"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -3161,17 +3162,28 @@ class Pult(Api, Parts):
 
     async def files_of_turn(self, lv, t):
         """The project's files the turn made or changed (pult_files.turn_files), for its outcome: (files, how many in
-        all); ([], 0) when unknown."""
+        all); ([], 0) when unknown. The paths the turn's own tools gave come first, from its transcript: in a big
+        tree the walk stops early, and a turn's own files must not be what it misses (2026-10-31)."""
         if t is None or not getattr(t, "started", None):
             return [], 0
         project = self.project_path(lv.pkey)
         if not project or not os.path.isdir(project):
             return [], 0
+        info = {}
+
+        def find():
+            named = G.turn_paths(lv.transcript, since=t.started, root=project, tail=TURN_TAIL, limit=None) \
+                if lv.transcript else []
+            return F.turn_files(project, t.started, time.time(), named, info)
         try:
-            return await asyncio.to_thread(F.turn_files, project, t.started, time.time())
+            got = await asyncio.to_thread(find)
         except Exception as e:
             log("turn files: %r" % e)
             return [], 0
+        if info.get("cut"):
+            log("turn files %s: the walk of %s stopped after %d entries — beyond the turn's own files, some may be missed"
+                % (lv.sid[:8], project, info["seen"]))
+        return got
 
     async def usage_watch(self):
         """Limit warnings: at 80 % and 95 %, a message with sound in General, once per window."""

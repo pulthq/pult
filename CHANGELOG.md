@@ -4,6 +4,16 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.35 — 2026-10-31
+
+- **A second opinion on one big project made of repositories.** When parts of a project's folder are git repositories
+  of their own, Codex now gets the history of each part the task changed files in — the changes since the task began,
+  committed or not — and no longer only the folder's own repository, which doesn't show them.
+- **A turn's files in a big project.** The files the turn's own tools wrote are always among them, even where the
+  search through a large folder stops early; the search starts next to them, and the log says when it stopped.
+- **Who does it says where Codex is.** The sheet now says Codex checks tasks for now, with **Second opinion · Codex**
+  under a task's outcome; Codex doing tasks itself is the next step.
+
 ## 0.18.34 — 2026-10-31
 
 - **One clock for a whole task.** "Working 47 min" now counts all of Claude's work on the task — every turn of the

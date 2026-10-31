@@ -1417,7 +1417,12 @@ class Api:
                 self.changed(sid)
                 facts = await asyncio.to_thread(CX.task_facts, path, project)
                 base = await asyncio.to_thread(CX.git_base, project, facts["t0"])
-                text = CX.instructions(facts, base, self.lang(), rules=os.path.isfile(os.path.join(project, "CLAUDE.md")))
+                # the parts of the folder that are repositories of their own: found by the files the task's edit tools
+                # wrote and its turns made or changed (commands too) — 2026-10-31
+                repos = await asyncio.to_thread(CX.nested_repos, project, facts["files"] + self.store.task_files(sid),
+                                                facts["t0"])
+                text = CX.instructions(facts, base, self.lang(), rules=os.path.isfile(os.path.join(project, "CLAUDE.md")),
+                                       repos=repos)
                 env = {k: v for k, v in os.environ.items() if not k.startswith("PULT_")}
 
                 def step(n):
@@ -1427,8 +1432,9 @@ class Api:
                 read = CX.parse(got["text"], project)
                 job.update(st="done", dur=time.time() - job["t0"], model=got["model"], summary=read["summary"],
                            items=read["items"], limits=got["limits"])
-                log("second opinion %s: Codex %s (%s), %d findings, %d commands, %.0f s%s" % (
+                log("second opinion %s: Codex %s (%s), %d findings, %d commands, %.0f s%s%s" % (
                     sid[:8], info["v"], got["model"], len(read["items"]), job["steps"], job["dur"],
+                    "; nested repositories: " + ", ".join(r["dir"] for r in repos) if repos else "",
                     "; declined: " + ", ".join(got["asked"]) if got["asked"] else ""))
         except asyncio.CancelledError:
             cut = True

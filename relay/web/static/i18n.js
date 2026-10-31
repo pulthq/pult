@@ -899,6 +899,8 @@ const S = {
   "who.default.make": { en: "Make it the default in {p}", ru: "Сделать по умолчанию в {p}" },
   "who.about": { en: "GLM, DeepSeek and Kimi work inside Claude Code: the same cards and outcome; you pay them by your key. Their sessions don't show in VS Code.",
     ru: "GLM, DeepSeek и Kimi работают внутри Claude Code: те же карточки и итог; платишь им по своему ключу. В VS Code их сессий не видно." },
+  "who.codex": { en: "Codex doesn't do tasks yet, it checks them: with Codex on the computer, a task that changed files gets “Second opinion · Codex” under its outcome.",
+    ru: "Codex пока не делает задачи, а проверяет их: если Codex есть на компьютере, под итогом задачи с правками — «Второе мнение · Codex»." },
   "new.about.vendor": { en: "A new Claude Code session in the project's folder, on {name}'s model: the turns and the outcome here and in the project's topic; not in VS Code.",
     ru: "Новая сессия Claude Code в папке проекта на модели {name}: ход и итог — здесь и в теме проекта; в VS Code её нет." },
   "vend.model.pick": { en: "{name}'s model", ru: "Модель {name}" },

@@ -152,7 +152,8 @@ function VendorPick({ vendors, cur, proj, onPick, onDefault, onClose }) {
     ${vendors.map((v) => row(v.id, v.name, v.key ? t("who.inside", { m: v.models[0] }) : t("who.nokey"), !v.key))}
     ${proj && (def === cur ? html`<div class="who-def dim">${ic("check", 15)} ${t("who.default", { p: q(proj.name) })}</div>`
       : html`<button class="link who-def" onClick=${() => onDefault(cur)}>${t("who.default.make", { p: q(proj.name) })}</button>`)}
-    <div class="dim small">${t("who.about")}</div></div>`;
+    <div class="dim small">${t("who.about")}</div>
+    <div class="dim small who-codex">${t("who.codex")}</div></div>`;
 }
 function VendorModels({ v, cur, onPick, onClose }) {
   return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick tall fixed">
