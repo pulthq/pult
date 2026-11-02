@@ -234,6 +234,16 @@ class Store:
     def put(self, k, v):
         self.db.execute("INSERT OR REPLACE INTO kv VALUES(?,?)", (k, json.dumps(v)))
 
+    def codex_task(self, thread):
+        """The Pult session whose Codex thread this is (pult_driven keeps codex.<sid> → {"thread": …}), or None."""
+        for r in self.db.execute("SELECT k, v FROM kv WHERE k LIKE 'codex.%' AND v LIKE ?", ("%" + thread + "%",)):
+            try:
+                if json.loads(r["v"]).get("thread") == thread:
+                    return r["k"][len("codex."):]
+            except (ValueError, AttributeError):
+                continue
+        return None
+
     def topic(self, pkey):
         return self.db.execute("SELECT * FROM topics WHERE pkey=?", (pkey,)).fetchone()
 

@@ -604,7 +604,19 @@ EFFORT_RE = re.compile(r"[a-z]{2,16}")    # a model's own effort (model/list): l
 RULES = ("This project's rules for coding agents are in CLAUDE.md at the root of this folder, and in CLAUDE.md files in "
          "the folders under it: read the root one before you start, the others when you work in their folders, and "
          "follow them as you would AGENTS.md.")
+SEND_RULE = ("When the owner asks for a file, or the task is to hand them one, send it to their phone with "
+             "`pult send <file>... [-m \"caption\"]`: it arrives in this project's Telegram topic. Only files inside "
+             "this project's folder, up to 50 MB each. It works inside the sandbox; files the owner sends from "
+             "Telegram are saved in this project's inbox/<date>/ folder.")
 FAILS = {"limit": "codex_limit", "login": "codex_login"}
+
+
+def send_config(outbox):
+    """A task's config: its sandbox may also write into Pult's outbox — `pult send` can't connect to the socket from
+    there (EPERM, Codex 0.166 on Linux, 0.148 on macOS), and leaves its request in that folder instead
+    (pultctl.send_outbox). A dotted key, as Codex's own -c: the rest of the owner's sandbox_workspace_write stays (a
+    whole table would replace it); a real task on 0.148 got exactly this folder as its writable root (2026-11-02)."""
+    return {"sandbox_workspace_write.writable_roots": [outbox]}
 
 
 def shell_of(command):

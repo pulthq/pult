@@ -576,13 +576,17 @@ S = {
                          "ru": "архив выходит больше {mb} МБ — Telegram не берёт у ботов файлы крупнее; отметь меньше"},
     "send.zip.caption": {"en": "Files: {n}", "ru": "Файлов: {n}"},
     "cli.send.usage": {"en": "pult send FILE… [-m TEXT] — files to the owner's phone, into the project's Telegram topic; "
-                             "run it from a Claude Code session",
+                             "run it from a Claude Code session or a Codex task",
                        "ru": "pult send ФАЙЛ… [-m ТЕКСТ] — файлы владельцу на телефон, в тему проекта в Telegram; "
-                             "запускать из сессии Claude Code"},
-    "cli.send.nosession": {"en": "pult send works inside a Claude Code session: the project is found by the session "
-                                 "(CLAUDE_CODE_SESSION_ID)",
-                           "ru": "pult send работает внутри сессии Claude Code: проект находится по сессии "
-                                 "(CLAUDE_CODE_SESSION_ID)"},
+                             "запускать из сессии Claude Code или задачи Codex"},
+    "cli.send.nosession": {"en": "pult send works inside a Claude Code session or a Codex task: the project is found "
+                                 "by the session (CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID)",
+                           "ru": "pult send работает внутри сессии Claude Code или задачи Codex: проект находится по "
+                                 "сессии (CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID)"},
+    "cli.send.sandbox": {"en": "The sandbox doesn't let this command reach Pult — nothing was sent. Run pult send "
+                               "outside the sandbox (ask for it), or update Pult and start the task from it again",
+                         "ru": "Песочница не пускает эту команду к Пульту — ничего не отправлено. Запусти pult send "
+                               "вне песочницы (попроси разрешения) или обнови Пульт и начни задачу из него заново"},
     "cli.send.nodaemon": {"en": "Pult isn't running — nothing was sent", "ru": "Пульт не запущен — ничего не отправлено"},
     "cli.send.old": {"en": "This Pult can't send files yet — update it (bash install.sh)",
                      "ru": "Этот Пульт ещё не умеет отправлять файлы — обнови его (bash install.sh)"},

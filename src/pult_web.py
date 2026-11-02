@@ -371,7 +371,7 @@ def transcript_page(path, before=None, after=None, cwd=None, page=PAGE):
 
 CODEX_SESSIONS = os.path.join(os.path.expanduser("~"), ".codex", "sessions")
 _CX_CMD = re.compile(r"exec_command\((\{.*?\})\)", re.S)
-_CX_ARG = re.compile(r'"cmd"\s*:\s*"((?:[^"\\]|\\.)*)"')
+_CX_ARG = re.compile(r'(?<![\w"])"?cmd"?\s*:\s*"((?:[^"\\]|\\.)*)"')   # by 0.166 a JS object: {cmd:"…"}
 _CX_FILE = re.compile(r"\*\*\* (?:Add|Update|Delete) File: (.+)")
 _CX_HEAD = re.compile(r"^Script completed\nWall time [\d.]+ seconds\nOutput:\n")
 
@@ -384,7 +384,8 @@ def is_codex(path):
 def codex_step(inp):
     """What a step of Codex's own `exec` tool did → (tool, input) in Claude Code's words, so the app and the turn's
     lines show it the same way: a command ("Bash", its cmd) or a patch ("Edit", the first file; "files" — all of them).
-    Codex 0.148 writes both as a script: tools.exec_command({...}) or tools.apply_patch("*** Add File: …")."""
+    Codex 0.148 writes both as a script: tools.exec_command({...}) or tools.apply_patch("*** Add File: …"); 0.166 —
+    tools.exec_command({cmd:"…"}), its keys unquoted."""
     s = str(inp or "")
     m = _CX_CMD.search(s)
     if m:
@@ -396,8 +397,8 @@ def codex_step(inp):
             return "Bash", {"command": str(args["cmd"])}
     m = _CX_ARG.search(s)                     # the script's arguments aren't strict JSON: its cmd alone
     if m:
-        try:
-            return "Bash", {"command": json.loads('"%s"' % m.group(1))}
+        try:                                  # JS escapes a quote JSON doesn't: \'
+            return "Bash", {"command": json.loads('"%s"' % m.group(1).replace("\\'", "'"))}
         except ValueError:
             return "Bash", {"command": m.group(1)}
     if "apply_patch" in s:
@@ -431,16 +432,15 @@ def codex_page(path, before=None, after=None, cwd=None, page=PAGE):
             turn = 0
         elif kind == "event_msg" and what == "task_complete":
             turn = None
-        if kind == "event_msg" and what == "user_message":
-            text = str(p.get("message") or "")
-            if text.strip():
-                items.append(user_item(text, ts, mid=bool(turn)))       # a second one in a turn came mid-turn (steer)
+        who, text = _cx_said(kind, what, p)
+        if who == "user":
+            if text.strip() and not (items and items[-1]["k"] == "user" and items[-1].get("raw") == text):
+                items.append(dict(user_item(text, ts, mid=bool(turn)), raw=text))    # a second one in a turn: mid-turn (steer)
             if turn is not None:
                 turn += 1
-        elif kind == "event_msg" and what == "agent_message":
-            text = str(p.get("message") or "")
-            if text.strip():
-                items.append({"k": "text", "text": _short(text, TEXT_MAX), "ts": ts})
+        elif who == "codex":
+            if text.strip() and not (items and items[-1]["k"] == "text" and items[-1].get("raw") == text):
+                items.append({"k": "text", "text": _short(text, TEXT_MAX), "ts": ts, "raw": text})
         elif kind == "event_msg" and what == "turn_aborted":
             turn = None
             items.append({"k": "note", "text": T("cx.stopped"), "ts": ts})
@@ -460,7 +460,25 @@ def codex_page(path, before=None, after=None, cwd=None, page=PAGE):
                 str(b.get("text") or "") for b in out or [] if isinstance(b, dict))
             if t is not None:
                 t.update(ok=True, out=_short(_CX_HEAD.sub("", text).strip(), IO_MAX))
+    for it in items:
+        it.pop("raw", None)
     return {"items": items, "before": (start if start > 0 else None) if after is None else None, "end": end}
+
+
+def _cx_said(kind, what, p):
+    """Words in a Codex history record: ("user" | "codex", text), or (None, ""). Codex wrote them as event_msg
+    user_message / agent_message; by 0.166 a task's thread has them only as item_completed UserMessage / AgentMessage
+    (2026-11-02: the app showed a Codex task's steps but none of its words, nor the owner's)."""
+    if kind != "event_msg":
+        return None, ""
+    if what in ("user_message", "agent_message"):
+        return ("user" if what == "user_message" else "codex"), str(p.get("message") or "")
+    it = p.get("item") if what == "item_completed" and isinstance(p.get("item"), dict) else {}
+    if it.get("type") not in ("UserMessage", "AgentMessage"):
+        return None, ""
+    text = "".join(str(b.get("text") or "") for b in it.get("content") or []
+                   if isinstance(b, dict) and str(b.get("type")).lower() == "text")
+    return ("user" if it["type"] == "UserMessage" else "codex"), text
 
 
 # ---------- subscription usage ----------

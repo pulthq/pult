@@ -7,7 +7,8 @@ FAKE_CODEX_CONF names a JSON file that shapes it, read anew on every start: vers
 review target; login — false: not signed in; fail — a codexErrorInfo ("usageLimitExceeded", "unauthorized") or "other";
 wait — seconds the review takes; hang — seconds it stays silent before going on (past a test's timeout); ask — it
 asks an approval of its own; steps — commands it runs; review — its answer; log — a file where
-every request lands as a JSON line (the tests read the sandbox and the instructions there). launcher(folder, conf) makes
+every request lands as a JSON line (the tests read the sandbox and the instructions there; initialize — with the PULT_
+names of its environment). launcher(folder, conf) makes
 the command that runs it on any system — a shell script, or a .cmd on Windows.
 
 As the one who does a task (stage M, M4.1): thread/start and thread/resume (a history file like Codex's own, in conf's
@@ -204,8 +205,9 @@ def serve(c):
             m = json.loads(line)
         except ValueError:
             continue
-        note(m)
         meth, i, prm = m.get("method"), m.get("id"), m.get("params") or {}
+        # initialize with Pult's names from its environment: what a command of the task's would get (pult send)
+        note(dict(m, env={k: v for k, v in os.environ.items() if k.startswith("PULT_")}) if meth == "initialize" else m)
         if not meth and i in doer.waits:                # Pult's answer to a request of the doer's own
             doer.answers[i] = m.get("result") or {}
             doer.waits.pop(i).set()

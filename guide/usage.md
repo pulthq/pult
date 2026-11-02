@@ -116,8 +116,9 @@ Signs in the feed: ⏳ works · ✅ a result · ✔️ decided or done · 🟠 w
 ⚠️ a failure · ⚙️ a job. A long result shows its beginning; the rest opens with a tap.
 
 **Asking Claude for a file.** Every session learns, at its start, that it can send files of its project to the
-project's topic with `pult send FILE… [-m TEXT]`. Only files inside the project, up to 50 MB each, ten at once, and
-nothing that looks like keys or settings (`.env`, `*.pem`, `.ssh/`, `credentials*`).
+project's topic with `pult send FILE… [-m TEXT]`; a task Codex does is told the same, and the command works inside its
+sandbox. Only files inside the project, up to 50 MB each, ten at once, and nothing that looks like keys or settings
+(`.env`, `*.pem`, `.ssh/`, `credentials*`).
 
 **Called only when it matters.** With the web app, Telegram becomes a pager: it rings when Claude waits for you and
 you're neither in the app nor at the computer. Reminders on long turns; warnings at 80 % and 95 % of a limit.
