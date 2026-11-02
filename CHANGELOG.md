@@ -4,6 +4,20 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.38 — 2026-11-02
+
+- **`pult send` works from a Codex task.** It failed three ways: it wanted Claude Code's session ID (Codex names its
+  own thread, which Pult now knows as the task's, and gets Pult's own in `PULT_SESSION_ID`); Codex's sandbox forbids
+  connecting to Pult's socket, and the command said "Pult isn't running" (it now leaves its request in Pult's outbox,
+  a folder the task's sandbox may write into); and Codex wasn't told the command exists (it is now, as Claude is).
+  That folder is the one thing the sandbox may write outside the project, and the daemon reads it without trusting
+  it: only a small regular file is a request, never a link or a pipe, and an answer is written under a new name — a
+  link planted in the folder can't make the daemon overwrite a file elsewhere, nor a pipe hang it.
+- **A Codex task's chat shows its words again.** Codex 0.166 keeps the owner's messages and its own replies in its
+  history only in a new form, and the app showed none of them — just the steps, and the outcome's short line with
+  nothing to open. Its commands also showed as "exec": by 0.166 it writes them with the keys unquoted.
+- The outcome's line shows a link's words, not the link's markdown.
+
 ## 0.18.37 — 2026-10-31
 
 - **Codex's effort, like Claude's.** Picking Codex in New task, or a Codex task's model on its screen, opens the same

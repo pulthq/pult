@@ -19,6 +19,7 @@ import os
 import re
 import secrets
 import shutil
+import stat
 import sys
 import tempfile
 import time
@@ -49,6 +50,7 @@ import pult_web as PW
 HOME = Path(os.environ.get("PULT_HOME") or "~/.local/share/pult").expanduser()
 ENV_FILE = Path(os.environ.get("PULT_ENV") or "~/.config/pult/env").expanduser()
 SOCK = os.environ.get("PULT_SOCK") or str(HOME / "pult.sock")
+OUTBOX = HOME / "outbox"      # pult send from a sandbox that may write here but not connect (pultctl.send_outbox)
 SEPS = os.sep + "/"                                           # trailing separators of a folder path: / (Windows: \ and /)
 CLAUDE_PROJECTS = Path(os.environ.get("PULT_PROJECTS") or "~/.claude/projects").expanduser()   # tests and the stand: their own
 
@@ -57,6 +59,9 @@ SKIP_PREFIXES = ("-private-", "-tmp-", "-var-folders-")   # throwaway folders, n
 AWAY_IDLE = 120          # idle here for longer than this (Pult.idle): the owner is away, notify with sound
 EDIT_EVERY = 12          # s; edit a turn message no more often than this (Telegram's per-group limit)
 MAX_DRIVEN = 5           # sessions from Telegram that hold a process
+OUTBOX_EVERY = 0.5       # s between looks into the outbox (pult send from a sandbox)
+OUTBOX_MAX = 64 << 10    # bytes of one request there: ten paths and a caption fit many times over
+OUTBOX_MANY = 4          # requests from there handled at once; the rest wait their turn
 RESULT_GRACE = 3.0       # s after a turn's result for its Stop hook; an interrupted turn gets none and is closed then
 TURN_TAIL = 8 << 20      # bytes of a transcript's end read for the paths a turn's tools gave (its files, stage F4)
 FOCUS_IDLE = 2 * 3600   # a topic forgets its current session after this long without the owner's text there
@@ -84,7 +89,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.37"
+VERSION = "0.18.38"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -3078,10 +3083,15 @@ class Pult(Api, Parts):
 
     async def on_send(self, msg):
         """`pult send` — a command Claude ran in a session: the files go to that session's project topic. The session is
-        the one Claude Code names in the command's environment (CLAUDE_CODE_SESSION_ID — probe_sessionctx.py)."""
+        the one Claude Code names in the command's environment (CLAUDE_CODE_SESSION_ID — probe_sessionctx.py); a Codex
+        task names Pult's session (PULT_SESSION_ID) or its own thread (CODEX_THREAD_ID), which Pult knows as that task's.
+        What doesn't go is said to the agent that ran it, which tells the owner — not in the topic (the owner, 2026-11-02)."""
         sid = str(msg.get("sid") or "")
+        if SID_RE.fullmatch(sid) and not self.session_project(sid)[1]:
+            sid = self.store.codex_task(sid) or sid
         pkey, project = self.session_project(sid) if SID_RE.fullmatch(sid) else (None, None)
         if not project:
+            log("pult send: no session %s known" % sid[:8])
             return {"error": self.t("send.err.session")}
         paths = [str(p) for p in (msg.get("paths") or []) if p]
         if not paths:
@@ -3090,7 +3100,115 @@ class Pult(Api, Parts):
             return {"error": self.t("send.err.many", n=F.SEND_MANY)}
         res = await self.send_files(sid, pkey, project, paths, msg.get("caption"))
         res.pop("paths", None)
+        if res["refused"]:
+            log("pult send from %s: not sent %s" % (sid[:8], json.dumps([n for n, _ in res["refused"]], ensure_ascii=False)))
         return res
+
+    async def outbox_watch(self):
+        """pult send's requests from the outbox (pultctl.send_outbox): a Codex task's sandbox lets a command write into
+        this folder but not connect to the socket. Each request is the file <id>.json, its answer — <id>.res.
+        The sandbox writes here and the daemon isn't in it, so nothing here is taken on trust (probes on Codex 0.148,
+        2026-11-02): a request is read only as a small regular file of the owner's, never through a link — a FIFO named
+        like one would hang the daemon; an answer is written into a file of a new name that then takes the answer's
+        place — a link planted at the name it was written to made the daemon overwrite the file the link named."""
+        OUTBOX.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name != "nt":
+            os.chmod(OUTBOX, 0o700)
+        busy, swept = set(), 0.0
+
+        def take(req):
+            """The request's bytes, or None: not a small regular file of the owner's. It is gone from the folder after."""
+            try:
+                fd = os.open(req, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+                             | getattr(os, "O_BINARY", 0))
+            except OSError:                             # a link (O_NOFOLLOW), a socket, or gone already
+                fd = None
+            try:
+                if fd is None:
+                    return None
+                st = os.fstat(fd)
+                if not stat.S_ISREG(st.st_mode) or st.st_size > OUTBOX_MAX \
+                        or (os.name != "nt" and st.st_uid != os.getuid()):
+                    return None
+                raw = b""
+                while len(raw) <= OUTBOX_MAX:
+                    chunk = os.read(fd, OUTBOX_MAX + 1 - len(raw))
+                    if not chunk:
+                        break
+                    raw += chunk
+                return raw if len(raw) <= OUTBOX_MAX else None
+            finally:
+                if fd is not None:
+                    os.close(fd)
+                try:
+                    os.unlink(req)
+                except OSError:
+                    pass
+
+        def answer(req, res):
+            fd, tmp = tempfile.mkstemp(prefix=".answer-", dir=OUTBOX)    # a new name (O_EXCL): never through a link
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(res, f, ensure_ascii=False)
+                os.replace(tmp, req.with_suffix(".res"))              # takes the name itself, a link there too
+            except OSError:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+
+        def sweep():
+            """What nobody took for an hour: an answer the command gave up on, a file half-written, anything else."""
+            now = time.time()
+            with os.scandir(OUTBOX) as it:
+                for e in it:
+                    try:
+                        if not e.is_dir(follow_symlinks=False) and now - e.stat(follow_symlinks=False).st_mtime > 3600:
+                            os.unlink(e.path)
+                    except OSError:
+                        pass
+
+        async def one(req):
+            try:
+                raw = await asyncio.to_thread(take, req)
+                try:
+                    msg = json.loads(raw.decode("utf-8")) if raw else None
+                except ValueError:
+                    msg = None
+                if not isinstance(msg, dict) or msg.get("op") != "send":
+                    log("outbox: %r isn't a request of pult send — dropped" % req.name)
+                    return
+                log("pult send from a sandbox, through the outbox: %s" % str(msg.get("sid") or "")[:8])
+                try:
+                    res = await self.on_send(msg)
+                except Exception as e:
+                    log("outbox: %r failed: %r" % (req.name, e))
+                    res = {"error": self.t("send.err.nothing")}
+                try:
+                    await asyncio.to_thread(answer, req, res)
+                except OSError as e:
+                    log("outbox: no answer for %r: %s" % (req.name, e))
+            finally:
+                busy.discard(req.name)
+
+        while True:
+            try:
+                with os.scandir(OUTBOX) as it:
+                    names = sorted(e.name for e in it if e.name.endswith(".json") and not e.is_dir(follow_symlinks=False))
+            except OSError:
+                names = []
+            for name in names:
+                if name not in busy and len(busy) < OUTBOX_MANY:
+                    busy.add(name)
+                    asyncio.create_task(one(OUTBOX / name))
+            if time.monotonic() - swept > 60:
+                swept = time.monotonic()
+                try:
+                    await asyncio.to_thread(sweep)
+                except OSError:
+                    pass
+            await asyncio.sleep(OUTBOX_EVERY)
 
     def check_send(self, project, paths):
         """Each file checked for Telegram (pult_files.why_not_send): inside the project, not like a secret, 1 byte to
@@ -3547,7 +3665,8 @@ async def amain():
     log("Pult started; group:", p.chat, "; link: 127.0.0.1:%d" % server.sockets[0].getsockname()[1]
         if pult_os.link_tcp() else "; socket: " + SOCK)
     # the panel is sent via the message queue, so it must run alongside it, or startup hangs (seen 2026-10-16, 0.6.0)
-    jobs = [p.out.run(), p.telegram_start(), p.usage_watch(), p.attention_watch(), p.update_watch(), p.release_watch()]
+    jobs = [p.out.run(), p.telegram_start(), p.usage_watch(), p.attention_watch(), p.update_watch(), p.release_watch(),
+            p.outbox_watch()]
     if env.get("PULT_RELAY_URL") and env.get("PULT_RELAY_SECRET"):
         p.web = PW.Web(p, env["PULT_RELAY_URL"], env["PULT_RELAY_SECRET"], token, p.allowed,
                        proxy=env.get("PULT_PROXY") or None, manifest=WEB_MANIFEST)

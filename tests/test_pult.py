@@ -2480,6 +2480,80 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await p.communicate()
         self.assertEqual(p.returncode, 2)
 
+    async def test_send_from_codex(self):
+        # pult send from a Codex task (2026-11-02): Codex names its own thread, which Pult knows as the task's; its
+        # sandbox can't connect to the socket, so the request goes through the outbox; what isn't sent is said to the
+        # agent that ran it, not in the topic (the owner, 2026-11-02)
+        proj = TMP / ("proj-" + self._testMethodName)
+        proj.mkdir(parents=True)
+        (proj / "shot.png").write_bytes(b"PNG")
+        (proj / ".env").write_text("TOKEN=1")
+        self.store.set_topic(PKEY, str(proj), "proj", 77)
+        self.store.touch_session(SID, PKEY, path=str(proj))
+        thread = "01a199f3-69eb-7b33-afaa-5a5377c2ef7f"
+        self.store.put("codex." + SID, {"thread": thread, "path": None})
+        self.assertEqual(self.store.codex_task(thread), SID)
+        self.assertIsNone(self.store.codex_task("01a199f3-0000-0000-0000-000000000000"))
+        said = len(self.texts())
+        res = await self.p.on_send({"sid": thread, "paths": [str(proj / "shot.png"), str(proj / ".env")]})
+        self.assertEqual((res["sent"], [n for n, _ in res["refused"]]), (["shot.png"], [".env"]))
+        self.assertEqual(self.fake.of("sendDocument")[-1]["message_thread_id"], "77")
+        self.assertEqual(len(self.texts()), said)                              # the refusal isn't said in the topic
+        # the outbox: a request file in, its answer file out; the command from a sandbox (Codex's flag) takes that way
+        watch = asyncio.create_task(self.p.outbox_watch())
+        try:
+            env = plain_env(PULT_HOME=str(TMP), PULT_SOCK=str(TMP / "nowhere.sock"), CODEX_THREAD_ID=thread,
+                            CODEX_SANDBOX_NETWORK_DISABLED="1", PULT_LANG="ru")
+            for k in ("CLAUDE_CODE_SESSION_ID", "PULT_SESSION_ID"):          # the session comes from Codex's own name
+                env.pop(k, None)
+            p = await asyncio.create_subprocess_exec(sys.executable, str(HERE / "pultctl.py"), "send", "shot.png", "-m", "Макет",
+                                                     cwd=str(proj), env=env, stdout=asyncio.subprocess.PIPE,
+                                                     stderr=asyncio.subprocess.PIPE)
+            out, err = await asyncio.wait_for(p.communicate(), 30)
+            self.assertEqual((p.returncode, out.decode().strip()), (0, "отправлено: shot.png"), err)
+            self.assertEqual(self.fake.of("sendDocument")[-1]["caption"], "Макет")
+            self.assertEqual(sorted(pultd.OUTBOX.iterdir()), [])                   # nothing left behind
+            # Pult's own name for the task comes first: Claude Code's may come with the daemon's environment (a stand)
+            env.update(PULT_SESSION_ID=SID, CLAUDE_CODE_SESSION_ID="0badc0de-0000-4000-8000-000000000000")
+            p = await asyncio.create_subprocess_exec(sys.executable, str(HERE / "pultctl.py"), "send", "shot.png", cwd=str(proj),
+                                                     env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            out, err = await asyncio.wait_for(p.communicate(), 30)
+            self.assertEqual((p.returncode, out.decode().strip()), (0, "отправлено: shot.png"), err)
+            # the sandbox writes this folder and the daemon isn't in it (probes on Codex 0.148, 2026-11-02): a link
+            # planted where an answer goes isn't written through; a request that is a link, a FIFO, too big or not a
+            # request is dropped unread — and the daemon goes on answering
+            box, docs = pultd.OUTBOX, len(self.fake.of("sendDocument"))
+            ask = json.dumps({"op": "send", "sid": SID, "paths": [str(proj / "shot.png")]})
+            (box / "big.json").write_text(ask + " " * pultd.OUTBOX_MAX)
+            (box / "junk.json").write_text("[1, 2")
+            if os.name != "nt":
+                outside, stray = TMP / ("outside-" + self._testMethodName), TMP / ("stray-" + self._testMethodName)
+                outside.write_text("the owner's file")
+                stray.write_text(ask)
+                os.mkfifo(box / "pipe.json")
+                (box / "link.json").symlink_to(stray)
+                for planted in ("x.rtmp", "x.res"):
+                    (box / planted).symlink_to(outside)
+            (box / "x.json").write_text(ask)
+            await until(lambda: (box / "x.res").is_file() and not (box / "x.res").is_symlink(), 10)
+            self.assertEqual(json.loads((box / "x.res").read_text())["sent"], ["shot.png"])
+            await until(lambda: not [n for n in os.listdir(box) if n.endswith(".json")], 10)
+            self.assertEqual(len(self.fake.of("sendDocument")), docs + 1)        # only the real request was sent
+            if os.name != "nt":
+                self.assertEqual(outside.read_text(), "the owner's file")
+                self.assertEqual(stray.read_text(), ask)                          # a link's file stays, unread
+                (box / "x.rtmp").unlink()
+            (box / "x.res").unlink()
+            self.assertEqual(sorted(box.iterdir()), [])
+        finally:
+            watch.cancel()
+        # no daemon to take it: the request is taken back, and the command says so
+        sys.path.insert(0, str(HERE))
+        import pultctl
+        with mock.patch.object(pultctl.S, "OUTBOX", pultd.OUTBOX):
+            self.assertIsNone(pultctl.send_outbox({"op": "send"}, pickup=0.5, wait=5))
+        self.assertEqual(sorted(pultd.OUTBOX.iterdir()), [])
+
     async def test_file_view(self):
         # a link in Claude's words tapped in the app (stage F5): the project's file or folder, by Telegram's rule —
         # inside the project, nothing like a secret; a link in a file's own page counts from that file's folder
@@ -3283,6 +3357,14 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((start["sandbox"], start["approvalPolicy"], os.path.realpath(start["cwd"])),
                          ("workspace-write", "on-request", os.path.realpath(str(proj))))
         self.assertIn("CLAUDE.md", start["developerInstructions"])          # Codex reads AGENTS.md only
+        self.assertIn("pult send", start["developerInstructions"])          # files to the phone, as Claude is told
+        self.assertEqual(start["config"], {"sandbox_workspace_write.writable_roots": [str(pultd.OUTBOX)]})  # a dotted key
+        # its commands get only Pult's names `pult send` needs: the task, this daemon's home and link — nothing else
+        # of the daemon's own (its settings and keys)
+        got = sent()
+        at = next(n for n, m in enumerate(got) if m.get("method") == "thread/start")
+        self.assertEqual([m for m in got[:at] if m.get("method") == "initialize"][-1]["env"],     # the task's own app-server
+                         {"PULT_SESSION_ID": sid, "PULT_HOME": str(pultd.HOME), "PULT_SOCK": str(pultd.SOCK)})
         await self.p.api_answer(req.rid, act="y")
         await until(lambda: any((m.get("result") or {}).get("decision") == "accept" for m in sent()))
         # its outcome: whose move, the turn's files, the session's screen from Codex's own history
@@ -6703,6 +6785,22 @@ class CodexTest(unittest.TestCase):
         self.assertEqual(PW.codex_step("something else"), ("exec", {"script": "something else"}))
         # a script whose arguments aren't strict JSON still gives its command (a Windows path, unescaped)
         self.assertEqual(PW.codex_step('tools.exec_command({"cmd":"dir","workdir":"C:\\Users\\x"})'), ("Bash", {"command": "dir"}))
+        # Codex 0.166 (2026-11-02): the words only as item_completed UserMessage / AgentMessage, the command as a JS
+        # object with its keys unquoted — the app showed a task's steps as "exec" and none of the words
+        item = lambda what, ts, text: row("event_msg", "item_completed", ts, item={
+            "type": what, "id": "i%d" % ts, "content": [{"type": "text" if what == "UserMessage" else "Text", "text": text}]})
+        rows = [row("event_msg", "task_started", 1, turn_id="t1"), item("UserMessage", 2, "Нарисуй макет"),
+                row("response_item", "custom_tool_call", 3, call_id="c1", name="exec",
+                    input='text(await tools.exec_command({cmd:"rg -n \'крив\' docs","max_output_tokens":6500}));\n'),
+                item("AgentMessage", 4, "[Открыть макет](previews/06.png)\n\n**Готово.**"),
+                row("event_msg", "agent_message", 4, message="[Открыть макет](previews/06.png)\n\n**Готово.**"),
+                row("event_msg", "task_complete", 5, turn_id="t1")]
+        f2 = d / "rollout-2026-11-02T04-50-28-th2.jsonl"
+        f2.write_text("\n".join(rows) + "\n")
+        self.assertEqual([(i["k"], i.get("step") or i.get("text")) for i in PW.codex_page(str(f2), cwd=str(d))["items"]],
+                         [("user", "Нарисуй макет"), ("tool", "⌘ rg -n 'крив' docs"),
+                          ("text", "[Открыть макет](previews/06.png)\n\n**Готово.**")])       # the same words once
+        self.assertEqual(B.first_sentence("[Открыть макет](previews/06.png)\n\n**Готово.** Дальше"), "Открыть макет Готово.")
         self.assertEqual(CX.shell_of("/bin/zsh -lc \"npm test -- --watch=false\""), "npm test -- --watch=false")
         self.assertEqual(CX.shell_of("git status"), "git status")
         self.assertEqual([CX.fail_of(e) for e in ({"codexErrorInfo": "usageLimitExceeded"}, {"message": "401 unauthorized"},

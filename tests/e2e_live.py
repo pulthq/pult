@@ -15,8 +15,9 @@ A new project "with a description" (stage S): git, its topic by the title, a fir
 A file made in a session goes to the project's topic with `pult send`, and the turn's outcome lists it (stage F).
 With the model on, a new task gets its section and topic as soon as its request is in, and again with the result (stage T);
 the first open of the project sorts its earlier tasks without tags, in a batch (T2).
-A task Codex does (stage M, M4.1): the real Codex of this computer writes a file in the project, its outcome and history come
-as a session's (skipped without Codex). A task on another vendor's model (stage M, step 2): a stand-in for DeepSeek on this computer gets the session's requests with
+A task Codex does (stage M, M4.1): the real Codex of this computer writes a file in the project and sends it with `pult send`
+from its sandbox — which can't reach the socket, so through Pult's outbox — its outcome and history come as a session's
+(skipped without Codex). A task on another vendor's model (stage M, step 2): a stand-in for DeepSeek on this computer gets the session's requests with
 Pult's key and never the subscription's token; the outcome comes; the transcript names the vendor's model, and so does its
 row — Claude's session's row its real model, and so does the owner's move on Home.
 """
@@ -98,6 +99,7 @@ async def main():
     p._agents = (time.monotonic() + 1e6, [])
     server = await pultd.start_link(p.handle_conn, os.environ["PULT_SOCK"])
     asyncio.create_task(p.out.run())
+    asyncio.create_task(p.outbox_watch())          # pult send from a Codex task's sandbox
     t0 = time.monotonic()
     log = lambda *a: print("%6.1f" % (time.monotonic() - t0), *a, flush=True)
 
@@ -391,9 +393,15 @@ async def main():
     else:
         levels, dflt = p.codex_efforts(None)
         level = "medium" if "medium" in levels else None          # its own level of effort, picked as from the app
-        sid12 = (await p.api_new(pkey5, "Create the file codex.txt containing the word hi. Reply in one short sentence.",
+        docs = len([1 for m, _ in calls if m == "sendDocument"])
+        send = "%s %s send codex.txt -m 'From Codex'" % (sys.executable, SRC / "pultctl.py")   # this copy's, not the installed
+        sid12 = (await p.api_new(pkey5, "Create the file codex.txt containing the word hi, then send it to me by running "
+                                 "exactly this command: " + send + " — Reply in one short sentence.",
                                  vendor="codex", effort=level))["sid"]
         await until(lambda: (p.attn.rec.get(sid12) or {}).get("ts"), what="итог задачи Codex")
+        sent12 = [d for m, d in calls if m == "sendDocument"][docs:]
+        log("Codex: файл в теме из песочницы — %d · ящик пуст: %s" % (len(sent12), not os.listdir(pultd.OUTBOX)))
+        assert sent12, "pult send from Codex's sandbox didn't deliver the file"
         made = os.path.join(p.project_path(pkey5), "codex.txt")
         items = (await p.api_session(sid12))["page"]["items"]
         llm12 = (await p.row_stats(sid12))[1]

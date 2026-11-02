@@ -40,6 +40,7 @@ from pult_i18n import T  # noqa: E402
 HOME = Path(os.environ.get("PULT_HOME") or "~/.local/share/pult").expanduser()
 ENV_FILE = Path(os.environ.get("PULT_ENV") or "~/.config/pult/env").expanduser()
 SOCK = os.environ.get("PULT_SOCK") or str(HOME / "pult.sock")
+OUTBOX = HOME / "outbox"       # pult send without the socket: a Codex sandbox lets a command write here, not connect
 LOG = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 WIN = pult_os.KIND == "windows"
 PY = HOME / "venv" / ("Scripts/python.exe" if WIN else "bin/python")    # Pult's environment; the hook and the tab
@@ -1241,7 +1242,8 @@ HOME_FILES = ("pultd.py", "pult_hook.py", "pult_render.py", "pult_web.py", "pult
               "installed.json", "installs.json", "update.json", "health.json", "installed.json.tmp", "installs.json.tmp",
               "update.json.tmp", "health.json.tmp", "prev", ".new", ".install-new",
               "pultctl.py", "pult_tab.py", "pult-tab.sh", "pult-tab.exe", "pult-tab.exe.new", "requirements.txt", "state.db",
-              "state.db-journal", "state.db-wal", "state.db-shm", "pult.sock", "pult.sock.tmp", "venv", "__pycache__")
+              "state.db-journal", "state.db-wal", "state.db-shm", "pult.sock", "pult.sock.tmp", "venv", "__pycache__",
+              "outbox")
 CONF_FILES = ("env", "env.tmp", "tab.json", "tab-off")
 TAB_STUB = ('#!/bin/sh\n# Pult was removed. This stub runs Claude Code directly, so VS Code tabs keep working:\n'
             '# remove the claudeCode.claudeProcessWrapper line from the VS Code settings, then delete this folder.\n'

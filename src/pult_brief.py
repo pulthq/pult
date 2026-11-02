@@ -137,6 +137,7 @@ def parse(result, tags=False):
 def first_sentence(text, n=LINE_MAX):
     """The rule without the model: the first sentence of the result, markdown and code stripped."""
     text = re.sub(r"```.*?```", " ", str(text or ""), flags=re.S)
+    text = re.sub(r"!?\[([^\]\n]*)\]\([^)\s]+\)", r"\1", text)     # a link: its words, not its path (2026-11-02)
     text = re.sub(r"[`*_#>]+", "", text)
     text = " ".join(text.split())
     m = re.match(r"(.+?[.!?…])(\s|$)", text)

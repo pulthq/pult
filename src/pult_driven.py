@@ -567,15 +567,19 @@ class CodexDriven(Driven):
         if not info["ok"]:
             raise CX.CodexError(info["why"] or "missing", "Codex %s can't do tasks here" % (info["v"] or ""))
         env = {k: v for k, v in os.environ.items() if not k.startswith("PULT_")}
+        # `pult send` from the task (pultctl): which session's topic, and this daemon's link and outbox — the folder its
+        # sandbox may write into (CX.send_config) — not the default ones, which a stand doesn't use
+        env.update(PULT_SESSION_ID=self.sid, PULT_HOME=str(self.d.D.HOME), PULT_SOCK=str(self.d.D.SOCK))
         s = self.server = await CX.AppServer.start(info["path"], self.path, env, on_request=self.answer)
         await s.request("initialize", {"clientInfo": {"name": "pult", "title": "Pult", "version": self.d.D.VERSION}})
         await s.send({"method": "initialized"})
         if not (await s.request("account/read", {})).get("account"):
             raise CX.CodexError("login", "Codex is not signed in to ChatGPT")
         keep = self.d.store.get("codex." + self.sid) or {}
-        params = {"cwd": self.path, "sandbox": CX.SANDBOX, "approvalPolicy": CX.APPROVAL}
-        if os.path.isfile(os.path.join(self.path, "CLAUDE.md")):
-            params["developerInstructions"] = CX.RULES
+        params = {"cwd": self.path, "sandbox": CX.SANDBOX, "approvalPolicy": CX.APPROVAL,
+                  "config": CX.send_config(str(self.d.D.OUTBOX))}
+        rules = [CX.RULES] if os.path.isfile(os.path.join(self.path, "CLAUDE.md")) else []
+        params["developerInstructions"] = "\n\n".join(rules + [CX.SEND_RULE])
         if self.resume and keep.get("thread"):
             r = await s.request("thread/resume", dict(params, threadId=keep["thread"]))
         else:

@@ -245,9 +245,11 @@ def cmd_run(argv):
 
 
 def cmd_send(argv):
-    """pult send FILE… [-m CAPTION]: files to the owner's phone, into the Telegram topic of the project the Claude
-    session works in. Claude runs it; Claude Code names the session in the command's environment
-    (CLAUDE_CODE_SESSION_ID), and the daemon checks every file (pult_files.why_not_send)."""
+    """pult send FILE… [-m CAPTION]: files to the owner's phone, into the Telegram topic of the project the session
+    works in. Claude runs it; Claude Code names the session in the command's environment (CLAUDE_CODE_SESSION_ID), a
+    Codex task from Pult gets PULT_SESSION_ID, and Codex itself names its thread (CODEX_THREAD_ID). Pult's own name
+    comes first: it is given only to the task Pult runs, while Claude Code's could come with the daemon's environment
+    (a stand started from a Claude session). The daemon checks every file (pult_files.why_not_send)."""
     caption, files, i = None, [], 0
     while i < len(argv):
         if argv[i] in ("-m", "--message") and i + 1 < len(argv):
@@ -258,26 +260,24 @@ def cmd_send(argv):
     if not files:
         print(T("cli.send.usage"))
         return 2
-    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    sid = next((os.environ[k] for k in ("PULT_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID")
+                if os.environ.get(k)), "")
     if not sid:
         print(T("cli.send.nosession"), file=sys.stderr)
         return 2
     msg = {"op": "send", "sid": sid, "paths": [os.path.abspath(f) for f in files], "caption": caption}
     try:
-        s = S.pult_os.link_connect(S.SOCK)
-        s.settimeout(900)                       # up to ten files of 50 MB through Telegram's queue
-        s.sendall(json.dumps(msg, ensure_ascii=False).encode() + b"\n")
-        buf = b""
-        while not buf.endswith(b"\n"):
-            chunk = s.recv(65536)
-            if not chunk:
-                break
-            buf += chunk
-        s.close()
-        res = json.loads(buf.decode("utf-8") or "{}")
+        res = send_link(msg)
+    except PermissionError:                     # a sandbox (Codex's) forbids the connection, not the daemon's absence
+        res = send_outbox(msg)
+        if res is None:
+            print(T("cli.send.sandbox"), file=sys.stderr)
+            return 1
     except (OSError, ValueError):
-        print(T("cli.send.nodaemon"), file=sys.stderr)
-        return 1
+        res = send_outbox(msg) if os.environ.get("CODEX_SANDBOX_NETWORK_DISABLED") else None
+        if res is None:
+            print(T("cli.send.nodaemon"), file=sys.stderr)
+            return 1
     if not res:                                 # a daemon from before 0.13 takes it for a hook event and says nothing
         print(T("cli.send.old"), file=sys.stderr)
         return 1
@@ -289,6 +289,60 @@ def cmd_send(argv):
     for n, why in res.get("refused") or []:
         print(T("cli.send.refused", name=n, why=why), file=sys.stderr)
     return 0 if res.get("sent") and not res.get("refused") else 1
+
+
+SEND_WAIT = 900          # s: up to ten files of 50 MB through Telegram's queue
+OUTBOX_PICKUP = 10       # s for the daemon to take a request from the outbox, or it isn't running
+
+
+def send_link(msg):
+    """The request over the daemon's link → its answer ({} from a daemon that doesn't know `send`)."""
+    s = S.pult_os.link_connect(S.SOCK)
+    s.settimeout(SEND_WAIT)
+    s.sendall(json.dumps(msg, ensure_ascii=False).encode() + b"\n")
+    buf = b""
+    while not buf.endswith(b"\n"):
+        chunk = s.recv(65536)
+        if not chunk:
+            break
+        buf += chunk
+    s.close()
+    return json.loads(buf.decode("utf-8") or "{}")
+
+
+def send_outbox(msg, pickup=OUTBOX_PICKUP, wait=SEND_WAIT):
+    """The request as a file in Pult's outbox, the answer as a file next to it (Pult.outbox_watch). A Codex task's
+    sandbox may write there (Pult opens the folder to it) but not connect to the socket. → the answer, or None: no
+    outbox to write to, or no daemon took the request in time."""
+    rid = uuid.uuid4().hex
+    req, ans = S.OUTBOX / (rid + ".json"), S.OUTBOX / (rid + ".res")
+    tmp = S.OUTBOX / (rid + ".tmp")
+    try:
+        tmp.write_text(json.dumps(msg, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, req)
+    except OSError:
+        return None
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < wait:
+        if ans.exists():
+            try:
+                res = json.loads(ans.read_text(encoding="utf-8") or "{}")
+            except (OSError, ValueError):
+                time.sleep(0.2)                 # still being written
+                continue
+            try:
+                ans.unlink()
+            except OSError:
+                pass
+            return res
+        if req.exists() and time.monotonic() - t0 > pickup:
+            try:
+                req.unlink()                    # nobody came for it: the daemon isn't running
+            except OSError:
+                pass
+            return None
+        time.sleep(0.3)
+    return None
 
 
 def utf8_pipes():
