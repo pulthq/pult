@@ -643,7 +643,10 @@ class ChainBase(unittest.IsolatedAsyncioTestCase):
         self.store.put("chat", T.CHAT)
         self.store.put("lang_tg", "ru")
         self.store.set_topic(T.PKEY, "/Users/x/proj", "proj", 77)
-        self.p = pultd.Pult({"PULT_ALLOWED_USER_IDS": str(T.OWNER), "PULT_FORCE_AWAY": "1"}, tg, self.store)
+        # PULT_CODEX: no Codex, as in test_pult — this computer's own (ChatGPT.app) was asked for its models on every
+        # session's screen, and with the network slow that took the 5 s a call may (2026-11-03)
+        self.p = pultd.Pult({"PULT_ALLOWED_USER_IDS": str(T.OWNER), "PULT_FORCE_AWAY": "1", "PULT_CODEX": str(T.TMP / "no-codex")},
+                            tg, self.store)
         self.p.out = pultd.Outbox(rate=60000, burst=1000)
         self.p._agents = (time.monotonic() + 1e6, [])
         fast = mock.patch.object(pultd, "EDIT_EVERY", 0.05)       # undone after each test (review 2026-10-27, Т8)

@@ -4,13 +4,17 @@ import { api, useLive } from "../core/conn.js";
 import { go } from "../core/nav.js";
 import { plural, q, t } from "../i18n.js";
 import { html, useState } from "../vendor/htm-preact-3.1.1.js";
-import { About, Loading, ago, bytes, dur, hhmm, ic, keyTap, level, nb, num, pct, toDate, useNow } from "./kit.js";
+import { About, Loading, ago, bytes, dur, hhmm, ic, keyTap, kilo, level, modelName, nb, num, pct, toDate, useNow } from "./kit.js";
 
 
 // ---------- screens ----------
 
 // Claude's background tasks still running after a turn; when one ends, Claude starts a new turn by itself
 const bgLine = (bg) => html`${ic("bg", 14)} ${t("bg", { list: bg.map(q).join(", ") })}`;
+// how many of each kind run in the background: "2 helpers, 1 command" — the session's line under "working…"
+const KINDS = [["subagent", "helper"], ["workflow", "workflow"], ["shell", "command"], ["monitor", "monitor"]];
+const bgCount = (kinds) => KINDS.map(([k, w]) => [kinds.filter((x) => (x || "shell") === k).length, w]).filter(([n]) => n)
+  .map(([n, w]) => n + "\u00a0" + plural(n, w)).join(", ");
 
 // ---------- the load on the computer ----------
 
@@ -69,9 +73,15 @@ function BgSheet({ sid, onClose, fixed }) {
   const [d, err] = useLive(() => api("load", { sid }), [sid], (m) => !m.sid || m.sid === sid, 5000);
   const more = () => { onClose(); setTimeout(() => go("#/load"), 60); };
   const one = (x) => html`<div class="task" key=${x.id}>
-    <div class="item-h"><b>${x.what}</b><span class="chip">${t(TASK_TYPES[x.type] || "bgs.shell")}</span></div>
+    <div class="item-h"><b>${x.what}</b><span class="chip">${t(TASK_TYPES[x.type] || "bgs.shell")}${x.agent ? " · " + x.agent : ""}</span></div>
     ${x.cmd && html`<pre class="cmdline">${x.cmd}</pre>`}
-    ${x.remote ? html`<div class="dim">${x.since ? t("bgs.atleast", { dur: dur(now - x.since), hm: hhmm(toDate(x.since)) }) + " · " : ""}${t("bgs.remote")}</div>`
+    ${x.remote && x.model ? html`<div class="kv">
+          ${x.since && html`<span>${t("bgs.runs")}</span><b>${dur(now - x.since)} <span class="dim">${t("bgs.since", { hm: hhmm(toDate(x.since)) })}</span></b>`}
+          <span>${t("bgs.model")}</span><b>${modelName(x.model)}</b>
+          ${x.steps != null && html`<span>${t("bgs.did")}</span><b>${x.steps} ${plural(x.steps, "step")}${x.tokens ? html` <span class="dim">· ${t("bgs.tokens", { n: kilo(x.tokens) })}</span>` : ""}</b>`}
+          ${x.now && html`<span>${t("bgs.now")}</span><b class="mono">${x.now}</b>`}
+        </div><div class="dim small">${t("bgs.remote")}</div>`
+      : x.remote ? html`<div class="dim">${x.since ? t("bgs.atleast", { dur: dur(now - x.since), hm: hhmm(toDate(x.since)) }) + " · " : ""}${t("bgs.remote")}</div>`
       : x.found === false ? html`<div class="dim">${t("bgs.gone")}</div>`
       : html`<div class="kv">
           <span>${t("bgs.runs")}</span><b>${dur(now - x.since)} <span class="dim">${t("bgs.since", { hm: hhmm(toDate(x.since)) })}</span></b>
@@ -87,4 +97,4 @@ function BgSheet({ sid, onClose, fixed }) {
     <button class="link" onClick=${more}>${t("bgs.more")}</button></div>`;
 }
 
-export { BgSheet, Load, bgLine, memPct };
+export { BgSheet, Load, bgCount, bgLine, memPct };

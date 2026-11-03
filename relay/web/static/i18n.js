@@ -647,6 +647,7 @@ const S = {
   "size.kb": { en: "{n} KB", ru: "{n} КБ" },
   "size.mb": { en: "{n} MB", ru: "{n} МБ" },
   "attach.remove": { en: "Remove", ru: "Убрать" },
+  "attach.full": { en: "{n} at most — remove one to add another", ru: "Не больше {n} — убери одно, чтобы добавить" },
   "attach.failed": { en: "Couldn't read the file", ru: "Не удалось прочитать файл" },
   // Telegram's popup: a title up to 64 characters, the text up to 256
   "pick.stuck.t": { en: "Telegram didn't open the file picker", ru: "Telegram не открыл выбор файла" },
@@ -807,6 +808,11 @@ const S = {
   "bgs.none": { en: "Nothing runs in the background now.", ru: "Сейчас в фоне ничего не идёт." },
   "bgs.session": { en: "The whole session now: processor {cpu} · memory {mem}", ru: "Вся сессия сейчас: процессор {cpu} · память {mem}" },
   "bgs.more": { en: "Load on the computer ›", ru: "Нагрузка на компьютер ›" },
+  "bgs.model": { en: "Model", ru: "Модель" },
+  "bgs.did": { en: "Done so far", ru: "Сделал" },
+  "bgs.now": { en: "Now", ru: "Сейчас" },
+  "bgs.tokens": { en: "{n} tokens", ru: "{n} токенов" },
+  "bg.n": { en: "{list} in the background", ru: "в фоне {list}" },
 
   // Resources: the plan's limits, the pace and the forecast (stage R)
   "sp.short.week": { en: "Week", ru: "Неделя" },
@@ -952,6 +958,9 @@ const P = {
   time: { en: ["time", "times"], ru: ["раз", "раза", "раз"] },
   rest: { en: ["resting", "resting"], ru: ["спит", "спят", "спят"] },
   command: { en: ["command", "commands"], ru: ["команда", "команды", "команд"] },
+  helper: { en: ["helper", "helpers"], ru: ["помощник", "помощника", "помощников"] },
+  monitor: { en: ["monitor", "monitors"], ru: ["наблюдатель", "наблюдателя", "наблюдателей"] },
+  workflow: { en: ["workflow", "workflows"], ru: ["сценарий", "сценария", "сценариев"] },
   finding: { en: ["finding", "findings"], ru: ["замечание", "замечания", "замечаний"] },
 };
 

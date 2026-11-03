@@ -153,6 +153,16 @@ async def main():
     sid4 = "aaaaaaaa-0000-4000-8000-000000000004"
     mark = len(calls)
     done = lambda after: [t for t in texts(after) if t.startswith("✅")]
+
+    async def watch_bg(sid, kind, out):
+        # the task is listed while the turn still runs — by its start's PostToolUse, not after the turn (Q128)
+        while not out:
+            lv = p.live.get(sid)
+            if lv and lv.turn and any(b.get("type") == kind for b in lv.bg):
+                out.append(time.time())
+            await asyncio.sleep(0.05)
+    seen4 = []
+    w4 = asyncio.create_task(watch_bg(sid4, "shell", seen4))
     begin = time.time()
     await p.drive(sid4, str(PROJ), "This is a test of background commands. Your first action must be a call to the Bash "
                   "tool with command `sleep 8; echo bg-done` and the parameter run_in_background: true. After the tool "
@@ -162,6 +172,9 @@ async def main():
     if buttons("p:", mark):                     # sleep may be allowed in the owner's settings — then there is no button
         await p.on_callback({"id": "c4", "from": {"id": OWNER}, "data": "p:%s:y" % buttons("p:", mark)[0].split(":")[1]})
     await until(lambda: done(mark), what="итог с фоном")
+    w4.cancel()
+    log("фоновая команда в списке во время хода:", bool(seen4))
+    assert seen4, "the background command was listed only after the turn"
     work1 = p.work_total(sid4)                   # the task's clock after its first turn (2026-10-30)
     log("итог с фоном:", done(mark)[0].replace("\n", " | "))
     assert "⚙️ Still running in the background" in done(mark)[0], "no “in the background” line"
@@ -207,6 +220,56 @@ async def main():
     llm4 = (await p.row_stats(sid4))[1]
     log("модель в строке:", llm4)
     assert llm4 and str(llm4.get("model")).startswith("claude-") and "vendor" not in llm4, "the row doesn't say Claude's model"
+    # 4b. a helper in the background (Q128): listed while the turn runs, with its model; the sheet tells its steps from its
+    #     own record; after the turn its steps are its own — no turn starts until its end's note (they used to start one)
+    sid7 = "aaaaaaaa-0000-4000-8000-000000000007"
+    mark7, starts, seen7 = len(calls), [], []
+    real_start = p.start_turn
+
+    def counting(lv, prompt=None, **kw):
+        if lv.sid == sid7:
+            starts.append((prompt, kw.get("note"), kw.get("reply_to")))
+        return real_start(lv, prompt, **kw)
+    p.start_turn = counting
+
+    async def allow_all(after):                  # the helper's command may ask, like step 4's
+        asked = set()
+        while True:
+            for b in buttons("p:", after):
+                if b not in asked:
+                    asked.add(b)
+                    await p.on_callback({"id": "c7", "from": {"id": OWNER}, "data": "p:%s:y" % b.split(":")[1]})
+            await asyncio.sleep(0.2)
+    w7, a7 = asyncio.create_task(watch_bg(sid7, "subagent", seen7)), asyncio.create_task(allow_all(mark7))
+    await p.drive(sid7, str(PROJ), "This is a test of background helpers. Call the Agent tool with subagent_type "
+                  "\"general-purpose\", run_in_background set to true, description \"Count to three\" and prompt \"Run "
+                  "the Bash command `sleep 6; echo ONE TWO THREE` and reply with its output only.\". Then reply with one "
+                  "word: STARTED. When you are notified that the helper finished, reply with one word: FINISHED.", origin=70)
+    await until(lambda: done(mark7), what="итог с помощником")
+    w7.cancel()
+    helper = next((b for b in p.live[sid7].bg if b.get("type") == "subagent"), None)
+    log("помощник в списке во время хода:", bool(seen7), "· после хода:", helper)
+    assert seen7, "the helper was listed only after the turn"
+    assert helper and str(helper.get("model")).startswith("claude-") and helper.get("agent_type") == "general-purpose", \
+        "the helper's model or type is missing"
+    if os.name != "nt":                         # the load view is empty on Windows so far (project doc, K2)
+        async def told():
+            ld = await p.api_load(sid=sid7)
+            return next((x for x in ld.get("tasks", []) if x["type"] == "subagent" and x.get("steps")), None)
+        h = None
+        for _ in range(100):
+            h = await told()
+            if h or not p.live[sid7].bg:
+                break
+            await asyncio.sleep(0.2)
+        log("лист «В фоне»:", h and {k: h.get(k) for k in ("agent", "model", "steps", "now", "tokens")})
+        assert h and h["model"].startswith("claude-") and h["now"] and h["tokens"], "the sheet doesn't tell the helper's work"
+    await until(lambda: len(done(mark7)) >= 2, what="итог по концу помощника")
+    a7.cancel()
+    p.start_turn = real_start
+    log("ходы задачи с помощником:", starts)
+    assert not [x for x in starts if x == (None, None, None)], "the helper's steps after the turn started a turn"
+    assert len(starts) == 2 and not p.live[sid7].bg, "the helper's end"
     # Telegram as a pager (stage V): a task from the app gets no turn or result message; Claude's question to the
     # owner, who is away, comes once — the session's title, the line, the way into the app
     p.env.update(PULT_APP_LINK="https://t.me/b/pult", PULT_RELAY_URL="wss://h.example/pult/agent")

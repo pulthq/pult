@@ -4,6 +4,20 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.39 — 2026-11-03
+
+- **A screenshot by ⌘V.** In New task's What to do, in a session's message field and in a new project's first task,
+  ⌘V (Ctrl+V on Windows and Linux) with a picture on the clipboard attaches it the way Picture does: a thumbnail under
+  the field, shrunk like a photo (a full Retina screen of small code still reads). A file dragged onto the field comes
+  in too. Words on the clipboard stay words even beside a picture — Word, Excel and Numbers put both.
+- **What runs in the background shows while the turn runs.** A helper (a subagent Claude starts in the background)
+  and a background command are listed the moment Claude starts them — Claude Code reports both at once — not only
+  after the turn: "2 helpers, 1 command in the background" by "working…" in the session and on its card in Running
+  now. A tap lists each — a helper's type, model, how long it runs, its steps and tokens so far and what it does now,
+  from its own record; a command with its processor and memory.
+- A background helper working on after the turn no longer reads as a new turn: its steps used to make the session
+  "working", its clock running, while only the helper worked.
+
 ## 0.18.38 — 2026-11-02
 
 - **`pult send` works from a Codex task.** It failed three ways: it wanted Claude Code's session ID (Codex names its

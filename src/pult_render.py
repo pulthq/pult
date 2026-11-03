@@ -201,6 +201,24 @@ def bg_text(tasks):
     return T("bg.many", n=len(names), list=_names(names, 3))
 
 
+def bg_started(tool, inp, resp):
+    """A task Claude has just started in the background, from its call's PostToolUse — the Stop hook lists it only
+    after the turn. A helper (Agent with run_in_background) answers at once with its id and model, a command (Bash with
+    run_in_background) with its id; the same id comes in the end's <task-notification> and in Stop's background_tasks
+    (tests/probe_helpers.py, Claude Code 2.1.300 and 2.1.317). → the task the way Stop lists it, or None."""
+    if not isinstance(resp, dict):
+        return None
+    inp = inp if isinstance(inp, dict) else {}
+    if tool in ("Agent", "Task") and resp.get("isAsync") and resp.get("agentId"):
+        return {"id": str(resp["agentId"]), "type": "subagent", "status": "running",
+                "description": str(resp.get("description") or inp.get("description") or ""),
+                "agent_type": str(inp.get("subagent_type") or "general-purpose"), "model": resp.get("resolvedModel")}
+    if tool == "Bash" and resp.get("backgroundTaskId"):
+        return {"id": str(resp["backgroundTaskId"]), "type": "shell", "status": "running",
+                "description": str(inp.get("description") or ""), "command": str(inp.get("command") or "")}
+    return None
+
+
 # ---------- Claude's markdown → Telegram HTML ----------
 
 def _inline(s):

@@ -37,6 +37,7 @@ import pult_brief as B
 from pult_driven import MAX_RUNNING, CodexDriven, Driven, Job, Live, Req, Turn   # sessions Pult runs (review 2026-10-27, 6.2)
 import pult_files as F
 import pult_i18n as I
+import pult_load as L
 import pult_new as N
 import pult_os
 from pult_parts import Parts   # parts and updates: Settings → Pult and its parts (review 2026-10-27, 6.2)
@@ -89,7 +90,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.38"
+VERSION = "0.18.39"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -1109,6 +1110,16 @@ class Pult(Api, Parts):
                     self.seen_here(lv)
                     self.resolve_elsewhere(r, self.t("req.answered_mac" if r.kind == "ask" else "req.allowed_mac"),
                                            inp)
+            if ev.get("agent_id"):
+                # a helper's own step — Claude Code marks it with agent_id (2.1.300, 2.1.317: tests/probe_helpers.py).
+                # It is not Claude's turn: a background helper working on after the turn used to start one, and the
+                # session read "working", its clock running, while only the helper worked. With no turn, only a
+                # background helper works: one Pult doesn't list (started before a restart) is listed now
+                if lv.turn is None:
+                    await self.helper_seen(lv, str(ev["agent_id"]), ev.get("agent_type"))
+                else:
+                    lv.turn.last = time.time()
+                return None
             if lv.turn is None:
                 if lv.title is None:
                     await self.refresh_title(lv)
@@ -1122,10 +1133,18 @@ class Pult(Api, Parts):
             t.n += 1
             t.last = time.time()
             t.changed.set()
+            task = R.bg_started(tool, inp, ev.get("tool_response"))
+            if task and not any(b.get("id") == task["id"] for b in lv.bg):
+                # started in the background: listed at once, not after the turn (Q128, 2026-11-03)
+                lv.bg = lv.bg + [task]
+                lv.bg_seen[task["id"]] = time.time()
+                self.changed(lv.sid)
         elif name == "Stop":
             self.resolve_all(lv, self.t("req.decided_mac"))
             if "background_tasks" in ev:                 # the field exists since Claude Code 2.1.30x (probe 2026-10-16)
-                lv.bg = [b for b in ev.get("background_tasks") or [] if isinstance(b, dict)]
+                # the list Claude Code keeps; what Pult learned at a task's start (a helper's model) stays with it
+                was = {b.get("id"): b for b in lv.bg}
+                lv.bg = [dict(was.get(b.get("id")) or {}, **b) for b in ev.get("background_tasks") or [] if isinstance(b, dict)]
                 now = time.time()
                 lv.bg_seen = {b.get("id"): lv.bg_seen.get(b.get("id"), now) for b in lv.bg}
             t = self.finish_turn(lv, "✔️")
@@ -1147,6 +1166,21 @@ class Pult(Api, Parts):
         elif name == "PermissionRequest":
             return AskLater(lv, ev)
         return None
+
+    async def helper_seen(self, lv, aid, kind=None):
+        """A helper's step with no turn running, of a helper Pult doesn't list: a background one started before Pult's
+        restart (or in a turn Pult missed). Listed now, its description from its own record (pult_load.HelperLogs)."""
+        if any(b.get("id") == aid for b in lv.bg) or not re.fullmatch(r"[\w-]{1,64}", aid):
+            return
+        meta = {}
+        if lv.transcript:
+            path = os.path.join(os.path.splitext(lv.transcript)[0], "subagents", "agent-%s.jsonl" % aid)
+            meta = await asyncio.to_thread(L.HelperLogs.meta, path)
+        lv.bg = lv.bg + [{"id": aid, "type": "subagent", "status": "running", "description": meta.get("what") or "",
+                          "agent_type": str(kind or meta.get("agent") or "")}]
+        lv.bg_seen[aid] = time.time()
+        log("session %s: helper %s found by its steps" % (lv.sid[:8], aid[:8]))
+        self.changed(lv.sid)
 
     async def post_result(self, lv, t, text, bg="", fail=None):
         """bg — the line "⚙️ Still running in the background: …" under the result header: Claude has finished the
@@ -3013,6 +3047,7 @@ class Pult(Api, Parts):
                          "dur": rec.get("dur"), "driven": sid in self.driven, "tab": bool(self.tab_for(sid)),
                          "open": sid in opened, "model": bool(rec.get("model")),
                          "bg": [R.short(b.get("description") or b.get("command") or self.t("task.default"), 80) for b in lv.bg],
+                         "bgk": [b.get("type") or "shell" for b in lv.bg],
                          "cwd": lv.cwd, "tags": self.tags_of(sid, tagged), **turn})
         return rows
 

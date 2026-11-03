@@ -7,8 +7,11 @@ A session is its claude process and everything under it. The commands Claude run
 workflows have no process of their own: they think on Anthropic's servers, and the commands they run are children of
 the same claude.
 """
+import json
 import os
 import re
+import time
+from datetime import datetime
 
 LOCAL = ("shell", "monitor")     # background tasks that are processes on the computer
 NOTABLE_CPU = 5.0                # % of one core: a process that is not Claude's command is listed from here
@@ -156,15 +159,26 @@ def session(procs, root, kids, cores, bg=()):
     return s
 
 
-def task(procs, root, kids, cores, b, seen=None, used=None):
+def task(procs, root, kids, cores, b, seen=None, used=None, story=None):
     """One background task for the app's card: what it is, since when, and — for a process on the computer — its
-    processor and memory now, its processor time and memory peak; found=False — no such process (it has ended)."""
+    processor and memory now, its processor time and memory peak; found=False — no such process (it has ended).
+    A helper (story — HelperLogs.story): its type and model, steps so far, the latest one, its tokens."""
     kind = b.get("type") or "shell"
     what, cmd = b.get("description") or "", b.get("command") or ""
     d = {"id": b.get("id"), "type": kind, "what": short(what or cmd, 200),
          "cmd": short(cmd, 400) if cmd and cmd != what else "", "since": seen}
     if kind not in LOCAL:
         d["remote"] = True
+        story = story or {}
+        if b.get("agent_type") or story.get("agent"):
+            d["agent"] = short(str(b.get("agent_type") or story.get("agent")), 40)
+        if not d["what"]:                       # a helper Pult found by its steps: its description from its own record
+            d["what"] = short(story.get("what") or d.get("agent") or "", 200)
+        if story.get("model") or b.get("model"):
+            d["model"] = story.get("model") or b.get("model")
+        if "steps" in story:
+            d.update(steps=story["steps"], now=story.get("now"), tokens=story.get("tokens"),
+                     since=story.get("since") or seen)
         return d
     used = set() if used is None else used
     pid = find(procs, root, kids, cmd, used) if root else None
@@ -174,3 +188,83 @@ def task(procs, root, kids, cores, b, seen=None, used=None):
     used.add(pid)
     d.update(view(total(procs, tree(pid, kids)), cores), found=True, since=procs[pid]["started"])
     return d
+
+
+
+# ---------- a helper's own record ----------
+
+HANDBACK = ("SubagentHandback",)     # a helper handing its report back: its end, not a step of its work
+USAGE = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
+
+
+def _ts(s):
+    try:
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+class HelperLogs:
+    """What a helper has done so far, from its own transcript — <session>/subagents/agent-<id>.jsonl beside
+    agent-<id>.meta.json (Claude Code 2.1.300 and 2.1.317, tests/probe_helpers.py): its model, its steps, the latest
+    one, and the tokens of its last request (what Claude Code shows as a subagent's tokens). The sheet asks every few
+    seconds while a helper's transcript grows to megabytes: each file is read on from where the last read stopped, a
+    line cut in the middle waits for its end; a file nobody asked about for an hour is forgotten."""
+    KEEP = 3600
+
+    def __init__(self):
+        self.files = {}         # path → {"at": bytes read, "used": when asked, "story": …}
+
+    def story(self, path, step=None, now=None):
+        """→ {steps, now, model, tokens, since, what, agent}, or None (no such file yet). step(name, input) → the
+        step's line, as the session's steps read; without it — the tool's name."""
+        now = now or time.time()
+        for p in [p for p, x in self.files.items() if now - x["used"] > self.KEEP]:
+            del self.files[p]
+        f = self.files.get(path)
+        try:
+            with open(path, "rb") as fh:
+                size = os.fstat(fh.fileno()).st_size
+                if f is None or size < f["at"]:           # new, or a new file under the same name: from the start
+                    f = self.files[path] = {"at": 0, "story": self.meta(path)}
+                fh.seek(f["at"])
+                data = fh.read(size - f["at"])
+        except OSError:
+            return None
+        f["used"] = now
+        s = f["story"]
+        end = data.rfind(b"\n")
+        f["at"] += end + 1
+        for line in data[:end + 1].splitlines():
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(e, dict):
+                continue
+            s["since"] = s["since"] or _ts(e.get("timestamp"))
+            m = e.get("message")
+            if e.get("type") != "assistant" or not isinstance(m, dict):
+                continue
+            s["model"] = m.get("model") or s["model"]
+            u = m.get("usage")
+            if isinstance(u, dict):
+                s["tokens"] = sum(u[k] for k in USAGE if isinstance(u.get(k), int))
+            for b in m.get("content") if isinstance(m.get("content"), list) else []:
+                if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") not in HANDBACK:
+                    s["steps"] += 1
+                    s["now"] = step(b.get("name"), b.get("input")) if step else str(b.get("name"))
+        return dict(s)
+
+    @staticmethod
+    def meta(path):
+        """The helper's own description and type from agent-<id>.meta.json — for one Pult found by its steps."""
+        out = {"steps": 0, "now": None, "model": None, "tokens": None, "since": None, "what": "", "agent": ""}
+        try:
+            with open(path[:-len(".jsonl")] + ".meta.json", encoding="utf-8") as fh:
+                m = json.load(fh)
+        except (OSError, ValueError):
+            return out
+        if isinstance(m, dict):
+            out.update(what=str(m.get("description") or ""), agent=str(m.get("agentType") or ""))
+        return out
