@@ -229,7 +229,7 @@ function NewTask({ pkey }) {
     <button class=${"field" + (p ? "" : " empty")} onClick=${() => setSheet({ k: "project", list: d.projects.filter((x) => !x.hidden) })}>
       <span>${p ? (cur ? cur.name : p) : t("new.pick")}</span><span class="dim">${ic("down", 18)}</span></button>
     <label class="lbl">${t("new.what")}</label>
-    <textarea ref=${plainField} rows="6" placeholder=${vend ? t("new.placeholder.who", { name: vend.name }) : t("new.placeholder")} value=${text} onKeyDown=${sendKey(() => { if (!busy && p && (text.trim() || a.files.length)) send(); }, setText)} onInput=${(e) => setText(e.target.value)}/>
+    <textarea ref=${plainField} rows="6" placeholder=${vend ? t("new.placeholder.who", { name: vend.name }) : t("new.placeholder")} value=${text} onKeyDown=${sendKey(() => { if (!busy && p && (text.trim() || a.files.length)) send(); }, setText)} onInput=${(e) => setText(e.target.value)} onPaste=${a.paste} onDragOver=${a.over} onDrop=${a.dropIn}/>
     <${Thumbs} a=${a}/>
     <${Attach} a=${a} disabled=${busy} wide=${true} keep=${{ k: "new", text }}/>
     ${d.stt ? html`<${Mic} v=${v} disabled=${busy} wide=${true}/>` : ""}
@@ -361,7 +361,7 @@ function NewProject() {
     ${how === "describe" ? html`<label class="lbl">${t("np.about")}</label>
       <textarea ref=${plainField} rows="5" placeholder=${t("np.about.ph")} value=${about} onInput=${(e) => setAbout(e.target.value)}/>`
     : html`<label class="lbl">${t("np.task")}</label>
-      <textarea ref=${plainField} rows="4" placeholder=${t("new.placeholder")} value=${text} onInput=${(e) => setText(e.target.value)}/>
+      <textarea ref=${plainField} rows="4" placeholder=${t("new.placeholder")} value=${text} onInput=${(e) => setText(e.target.value)} onPaste=${a.paste} onDragOver=${a.over} onDrop=${a.dropIn}/>
       <${Thumbs} a=${a}/><${Attach} a=${a} disabled=${busy} wide=${true} keep=${{}}/>`}
     ${d && d.stt && html`<${Mic} v=${v} disabled=${busy} wide=${true}/>`}
     ${(how === "describe" || text.trim() || a.files.length > 0) && html`<label class="lbl">${t("model.pick")}</label>

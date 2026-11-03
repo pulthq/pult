@@ -11,7 +11,7 @@ import { Replies, ResumeAt, copyWhy, forkAsk } from "./home.js";
 import { TagPick } from "../ui/cards.js";
 import { Req, useRcpt } from "../ui/cards.js";
 import { Dots, Loading, ModelPick, Sheet, SwipeRow, avatar, bgChip, copyRich, dayLabel, dot, dotted, dur, effortName, hhmm, home, ic, kilo, llmName, modelName, num, pauseChip, plainField, queueChip, sendKey, tagChips, toDate, useNow, workChip } from "../ui/kit.js";
-import { BgSheet, bgLine } from "../ui/load.js";
+import { BgSheet, bgCount, bgLine } from "../ui/load.js";
 import { Attach, Pic, Thumbs, Viewer, useAttach, useNoFold } from "../ui/pics.js";
 
 
@@ -592,7 +592,7 @@ function Session({ sid }) {
     <div class="sess-h"><h2>${info.title}</h2>
       ${info.tagset && html`<button class="sess-tags" onClick=${() => (tagPick ? closeTagPick() : openTagPick())}>${(info.tags || []).length ? tagChips(info.tags) : html`<span class="dim">${t("tags.none")}</span>`}<span class="caret">${ic("down", 14)}</span></button>`}
       <div class="dim">${home(20)}${info.project !== info.title ? html`<span class="sep">›</span><a class="crumb" href=${"#/p/" + encodeURIComponent(info.pkey)}>${info.project}</a>` : ""} ${st}</div>
-      ${lv.bg && lv.bg.length > 0 && html`<button class="bg tap plain" onClick=${openBgs}>${bgLine(lv.bg)} ${ic("chev", 14)}</button>`}</div>
+      ${lv.state !== "work" && lv.bg && lv.bg.length > 0 && html`<button class="bg tap plain" onClick=${openBgs}>${bgLine(lv.bg)} ${ic("chev", 14)}</button>`}</div>
     ${s.before != null && html`<button class="link center earlier" disabled=${early} onClick=${earlier}>${t(early ? "earlier.loading" : "earlier")}</button>`}
     ${(away || pin) && html`<div class="sess-top">
       ${away && html`<div class="where-bar">${home(22)}${avatar(info.project, 30)}<span class="wb-body">
@@ -613,7 +613,7 @@ function Session({ sid }) {
         : o.n ? html`<div class="out-n">${ic("clip", 13)} ${o.n}</div>` : ""}<${At} ts=${o.ts} st=${o.st}/></div>
       ${o.st === "sent" && (lv.state === "work" || lv.state === "ask") ? html`<div class="out-hint">${t("out.after_step")}</div>`
         : o.st === "gone" ? html`<div class="out-hint bad">${t("out.gone.why")}</div>` : ""}`)}
-    ${lv.state === "work" && html`<div class="working">${t("working")}</div>`}
+    ${lv.state === "work" && html`<div class="working">${t("working")}${lv.bgk && lv.bgk.length > 0 ? html` · <button class="bg-n" onClick=${openBgs}>${ic("bg", 13)} ${t("bg.n", { list: bgCount(lv.bgk) })} ${ic("chev", 12)}</button>` : ""}</div>`}
     ${lv.state === "queue" && html`<div class="card queue"><div class="q-t">${ic("clock", 16)} ${t("queue.title")}</div>
       <div class="dim small">${t("queue.why", { n: lv.slots })}</div>
       <div class="foot"><span></span><button class="btn" onClick=${jump}>${t("queue.jump")}</button></div></div>`}
@@ -634,7 +634,7 @@ function Session({ sid }) {
         <button class="link" onClick=${() => { const el = document.querySelector('.msg.me[data-n="' + full.n + '"]'); closeFull();
           if (el) setTimeout(() => el.scrollIntoView({ block: "start" }), 60); }}>${t("pin.goto")}</button></div>`}
       <${Thumbs} a=${a}/>
-      <textarea ref=${taRef} rows="1" placeholder=${t("write")} value=${text} onKeyDown=${sendKey(() => { if (!busy) sendText(false); }, setText)} onInput=${(e) => { setText(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}/>
+      <textarea ref=${taRef} rows="1" placeholder=${t("write")} value=${text} onPaste=${a.paste} onDragOver=${a.over} onDrop=${a.dropIn} onKeyDown=${sendKey(() => { if (!busy) sendText(false); }, setText)} onInput=${(e) => { setText(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}/>
       <div class="ctl"><${Attach} a=${a} disabled=${busy} keep=${{ k: "s:" + sid, text }}/>${info.stt ? html`<${Mic} v=${v} disabled=${busy}/>` : ""}
         <div class="status">${line1}${line2}</div>
         ${lv.driven && (lv.state === "work" || lv.state === "queue") ? html`<button class="btn danger" onClick=${stop}>${t("stop")}</button>` : ""}

@@ -49,11 +49,43 @@ const MAX_PICS = 3;
 // go to the project's topic in Telegram (up to 20 MB) — stage F
 const DOC_MAX = 5 * 1048576;
 const asB64 = (f) => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1] || ""); r.onerror = no; r.readAsDataURL(f); });
+// the files of a clipboard or a drag: `files`, else the items that are files (a webview may fill only one of them)
+const filesOf = (dt) => {
+  if (!dt) return [];
+  const f = [...(dt.files || [])];
+  return f.length ? f : [...(dt.items || [])].filter((i) => i.kind === "file").map((i) => i.getAsFile()).filter(Boolean);
+};
+// a paste or a drop with more than words, to the computer's log (Q127): what the webview gave. On the Mac it is WebKit
+// inside Telegram, which no stand runs — the owner's first screenshot tells
+const tell = (how, dt, n, words) => api("paste", { how, n, words, types: [...((dt && dt.types) || [])].slice(0, 8),
+  plat: (tg && tg.platform) || "" }).catch(() => {});
 function useAttach() {
   const [files, setFiles] = useState([]);
-  const pick = async (e) => {
-    const list = [...(e.target.files || [])].slice(0, MAX_PICS - files.length);
-    e.target.value = "";
+  const pick = async (e) => { const got = [...(e.target.files || [])]; e.target.value = ""; await add(got); };
+  // ⌘V / Ctrl+V in the field (Q127): a picture on the clipboard — a screenshot — comes in as if picked. Words on the
+  // clipboard are the field's own even beside a picture: Word, Excel and Numbers put a picture of the copied cells
+  // next to their words, and the words are what was meant
+  const paste = (e) => {
+    const cd = e.clipboardData, got = filesOf(cd);
+    if (!got.length && [...((cd && cd.types) || [])].every((k) => /^text\//.test(k))) return;     // only words
+    const words = !!(cd.getData("text/plain") || "").trim();
+    tell("paste", cd, got.length, words && got.length > 0);
+    if (!got.length || words) return;
+    e.preventDefault();
+    add(got);
+  };
+  // a file dragged onto the field from the computer: the screenshot's thumbnail, a file from Finder
+  const over = (e) => { if (e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files")) e.preventDefault(); };
+  const dropIn = (e) => {
+    const got = filesOf(e.dataTransfer);
+    if (!got.length) return;
+    e.preventDefault();
+    tell("drop", e.dataTransfer, got.length, false);
+    add(got);
+  };
+  const add = async (got) => {
+    if (files.length + got.length > MAX_PICS) emit("toast", t("attach.full", { n: MAX_PICS }));
+    const list = got.slice(0, MAX_PICS - files.length);
     const out = [];
     let docs = files.reduce((n, f) => n + (f.doc ? f.size : 0), 0);
     for (const f of list) {
@@ -73,7 +105,7 @@ function useAttach() {
   // a thumbnail opens the pictures on the whole screen, Crop and Remove at the bottom
   const view = (i) => { const pics = files.filter((f) => !f.doc);
     emit("view", { items: pics.map((f) => ({ src: f.preview, f })), at: Math.max(0, pics.indexOf(files[i])), crop: edit, remove: drop }); };
-  return { files, pick, view, remove: (i) => setFiles(files.filter((_, k) => k !== i)), clear: () => setFiles([]),
+  return { files, pick, paste, over, dropIn, view, remove: (i) => setFiles(files.filter((_, k) => k !== i)), clear: () => setFiles([]),
     payload: () => files.map((f) => ({ name: f.name, data: f.data })) };
 }
 const CLIP = html`<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>`;

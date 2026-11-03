@@ -3791,6 +3791,100 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await until(lambda: any("фоновые задачи остановлены" in t and "«Сборка»" in t for t in self.texts()))
         self.assertEqual(self.p.live[SID].bg, [])
 
+    async def test_helpers_mid_turn(self):
+        # Q128: a helper and a command Claude starts in the background are listed at once, by their PostToolUse — not
+        # only after the turn; a helper's own steps (agent_id) are the helper's, not a turn; the sheet tells what each
+        # helper does, from its own record (tests/probe_helpers.py, Claude Code 2.1.300 and 2.1.317)
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        Path(TP).write_text(tline("user", "Найди все цвета в графиках") + "\n")
+        await run_hook(ev("UserPromptSubmit", prompt="Найди все цвета в графиках"))
+        await until(lambda: SID in self.p.live and self.p.live[SID].turn)
+        lv = self.p.live[SID]
+        await run_hook(ev("PostToolUse", tool_name="Agent",
+                          tool_input={"description": "Цвета графиков", "subagent_type": "Explore", "prompt": "…",
+                                      "run_in_background": True},
+                          tool_response={"isAsync": True, "status": "async_launched", "agentId": "a1b2c3",
+                                         "description": "Цвета графиков", "resolvedModel": "claude-haiku-5-5"}))
+        await run_hook(ev("PostToolUse", tool_name="Bash",
+                          tool_input={"command": "npm run build", "description": "Сборка", "run_in_background": True},
+                          tool_response={"stdout": "", "stderr": "", "interrupted": False, "backgroundTaskId": "bq1"}))
+        await until(lambda: len(lv.bg) == 2)
+        self.assertEqual([(b["id"], b["type"], b.get("agent_type"), b.get("model")) for b in lv.bg],
+                         [("a1b2c3", "subagent", "Explore", "claude-haiku-5-5"), ("bq1", "shell", None, None)])
+        item = self.p.live_item(lv)
+        self.assertEqual((item["state"], item["bg"], item["bgk"]), ("work", ["Цвета графиков", "Сборка"], ["subagent", "shell"]))
+        # the helper's own record: its model, steps, the latest one, the tokens of its last request
+        rec = Path(TP).with_suffix("") / "subagents" / "agent-a1b2c3.jsonl"
+        rec.parent.mkdir(parents=True, exist_ok=True)
+
+        def step(name, inp, tokens):
+            return json.dumps({"type": "assistant", "timestamp": "2026-11-03T18:55:01.175Z", "message": {
+                "model": "claude-haiku-5-5", "role": "assistant", "usage": {"input_tokens": 3, "output_tokens": 97,
+                                                                            "cache_read_input_tokens": tokens - 100},
+                "content": [{"type": "tool_use", "id": "t" + name, "name": name, "input": inp}]}}) + "\n"
+        rec.write_text(tline("user", "Цвета графиков") + "\n" + step("Grep", {"pattern": "#[0-9a-f]{6}"}, 9000) +
+                       step("Read", {"file_path": "/Users/x/proj/charts/line.js"}, 12000))
+        self.p._procs = (time.monotonic() + 1e6, (fprocs(), {"cores": 8, "cpu": 40.0, "mem_total": 16 << 30,
+                                                            "mem_used": 8 << 30, "load": 3.0}))
+        self.p._agents = (time.monotonic() + 1e6, [{"sessionId": SID, "pid": 100, "cwd": "/Users/x/proj"}])
+        d = await self.p.api_load(sid=SID)
+        h = d["tasks"][0]
+        self.assertEqual((h["agent"], h["model"], h["steps"], h["now"], h["tokens"], h["remote"]),
+                         ("Explore", "claude-haiku-5-5", 2, "📖 charts/line.js", 12000, True))
+        # read on from where it stopped; a line cut in the middle waits for its end
+        last = step("Glob", {"pattern": "charts/*.js"}, 15000)
+        with rec.open("a") as f:
+            f.write(last[:40])
+        self.assertEqual((await self.p.api_load(sid=SID))["tasks"][0]["steps"], 2)
+        with rec.open("a") as f:
+            f.write(last[40:])
+        h = (await self.p.api_load(sid=SID))["tasks"][0]
+        self.assertEqual((h["steps"], h["now"], h["tokens"]), (3, "🔎 charts/*.js", 15000))
+        # the turn ends, the two still running: Claude Code's list, with what Pult learned at the start kept
+        await run_hook(ev("Stop", last_assistant_message="Запустил помощника и сборку", background_tasks=[
+            {"id": "a1b2c3", "type": "subagent", "status": "running", "description": "Цвета графиков", "agent_type": "Explore"},
+            {"id": "bq1", "type": "shell", "status": "running", "description": "Сборка", "command": "npm run build"}]))
+        await until(lambda: lv.turn is None)
+        self.assertEqual(lv.bg[0].get("model"), "claude-haiku-5-5")
+        # the helper works on: its steps are its own — no turn starts, the session stays "in the background"
+        await run_hook(ev("PostToolUse", tool_name="Read", tool_input={"file_path": "/Users/x/proj/charts/bar.js"},
+                          agent_id="a1b2c3", agent_type="Explore"))
+        await run_hook(ev("PostToolUse", tool_name="Read", tool_input={"file_path": "/Users/x/proj/charts/pie.js"},
+                          agent_id="a1b2c3", agent_type="Explore"))
+        await asyncio.sleep(0.3)
+        self.assertIsNone(lv.turn)
+        self.assertEqual(self.p.live_item(lv)["state"], "idle")
+        self.assertEqual([r["state"] for r in (await self.p.api_overview())["board"][0]["rows"]], ["bg"])
+        # a helper Pult didn't list (started before a restart): found by its steps, its description from its record
+        meta = rec.parent / "agent-z9y8x7.meta.json"
+        meta.write_text(json.dumps({"agentType": "general-purpose", "description": "Контраст тёмной темы"}))
+        await run_hook(ev("PostToolUse", tool_name="Grep", tool_input={"pattern": "--color-"},
+                          agent_id="z9y8x7", agent_type="general-purpose"))
+        await until(lambda: len(lv.bg) == 3)
+        self.assertEqual((lv.bg[2]["id"], lv.bg[2]["description"], lv.bg[2]["agent_type"]),
+                         ("z9y8x7", "Контраст тёмной темы", "general-purpose"))
+        self.assertIsNone(lv.turn)
+        # the first helper ends: Claude Code starts a turn with its note — it leaves the list
+        await run_hook(ev("UserPromptSubmit", prompt="<task-notification>\n<task-id>a1b2c3</task-id>\n<tool-use-id>"
+                                                     "toolu_1</tool-use-id>\n<status>completed</status>\n<summary>Agent "
+                                                     "\"Цвета графиков\" completed</summary>\n</task-notification>"))
+        await until(lambda: lv.turn is not None)
+        self.assertEqual([b["id"] for b in lv.bg], ["bq1", "z9y8x7"])
+
+    async def test_helper_step_is_no_turn(self):
+        # a background helper works on after the turn: its steps come to the hook marked with agent_id. They used to
+        # start a turn — "working" for as long as the helper worked, the task's clock running (Q118 says it stands)
+        await run_hook(ev("UserPromptSubmit", prompt="Позови ревьюера"))
+        await until(lambda: SID in self.p.live and self.p.live[SID].turn)
+        await run_hook(ev("Stop", last_assistant_message="Ревьюер смотрит", background_tasks=[
+            {"id": "a9", "type": "subagent", "status": "running", "description": "Ревью правки", "agent_type": "general-purpose"}]))
+        await until(lambda: self.p.live[SID].turn is None)
+        await run_hook(ev("PostToolUse", tool_name="Bash", tool_input={"command": "git diff"}, agent_id="a9",
+                          agent_type="general-purpose"))
+        await asyncio.sleep(0.3)
+        self.assertIsNone(self.p.live[SID].turn)
+        self.assertEqual([b["id"] for b in self.p.live[SID].bg], ["a9"])
+
     async def test_background_tasks(self):
         # turn over, its background command still running → a line in the result; once it ends, Claude starts a turn
         Path(TP).parent.mkdir(parents=True, exist_ok=True)

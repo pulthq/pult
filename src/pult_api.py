@@ -122,6 +122,7 @@ class Api:
                 "prompt": R.short(R.prompt_text(t.prompt), 300) if t and t.prompt else None,
                 "note": t.note if t else None, "now": R.plain(t.now, self.D.NOW_LEN) if t and t.now else None,
                 "bg": [R.short(b.get("description") or b.get("command") or self.t("task.default"), 80) for b in lv.bg],
+                "bgk": [b.get("type") or "shell" for b in lv.bg],
                 "bg_since": self.bg_since(lv), "tab": bool(self.tab_for(lv.sid)), "work": self.work_total(lv.sid)}
 
     def req_item(self, req):
@@ -297,6 +298,23 @@ class Api:
                 what, old, tgv, cv))
         return {"ok": True}
 
+    async def api_paste(self, how="paste", n=0, types=(), words=False, plat=""):
+        """A picture pasted (⌘V / Ctrl+V) or dropped onto a message field in the app (Q127): how many files the webview
+        gave and of which types, or none beside the clipboard's other types — on the Mac it is WebKit inside Telegram,
+        which the stand never runs; the first real paste tells. words — the clipboard had words too: they went in
+        as words, the picture was left. Every field is checked: it goes to the log."""
+        ok = lambda x: isinstance(x, str) and re.fullmatch(r"[\w.+/-]{1,60}", x)
+        kinds = [x for x in (types if isinstance(types, list) else [])[:8] if ok(x)]
+        try:
+            n = min(9, max(0, int(n)))
+        except (TypeError, ValueError):
+            n = 0
+        plat = plat if ok(plat) else "?"
+        what = "dropped" if how == "drop" else "pasted"
+        log("app: %s — %s (%s; %s)%s" % (what, "%d file(s)" % n if n else "no file", ", ".join(kinds) or "no types", plat,
+                                         " — the words went in, the picture was left" if words else ""))
+        return {"ok": True}
+
     async def api_catchup_off(self):
         self.catch_from = None
         self.store.put("catch_from", None)
@@ -361,10 +379,21 @@ class Api:
         if not sid:
             return dict(out, sessions=rows)
         row = next((r for r in rows if r["sid"] == sid), None)
-        lv, used = self.live.get(sid), set()
-        tasks = [L.task(procs, row and row["pid"], kids, mac["cores"], b, lv.bg_seen.get(b.get("id")), used)
-                 for b in (lv.bg if lv else [])]
+        lv, used, tasks = self.live.get(sid), set(), []
+        for b in lv.bg if lv else []:
+            story = None
+            if b.get("type") == "subagent" and lv.transcript and re.fullmatch(r"[\w-]{1,64}", str(b.get("id") or "")):
+                # a helper: what it has done so far, from its own record (Q128 б)
+                path = os.path.join(os.path.splitext(lv.transcript)[0], "subagents", "agent-%s.jsonl" % b["id"])
+                story = await asyncio.to_thread(self.helpers().story, path, lambda n, i: R.tool_step(n, i, lv.cwd))
+            tasks.append(L.task(procs, row and row["pid"], kids, mac["cores"], b, lv.bg_seen.get(b.get("id")), used, story))
         return dict(out, session=row, tasks=tasks)
+
+    def helpers(self):
+        """The helpers' own records, each read on from where it stopped (pult_load.HelperLogs): one for the daemon."""
+        if getattr(self, "_helpers", None) is None:
+            self._helpers = L.HelperLogs()
+        return self._helpers
 
     # ----- projects and their sessions; a task's tags (stage T) -----
 

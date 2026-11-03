@@ -84,6 +84,14 @@ Codex for a second opinion. So one model can do a task and another check it — 
 - **How long Claude worked**: "working 47 min" in Running now is the whole task's work — all its turns, without the
   time it waited for you; on a card of Your move and at the top of a session the same clock stands, grey with a pause
   sign, until you answer. A background task Claude left running isn't in it; the turn its end starts is.
+- **In the background**: by "working…" in a session, and on its card in Running now, — how many helpers (the subagents
+  Claude starts) and commands run in the background, from the moment Claude starts them, not only after its turn. A
+  tap lists each: a helper's type, its model, how long it runs, its steps and tokens so far and what it does now (from
+  its own record); a command with its processor and memory.
+- **A screenshot by ⌘V**: in What to do, in a session's message field and in a new project's first task, ⌘V (Ctrl+V
+  on Windows and Linux) with a picture on the clipboard attaches it the way Picture does — take one straight to the
+  clipboard with ⌃⇧⌘4 on a Mac. A file dragged onto the field comes in too; words on the clipboard stay words, even
+  beside a picture (as Word, Excel and Numbers copy).
 - **A second opinion from Codex**: under a session's outcome, **Second opinion · Codex** asks Codex — OpenAI's coding
   agent, with the ChatGPT sign-in on your computer — to read what the task changed since it began (in git: everything
   since the commit the folder was on, new files too; without git: the files Claude's edits wrote), together with your

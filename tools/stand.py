@@ -40,7 +40,8 @@ offers "Second opinion · Codex" under its outcome (tools/second_check.py). STAN
 STAND_VENDORS=1 (stage M, step 2): DeepSeek has a made-up key (GLM and Kimi none), a key's check passes "sk-…" without any
 network, and a session ran on DeepSeek's model (SESSV) — its next turn runs now, from the app, on deepseek-v4-pro[1m];
 the session that waits for you (SESS4) ran on DeepSeek too, the weekly report on Fable — the cards and rows name the model;
-"Who does it" in New task — Codex a stand-in that can do a task (M4.1) — Settings → Other vendors (tools/vendors_check.py). STAND_REPORT=1: the weekly report hasn't
+"Who does it" in New task — Codex a stand-in that can do a task (M4.1) — Settings → Other vendors (tools/vendors_check.py). STAND_HELPERS=1 (Q128): the dark theme's turn has started two helpers and a command in the
+background — their PostToolUse and the helpers' own records; SESS7 — its screen (tools/helpers_check.py). STAND_REPORT=1: the weekly report hasn't
 been put away — a plain report waits in "Your move" for "Got it" like any other (tools/gotit_check.py); without it (and
 without STAND_ASK2) the owner has put it away. VS Code's settings and the tab switch are made up on every stand: the app
 never reads this computer's."""
@@ -114,6 +115,8 @@ D = {
         s4_r3="Explain the difference", s5_title="Weekly support report",
         s5_line="The weekly report is ready: 48 tickets, 2 overdue", s6_title="Images: WebP thumbnails",
         s7_ask="Add a dark theme to the admin panel", s7_now="Colours are variables now; the tables and charts are next.",
+        h1="Find every colour the charts set by hand", h2="Check the dark theme's contrast, page by page",
+        h3="Build the admin panel and take its screenshots", h3_cmd="npm run build && node scripts/shots.js --theme dark",
         v_ask="Rename the admin theme's CSS variables to the new scheme",
         v_done="Renamed 14 variables in admin/theme.css; nothing else used the old names.",
         v_ask2="Now the same for the storefront's theme"),
@@ -149,6 +152,8 @@ D = {
         s4_r3="Объясни разницу", s5_title="Отчёт поддержки за неделю",
         s5_line="Отчёт за неделю готов: 48 заявок, 2 просрочены", s6_title="Картинки: превью WebP",
         s7_ask="Сделай тёмную тему для админки", s7_now="Цвета вынесены в переменные; дальше — таблицы и графики.",
+        h1="Найти все цвета, заданные в графиках вручную", h2="Проверить контраст тёмной темы по страницам",
+        h3="Собрать админку и снять скриншоты", h3_cmd="npm run build && node scripts/shots.js --theme dark",
         v_ask="Переименуй CSS-переменные темы админки по новой схеме",
         v_done="Переименовал 14 переменных в admin/theme.css; старые имена больше нигде не используются.",
         v_ask2="Теперь то же для темы витрины"),
@@ -224,6 +229,45 @@ def png_sample(w=320, h=200):
 def ev(name, sid, cwd=SHOP, **kw):
     folder = Path(T.TP).parent if cwd == SHOP else Path(T.TP).parent.parent / PKEY2
     return dict(hook_event_name=name, session_id=sid, transcript_path=str(folder / (sid + ".jsonl")), cwd=cwd, **kw)
+
+
+async def stand_helpers(p, d):
+    """STAND_HELPERS=1 (Q128): the dark theme's turn (SID7) has started two helpers and a command in the background, the
+    way Claude Code tells it — each start's PostToolUse with its id and model, each helper's own record beside the
+    session's (tests/probe_helpers.py). The app lists them by "working…" at once, the sheet tells what each one does
+    (tools/helpers_check.py)."""
+    iso = lambda ts: time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(ts))
+    now, sub = time.time(), d / SID7 / "subagents"
+    sub.mkdir(parents=True, exist_ok=True)
+    charts = ["bar", "pie", "area", "donut", "gauge", "spark", "heat", "radar", "funnel", "line"]
+    helpers = [("a7e1c0de11aa", "Explore", "claude-haiku-5-5", D["h1"], 190, 41200,
+                [("Glob", {"pattern": "admin/charts/**/*.js"}), ("Grep", {"pattern": "#[0-9a-fA-F]{6}"}),
+                 ("Grep", {"pattern": "rgba?\\("}), ("Grep", {"pattern": "fill:"})]
+                + [("Read", {"file_path": SHOP + "/admin/charts/%s.js" % c}) for c in charts]),
+               ("a7e2c0de22bb", "general-purpose", "claude-opus-5-5", D["h2"], 75, 18300,
+                [("Read", {"file_path": SHOP + "/admin/theme/dark.css"}), ("Glob", {"pattern": "admin/pages/*.html"}),
+                 ("Read", {"file_path": SHOP + "/admin/pages/orders.html"}), ("Read", {"file_path": SHOP + "/admin/pages/users.html"}),
+                 ("Bash", {"command": "npx wcag-contrast admin/theme/dark.css", "description": "Measure the contrast"}),
+                 ("Grep", {"pattern": "--color-"})])]
+    for aid, kind, model, what, ago, tokens, uses in helpers:
+        rows = [json.dumps({"type": "user", "timestamp": iso(now - ago), "message": {"role": "user", "content": what}})]
+        for k, (name, inp) in enumerate(uses):
+            rows.append(json.dumps({"type": "assistant", "timestamp": iso(now - ago + 8 + k * 9), "message": {
+                "id": "%s-%d" % (aid, k), "model": model, "role": "assistant",
+                "content": [{"type": "tool_use", "id": "tu-%s-%d" % (aid, k), "name": name, "input": inp}],
+                "usage": {"input_tokens": 3, "cache_creation_input_tokens": 900, "cache_read_input_tokens": tokens - 1200,
+                          "output_tokens": 297}}}))
+        (sub / ("agent-%s.jsonl" % aid)).write_text("\n".join(rows) + "\n")
+        (sub / ("agent-%s.meta.json" % aid)).write_text(json.dumps({"agentType": kind, "description": what}))
+        await T.run_hook(ev("PostToolUse", SID7, tool_name="Agent",
+                            tool_input={"description": what, "subagent_type": kind, "prompt": "…", "run_in_background": True},
+                            tool_response={"isAsync": True, "status": "async_launched", "agentId": aid,
+                                           "description": what, "resolvedModel": model}))
+    await T.run_hook(ev("PostToolUse", SID7, tool_name="Bash",
+                        tool_input={"command": D["h3_cmd"], "description": D["h3"], "run_in_background": True},
+                        tool_response={"stdout": "", "stderr": "", "interrupted": False, "backgroundTaskId": "b7e3c0de33cc"}))
+    lv = await taken(p, SID7, lambda lv: len(lv.bg) == 3)
+    lv.bg_seen.update({"a7e1c0de11aa": now - 190, "a7e2c0de22bb": now - 75, "b7e3c0de33cc": now - 260})
 
 
 async def taken(p, sid, has=lambda lv: lv.turn):
@@ -1024,6 +1068,8 @@ async def main():
     await T.run_hook(ev("PostToolUse", SID7, tool_name="Edit", tool_input={"file_path": SHOP + "/admin/theme.css"}))
     (await taken(p, SID7)).turn.started -= 400
     p.set_ctx(SID7, 200000, 32000, model="claude-opus-5-5")
+    if os.environ.get("STAND_HELPERS") == "1":      # its helpers and a command, started in the background mid-turn
+        await stand_helpers(p, d)
     # how long Claude worked on each task before these turns (made up, 2026-10-30): "working N" of one at work goes on
     # from it, the card of one that waits for you and its outcome show it stopped
     for sid, mins in ((SID7, 41), (SID4, 52), (SID5, 9), (SIDV, 12), (T.SID, 18), (SID2, 7)):
@@ -1073,6 +1119,9 @@ async def main():
              2001: proc(1, claude, 1.5, 260, 2 * 3600, 120), 2002: shell(2001, D["bg_cmd"], 1500),
              2003: proc(2002, D["bg_cmd"], 96.0, 180, 1499, 1380, 410),
              3001: proc(1, claude, 0.2, 170, 26 * 3600, 60)}
+    if os.environ.get("STAND_HELPERS") == "1":
+        procs.update({7001: proc(1, claude, 4.0, 290, 3600, 150), 7002: shell(7001, D["h3_cmd"], 260),
+                      7003: proc(7002, "node scripts/shots.js --theme dark", 64.0, 420, 255, 160, 610)})
     p._procs = (time.monotonic() + 1e6, (procs, {"cores": 8, "cpu": 41.0, "mem_total": 16 << 30,
                                                  "mem_used": int(10.4 * (1 << 30)), "load": 3.6}))
     agents = [{"sessionId": SID3, "cwd": "/Users/x/blog", "pid": 3001}]
@@ -1081,6 +1130,8 @@ async def main():
         agents.append({"sessionId": SID4, "cwd": SHOP, "pid": 4001})
     p._agents = (time.monotonic() + 1e6, agents)
     p.live[T.SID].pid, p.live[SID2].pid = 1001, 2001
+    if os.environ.get("STAND_HELPERS") == "1":
+        p.live[SID7].pid = 7001
     if os.environ.get("STAND_TAGS"):
         tag_pk, tag_sids = await stand_tags(p, store, d.parent)
         print("PROJT http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
@@ -1103,6 +1154,9 @@ async def main():
           (PORT, urllib.parse.quote(init("usage"))), flush=True)
     print("SESS http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
           (PORT, urllib.parse.quote(init("s_" + T.SID))), flush=True)
+    if os.environ.get("STAND_HELPERS") == "1":      # the dark theme's turn with its helpers (tools/helpers_check.py)
+        print("SESS7 http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
+              (PORT, urllib.parse.quote(init("s_" + SID7))), flush=True)
     print("NEW http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
           (PORT, urllib.parse.quote(init("new"))), flush=True)
     print("PROJ http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %

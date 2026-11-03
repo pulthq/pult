@@ -8,7 +8,7 @@ import { plural, t } from "../i18n.js";
 import { html, useEffect, useRef, useState } from "../vendor/htm-preact-3.1.1.js";
 import { Req, TagPick, useRcpt } from "../ui/cards.js";
 import { GEAR, GLYPH, Loading, MODES, ModePick, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, dot, dur, durShort, hhmm, ic, keyTap, llmName, nb, pauseChip, pct, plainField, queueChip, quiet, tagChips, toDate, useNow, workChip } from "../ui/kit.js";
-import { BgSheet, bgLine, memPct } from "../ui/load.js";
+import { BgSheet, bgCount, bgLine, memPct } from "../ui/load.js";
 import { UpdRow } from "../ui/upd.js";
 
 function Top({ mac, load, usagePct, usageTop, pager, onSet }) {
@@ -211,6 +211,7 @@ function RunRow({ r, now, onBg, onTags, showProject = true }) {
     ${ask && html`<div class=${"run-ask" + (said ? "" : " solo")}>${t("run.you", { text: ask })}</div>`}
     ${said && html`<div class="run-now">${said}</div>`}
     ${r.state === "bg" && r.bg && r.bg.length > 0 && html`<div class="bg tap" role="button" tabindex="0" onClick=${bgTap} onKeyDown=${keyTap(bgTap)}>${bgLine(r.bg)} ${ic("chev", 14)}</div>`}
+    ${r.state === "work" && r.bgk && r.bgk.length > 0 && html`<div class="bg tap" role="button" tabindex="0" onClick=${bgTap} onKeyDown=${keyTap(bgTap)}>${ic("bg", 14)} ${t("bg.n", { list: bgCount(r.bgk) })} ${ic("chev", 14)}</div>`}
   </div>`;
   return onTags ? html`<${SwipeRow} what="task" acts=${tagsAct(r, onTags)}>${body}</${SwipeRow}>` : body;
 }
