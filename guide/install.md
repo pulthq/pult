@@ -13,7 +13,8 @@
   Store one).
 - Telegram and a bot of your own, created in @BotFather; the setup walks you through it.
 - Optional, for a second opinion: Codex signed in with ChatGPT — ChatGPT for Mac carries it, or the `codex` command.
-- Optional, for other vendors' models: a key of DeepSeek, GLM (Z.ai) or Kimi (Moonshot AI).
+- Optional, for other vendors' models: a key of DeepSeek, GLM (Z.ai) or Kimi (Moonshot AI); for a model of your own —
+  [Ollama](https://ollama.com) with a model that can use tools, its context set to 16K or more (`PARAMETER num_ctx`).
 
 ## Install
 
@@ -37,7 +38,8 @@ Then **Developer: Reload Window** in VS Code, so open tabs pick up the hooks. Op
 - `pult tab setup` — writing into open tabs: one line for the VS Code settings;
 - `pult app` — the web app (below);
 - `pult stt` — voice messages as text, with a free Groq key;
-- in the app, Settings → Other vendors — a vendor's key, checked with one tiny request; Codex needs nothing there.
+- in the app, Settings → Other vendors — a vendor's key, checked with one tiny request; Codex needs nothing there;
+  Local model — Ollama's address on this computer, **Check and turn on**.
 
 ## The web app (optional)
 

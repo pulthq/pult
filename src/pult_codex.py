@@ -54,8 +54,8 @@ LANG_NAMES = {"en": "English", "ru": "Russian"}
 
 
 class CodexError(Exception):
-    """A review that didn't happen or didn't end. kind: "missing" (no Codex here), "start" (it didn't start or answer),
-    "login" (not signed in to ChatGPT), "limit" (the subscription's limit), "timeout", "failed" (anything else)."""
+    """A task or review that failed. kind: a cause from ERROR_KINDS, "missing" (no Codex here), "start" (it didn't
+    start or answer), "timeout" (the review's deadline), or "failed" (an unknown cause)."""
     def __init__(self, kind, text=""):
         super().__init__(text or kind)
         self.kind, self.text = kind, str(text or "")
@@ -583,18 +583,46 @@ class AppServer:
             self.p.terminate()
 
 
+ERROR_KINDS = {
+    "serveroverloaded": "overloaded", "usagelimitexceeded": "limit", "ratelimitexceeded": "rate",
+    "unauthorized": "login", "contextwindowexceeded": "context", "sessionbudgetexceeded": "budget",
+    "internalservererror": "server", "modelnotfound": "model", "badrequest": "request", "sandboxerror": "sandbox",
+    "cyberpolicy": "policy", "misalignmentpolicyviolation": "policy",
+}
+TRANSPORT_ERRORS = {"httpconnectionfailed", "responsestreamconnectionfailed", "responsestreamdisconnected",
+                    "responsetoomanyfailedattempts"}
+
+
 def kind_of(err):
-    """A Codex error → CodexError's kind: its codexErrorInfo when it has one, else its words."""
-    info = (err or {}).get("codexErrorInfo") if isinstance(err, dict) else None
-    if info == "usageLimitExceeded":
-        return "limit"
-    if info == "unauthorized":
-        return "login"
+    """Prefer the service's cause over guessed words. App-server uses camelCase; saved events use snake_case.
+    A temporary rate limit is not the subscription's usage limit; HTTP 503 alone doesn't name an overloaded model."""
+    info = (err.get("codexErrorInfo") or err.get("codex_error_info")) if isinstance(err, dict) else None
+    tag, details = info, {}
+    if isinstance(info, dict) and len(info) == 1:
+        tag, details = next(iter(info.items()))
+    tag = tag.replace("_", "").lower() if isinstance(tag, str) else ""
+    if tag in ERROR_KINDS:
+        return ERROR_KINDS[tag]
+    if tag in TRANSPORT_ERRORS:
+        status = (details.get("httpStatusCode") or details.get("http_status_code")) if isinstance(details, dict) else None
+        if status == 401:
+            return "login"
+        if status == 403:
+            return "access"
+        if status == 429:
+            return "rate"
+        if isinstance(status, int) and 500 <= status <= 599 and status != 504:
+            return "server"
+        return "network"
     words = str((err or {}).get("message") if isinstance(err, dict) else err or "")
+    if re.search(r"\b(?:selected )?model is (?:at capacity|overloaded)\b|\bserver (?:is )?overloaded\b", words, re.I):
+        return "overloaded"
     if re.search(r"log ?in|sign ?in|unauthori[sz]ed|\b401\b", words, re.I):
         return "login"
-    if re.search(r"usage limit|rate limit|\b429\b", words, re.I):
+    if re.search(r"usage limit", words, re.I):
         return "limit"
+    if re.search(r"rate limit|\b429\b|too many requests", words, re.I):
+        return "rate"
     return "failed"
 
 
@@ -611,7 +639,7 @@ SEND_RULE = ("When the owner asks for a file, or the task is to hand them one, s
              "`pult send <file>... [-m \"caption\"]`: it arrives in this project's Telegram topic. Only files inside "
              "this project's folder, up to 50 MB each. It works inside the sandbox; files the owner sends from "
              "Telegram are saved in this project's inbox/<date>/ folder.")
-FAILS = {"limit": "codex_limit", "login": "codex_login"}
+FAILS = {kind: "codex_" + kind for kind in set(ERROR_KINDS.values()) | {"network", "access"}}
 
 
 def send_config(outbox):

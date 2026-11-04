@@ -179,7 +179,7 @@ class Api:
             return {"vendor": "Codex", "model": got} if got else {"vendor": "Codex", "model": "Codex"}
         p = self.vendor_profiles().get(vid) if vid else None
         if p:
-            return {"vendor": p["name"], "model": chosen or model or p["models"][0]}
+            return {"vendor": p.get("short") or p["name"], "model": chosen or model or next(iter(p["models"]), None)}
         return {"model": model or chosen} if model or chosen else None
 
     async def board(self, agents):
@@ -1147,9 +1147,12 @@ class Api:
     # Code tab; a session keeps its vendor (session_vendor) for its continuations and copies
 
     def vendor_profiles(self):
-        return V.profiles(self.store.get("vendors.conf") or {})
+        return V.profiles(self.store.get("vendors.conf") or {},
+                          names={V.LOCAL: (self.t("vendor.local"), self.t("vendor.local.short"))})
 
     def vendor_key(self, vid):
+        if vid == V.LOCAL:           # no key of its own: on once a check found a model Claude Code can work with
+            return V.LOCAL_KEY if self.vendor_profiles()[V.LOCAL]["on"] else None
         return (self.env.get(V.key_name(vid)) or "").strip() or None if vid else None
 
     def vendor_default(self, pkey):
@@ -1169,7 +1172,10 @@ class Api:
         — a vendor only while its key is here and the project allowed — → a vendor's id, or "claude"."""
         own = self.vendor_default(pkey)
         vid = own or self.vendor_all()
-        return vid if vid and vid != "claude" and self.vendor_ready(vid) and self.vendors_ok(pkey) else "claude"
+        # one's own model keeps the code home: a project's own choice of it needs no permission; the common default
+        # still reaches only the projects allowed to go to other vendors
+        home = own == V.LOCAL
+        return vid if vid and vid != "claude" and self.vendor_ready(vid) and (home or self.vendors_ok(pkey)) else "claude"
 
     def vendor_ready(self, vid):
         """A vendor can take a task now: its key is here — or, Codex, it is here and Pult can use it."""
@@ -1246,9 +1252,17 @@ class Api:
         return {"ok": True, "live": False, "choice": self.choice.get(sid) or {}}
 
     def vendors_list(self):
-        """For the app: each vendor — its name, whether its key is here, its models (the main one first)."""
-        return [{"id": vid, "name": p["name"], "key": bool(self.vendor_key(vid)), "models": p["models"]}
-                for vid, p in self.vendor_profiles().items()]
+        """For the app: each vendor — its name, whether its key is here, its models (the main one first); the local
+        model — "key": on, its address, what its last check found and the context of each model it can use."""
+        out = []
+        for vid, p in self.vendor_profiles().items():
+            row = {"id": vid, "name": p["name"], "key": bool(self.vendor_key(vid)), "models": p["models"]}
+            if p.get("local"):
+                found = ((self.store.get("vendors.conf") or {}).get(vid) or {}).get("found") or {}
+                row.update(local=True, short=p["short"], url=p["url"], ctx=p["ctxs"], found=found,
+                           min=V.LOCAL_CTX_MIN)
+            out.append(row)
+        return out
 
     def vendor_view(self, sid):
         """The vendor a session runs on, for its screen: {"id", "name", "models"}, or None — Claude."""
@@ -1260,7 +1274,8 @@ class Api:
             return {"id": "codex", "name": "Codex", "models": models, "key": self.codex_ready(), "own": True,
                     "efforts": efforts, "effort": dflt}
         p = self.vendor_profiles().get(vid) if vid else None
-        return {"id": vid, "name": p["name"], "models": p["models"], "key": bool(self.vendor_key(vid))} if p else None
+        return {"id": vid, "name": p["name"], "short": p.get("short") or p["name"], "models": p["models"],
+                "key": bool(self.vendor_key(vid)), "local": bool(p.get("local"))} if p else None
 
     def vendor_stop(self, sid, pkey=None):
         """Why a session on another vendor's model can't go on — its key is gone, or its project no longer goes to other
@@ -1274,7 +1289,9 @@ class Api:
             if not self.codex_ready():
                 return self.t("vendor.err.codex")
         elif not self.vendor_key(vid):
-            return self.t("vendor.err.gone", name=name)
+            return self.t("vendor.err.local.off") if vid == V.LOCAL else self.t("vendor.err.gone", name=name)
+        if vid == V.LOCAL:                         # the code stays home: no permission to take back
+            return None
         row = self.store.session(sid)
         pkey = pkey or (row["pkey"] if row else None)
         return None if pkey and self.vendors_ok(pkey) else self.t("vendor.err.revoked", name=name)
@@ -1297,10 +1314,10 @@ class Api:
         p = self.vendor_profiles().get(vendor)
         if not p:
             raise ValueError("bad vendor")
-        if not self.vendors_ok(pkey):
+        if not self.vendors_ok(pkey) and vendor != V.LOCAL:
             raise ValueError(self.t("vendor.err.allow", name=p["name"]))
         if not self.vendor_key(vendor):
-            raise ValueError(self.t("vendor.err.key", name=p["name"]))
+            raise ValueError(self.t("vendor.err.local.off") if vendor == V.LOCAL else self.t("vendor.err.key", name=p["name"]))
         return vendor
 
     def vendor_model(self, vid, model):
@@ -1315,7 +1332,7 @@ class Api:
         """A vendor's key from Settings: checked with the vendor (one token of its fast model), then written to the
         settings file on this computer — never into anything the app can read back; "" removes it."""
         p = self.vendor_profiles().get(vendor)
-        if not p:
+        if not p or p.get("local"):                  # the local model has no key: it is turned on by its check
             raise ValueError("bad vendor")
         key = str(key or "").strip()
         model, warn = None, None
@@ -1357,6 +1374,50 @@ class Api:
         log("vendor %s: models %s" % (vendor, ", ".join(self.vendor_profiles()[vendor]["models"])))
         return {"models": self.vendor_profiles()[vendor]["models"]}
 
+    async def api_vendor_local(self, url=None, on=True):
+        """The local model (Settings → Other vendors → Local model). "Check and turn on": the server at url says what it
+        has (V.check_local) — the models Claude Code can work with (tools) and each one's context — and it is on while
+        one of them fits (its context known and at least LOCAL_CTX_MIN); the owner's order of them is kept, the first is
+        the one a task gets. on=False — off: its tasks can't start, the common default to it goes back to Claude.
+        → {"vendor": its row as vendors_list has it, "words"}."""
+        conf = self.store.get("vendors.conf") or {}
+        mine = conf.setdefault(V.LOCAL, {})
+        if not on:
+            mine["on"] = False
+            self.store.put("vendors.conf", conf)
+            if self.vendor_all() == V.LOCAL:
+                self.store.put("vendors.all", None)
+            log("vendor local: turned off")
+            self.changed()
+            return {"vendor": self.vendor_row(V.LOCAL), "words": self.t("vendor.local.offed")}
+        url = str(url or self.vendor_profiles()[V.LOCAL]["url"]).strip().rstrip("/")
+        try:
+            got = await V.check_local(url)
+        except V.VendorError as e:
+            log("vendor local: %s didn't pass — %s%s" % (url, e.kind, ": " + e.text[:120] if e.text else ""))
+            raise ValueError(self.t("vendor.local." + e.kind, url=url, why=e.text[:200])) from None
+        fit = [m["name"] for m in got["models"] if m["tools"] and (m["ctx"] or 0) >= V.LOCAL_CTX_MIN]
+        keep = [m for m in mine.get("models") or [] if m in fit]                # the owner's order first
+        mine.update(url=url, on=bool(fit), models=keep + [m for m in fit if m not in keep],
+                    ctx={m["name"]: m["ctx"] for m in got["models"] if m["ctx"]},
+                    found={"version": got["version"], "models": got["models"], "ts": time.time()})
+        self.store.put("vendors.conf", conf)
+        log("vendor local: %s — Ollama %s, models %s; %s" % (url, got["version"], ", ".join(
+            "%s (%s%s)" % (m["name"], m["ctx"] or "ctx ?", "" if m["tools"] else ", no tools") for m in got["models"]),
+            "on, " + mine["models"][0] if fit else "nothing fits — off"))
+        if not fit and self.vendor_all() == V.LOCAL:
+            self.store.put("vendors.all", None)
+        self.changed()
+        if fit:
+            words = self.t("vendor.local.ok", v=got["version"], m=mine["models"][0],
+                           ctx="%dK" % (mine["ctx"][mine["models"][0]] // 1024), n=len(fit))
+        else:
+            words = self.t("vendor.local.none", min="%dK" % (V.LOCAL_CTX_MIN // 1024))
+        return {"vendor": self.vendor_row(V.LOCAL), "words": words}
+
+    def vendor_row(self, vid):
+        return next((r for r in self.vendors_list() if r["id"] == vid), None)
+
     async def api_vendor_default(self, pkey, vendor=None):
         """Who does a project's new tasks by default (the sheet "Who does it" in New task): a vendor — the project
         allowed and its key here — "claude", or None — as the common default says. → {"vendor", "who"}."""
@@ -1383,7 +1444,7 @@ class Api:
             if not p:
                 raise ValueError("bad vendor")
             if not self.vendor_key(vendor):
-                raise ValueError(self.t("vendor.err.key", name=p["name"]))
+                raise ValueError(self.t("vendor.err.local.off") if vendor == V.LOCAL else self.t("vendor.err.key", name=p["name"]))
         self.store.put("vendors.all", vendor)
         n = sum(1 for k in (self.store.get("vendors.ok") or {}) if not self.vendor_default(k))
         log("app: new tasks by default — %s (allowed projects following it: %d)" % (vendor or "Claude", n))

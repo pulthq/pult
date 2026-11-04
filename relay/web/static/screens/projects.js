@@ -150,11 +150,13 @@ function VendorPick({ vendors, cur, proj, onPick, onDefault, onClose }) {
     <div class="q-t pick-h">${t("who.title")}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
     ${row("claude", "Claude", t("who.claude"), false)}
     ${vendors.map((v) => row(v.id, v.name, v.own ? (v.key ? t("who.codex.row", { m: codexModel(v.models[0]) || t("who.codex.model") })
-      : t(v.why === "version" ? "who.codex.version" : "who.codex.missing")) : v.key ? t("who.inside", { m: v.models[0] }) : t("who.nokey"), !v.key))}
+      : t(v.why === "version" ? "who.codex.version" : "who.codex.missing")) : v.local ? (v.key ? t("who.local.row", { m: v.models[0] }) : t("who.local.off"))
+      : v.key ? t("who.inside", { m: v.models[0] }) : t("who.nokey"), !v.key))}
     ${proj && (def === cur ? html`<div class="who-def dim">${ic("check", 15)} ${t("who.default", { p: q(proj.name) })}</div>`
       : html`<button class="link who-def" onClick=${() => onDefault(cur)}>${t("who.default.make", { p: q(proj.name) })}</button>`)}
     <div class="dim small">${t("who.about")}</div>
-    <div class="dim small who-codex">${t("who.codex")}</div></div>`;
+    <div class="dim small who-codex">${t("who.codex")}</div>
+    ${vendors.some((v) => v.local) && html`<div class="dim small who-local">${t("who.local")}</div>`}</div>`;
 }
 // a Codex task's model and level of effort, in words: "GPT-5.6-Sol · Много"; nothing picked — its default level
 const codexText = (v, model, effort) => {
@@ -165,7 +167,7 @@ const codexText = (v, model, effort) => {
 };
 function VendorModels({ v, cur, onPick, onClose }) {
   return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick tall fixed">
-    <div class="q-t pick-h">${t("vend.model.pick", { name: v.name })}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
+    <div class="q-t pick-h">${v.local ? t("vend.local.model") : t("vend.model.pick", { name: v.name })}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
     ${v.models.map((m) => html`<button key=${m} class=${"opt" + (m === (cur || v.models[0]) ? " on" : "")} onClick=${() => onPick(m)}>${m}</button>`)}</div>`;
 }
 
@@ -194,14 +196,23 @@ function NewTask({ pkey }) {
   const byId = (id) => vendors.find((v) => v.id === id);
   // with nothing picked: what the computer says this project's new task goes to — its own default, else the common one
   const dv = cur && byId(cur.who || cur.vendor);
-  const whoNow = who || (dv && dv.key && cur.vok ? dv.id : "claude");
+  // one's own model keeps the code home: the project's own choice of it needs no permission (the common default does)
+  const whoNow = who || (dv && dv.key && (cur.vok || (dv.local && cur.vendor === dv.id)) ? dv.id : "claude");
   const vend = whoNow === "claude" ? null : byId(whoNow);
   const send = async () => {
     setBusy(true);
     try {
       const args = { pkey: p, text, files: a.payload(), model, effort };
       if (vendors.length) args.vendor = whoNow;
-      const r = await api("new", args);
+      let r;
+      try { r = await api("new", args); }
+      catch (e) {
+        // one's own model off, or its computer silent (stage M, step 6): one tap starts the same task with Claude;
+        // "no" leaves the form as it is — the words were in the question
+        if (!(vend && vend.local)) throw e;
+        if (!(await confirmBox(e.message + "\n\n" + t("new.local.claude")))) { setBusy(false); return; }
+        r = await api("new", Object.assign(args, { vendor: "claude", model: "", effort: "" }));
+      }
       LAST_NEW.set(p); haptic("success"); go("#/s/" + r.sid, true);
     }
     catch (e) { alertBox(e.message); }
@@ -212,8 +223,8 @@ function NewTask({ pkey }) {
   // a vendor without a key says where to add one; a project not yet allowed asks once (Q105)
   const pickWho = async (id) => {
     const v = byId(id);
-    if (v && !v.key) return alertBox(v.own ? t(v.why === "version" ? "who.codex.go.version" : "who.codex.go") : t("who.nokey.go", { name: v.name }));
-    if (v && cur && !cur.vok) {
+    if (v && !v.key) return alertBox(v.own ? t(v.why === "version" ? "who.codex.go.version" : "who.codex.go") : v.local ? t("who.local.go") : t("who.nokey.go", { name: v.name }));
+    if (v && cur && !cur.vok && !v.local) {
       if (!(await confirmBox(t("who.allow", { name: v.name, p: q(cur.name) })))) return;
       try { await api("vendors_ok", { pkey: p, on: true }); keep(Object.assign({}, cur, { vok: true })); }
       catch (e) { return alertBox(e.message); }
@@ -235,12 +246,12 @@ function NewTask({ pkey }) {
     ${d.stt ? html`<${Mic} v=${v} disabled=${busy} wide=${true}/>` : ""}
     ${vendors.length > 0 && html`<label class="lbl">${t("who.title")}</label>
     <button class="field" onClick=${() => setSheet({ k: "who" })}>
-      <span>${vend ? vend.name : "Claude"}<i class="dim vf-sub"> · ${vend ? t(vend.own ? "who.codex.short" : "who.inside.short") : t("who.claude")}</i></span><span class="dim">${ic("down", 18)}</span></button>`}
-    <label class="lbl">${vend ? t("vend.model.pick", { name: vend.name }) : t("model.pick")}</label>
+      <span>${vend ? vend.name : "Claude"}<i class="dim vf-sub"> · ${vend ? t(vend.own ? "who.codex.short" : vend.local ? "who.local.short" : "who.inside.short") : t("who.claude")}</i></span><span class="dim">${ic("down", 18)}</span></button>`}
+    <label class="lbl">${vend ? (vend.local ? t("vend.local.model") : t("vend.model.pick", { name: vend.name })) : t("model.pick")}</label>
     <button class="field" onClick=${() => setSheet({ k: "model" })}>
       <span>${vend && vend.own ? codexText(vend, model, effort) : vend ? model || vend.models[0] : choiceText(model, effort, d.choice)}</span><span class="dim">${ic("down", 18)}</span></button>
     <button class="btn wide" disabled=${busy || !p || (!text.trim() && !a.files.length)} onClick=${send}>${t("new.start")}</button>
-    <div class="dim small">${vend ? (vend.own ? t("new.about.codex") : t("new.about.vendor", { name: vend.name })) : t("new.about")}</div>
+    <div class="dim small">${vend ? (vend.own ? t("new.about.codex") : vend.local ? t("new.about.local") : t("new.about.vendor", { name: vend.name })) : t("new.about")}</div>
     ${sheet && sheet.k === "who" && html`<${VendorPick} vendors=${vendors} cur=${whoNow} proj=${cur} onPick=${pickWho} onDefault=${makeDefault} onClose=${close}/>`}
     ${sheet && sheet.k === "project" && html`<${ProjectPick} projects=${sheet.list} cur=${p} create=${d.create} onClose=${close} onPick=${(k) => { if (k !== p) { setWho(""); setModel(""); } setP(k); haptic("success"); close(); }}/>`}
     ${sheet && sheet.k === "model" && vend && vend.own && html`<div class="backdrop" onClick=${close}></div><div class="card pick tall fixed">

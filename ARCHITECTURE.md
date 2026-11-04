@@ -40,6 +40,7 @@ flowchart LR
   CCT --> ANT["Anthropic<br/>your plan"]
   CCS --> ANT
   CCS -.->|"another vendor's model"| VEN["DeepSeek · GLM · Kimi<br/>your key"]
+  CCS -.->|"a model of your own"| OLL["Ollama<br/>this computer's address"]
   CX --> OAI["OpenAI<br/>your ChatGPT sign-in"]
 ```
 
@@ -50,6 +51,7 @@ flowchart LR
 | **pult_tab.py** | an optional `claudeCode.claudeProcessWrapper` between the VS Code extension and Claude Code | the only way to put a message into a tab that is already open |
 | **Agent SDK** | sessions started from Telegram or the app run your own Claude Code in the project's folder, by default in its `auto` permission mode (`PULT_PERMISSION_MODE`) | same settings, same system prompt, same plan as a terminal |
 | **another vendor's model** | DeepSeek, GLM and Kimi answer Claude Code's own protocol at an address of theirs: a session Pult starts gets that address, your key and the vendor's models by role (`pult_vendors.py`) | the same Claude Code, hooks and cards — only the model differs; only in a project you allowed, never without a key |
+| **a model of your own** | Ollama answers the same protocol at this computer's own address — http://127.0.0.1 or localhost only; another computer is reached by a tunnel you keep. Pult asks it which models can use tools and each one's context (`num_ctx`), takes only those with 16K or more, gives the session a stand-in key, the five core tools and one model for every role, and checks the server answers before a task starts (`pult_vendors.py`) | free, the code stays home; Ollama cuts a longer request silently, so the context must be known; all 25 tools were slow and sloppy on a 12B model, the five right in seconds (probe 2026-11-04) |
 | **Codex** | OpenAI's agent, found where ChatGPT for Mac or the `codex` command is; driven over its `app-server` protocol (JSON-RPC), in a read-only sandbox that asks nothing, one review at a time (`pult_codex.py`) | a second opinion from another vendor, on your own ChatGPT sign-in; Pult gives it none of its keys |
 | **relay.py** | a WebSocket relay on a small Linux server (~50 MB of memory) | Telegram opens Mini Apps only from public HTTPS; the computer stays closed |
 | **Mini App** | Preact + htm, no build step, served by the relay | a full screen on the phone: transcripts, answers, new tasks, usage |

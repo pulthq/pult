@@ -44,7 +44,10 @@ CHECKS = {
     "pins": ({"STAND_TAGS": "1", "STAND_HOMES": "1", "STAND_PINS": "blog,shop", "STAND_HIDES": "desk", "STAND_LANG": "ru"}, "out", []),   # stage Zh
     "msgcopy": ({"STAND_LANG": "ru"}, "out", []),                  # stage Zh, step 3: a slide copies Claude's message
     "second": ({"STAND_SECOND": "1", "STAND_LANG": "ru"}, "out", []),   # stage M, step 1: Codex's second opinion
+    "codexerrors": ({"STAND_SECOND": "allowed", "STAND_SECOND_FAIL": "serverOverloaded", "STAND_LANG": "ru"}, "out", []),
     "vendors": ({"STAND_VENDORS": "1", "STAND_HOMES": "1", "STAND_LANG": "ru"}, "out", []),   # stage M, step 2
+    "local": ({"STAND_LOCAL": "1", "STAND_HOMES": "1", "STAND_LANG": "ru"}, "out", []),   # stage M, step 6: one's own model
+    "local-down": ({"STAND_LOCAL": "down", "STAND_HOMES": "1", "STAND_LANG": "ru"}, "out", ["down"]),   # … its server silent
     "gotit": ({"STAND_REPORT": "1", "STAND_LANG": "ru"}, "out", []),   # every finished task waits for "Got it" (2026-10-30)
     "states": ({"STAND_TAGS": "1", "STAND_ASK2": "1", "STAND_LANG": "ru"}, "out", []),   # a task's state in colour (Q110–Q112)
     "worktime": ({"STAND_VENDORS": "1", "STAND_HOMES": "1", "STAND_REPORT": "1", "STAND_LANG": "ru"}, "out", []),   # one clock per task (Q117)

@@ -40,7 +40,11 @@ offers "Second opinion · Codex" under its outcome (tools/second_check.py). STAN
 STAND_VENDORS=1 (stage M, step 2): DeepSeek has a made-up key (GLM and Kimi none), a key's check passes "sk-…" without any
 network, and a session ran on DeepSeek's model (SESSV) — its next turn runs now, from the app, on deepseek-v4-pro[1m];
 the session that waits for you (SESS4) ran on DeepSeek too, the weekly report on Fable — the cards and rows name the model;
-"Who does it" in New task — Codex a stand-in that can do a task (M4.1) — Settings → Other vendors (tools/vendors_check.py). STAND_HELPERS=1 (Q128): the dark theme's turn has started two helpers and a command in the
+"Who does it" in New task — Codex a stand-in that can do a task (M4.1) — Settings → Other vendors (tools/vendors_check.py).
+STAND_LOCAL=1 (stage M, step 6): one's own model through Ollama, off — its check answers at http://127.0.0.1:11434 as Ollama
+0.40.14 did (gemma4-32k with a 32K context; two models without one), any other address doesn't; =on — checked and on, the
+session that waits for you ran on it; =down — on, but the server doesn't answer: a new task on it is refused
+(tools/local_check.py). STAND_HELPERS=1 (Q128): the dark theme's turn has started two helpers and a command in the
 background — their PostToolUse and the helpers' own records; SESS7 — its screen (tools/helpers_check.py). STAND_REPORT=1: the weekly report hasn't
 been put away — a plain report waits in "Your move" for "Got it" like any other (tools/gotit_check.py); without it (and
 without STAND_ASK2) the owner has put it away. VS Code's settings and the tab switch are made up on every stand: the app
@@ -612,6 +616,8 @@ async def main():
         import fake_codex
         conf = T.TMP / "stand-codex.json"
         conf.write_text(json.dumps({"wait": 5, "steps": 4, "review": SECOND_REVIEW[LANG]}))
+        if os.environ.get("STAND_SECOND_FAIL"):
+            conf.write_text(json.dumps({"wait": 0.2, "steps": 0, "fail": os.environ["STAND_SECOND_FAIL"]}))
         codex = fake_codex.launcher(str(T.TMP), str(conf))
         if second == "allowed":
             store.put("vendors.ok", {T.PKEY: time.time()})
@@ -1006,6 +1012,11 @@ async def main():
     async def stand_new(pkey, text, files=None, model=None, effort=None, vendor=None):   # never launches Claude here
         if vendor not in (None, "claude"):
             p.vendor_for_new(pkey, vendor)            # the computer's own checks: the project allowed, the key there
+        if vendor == "local":                         # the daemon's drive(): nothing starts while the server is silent
+            import pult_vendors as V
+            lp = p.vendor_profiles()["local"]
+            if not await V.reach(lp["url"]):
+                raise ValueError(p.t("vendor.err.local.down", name=lp["name"], url=lp["url"]))
         print("NEWTASK", pkey, json.dumps(text, ensure_ascii=False), "vendor=%s model=%s" % (vendor, model), flush=True)
         return {"ok": True, "sid": T.SID}
     p.api_new = stand_new
@@ -1039,6 +1050,30 @@ async def main():
         # the session that waits for you ran on DeepSeek too: its card in "Your move" names the model at its foot (Q108)
         store.set_vendor(SID4, "deepseek")
         p.set_choice(SID4, "deepseek-v4-pro[1m]")
+    if os.environ.get("STAND_LOCAL"):                  # stage M, step 6: one's own model through Ollama — no server here
+        import pult_vendors as V
+        found = {"version": "0.40.14", "models": [{"name": "gemma4-32k", "ctx": 32768, "tools": True},
+                                                  {"name": "qwen3.5:4b", "ctx": None, "tools": True},
+                                                  {"name": "gemma4:12b", "ctx": None, "tools": True}]}
+
+        async def stand_local(url, transport=None):   # this computer's usual address answers as Ollama did on 2026-11-04
+            if not V.url_ok("local", url):
+                raise V.VendorError("url", url)
+            if url.rstrip("/") != "http://127.0.0.1:11434":
+                raise V.VendorError("net", "ConnectError")
+            return found
+        up = os.environ["STAND_LOCAL"] != "down"
+
+        async def stand_reach(url, transport=None):
+            return up
+        V.check_local, V.reach = stand_local, stand_reach
+        if os.environ["STAND_LOCAL"] in ("on", "down"):     # checked and on; the session that waits for you ran on it
+            conf = store.get("vendors.conf") or {}
+            conf["local"] = {"on": True, "url": "http://127.0.0.1:11434", "models": ["gemma4-32k"],
+                             "ctx": {"gemma4-32k": 32768}, "found": dict(found, ts=time.time() - 3600)}
+            store.put("vendors.conf", conf)
+            store.set_vendor(SID4, "local")
+            p.set_choice(SID4, "gemma4-32k")
     store.touch_session(SID5, PKEY2, path=DESK, title=D["s5_title"])
     if os.environ.get("STAND_VENDORS") == "1" or os.environ.get("STAND_REPORT") == "1":   # its chat: the ask, the report
         fl = json.loads(aline(D["s5_line"] + ".", "s5", 900, ago=600))

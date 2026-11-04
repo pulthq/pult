@@ -58,11 +58,12 @@ async def main():
         verdict("… Claude by default", who.startswith("Claude") and "твоя подписка" in who, who)
         await pg.tap(FIELD % "Кто делает", wait=0.6)
         rows = await pg.js("[...document.querySelectorAll('.card.pick.who .opt')].map((b) => [b.textContent.trim(), b.classList.contains('vo-off')])")
-        verdict("the sheet: Claude, Codex — its own agent with its model (M4.1) — DeepSeek with its model, GLM and Kimi grey without a key",
-                [r[0].split("внутри")[0].split("ключа")[0].split("Claude Code")[0].split("свой агент")[0].strip() for r in rows]
-                == ["Claude", "Codex", "DeepSeek", "GLM", "Kimi"]
+        verdict("the sheet: Claude, Codex — its own agent with its model (M4.1) — DeepSeek with its model, GLM and Kimi grey "
+                "without a key, the local model grey while off (M6)",
+                [r[0].split("внутри")[0].split("ключа")[0].split("Claude Code")[0].split("свой агент")[0].split("выключена")[0].strip()
+                 for r in rows] == ["Claude", "Codex", "DeepSeek", "GLM", "Kimi", "Своя модель"]
                 and "свой агент OpenAI · GPT-5.6-Sol" in rows[1][0] and not rows[1][1]
-                and "deepseek-flash[1m]" in rows[2][0] and not rows[2][1] and rows[3][1] and rows[4][1], rows)
+                and "deepseek-flash[1m]" in rows[2][0] and not rows[2][1] and rows[3][1] and rows[4][1] and rows[5][1], rows)
         await pg.shot(os.path.join(OUT, "who.png"))
         await pg.tap(OPT % "GLM", wait=0.6)
         s = await said(pg)
@@ -136,7 +137,7 @@ async def main():
         await pg.shot(os.path.join(OUT, "settings-all.png"))
         VEND = "[...document.querySelectorAll('.item.vend')].find((x) => x.querySelector('b').textContent === %r)"
         st = await pg.js("[...document.querySelectorAll('.item.vend')].map((x) => x.querySelector('.vend-st').textContent)")
-        verdict("DeepSeek's key is there, GLM's and Kimi's aren't", st == ["ключ есть", "нет ключа", "нет ключа"], st)
+        verdict("DeepSeek's key is there, GLM's and Kimi's aren't; the local model is off", st == ["ключ есть", "нет ключа", "нет ключа", "выключена"], st)
         typed = ("(() => { const i = (%s).querySelector('input[type=password]'); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;"
                  " set.call(i, %%r); i.dispatchEvent(new Event('input', {bubbles: true})); return true; })()" % (VEND % "GLM"))
         await pg.js(typed % "not-a-good-key-000000")

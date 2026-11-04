@@ -4,6 +4,20 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.41 — 2026-11-04
+
+- **A model of your own does the task.** Who does it has Local model: Ollama on this computer, or on another one
+  through a tunnel you keep open — free, and the code stays home. Settings → Other vendors → Local model → Check and
+  turn on asks the server which models can use tools and each one's context; a model is taken only with its context
+  set to 16K or more (Ollama cuts a longer request silently). No key and no project's permission; Claude Code gets
+  five tools there — commands, reading, editing and writing files, a question to you — and one model does every role.
+  A task doesn't start while the server doesn't answer, and says so.
+- **A Codex error says what happened and what to do.** Instead of "Codex's error — try again", a task's outcome, its
+  word in Telegram and a second opinion tell an overloaded model, the plan's limit, too many requests, signing in, the
+  context, the session's budget, the server, the network, access, the model, the request, the sandbox and a refusal
+  under OpenAI's rules apart — from the cause Codex names, its words only for an older one; nothing retries or
+  switches the model by itself.
+
 ## 0.18.40 — 2026-11-04
 
 - **A full relay lets a new window in.** Telegram keeps a closed app's webview alive, and it answers the relay's

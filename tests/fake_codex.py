@@ -160,7 +160,8 @@ class Doer:
             self.say({"method": "turn/completed", "params": {"threadId": th, "turn": {"id": tu, "status": "interrupted", "items": []}}})
             return
         if d.get("fail"):
-            err = {"message": "made-up failure: " + d["fail"], "codexErrorInfo": d["fail"]}
+            err = d["fail"] if isinstance(d["fail"], dict) else {"message": "made-up failure: " + d["fail"],
+                                                              "codexErrorInfo": d["fail"]}
             self.say({"method": "turn/completed", "params": {"threadId": th, "turn": {"id": tu, "status": "failed", "items": [], "error": err}}})
             return
         words = d.get("say", "Готово: записал %s." % name) + ("" if allowed else " Без файла: ты не разрешил.")
@@ -262,7 +263,7 @@ def serve(c):
                 time.sleep(float(c["hang"]))
             time.sleep(float(c.get("wait", 0.2)) / max(1, n + 1))
             if c.get("fail"):
-                info = c["fail"] if c["fail"] != "other" else "internalServerError"
+                info = c["fail"]
                 err = {"message": "made-up failure: " + info, "codexErrorInfo": info}
                 say({"method": "error", "params": {"threadId": "th-1", "turnId": "tu-1", "willRetry": False, "error": err}})
                 say({"method": "turn/completed", "params": {"threadId": "th-1", "turn": {"id": "tu-1", "status": "failed",

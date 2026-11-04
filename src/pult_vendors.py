@@ -14,8 +14,18 @@ What tests/probe_vendor.py found on Claude Code 2.1.300 (2026-10-30), and what f
   • CLAUDE_CODE_AUTO_COMPACT_WINDOW sets when the conversation is compacted — a vendor's window may be smaller than
     the one Claude Code assumes; the SDK's own entrypoint (sdk-py) keeps the session off VS Code's list (the owner,
     2026-10-30: continued in a tab it would go to Claude with another vendor's turns in it).
+Your own model (stage M, step 6) is one more profile, "local": a server at this computer's own address that answers the
+same protocol — Ollama's /v1/messages. What tests/probe_local.py found on Ollama 0.40.14 with gemma4:12b (2026-11-04):
+  • no key is checked — Pult puts LOCAL_KEY in both places, so the subscription's token never goes there;
+  • with Claude Code's five core tools a task was right both times in 8–10 s; with all 25 — 41 s, sloppy, and once a
+    request hung in Ollama for 10 minutes: a local session gets the five (LOCAL_TOOLS);
+  • a prompt longer than the model's context is cut silently, to half of it, its first five tokens kept — so a model is
+    taken only with its context known (num_ctx in its Modelfile) and big enough, and the compaction window is that;
+  • /api/show says what a model can do ("tools") and its num_ctx; an empty /v1/messages answers 400 without loading
+    anything — the address speaks the protocol. One model does every role: Ollama keeps one loaded at a time.
 Standard library and httpx (the key's check). Design: docs/project.html, stage M.
 """
+import os
 import re
 
 import httpx
@@ -45,8 +55,21 @@ PRESETS = {
     # Moonshot: third parties' guides only, not checked — a starting point for the owner's own list
     "kimi": {"name": "Kimi", "url": "https://api.moonshot.ai/anthropic", "models": ["kimi-k3.1-pro"], "ctx": None,
              "env": {}, "price": {"kimi-k3.1-pro": [2.0, 10.0]}},
+    # a model of the owner's own through Ollama, at this computer's address (a tunnel to another computer is the
+    # owner's); its models and their context come from the server itself (check_local), its name from the daemon's
+    # words; a request may wait long on a slow card, not the 10 minutes Claude Code would
+    "local": {"name": "Local model", "short": "Local", "url": "http://127.0.0.1:11434", "models": [], "ctx": None,
+              "env": {"API_TIMEOUT_MS": "300000"}, "price": {}, "local": True},
 }
-ORDER = ("deepseek", "glm", "kimi")
+ORDER = ("deepseek", "glm", "kimi", "local")
+LOCAL = "local"
+LOCAL_KEY = "pult-local-no-key-needed"
+LOCAL_TOOLS = ("Bash", "Read", "Edit", "Write", "AskUserQuestion")
+LOCAL_CTX_MIN = 16384      # tokens: the five tools' first request is ~5K (the probe), a big CLAUDE.md and the work need more
+LOCAL_OUT_MAX = 8192       # tokens an answer may take: it has to fit in the context with the prompt
+LOCAL_REACH = 3            # s to answer "is it there" before a task starts
+LOOPBACK = re.compile(r"http://(127\.0\.0\.1|localhost|\[::1\])(:\d{1,5})?")
+CLOUD = re.compile(r"(^|[-:])cloud\b", re.I)       # Ollama's cloud models run on ollama.com: not one's own
 
 
 class VendorError(Exception):
@@ -61,8 +84,16 @@ def key_name(vid):
     return KEY_PREFIX + vid.upper()
 
 
-def profiles(own=None):
-    """The presets with the owner's own changes over them (state.db, "vendors.conf": {vid: {"models", "url"}})."""
+def url_ok(vid, url):
+    """An address a profile may take: https; a local model's — this computer's own, plain http."""
+    url = str(url or "").rstrip("/")
+    return url.startswith("https://") or vid == LOCAL and bool(LOOPBACK.fullmatch(url))
+
+
+def profiles(own=None, names=None):
+    """The presets with the owner's own changes over them (state.db, "vendors.conf": {vid: {"models", "url"}}; the
+    local model's also "on" and "ctx" — {model: its context}, as the server said); names — {vid: (name, short)} in the
+    owner's language."""
     out = {}
     for vid in ORDER:
         p = dict(PRESETS[vid], id=vid)
@@ -70,8 +101,16 @@ def profiles(own=None):
         models = [m for m in mine.get("models") or [] if isinstance(m, str) and MODEL_RE.fullmatch(m)][:MODELS_MAX]
         if models:
             p["models"] = models
-        if isinstance(mine.get("url"), str) and mine["url"].startswith("https://"):
+        if isinstance(mine.get("url"), str) and url_ok(vid, mine["url"]):
             p["url"] = mine["url"].rstrip("/")
+        if p.get("local"):
+            ctx = mine.get("ctx") if isinstance(mine.get("ctx"), dict) else {}
+            p["ctxs"] = {m: int(n) for m, n in ctx.items() if isinstance(n, int) and n > 0}
+            p["models"] = [m for m in p["models"] if p["ctxs"].get(m, 0) >= LOCAL_CTX_MIN]
+            p["on"] = bool(mine.get("on")) and bool(p["models"])
+            p["tools"] = list(LOCAL_TOOLS)
+        if vid in (names or {}):
+            p["name"], p["short"] = names[vid]
         out[vid] = p
     return out
 
@@ -91,14 +130,68 @@ def session_env(p, key, model=None):
         raise ValueError("no key for " + p["name"])
     main = model or p["models"][0]
     fast = p["models"][1] if len(p["models"]) > 1 else p["models"][0]
+    ctx = p.get("ctx")
+    if p.get("local"):                 # one model for every role, its own context — never one Pult doesn't know
+        fast, ctx = main, (p.get("ctxs") or {}).get(main)
+        if not ctx or ctx < LOCAL_CTX_MIN:
+            raise ValueError("%s: the context of %s isn't known, or is too small" % (p["name"], main))
     env = {k: str(v) for k, v in (p.get("env") or {}).items()}       # the vendor's own advice first: never over these
     env.update({"ANTHROPIC_BASE_URL": p["url"], "ANTHROPIC_AUTH_TOKEN": key, "ANTHROPIC_API_KEY": key,
                 "ANTHROPIC_DEFAULT_OPUS_MODEL": main, "ANTHROPIC_DEFAULT_SONNET_MODEL": main,
                 "ANTHROPIC_DEFAULT_FABLE_MODEL": main, "ANTHROPIC_DEFAULT_HAIKU_MODEL": fast,
                 "CLAUDE_CODE_SUBAGENT_MODEL": fast, "CLAUDE_CODE_ENTRYPOINT": "sdk-py"})
-    if p.get("ctx"):
-        env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(p["ctx"]))
+    if ctx:
+        env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(ctx))
+    if p.get("local"):
+        env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(min(LOCAL_OUT_MAX, int(ctx) // 4))
+        # this computer's own address never through a proxy (Pult's own goes to another country)
+        near = [os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or "", "127.0.0.1,localhost,::1"]
+        env["NO_PROXY"] = env["no_proxy"] = ",".join(x for x in near if x)
     return env
+
+
+async def check_local(url, transport=None):
+    """What a local server has (Settings → Local model → Check): Ollama's version, and each of its models — whether it
+    can use tools, its context (num_ctx in its Modelfile; None — the server's default, which no answer says). Never
+    through a proxy, never loads a model: /api/show and an empty /v1/messages (400 — it speaks Claude Code's protocol).
+    → {"version", "models": [{"name", "ctx", "tools"}]}; VendorError: "url", "net", "proto", "model"."""
+    url = str(url or "").rstrip("/")
+    if not url_ok(LOCAL, url):
+        raise VendorError("url", url)
+    kw = dict(transport=transport) if transport is not None else {}
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15, connect=LOCAL_REACH), trust_env=False, **kw) as c:
+            version = (await c.get(url + "/api/version")).json().get("version") or "?"
+            tags = (await c.get(url + "/api/tags")).json().get("models") or []
+            probe = await c.post(url + "/v1/messages", json={})
+            if probe.status_code == 404:
+                raise VendorError("proto", version)
+            models = []
+            for m in tags:
+                name = m.get("name") or m.get("model")
+                if not isinstance(name, str) or CLOUD.search(name) or not MODEL_RE.fullmatch(name):
+                    continue
+                show = (await c.post(url + "/api/show", json={"model": name})).json()
+                n = re.search(r"(?m)^num_ctx\s+(\d+)", show.get("parameters") or "")
+                models.append({"name": name.removesuffix(":latest"), "ctx": int(n.group(1)) if n else None,
+                               "tools": "tools" in (show.get("capabilities") or [])})
+    except httpx.TransportError as e:
+        raise VendorError("net", type(e).__name__) from None
+    except ValueError as e:                  # not JSON: something else answers there
+        raise VendorError("proto", str(e)[:80]) from None
+    if not any(m["tools"] for m in models):
+        raise VendorError("model", ", ".join(m["name"] for m in models))
+    return {"version": version, "models": models[:MODELS_MAX * 2]}
+
+
+async def reach(url, transport=None):
+    """Whether a local server answers now — before a task starts on it: the computer with the model may be off."""
+    kw = dict(transport=transport) if transport is not None else {}
+    try:
+        async with httpx.AsyncClient(timeout=LOCAL_REACH, trust_env=False, **kw) as c:
+            return (await c.get(str(url).rstrip("/") + "/api/version")).status_code == 200
+    except httpx.HTTPError:
+        return False
 
 
 async def check_key(p, key, proxy=None, transport=None):

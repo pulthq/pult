@@ -228,9 +228,9 @@ function ModelPick({ sid, choice, now, driven, tab, dflt, canModel, canEffort, v
     <${CodexCols} v=${vendor} model=${cur.model} effort=${cur.effort} busy=${busy} onPick=${pick}/>
     <div class="dim small">${t("cx.model.next")}</div></div>`;
   // another vendor's session (stage M, step 2): only its own models, the main one when nothing is picked; no effort
-  if (vendor) return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick"><div class="q-t pick-h">${t("vend.model.pick", { name: vendor.name })}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
+  if (vendor) return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick"><div class="q-t pick-h">${vendor.local ? t("vend.local.model") : t("vend.model.pick", { name: vendor.name })}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
     <div class="pick-col">${vendor.models.map((m) => html`<button key=${m} class=${"opt" + (m === (cur.model || vendor.models[0]) ? " on" : "")} disabled=${busy} onClick=${() => pick({ model: m })}>${m}</button>`)}</div>
-    <div class="dim small">${t("model.vendor", { name: vendor.name })}</div></div>`;
+    <div class="dim small">${vendor.local ? t("model.local") : t("model.vendor", { name: vendor.name })}</div></div>`;
   return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick"><div class="q-t pick-h">${t("model.pick")}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
     <div class="pick-cols">
       ${col(t("model"), MODELS.map(([m, label]) => [m, m ? label : t("pick.default")]), cur.model || "", "model", canModel, now.model && modelName(now.model))}
