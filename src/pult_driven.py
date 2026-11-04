@@ -319,6 +319,12 @@ class Driven:
             effort = None                        # the vendor's own advice sets it (CLAUDE_CODE_EFFORT_LEVEL)
             if p.get("tools"):                   # one's own model: the five core tools (probe_local: all 25 — slow, sloppy)
                 kw["tools"] = list(p["tools"])
+            # isolation (stage M, step 7.1): its own Claude Code home — not the owner's CLAUDE.md, memory and settings, and
+            # its transcript out of ~/.claude — unless it began before (a continuation is found only where it began);
+            # none of Claude Code's own requests elsewhere; a line on who it is after Claude Code's text about Claude
+            home = self.d.vendor_home(vid, self.path, self.resume)
+            kw["env"] = dict(kw["env"], **V.QUIET, **({"CLAUDE_CONFIG_DIR": str(home)} if home else {}))
+            kw["system_prompt"] = dict(kw["system_prompt"], append=V.identity(vid, model))
         if model:
             kw["model"] = model
         if effort:

@@ -3272,6 +3272,107 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         for dr in list(self.p.driven.values()):
             dr.task.cancel()
 
+    async def test_isolation(self):
+        # stage M, step 7.1 (Q139): another vendor's session runs in a Claude Code home of its own — Pult's rules there,
+        # not the owner's CLAUDE.md and memory; its transcript out of ~/.claude — with Claude Code's own requests off and a
+        # line on who the model is; one begun before keeps ~/.claude (a continuation is found only where it began);
+        # Pult finds its transcript and lists it in Earlier; Claude haiku never reads another vendor's task
+        import claude_agent_sdk
+        proj = TMP / ("proj-" + self._testMethodName)
+        proj.mkdir()
+        self.store.set_topic(PKEY, str(proj), "proj", 77)
+        started = []
+
+        class Fake:
+            def __init__(self, options):
+                started.append(options)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def query(self, text):
+                pass
+
+            async def interrupt(self):
+                pass
+
+            async def set_model(self, m):
+                pass
+
+            async def receive_messages(self):
+                await asyncio.Event().wait()
+                yield
+        conf = {"local": {"on": True, "url": "http://127.0.0.1:11434", "models": ["gemma4-32k"], "ctx": {"gemma4-32k": 32768}}}
+        self.store.put("vendors.conf", conf)
+        home = pultd.HOMES / "local"
+        with mock.patch.object(claude_agent_sdk, "ClaudeSDKClient", Fake), \
+                mock.patch.object(V, "reach", mock.AsyncMock(return_value=True)):
+            sid = (await self.p.api_new(PKEY, "Почини тесты", vendor="local"))["sid"]
+            await until(lambda: started)
+            o = started[-1]
+            self.assertEqual((o.env["CLAUDE_CONFIG_DIR"], o.env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"]), (str(home), "1"))
+            self.assertIn("you are not Claude. You are gemma4-32k", o.system_prompt["append"])
+            self.assertEqual(o.system_prompt["preset"], "claude_code")
+            self.assertIn("Answer the owner in Russian", (home / "CLAUDE.md").read_text())
+            # a session begun before 7.1: its transcript is in ~/.claude — it goes on there, still quiet, still told who it is
+            old = "88888888-2222-3333-4444-555555555555"
+            self.store.touch_session(old, PKEY, path=str(proj))
+            self.store.set_vendor(old, "local")
+            legacy = TMP / "projects" / pultd.sanitize(str(proj))
+            legacy.mkdir(parents=True, exist_ok=True)
+            (legacy / (old + ".jsonl")).write_text(tline("user", "Старая задача", ago=600) + "\n")
+            await self.p.drive(old, str(proj), "дальше", None, pkey=PKEY, resume=old)
+            await until(lambda: len(started) == 2)
+            o = started[-1]
+            self.assertNotIn("CLAUDE_CONFIG_DIR", o.env)
+            self.assertEqual(o.env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"], "1")
+            self.assertIn("gemma4-32k", o.system_prompt["append"])
+            # Claude's session beside them: the owner's home, no line
+            sid_c = (await self.p.api_new(PKEY, "А это — Claude", vendor="claude"))["sid"]
+            await until(lambda: len(started) == 3)
+            self.assertNotIn("CLAUDE_CONFIG_DIR", started[-1].env)
+            self.assertNotIn("append", started[-1].system_prompt)
+            self.assertIsNone(self.store.vendor_of(sid_c))
+        for dr in list(self.p.driven.values()):
+            dr.task.cancel()
+        await asyncio.sleep(0.05)
+        self.p.driven.clear()
+        # Pult finds the new session's transcript in its home, and lists it in the project's Earlier
+        f = home / "projects" / PKEY / (sid + ".jsonl")
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(tline("user", "Почини тесты", ago=90000) + "\n" + tline("assistant", "Починил.", ago=89990) + "\n")
+        self.assertEqual(self.p.transcript_of(sid)[0], str(f))
+        hf = home / "projects" / pultd.sanitize(str(proj)) / ("99999999-2222-3333-4444-555555555555.jsonl")
+        hf.parent.mkdir(parents=True, exist_ok=True)
+        hf.write_text(tline("user", "Задача в своём доме", ago=90000) + "\n" + tline("assistant", "Сделал.", ago=89990) + "\n")
+        earlier = (await self.p.api_project(PKEY))["earlier"]
+        self.assertIn("99999999-2222-3333-4444-555555555555", [e["sid"] for e in earlier])
+        # one's own model's context gauge: its own context, the room its answer takes off (not Claude Code's 200 000)
+        self.assertEqual(self.p.ctx_of(sid, "gemma4-32k"), [32768, 8192])
+        self.assertEqual(self.p.ctx_room(sid, [32768, 8192]), 24576)
+        # Claude haiku never reads another vendor's task: no result line by the model, no tags
+        await self.p.api_prefs(brief=True)
+        asked = []
+
+        async def fake_brief(prompt, reply, bg, lang, cwd, tags=None):
+            asked.append(("brief", prompt))
+            return {"line": "Отчёт", "you": False, "need": ""}
+
+        async def fake_tag(req, lang, cwd):
+            asked.append(("tag", req))
+            return None
+        self.store.set_vendor(SID, "local")
+        with mock.patch.object(pultd.B, "brief", fake_brief), mock.patch.object(pultd.G, "tag", fake_tag):
+            await run_hook(ev("UserPromptSubmit", prompt="Проверь"))
+            await run_hook(ev("Stop", last_assistant_message="Проверил: всё зелёное.", background_tasks=[]))
+            await until(lambda: (self.p.attn.rec.get(SID) or {}).get("ts"))
+            await asyncio.sleep(0.2)
+        self.assertEqual(asked, [])
+        self.assertEqual(self.p.attn.rec[SID]["line"], "Проверил: всё зелёное.")      # the first sentence, by rules
+
     def second_project(self, **conf):
         """A project in git whose task changed a file, its session with an outcome and a turn that wrote it, and a
         stand-in Codex with these settings (stage M): → (the folder, the commit the task began on, its settings file,

@@ -4,6 +4,14 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.43 — 2026-11-05
+
+- **Other vendors' models are kept apart.** A task on DeepSeek, GLM, Kimi or a model of your own runs in a Claude Code
+  home of its own: your global CLAUDE.md, settings and memory stay out of its requests, and its conversation and memory
+  stay out of `~/.claude`. Claude Code's own requests elsewhere are off, and the model is told who it is — asked, a
+  local model no longer says it is Claude. Claude haiku no longer reads those tasks for the result line and the tags.
+  One's own model's context gauge shows its real window, not Claude Code's 200K. A task begun before goes on as it was.
+
 ## 0.18.42 — 2026-11-04
 
 - **Your own answer to a question goes with Enter, and by voice.** The line under a question's options — and the note
