@@ -1,8 +1,9 @@
 """A question of several parts, in headless Chrome over DevTools, on the stand, with real taps: an answer to one part
-keeps the card, that part shows its answer and the next one waits; the screen opened again shows the same (the
-computer keeps the answers); the last part closes the card with "Answer sent", which stays 3 s with a bar running out,
-though the computer drops the request at once — on Home and in a session (a permission there). And "your move" is one
-line by time, questions and permissions among the sessions that wait: the freshest on top, the longest at the bottom. Each card's header opens its session.
+— one's own words, sent by Enter (2026-11-04: Return did nothing there) — keeps the card, that part shows its answer
+and the next one waits; the screen opened again shows the same (the computer keeps the answers); the last part closes
+the card with "Answer sent", which stays 3 s with a bar running out, though the computer drops the request at once —
+on Home and in a session (a permission there). And "your move" is one line by time, questions and permissions among
+the sessions that wait: the freshest on top, the longest at the bottom. Each card's header opens its session.
   STAND_ASK2=1 STAND_LANG=ru HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out &
   ~/.local/share/pult/venv/bin/python tools/ask_check.py /tmp/stand.out [out_dir]
 Screenshots go to out_dir (a temporary folder by default). Exit 1 on a failed check."""
@@ -16,6 +17,7 @@ import _cdp  # noqa: E402  (tools/_cdp.py: where Chrome is, free ports, a profil
 CHROME = _cdp.CHROME
 PORT = _cdp.free_port()
 failures = []
+OWN = "Только после проверки на стенде"
 
 
 def minutes(text):
@@ -126,8 +128,15 @@ async def main():
             await cmd("Page.navigate", url="about:blank")
             await cmd("Page.navigate", url=URLS["HOME"])
             await until("(%s || {}).open === 2" % state, 150)
-            await tap(".card.ask .q:not(.done) .opt", 0)
-            verdict("an answer to the first part keeps the card", await until("(%s || {}).done === 1" % state), await js(state))
+            own = "document.querySelector('.card.ask .q:not(.done) .own %s')"
+            shown = "(() => { const b = %s; return !!b && getComputedStyle(b).display !== 'none'; })()" % (own % ".btn")
+            verdict("the own answer's button waits for words", not await js(shown))
+            await js("(%s).focus()" % (own % "input"))
+            await cmd("Input.insertText", text=OWN)
+            verdict("…and shows up with them", await js(shown))
+            for kind in ("keyDown", "keyUp"):     # Return on the Mac, the keyboard's arrow on the phone
+                await cmd("Input.dispatchKeyEvent", type=kind, key="Enter", code="Enter", windowsVirtualKeyCode=13, **({"text": "\r"} if kind == "keyDown" else {}))
+            verdict("Enter sends one's own words: the card stays for the next part", await until("(%s || {}).done === 1" % state), await js(state))
             s = await js(state)
             verdict("the second part waits with its options", s and s["open"] == 1 and s["opts"] == 2, s)
             verdict("no \"Answer sent\" yet", await js("!document.querySelector('.card.rcpt')"))
@@ -139,6 +148,7 @@ async def main():
             await cmd("Page.navigate", url="about:blank")
             await cmd("Page.navigate", url=URLS["HOME"])
             verdict("opened again: the computer kept the first answer", await until("(%s || {}).done === 1" % state, 150), await js(state))
+            verdict("…in one's own words", OWN in await js("(document.querySelector('.card.ask .q.done') || {}).textContent || ''"))
             await tap(".card.ask .q:not(.done) .opt", 1)
             t0 = time.time() - 0.5                  # tap() waits half a second after the finger
             verdict("the last part closes the card with \"Answer sent\"", await until("!!document.querySelector('.card.rcpt')"))

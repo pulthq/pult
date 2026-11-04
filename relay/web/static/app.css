@@ -245,12 +245,12 @@ pre code { background: none; padding: 0; }
   padding: 9px 12px; margin: 6px 0; cursor: pointer; }
 .opt.on { border-color: var(--accent); }
 .opt span { display: block; font-size: var(--fs-sec); }
-.own { display: flex; gap: 8px; margin-top: 8px; }
+.own { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
 input, textarea, select { font: inherit; color: var(--ink); background: var(--code); border: 1px solid transparent; border-radius: 10px;
   padding: 9px 12px; width: 100%; outline: none; }
 textarea { resize: none; }
 input:focus, textarea:focus, select:focus { border-color: var(--accent); }
-.own input { flex: 1; }
+.own input { flex: 1; min-width: 0; }
 .own .btn { flex: none; }
 .lbl { display: block; color: var(--muted); font-size: var(--fs-cap); margin: 14px 2px 6px; }
 details.plan summary { cursor: pointer; color: var(--link); }
@@ -665,9 +665,9 @@ table.tv th { color: var(--muted); font-weight: 500; }
 .q .opt.on { background: color-mix(in srgb, var(--accent) 13%, transparent); border-color: var(--accent); }
 .q { display: flex; flex-wrap: wrap; gap: 8px; } .q > .kind, .q > .q-t, .q > .own, .q > .btn { flex-basis: 100%; }
 .qr { gap: 8px; margin-top: 10px; }
-/* your own words: one round field; its button shows up once there is text */
+/* your own words: one round field, the microphone beside it; its button shows up once there is text */
 .own input, .reply input { border-radius: 99px; padding: 8px 14px; }
-.own input:placeholder-shown + .btn { display: none; }
+.own input:placeholder-shown ~ .btn { display: none; }
 .own .btn.ghost { background: var(--accent); color: var(--accent-ink); border-radius: 99px; min-height: 40px; }
 .reply .btn.send { border-radius: 99px; width: 40px; min-height: 40px; padding: 0; display: flex; align-items: center; justify-content: center; }
 /* the quiet foot of a card: "Always allow", "Deny with a note", "Got it" */

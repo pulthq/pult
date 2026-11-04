@@ -4,6 +4,12 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.42 — 2026-11-04
+
+- **Your own answer to a question goes with Enter, and by voice.** The line under a question's options — and the note
+  to a "no" or to a plan — sends on Enter (Return on the Mac, the keyboard's arrow on the phone) and has the microphone
+  beside it when voice input is on, as a finished task's reply line already had.
+
 ## 0.18.41 — 2026-11-04
 
 - **A model of your own does the task.** Who does it has Local model: Ollama on this computer, or on another one

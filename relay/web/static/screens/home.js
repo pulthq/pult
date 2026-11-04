@@ -95,7 +95,7 @@ function QuickReply({ sid, stt, onSent }) {
     setBusy(false);
   };
   return html`<div class="reply" onClick=${(e) => e.stopPropagation()}>
-    <input ref=${plainField} placeholder=${t("reply.own")} value=${text} onInput=${(e) => setText(e.target.value)}
+    <input ref=${plainField} placeholder=${t("reply.own")} value=${text} enterkeyhint="send" onInput=${(e) => setText(e.target.value)}
       onKeyDown=${(e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); send(); } }}/>
     ${stt ? html`<${Mic} v=${v} disabled=${busy}/>` : ""}
     ${text.trim() ? html`<button class="btn send" aria-label=${t("send")} disabled=${busy} onClick=${send}>${ic("up", 18)}</button>` : ""}</div>`;
@@ -274,7 +274,7 @@ function Home() {
       ${jobsOn.map((j) => html`<${Job} key=${j.id} j=${j} now=${now} row=${true}/>`)}</div></section>`}
     ${d.catchup && html`<${Catchup} c=${d.catchup} onClose=${() => { api("catchup_off").catch(() => {}); set(Object.assign({}, d, { catchup: null })); }}/>`}
     ${(n > 0 || yours.length > 0) && html`<section class="zone-mine"><h3>${dot("attn")}${t("home.mine", { n })}</h3>
-      ${yours.map((e) => e.req ? html`<${Req} key=${e.key} r=${e.req}/>`
+      ${yours.map((e) => e.req ? html`<${Req} key=${e.key} r=${e.req} stt=${d.stt}/>`
         : html`<${Mine} key=${e.key} r=${Object.assign({ reset: d.reset }, e.mine)} now=${now} onGot=${gone} stt=${d.stt}/>`)}</section>`}
     ${rest.length > 0 && html`<h3>${t("home.projects")}</h3>${rest.map((p) => html`<${ProjectBlock} key=${p.pkey} p=${p} now=${now} onBg=${onBg} onTags=${onTags}/>`)}`}
     ${!n && !board.length && !nRun && html`<div class="empty">${t("home.quiet")}</div>`}
