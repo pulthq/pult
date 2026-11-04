@@ -71,6 +71,31 @@ LOCAL_REACH = 3            # s to answer "is it there" before a task starts
 LOOPBACK = re.compile(r"http://(127\.0\.0\.1|localhost|\[::1\])(:\d{1,5})?")
 CLOUD = re.compile(r"(^|[-:])cloud\b", re.I)       # Ollama's cloud models run on ollama.com: not one's own
 
+# Isolation (stage M, step 7.1; Q139): another vendor's session gets a Claude Code home of its own — CLAUDE_CONFIG_DIR, a
+# folder of Pult's — so the owner's global CLAUDE.md, settings and memory stay out of its requests, and its transcripts,
+# memory and settings stay out of ~/.claude, where Claude and the owner's tabs live; Claude Code's own nonessential
+# requests (to api.anthropic.com, and its session title) go off; the system prompt gets a line on who the model is —
+# Claude Code's own text says "Claude". All three by tests/probe_home.py on Claude Code 2.1.300 (project.html #stage-m7)
+QUIET = {"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
+MAKERS = {"deepseek": "a DeepSeek model", "glm": "a GLM model by Z.ai", "kimi": "a Kimi model by Moonshot AI",
+          "local": "a model running through Ollama on the owner's own computer"}
+LANGS = {"en": "English", "ru": "Russian"}
+
+
+def identity(vid, model):
+    """The line appended to Claude Code's system prompt in a session on another vendor's model: who it is."""
+    model = re.sub(r"\[1m\]$", "", str(model or ""))
+    return ("Who you are: you are not Claude. You are %s, %s, working inside Claude Code through Pult. The text above "
+            "was written for Claude: its tools and rules are yours, but when asked who or what you are, say you are %s."
+            % (model, MAKERS.get(vid, "another vendor's model"), model))
+
+
+def home_rules(lang):
+    """CLAUDE.md of a vendor's own Claude Code home — instead of the owner's global one, which stays out (Q139)."""
+    return ("# Rules from Pult\n\n"
+            "- Answer the owner in %s unless they write in another language.\n"
+            "- The owner often reads you on a phone: keep answers short and plain.\n" % LANGS.get(lang, "English"))
+
 
 class VendorError(Exception):
     """A key that doesn't pass its check: kind "key" (refused), "balance" (no money left on it), "model" (the key is
@@ -143,11 +168,16 @@ def session_env(p, key, model=None):
     if ctx:
         env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(ctx))
     if p.get("local"):
-        env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(min(LOCAL_OUT_MAX, int(ctx) // 4))
+        env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(local_out(ctx))
         # this computer's own address never through a proxy (Pult's own goes to another country)
         near = [os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or "", "127.0.0.1,localhost,::1"]
         env["NO_PROXY"] = env["no_proxy"] = ",".join(x for x in near if x)
     return env
+
+
+def local_out(ctx):
+    """Tokens an answer of one's own model may take: it has to fit in its context with the prompt."""
+    return min(LOCAL_OUT_MAX, int(ctx) // 4)
 
 
 async def check_local(url, transport=None):

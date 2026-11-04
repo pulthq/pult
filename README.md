@@ -83,7 +83,9 @@ New task asks **who does it**: Claude, Codex on your ChatGPT plan, or DeepSeek, 
 GLM and Kimi work inside Claude Code; Codex works in its own program, in a sandbox of the project's folder, and asks
 only to leave it. The turns, the cards, the permissions and the outcome are the same for all of them. A project can
 keep its own default, and every card names the model that did the work. A model of your own runs there too: Ollama on
-this computer, or on another one through a tunnel — free, and the code stays home.
+this computer, or on another one through a tunnel — free, and the code stays home. DeepSeek, GLM, Kimi and your own model
+each work in a Claude Code home of their own: your global instructions and memory don't go to them, and their work
+doesn't go to Claude.
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="media/f-who.en.dark.png"><img src="media/f-who.en.png" width="330" alt="New task in the app with the sheet Who does it open: Claude on your plan, DeepSeek with its main model, GLM and Kimi grey until their key is in Settings"></picture></p>
 

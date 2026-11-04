@@ -394,6 +394,8 @@ async def main():
     import pult_vendors as V
     from aiohttp import web
     asked = []
+    md = Path("~/.claude/CLAUDE.md").expanduser()                     # the owner's global rules: a line of them, if any
+    owner_md = next((x.strip() for x in (md.read_text(errors="replace").splitlines() if md.exists() else []) if len(x.strip()) > 40), "")
 
     async def stand_in(req):
         body = await req.json() if req.method == "POST" else {}
@@ -401,7 +403,8 @@ async def main():
         sysp = sysp if isinstance(sysp, str) else " ".join(b.get("text", "") for b in sysp or [] if isinstance(b, dict))
         asked.append({"path": req.path, "x": req.headers.get("x-api-key"), "auth": req.headers.get("authorization") or "",
                       "model": body.get("model"), "sys": sysp[:160], "max": body.get("max_tokens"),
-                      "tools": len(body.get("tools") or [])})
+                      "tools": len(body.get("tools") or []), "who": "you are not Claude" in sysp,
+                      "owner_md": bool(owner_md) and owner_md in json.dumps(body, ensure_ascii=False)})
         if not req.path.endswith("/messages"):
             return web.json_response({"input_tokens": 9} if req.path.endswith("count_tokens") else {}, status=200)
         resp = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
@@ -442,6 +445,11 @@ async def main():
     log("   в транскрипте модели:", sorted({json.loads(x).get("message", {}).get("model") for x in tr.splitlines()
                                             if '"assistant"' in x} - {None}))
     assert "deepseek-flash" in models and '"model":"deepseek-flash"' in tr.replace(" ", ""), "the vendor's model isn't in the transcript"
+    # isolation (stage M, 7.1): its own Claude Code home, a line on who it is, the owner's global CLAUDE.md never in a request
+    log("   дом:", p.transcript_of(sid11)[0].startswith(str(pultd.HOMES / "deepseek")), "· «кто ты»:",
+        all(a["who"] for a in asked if a["tools"]), "· глобальный CLAUDE.md в запросах:", any(a["owner_md"] for a in asked))
+    assert p.transcript_of(sid11)[0].startswith(str(pultd.HOMES / "deepseek")), "the vendor's transcript isn't in its own home"
+    assert all(a["who"] for a in asked if a["tools"]) and not any(a["owner_md"] for a in asked), "the vendor's session isn't isolated"
     assert p.store.vendor_of(sid11) == "deepseek"
     llm11 = (await p.row_stats(sid11))[1]
     log("модель в строке:", llm11)
@@ -465,6 +473,8 @@ async def main():
     assert {a["model"] for a in msgs} == {"stand-local-32k"}, "a role went to another model"
     assert max(a["tools"] for a in msgs) == len(V.LOCAL_TOOLS), "the session didn't get the five tools"
     assert p.store.vendor_of(sid13) == "local"
+    assert p.transcript_of(sid13)[0].startswith(str(pultd.HOMES / "local")) and all(a["who"] for a in msgs if a["tools"]) \
+        and not any(a["owner_md"] for a in msgs), "the local model's session isn't isolated"
     llm13 = (await p.row_stats(sid13))[1]
     log("модель в строке:", llm13)
     assert llm13 and llm13.get("vendor") in ("Local", "Своя") and llm13["model"] == "stand-local-32k", "the row doesn't say the local model"

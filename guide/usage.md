@@ -79,6 +79,11 @@ Codex for a second opinion. So one model can do a task and another check it — 
   by default** does it for every allowed project at once (a project's own choice comes first). A session keeps its vendor when it goes on or
   is copied, never starts without the key and doesn't show in VS Code's list. Anthropic doesn't support this, and
   Claude Code's prompts are written for Claude: for the cheaper tasks, not the hard ones.
+- **Kept apart**: a task on another vendor's model runs in a Claude Code home of its own (in Pult's folder): your global
+  CLAUDE.md, settings and memory stay out of its requests, and its conversation and memory stay out of `~/.claude`;
+  Claude Code's own requests elsewhere are off, and the model is told who it is. Claude haiku doesn't read these tasks —
+  their result line is the first sentence of the answer, and their tags are yours to set. A task begun before goes on
+  as it was.
 - **A model of your own**: Who does it has **Local model** too — Ollama on this computer, or on another one through a
   tunnel you keep open (Pult reaches only this computer's own address). Settings → Other vendors → Local model →
   **Check and turn on** asks the server what it has: a model fits when it can use tools and its context is set to 16K

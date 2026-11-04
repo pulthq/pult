@@ -157,8 +157,15 @@ class Api:
         st = await asyncio.to_thread(self.stats.get, path)
         await self.work_ready(sid, path)             # the clock has the turns from before Pult counted them (work_into)
         ctx = self.ctx_of(sid, (st or {}).get("model"))
-        pct = min(100, round(st["context"] * 100 / ctx_usable(ctx[0], ctx[1]))) if st and st.get("context") and ctx else None
+        pct = min(100, round(st["context"] * 100 / self.ctx_room(sid, ctx))) if st and st.get("context") and ctx else None
         return pct, self.llm_view(sid, st)
+
+    def ctx_room(self, sid, ctx):
+        """How much of a session's window its context may fill: VS Code's figure; one's own model's — its server's own
+        limit, the context less its answer's room (Ollama cuts a longer request silently)."""
+        if self.store.vendor_of(sid) == V.LOCAL:
+            return max(1, ctx[0] - ctx[1])
+        return ctx_usable(ctx[0], ctx[1])
 
     def work_into(self, r):
         """A row's clock, again after row_stats: the turns from before Pult counted them are in it now."""
@@ -545,6 +552,8 @@ class Api:
             except Exception as e:
                 log("project sessions not listed:", repr(e))
                 items = []
+            items = sorted(items + await asyncio.to_thread(self.home_sessions, path, 40),
+                           key=lambda x: -(x.last_modified or 0))[:40]
             known, tagged = {r["sid"]: r for r in rows}, {}
             for x in items:
                 if x.session_id in shown:
@@ -571,6 +580,7 @@ class Api:
             raise ValueError(self.t("err.no_project"))
         from claude_agent_sdk import list_sessions
         items = await asyncio.to_thread(list_sessions, path, 30)
+        items = sorted(items + await asyncio.to_thread(self.home_sessions, path, 30), key=lambda x: -(x.last_modified or 0))[:30]
         live = {a.get("sessionId") for a in await self.agents()}
         return {"pkey": pkey, "name": self.project_label(pkey), "sessions": [
             {"sid": s.session_id, "title": R.short(s.custom_title or s.summary or "—", 80), "named": bool(s.custom_title),
@@ -875,6 +885,7 @@ class Api:
             self.D.BRIEF_DIR.mkdir(parents=True, exist_ok=True)
             if new_list:
                 items = await asyncio.to_thread(list_sessions, path, G.LIST_TASKS)
+                items = [x for x in items if not self.store.vendor_of(x.session_id)]     # Claude's tasks only (stage M, 7.1)
                 readme, claude_md = await asyncio.to_thread(self.project_docs, path)
                 vocab = self.store.tag_vocab(pkey)
                 own = [{"n": s["n"], "topics": [t for t in s["topics"] if t["own"]]} for s in vocab
@@ -903,7 +914,9 @@ class Api:
                 job.pop("list", None)
                 self.changed()
             items = await asyncio.to_thread(list_sessions, path, G.OLD_MAX)
-            todo = [x for x in items if not ((self.store.session_tag(x.session_id) or {"sec": None})["sec"])]
+            # another vendor's earlier task (one from before 7.1 is still in ~/.claude) never goes to Claude haiku
+            todo = [x for x in items if not ((self.store.session_tag(x.session_id) or {"sec": None})["sec"])
+                    and not self.store.vendor_of(x.session_id)]
             job["total"] = len(todo)
             self.changed()
             for i in range(0, len(todo), G.BATCH):
@@ -985,7 +998,7 @@ class Api:
                 "tag_auto": not (own and own["own"]),
                 "live": live, "page": page, "stats": stats, "choice": self.choice.get(sid) or {}, "switch": switch,
                 "switch_effort": switch_effort, "default": dflt, "stt": self.stt_state()["on"],
-                "ctx": {"window": ctx[0], "max_out": ctx[1], "usable": ctx_usable(ctx[0], ctx[1])} if ctx else None,
+                "ctx": {"window": ctx[0], "max_out": ctx[1], "usable": self.ctx_room(sid, ctx)} if ctx else None,
                 "pending": [self.req_item(r) for r in lv.pending.values() if not r.fut.done()],
                 "out": self.out_view(sid), "second": await self.second_view(sid, rec, lv), "vendor": self.vendor_view(sid)}
 
@@ -1145,6 +1158,39 @@ class Api:
     # in its environment. Only in a project the owner allowed (vendors.ok — the same as the second opinion's), only with
     # the owner's key (the settings file; never without one: the subscription's token would go there), never in a VS
     # Code tab; a session keeps its vendor (session_vendor) for its continuations and copies
+
+    def vendor_home(self, vid, path, resume=None):
+        """The Claude Code home of a session on another vendor's model (stage M, step 7.1): its own folder under Pult's
+        home, with Pult's rules for it — or None: Claude's, Codex's, or a session begun before 7.1, whose transcript is in
+        ~/.claude (its continuation and copy stay there: Claude Code finds a session only in its own home)."""
+        if not vid or vid == "codex":
+            return None
+        if resume and (self.D.CLAUDE_PROJECTS / self.D.sanitize(path) / (resume + ".jsonl")).exists():
+            return None
+        home = self.D.HOMES / vid
+        home.mkdir(parents=True, exist_ok=True)
+        rules = home / "CLAUDE.md"
+        text = V.home_rules(self.lang())
+        if not rules.exists() or rules.read_text(encoding="utf-8") != text:
+            rules.write_text(text, encoding="utf-8")
+        return home
+
+    def home_sessions(self, path, limit):
+        """The sessions other vendors' models did in this folder, from their own homes — for Earlier and the list of
+        sessions (the SDK's list_sessions reads ~/.claude only). Its reader of a folder is the SDK's own (private): on a
+        version without it — none, said in the log."""
+        try:
+            from claude_agent_sdk._internal.sessions import _read_sessions_from_dir
+        except ImportError:
+            log("other vendors' sessions not listed: this SDK has no reader of a folder")
+            return []
+        out = []
+        for d in sorted(self.D.HOMES.glob("*/projects/" + self.D.sanitize(path))):
+            try:
+                out += _read_sessions_from_dir(d, path)
+            except Exception as e:
+                log("sessions of %s not listed: %r" % (d.parent.parent.name, e))
+        return sorted(out, key=lambda x: -(x.last_modified or 0))[:limit]
 
     def vendor_profiles(self):
         return V.profiles(self.store.get("vendors.conf") or {},

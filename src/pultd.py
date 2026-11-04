@@ -77,6 +77,7 @@ OUT_READ = 30            # s a message just read stays in the outbox: the app sh
 OUT_GONE = 10 * 60       # s a message that didn't reach Claude stays in the outbox: the app shows it crossed out
 OUT_SENT = 6 * 3600      # s a message may wait to be read; never read by then (its hook never came) — crossed out (A8)
 BRIEF_DIR = HOME / "brief"   # an empty folder the result-reading model runs in (pult_brief): no project, no settings
+HOMES = HOME / "homes"       # other vendors' own Claude Code homes, one per vendor (stage M, step 7.1): <vendor>/projects/…
 APP_ON = 45              # s: the app said "on screen" this recently — the owner is looking at it (stage V)
 AWAY_LOCKABLE = 300      # s: where the screen lock can be read, away after this long without input (locked — at once)
 PAGE_WAIT = 20           # s: a "your move" waits this long for the model's line before Telegram gets it
@@ -91,7 +92,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.42"
+VERSION = "0.18.43"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -1270,7 +1271,8 @@ class Pult(Api, Parts):
             rec["turn_files"] = files                      # {id, n, size}: the app's line to the turn's files (stage F4)
             self.attn.save()
         self.changed(lv.sid)
-        if not fail and text.strip() and self.prefs()["brief"]:
+        if not fail and text.strip() and self.prefs()["brief"] and not self.store.vendor_of(lv.sid):
+            # Claude haiku reads only Claude's tasks: another vendor's work never goes to Anthropic (stage M, 7.1)
             bg = [b.get("description") or b.get("command") or "" for b in lv.bg]
             asyncio.create_task(self.brief_result(lv, rec["ts"], (t.ask or t.prompt) if t else None, text, bg, waits,
                                                   since=t.started if t else 0.0))
@@ -1491,7 +1493,7 @@ class Pult(Api, Parts):
             self.tag_example_soon(lv.pkey, lv.sid, text)
             return
         cur = self.store.session_tag(lv.sid)
-        if self.prefs()["brief"] and (words or not (cur and cur["sec"])):
+        if self.prefs()["brief"] and (words or not (cur and cur["sec"])) and not self.store.vendor_of(lv.sid):
             asyncio.create_task(self.tag_task(lv, text, own=words[0] if words else None))
 
     def tag_by_owner(self, lv, words):
@@ -2435,7 +2437,15 @@ class Pult(Api, Parts):
         self.changed(sid)
 
     def ctx_of(self, sid, model=None):
-        """The session's context window, or the window known for its model."""
+        """The session's context window, or the window known for its model. One's own model's is its context as its
+        server said, and the room its answer takes (Claude Code knows nothing of it and says 200 000 — the owner's
+        screenshot, 2026-11-04)."""
+        if self.store.vendor_of(sid) == V.LOCAL:
+            p = self.vendor_profiles()[V.LOCAL]
+            n = p["ctxs"].get(model or "") or p["ctxs"].get((self.choice.get(sid) or {}).get("model") or "") \
+                or p["ctxs"].get(next(iter(p["models"]), ""))
+            if n:
+                return [n, V.local_out(n)]
         return self.ctx.get(sid) or (self.ctx_model.get(model_key(model)) if model else None)
 
     def with_uploads(self, text, files, project=None):
@@ -2745,11 +2755,15 @@ class Pult(Api, Parts):
     def list_projects(known):
         """Projects with transcripts, most recent first. Runs in a separate thread, so it doesn't touch the database:
         the known topic paths are passed in known."""
-        out = []
-        for d in CLAUDE_PROJECTS.iterdir() if CLAUDE_PROJECTS.exists() else []:
-            if skip_pkey(d.name):
+        out, dirs = [], {}
+        for root in [CLAUDE_PROJECTS] + sorted(HOMES.glob("*/projects")):       # other vendors' homes too (stage M, 7.1)
+            for d in root.iterdir() if root.exists() else []:
+                dirs.setdefault(d.name, []).append(d)
+        for name, ds in dirs.items():
+            if skip_pkey(name):
                 continue
-            files = list(d.glob("*.jsonl"))
+            d = ds[0]
+            files = [f for x in ds for f in x.glob("*.jsonl")]
             if not files:
                 continue
             path = known.get(d.name) or decode_pkey(d.name)
@@ -3000,15 +3014,20 @@ class Pult(Api, Parts):
         if keep and keep.get("path") and os.path.isfile(keep["path"]):
             return keep["path"], lv
         row = self.store.session(sid)
+        # another vendor's session started since stage M, step 7.1 lives in its own Claude Code home; an earlier one —
+        # in ~/.claude, as before
+        vid = self.store.vendor_of(sid)
+        roots = [CLAUDE_PROJECTS] + ([HOMES / vid / "projects"] if vid and vid != "codex" else [])
         if row and row["pkey"]:
-            p = CLAUDE_PROJECTS / row["pkey"] / (sid + ".jsonl")
-            if p.exists():
-                return str(p), lv
-        found = next(CLAUDE_PROJECTS.glob("*/%s.jsonl" % sid), None)
+            for root in roots:
+                p = root / row["pkey"] / (sid + ".jsonl")
+                if p.exists():
+                    return str(p), lv
+        found = next((f for root in roots for f in root.glob("*/%s.jsonl" % sid)), None)
         if not found and row and row["pkey"] and sid in self.driven:
             # a session Pult has just started: Claude Code writes its file a moment later, and the app opens the
             # new session at once — an empty chat for now, not "not found" (2026-10-21)
-            return str(CLAUDE_PROJECTS / row["pkey"] / (sid + ".jsonl")), lv
+            return str(roots[-1] / row["pkey"] / (sid + ".jsonl")), lv
         if not found:
             raise ValueError(self.t("err.no_transcript"))
         return str(found), lv
