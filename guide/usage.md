@@ -51,6 +51,7 @@ phone — on Claude's models or another vendor's, and another model can check wh
 - **Resources**: Limits — the curve of each limit against the even pace, the forecast (on pace, under: how many hours
   of a session's work would go unused, over: when it runs out), who spent it; Computer — the processor, the memory
   and each Claude session's commands.
+  From 85 % of the computer's memory a line at the top of every screen says so, red from 95 %; a tap opens Resources.
 - **Files of the turn**: what Claude made or changed in the project — tick the ones you need and send them to the
   topic, one by one or as one archive; earlier turns' files stay a swipe away.
 - **A new project**: a folder anywhere in your home folder — empty with git, with a `CLAUDE.md` that Claude writes

@@ -4,6 +4,24 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.40 — 2026-11-04
+
+- **A full relay lets a new window in.** Telegram keeps a closed app's webview alive, and it answers the relay's
+  pings for good: six of them could lock the app out until the relay restarted. Now the owner's new window takes the
+  place of the one that hasn't said it is on screen for a minute; that window reconnects when it is shown again.
+- **A dead link is replaced, a slow computer is not one.** The app checks its link with a ping the relay answers
+  itself: a socket a network switch left open and dead is replaced within 30 s, and a computer slow to answer no
+  longer looks like a broken link. A connection stuck while opening is replaced after 15 s. The banner tells a full
+  server from no connection and has Reconnect; a screen waiting for the connection says so instead of "Loading".
+- **Memory running low, on every screen.** From 85 % of the task computer's memory a line at the top says how much
+  is in use and what it means (from 95 % — the system may stop tasks); cut off, it says when it was measured instead
+  of raising an old alarm. On Linux the reading counts the cgroup v2 limits Pult runs under (an LXC container's own
+  figures stay when its limit is hidden), and Resources says when the figure is such a limit.
+- On Linux a task killed for lack of memory no longer stops the whole systemd service with every session in it
+  (`OOMPolicy=continue`); Pult itself killed so still restarts.
+- **Codex is found again in ChatGPT.app.** Its update (26.924, Codex 0.158) moved Codex into `codex-cli/bin`, and Pult,
+  looking only where it used to be, saw no Codex: no second opinion, no Codex tasks. Both places are looked at now.
+
 ## 0.18.39 — 2026-11-03
 
 - **A screenshot by ⌘V.** In New task's What to do, in a session's message field and in a new project's first task,

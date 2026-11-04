@@ -207,6 +207,72 @@ class RelayTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await ws.receive(timeout=5)).type, aiohttp.WSMsgType.CLOSE)
         await mac.close()
 
+    async def window(self, mac):
+        """An app window the Mac lets in → (ws, cid)."""
+        ws, hello = await self.phone(init_data())
+        self.assertEqual(hello["t"], "hello")
+        cid = json.loads((await mac.receive(timeout=5)).data)["cid"]
+        await mac.send_str(json.dumps({"t": "auth", "cid": cid, "ok": True}))
+        self.assertEqual(json.loads((await ws.receive(timeout=5)).data)["t"], "ready")
+        return ws, cid
+
+    async def knock(self, init):
+        """A new window → its first frame: (type, data) — a CLOSE with its code, or the relay's word."""
+        ws = await self.http.ws_connect(self.url("/pult/ws"))
+        await ws.send_str(json.dumps({"t": "hello", "init": init}))
+        frame = await ws.receive(timeout=5)
+        await ws.close()
+        return frame.type, frame.data if frame.type == aiohttp.WSMsgType.CLOSE else json.loads(frame.data)
+
+    async def test_full_relay_frees_the_window_silent_longest(self):
+        # Telegram keeps a closed app's webview, and it answers WebSocket pings for good (2026-11-04: six of them locked
+        # a phone out until the relay restarted). A full relay gives the owner's new window the place of the one that
+        # hasn't said "on screen" for SILENT s — 4001, the app reopens it when shown; a window in use keeps its place,
+        # and a stranger frees none
+        with mock.patch.object(relay, "MAX_CLIENTS", 2), mock.patch.object(relay, "SILENT", 0.6):
+            mac, _ = await self.agent()
+            kept, kept_cid = await self.window(mac)
+            used, _ = await self.window(mac)
+            await asyncio.sleep(0.4)
+            await used.ping()                                  # the protocol's ping is no word from the app
+            await used.send_str(json.dumps({"t": "req", "id": 1, "op": "presence", "args": {"on": True}}))
+            self.assertEqual(json.loads((await mac.receive(timeout=5)).data)["op"], "presence")
+            self.assertEqual(await self.knock(init_data()), (aiohttp.WSMsgType.CLOSE, 4429))   # nobody silent long enough
+            await asyncio.sleep(0.3)
+            self.assertEqual(await self.knock(init_data(uid=5)), (aiohttp.WSMsgType.TEXT, {"t": "denied"}))
+            await mac.send_str(json.dumps({"t": "event", "kind": "turn"}))     # both windows are still in
+            for ws in (kept, used):
+                self.assertEqual(json.loads((await ws.receive(timeout=5)).data)["kind"], "turn")
+            new, hello = await self.phone(init_data())
+            self.assertEqual(hello["t"], "hello")
+            frame = await kept.receive(timeout=5)
+            self.assertEqual((frame.type, frame.data), (aiohttp.WSMsgType.CLOSE, 4001))
+            heard = []                                          # the Mac forgets the window that went, hears of the new
+            while not ({"t": "close", "cid": kept_cid} in heard and any(m["t"] == "open" for m in heard)):
+                heard.append(json.loads((await mac.receive(timeout=5)).data))
+            for ws in (used, new, mac):
+                await ws.close()
+
+    async def test_full_relay_without_the_mac(self):
+        # windows waiting for a Mac that is away can say nothing: the one waiting longest gives its place up
+        with mock.patch.object(relay, "MAX_CLIENTS", 1), mock.patch.object(relay, "SILENT", 0.3):
+            old, hello = await self.phone(init_data())
+            self.assertFalse(hello["mac"])
+            await asyncio.sleep(0.4)
+            new, hello = await self.phone(init_data())
+            self.assertEqual(hello["t"], "hello")
+            self.assertEqual((await old.receive(timeout=5)).data, 4001)
+            await new.close()
+
+    async def test_ping(self):
+        # the app checks its link with a ping the relay answers itself — at once, before the Mac confirmed the login
+        # and with no Mac at all: no answer is a broken link, a slow Mac is not one
+        ws, hello = await self.phone(init_data())
+        self.assertIs(hello["pong"], True)
+        await ws.send_str(json.dumps({"t": "ping"}))
+        self.assertEqual(json.loads((await ws.receive(timeout=5)).data), {"t": "pong"})
+        await ws.close()
+
     async def test_waiting_cap(self):
         # connections that don't say who they are: at most WAITING_PER_IP from one address hold a place
         held = [await self.http.ws_connect(self.url("/pult/ws"), headers={"X-Real-IP": "198.51.100.1"})

@@ -1106,6 +1106,50 @@ class FilesTest(unittest.TestCase):
 
 
 class LoadTest(unittest.TestCase):
+    def test_linux_memory_limits_and_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc, cg = Path(tmp) / "proc", Path(tmp) / "cgroup"
+            (proc / "self").mkdir(parents=True)
+            leaf = cg / "user" / "pult"
+            leaf.mkdir(parents=True)
+            (proc / "meminfo").write_text("MemTotal: 16777216 kB\nMemAvailable: 12582912 kB\n")
+            (proc / "self/cgroup").write_text("0::/user/pult\n")
+            (proc / "self/mountinfo").write_text("1 0 0:1 / %s rw - cgroup2 cgroup rw\n" % cg)
+            (leaf / "memory.max").write_text("max\n")
+            parent = leaf.parent
+            (parent / "memory.max").write_text(str(6 << 30))
+            (parent / "memory.current").write_text(str(5 << 30))
+            (parent / "memory.stat").write_text("inactive_file %d\nshmem %d\n" % (1 << 30, 2 << 30))
+            reading = pult_os._linux_memory(proc)
+            self.assertEqual(reading, {"mem_total": 6 << 30, "mem_used": 4 << 30, "mem_scope": "limit"})
+            # A smaller service limit wins when it leaves less room; shared memory stays counted.
+            (leaf / "memory.max").write_text(str(2 << 30))
+            (leaf / "memory.current").write_text(str(2 << 30))
+            (leaf / "memory.stat").write_text("inactive_file 0\nshmem 1000\n")
+            self.assertEqual(pult_os._linux_memory(proc)["mem_total"], 2 << 30)
+            (leaf / "memory.max").write_text("max")
+            (parent / "memory.max").write_text("max")
+            self.assertEqual(pult_os._linux_memory(proc)["mem_total"], 16 << 30)
+            # LXC may expose only 'max' but already virtualize meminfo to its outer 8 GiB limit.
+            (proc / "meminfo").write_text("MemTotal: 8388608 kB\nMemAvailable: 3145728 kB\n")
+            self.assertEqual(pult_os._linux_memory(proc), {"mem_total": 8 << 30, "mem_used": 5 << 30, "mem_scope": "system"})
+            (proc / "self/cgroup").write_text("0::/../../outside\n")
+            self.assertEqual(pult_os._linux_memory(proc)["mem_total"], 8 << 30)
+            (proc / "self/mountinfo").unlink()
+            self.assertEqual(pult_os._linux_memory(proc)["mem_used"], 5 << 30)
+            (proc / "meminfo").write_text("MemTotal: 8388608 kB\n")
+            self.assertIsNone(pult_os._linux_memory(proc))
+
+    def test_memory_unavailable_and_mac(self):
+        with mock.patch.object(pult_os, "KIND", "windows"):
+            self.assertIsNone(pult_os.memory())
+        with mock.patch.object(pult_os, "KIND", "linux"), mock.patch.object(pult_os, "_linux_memory", side_effect=OSError):
+            self.assertIsNone(pult_os.memory())
+        with mock.patch.object(pult_os, "KIND", "mac"), mock.patch.object(pult_os, "run", return_value="8589934592\n25\n"):
+            self.assertEqual(pult_os.memory()["mem_used"], 6 << 30)
+        with mock.patch.object(pult_os, "KIND", "mac"), mock.patch.object(pult_os, "run", return_value="8589934592\n"):
+            self.assertIsNone(pult_os.memory())
+
     def test_ps_rows(self):
         # macOS ps: a comma as the decimal mark (a locale), days in the elapsed time, minutes past 60 in the processor
         # time, a newline in the arguments written as \012; a line that isn't a process is skipped
@@ -4827,6 +4871,15 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await self.p.api_presence(False)                                               # the visit is over
         self.assertIsNone((await self.p.api_overview())["catchup"])
 
+    async def test_memory_api(self):
+        reading = {"mem_total": 6 << 30, "mem_used": 5 << 30, "mem_scope": "limit"}
+        with mock.patch.object(pult_os, "memory", return_value=reading):
+            result = await self.p.api_memory()
+        self.assertEqual({k: result[k] for k in reading}, reading)
+        self.assertLess(abs(result["now"] - time.time()), 2)
+        with mock.patch.object(pult_os, "memory", return_value=None):
+            self.assertIsNone(await self.p.api_memory())
+
     async def test_load_view(self):
         # the load view: the computer and each session with a claude process; a background task is found among the
         # processes by its command; `claude agents` first, then the hook's parent, then Pult's own children
@@ -6956,6 +7009,22 @@ class CodexTest(unittest.TestCase):
         self.assertEqual(CX.window({"rateLimits": {"secondary": {"usedPercent": 30, "windowDurationMins": 10080, "resetsAt": 2},
                                                    "primary": {"usedPercent": 12, "windowDurationMins": 300, "resetsAt": 1}}}),
                          [{"pct": 12, "mins": 300, "reset": 1}, {"pct": 30, "mins": 10080, "reset": 2}])
+
+    def test_find_in_chatgpt_app(self):
+        # ChatGPT.app 26.924 (Codex 0.158) keeps it in codex-cli/bin, the app before it at the top of Resources: with only
+        # the old place Pult found no Codex after the app updated itself (2026-11-04). The new place goes first
+        self.assertEqual(CX.APP[0], "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex")
+        self.assertIn("~/Applications/ChatGPT.app/Contents/Resources/codex", CX.APP)
+        app = TMP / "codex-app" / "ChatGPT.app" / "Contents" / "Resources"
+        new, old = app / "codex-cli" / "bin" / "codex", app / "codex"
+        with mock.patch.object(CX, "APP", (str(new), str(old))), mock.patch.object(CX, "MORE_PATH", ()), \
+                mock.patch.object(CX.sys, "platform", "darwin"):
+            self.assertIsNone(CX.find({"PATH": ""}))
+            for p in (old, new):
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text("#!/bin/sh\n")
+                p.chmod(0o755)
+                self.assertEqual(CX.find({"PATH": ""}), str(p))
 
     def test_review_over_the_protocol(self):
         d = TMP / "codex-review"

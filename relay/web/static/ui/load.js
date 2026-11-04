@@ -56,6 +56,7 @@ function Load({ embedded }) {
       ${m !== null && html`<div class="lim"><div class="item-h"><b>${t("load.mem")}</b><b class=${"pct " + level(m)}>${m} %</b></div>
         <div class="meter"><i class=${level(m)} style=${"width:" + Math.min(100, m) + "%"}></i></div>
         <div class="dim">${t("load.mem.about", { used: bytes(l.mem_used), total: bytes(l.mem_total), free: bytes(l.mem_total - l.mem_used) })}</div></div>`}
+      ${l.mem_scope === "limit" && html`<div class="dim small">${t("memory.limit")}</div>`}
     </div>
     <h3>${t("load.sessions", { n: l.claude.n, sessions: plural(l.claude.n, "session"), cpu: pct(l.claude.cpu), mem: bytes(l.claude.mem) })}</h3>
     ${!d.sessions.length && html`<div class="empty">${t("load.nosessions")}</div>`}

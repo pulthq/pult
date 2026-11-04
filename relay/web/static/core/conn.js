@@ -20,7 +20,8 @@ const keyStore = {
   set(k) { try { k ? sessionStorage.setItem("pult.resume", k) : sessionStorage.removeItem("pult.resume"); } catch (e) {} },
 };
 const conn = { ws: null, state: "connecting", ready: false, mac: null, seq: 0, wait: new Map(), retry: 0,
-  key: keyStore.get(), why: null, fresh: 0, updating: 0, gone: 0 };   // gone: since when the computer is away (ms, this phone's clock)
+  key: keyStore.get(), why: null, fresh: 0, updating: 0, gone: 0,   // gone: since when the computer is away (ms, this phone's clock)
+  pong: false, heard: 0 };   // pong: the relay answers a ping itself (0.18.40); heard: the socket's last word (ms)
 // the relay says how many seconds ago the computer went away (0.18.5): a computer silent for hours is one whose Pult
 // doesn't start, and the banner says since when
 const noteGone = (m) => { conn.gone = typeof m.away === "number" ? Date.now() - m.away * 1000 : conn.gone; };   // updating: since when Pult installs an update (stage U)       // fresh: when the Mac last answered — what's on screen is from then
@@ -31,27 +32,45 @@ const setKey = (k) => { conn.key = k || null; keyStore.set(k); };
 // (2026-10-27: a reload sent as an install stopped Pult held the table's next one back — a stale Install was tapped
 // twice); `lost` — the call may have reached the computer before it went
 const dropWaits = () => { for (const w of conn.wait.values()) { clearTimeout(w.timer); w.reject(Object.assign(new Error(t("conn.lost")), { lost: true })); } conn.wait.clear(); };
+let retryTimer = 0, dialTimer = 0, pingTimer = 0;
+// A network switch can leave WebSocket CONNECTING (or OPEN but silent, see ping) forever. Retire that socket before
+// replacing it; its late callbacks must not change the new connection or replay any request.
+function reconnect() {
+  clearTimeout(retryTimer); clearTimeout(dialTimer); clearTimeout(pingTimer);
+  const old = conn.ws;
+  conn.ws = null; conn.ready = false;
+  dropWaits();
+  if (old) old.close();
+  connect();
+}
 function connect() {
   if (conn.ws && conn.ws.readyState <= 1) return;
+  clearTimeout(retryTimer); clearTimeout(dialTimer);
   conn.ready = false;
   dropWaits();
   const ws = (conn.ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/pult/ws"));
   setState("connecting");
-  ws.onopen = () => ws.send(JSON.stringify({ t: "hello", init: (tg && tg.initData) || "", resume: conn.key,
-    client: { platform: tg && tg.platform, version: tg && tg.version } }));
+  dialTimer = setTimeout(() => { if (ws === conn.ws) reconnect(); }, 15000);
+  ws.onopen = () => { if (ws === conn.ws) ws.send(JSON.stringify({ t: "hello", init: (tg && tg.initData) || "", resume: conn.key,
+    client: { platform: tg && tg.platform, version: tg && tg.version } })); };
   // a socket replaced while it was closing says nothing more: its late end failed the new one's calls and planned an
   // extra reconnect (review 2026-10-27, П8); a frame that isn't JSON is no message
   ws.onmessage = (ev) => {
     if (ws !== conn.ws) return;
+    conn.heard = Date.now();
     let m;
     try { m = JSON.parse(ev.data); } catch (e) { return; }
     if (!m || typeof m !== "object") return;
-    if (m.t === "hello") { conn.mac = m.mac; conn.gone = 0; if (!m.mac) noteGone(m); setState(m.mac ? "auth" : "nomac"); }
+    if (m.t === "hello") {
+      clearTimeout(dialTimer); conn.mac = m.mac; conn.gone = 0; conn.pong = m.pong === true; if (!m.mac) noteGone(m);
+      setState(m.mac ? "auth" : "nomac"); emit("hello");
+    }
     else if (m.t === "ready") {
+      clearTimeout(dialTimer);
       if (m.resume) setKey(m.resume);
       conn.ready = true; conn.retry = 0; setState("ok"); emit("ready"); api("lang").then(useLang).catch(() => {});
     }
-    else if (m.t === "denied") { conn.ready = false; conn.why = m.why || null; if (m.why === "out") setKey(null); setState("denied"); }
+    else if (m.t === "denied") { clearTimeout(dialTimer); conn.ready = false; conn.why = m.why || null; if (m.why === "out") setKey(null); setState("denied"); }
     else if (m.t === "mac") { conn.mac = m.on; if (!m.on) { noteGone(m); conn.ready = false; dropWaits(); setState("nomac"); } else { conn.gone = 0; if (!conn.ready) setState("auth"); } }
     else if (m.t === "res") {
       const w = conn.wait.get(m.id);
@@ -60,13 +79,17 @@ function connect() {
   };
   ws.onclose = (ev) => {
     if (ws !== conn.ws) return;
+    clearTimeout(dialTimer);
     conn.ready = false;
     dropWaits();
     if (conn.state === "denied") return;
-    setState("offline");
-    // "too many windows" (4429): the relay holds this phone's dead sockets up to its 25-s heartbeat — wait them out
-    // instead of knocking again every few seconds
-    setTimeout(connect, ev && ev.code === 4429 ? 15000 + Math.random() * 15000 : [500, 1000, 2000, 5000, 10000][Math.min(conn.retry++, 4)]);
+    setState(ev && ev.code === 4429 ? "busy" : "offline");
+    // Background webviews may keep responding to protocol pings after the person closed the app. A full relay
+    // gives their place to a new window (4001); reopen only when this window comes back on screen.
+    if (ev && ev.code === 4001 && (document.hidden || tg && tg.isActive === false)) return;
+    // "too many windows" (4429): every window on the relay is in use — wait for one to go instead of knocking
+    // again every few seconds
+    retryTimer = setTimeout(connect, ev && ev.code === 4429 ? 15000 + Math.random() * 15000 : [500, 1000, 2000, 5000, 10000][Math.min(conn.retry++, 4)]);
   };
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden) connect(); });
@@ -121,14 +144,28 @@ function useLive(load, deps, match, every = 30000) {
 // where you are, for Pult (stage V): the app says "on screen" while it is visible — every 20 s and at once on a change
 // (the page's visibility and Telegram's own activated / deactivated). Pult then calls you in the app, not in Telegram
 let shownTimer = 0;
+// and the link itself, at the same pace: a network switch can leave the socket open and dead. The relay answers a ping
+// on its own (its hello says "pong"), so no word in 10 s is a broken link — a computer slow to answer is not one
+function ping() {
+  const ws = conn.ws, sent = Date.now();
+  clearTimeout(pingTimer);
+  if (!conn.pong || !ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({ t: "ping" }));
+  pingTimer = setTimeout(() => { if (ws === conn.ws && conn.heard < sent) reconnect(); }, 10000);
+}
 const sayShown = () => {
   const on_ = document.visibilityState === "visible" && !(tg && tg.isActive === false);
   if (conn.ready) api("presence", { on: on_ }).catch(() => {});
   clearInterval(shownTimer);
-  if (on_) shownTimer = setInterval(() => conn.ready && api("presence", { on: true }).catch(() => {}), 20000);
+  clearTimeout(pingTimer);              // a page Telegram froze wakes with old timers: the link is checked anew
+  if (on_) {
+    ping();
+    shownTimer = setInterval(() => { if (conn.ready) api("presence", { on: true }).catch(() => {}); ping(); }, 20000);
+  }
 };
 document.addEventListener("visibilitychange", sayShown);
-if (tg && tg.onEvent) { tg.onEvent("activated", sayShown); tg.onEvent("deactivated", sayShown); }
+if (tg && tg.onEvent) { tg.onEvent("activated", () => { connect(); sayShown(); }); tg.onEvent("deactivated", sayShown); }
+on("hello", sayShown);
 on("ready", sayShown);
 
 function useConn() {
@@ -139,4 +176,4 @@ function useConn() {
   return conn;
 }
 
-export { api, conn, emit, on, pacer, useConn, useLang, useLive };
+export { api, conn, emit, on, pacer, reconnect, useConn, useLang, useLive };

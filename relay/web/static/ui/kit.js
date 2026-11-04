@@ -470,7 +470,8 @@ function About({ text, label }) {
 // in the phone), instead of "Loading…" for ever under the banner
 function Loading({ err }) {
   const c = useConn();
-  return html`<div class="empty">${err || (c.state === "nomac" ? t("loading.nomac") : c.state === "denied" ? "" : t("loading"))}</div>`;
+  return html`<div class="empty">${err || (c.state === "nomac" ? t("loading.nomac") : c.state === "denied" ? ""
+    : ["offline", "connecting", "busy"].includes(c.state) ? t("loading.connection") : t("loading"))}</div>`;
 }
 
 export { About, ChoicePick, CodexCols, Dots, GEAR, GLYPH, Loading, MODES, ModePick, ModelPick, Sheet, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, bytes, choiceText, codexModel, copyRich, dayLabel, dot, dotted, dur, durShort, effortName, hhmm, home, hue, ic, keyTap, kilo, level, llmName, modelName, nb, num, pauseChip, pct, plainField, queueChip, quiet, resetText, sendKey, TAG_H, tagChips, tagJob, tagSt, toDate, useNow, workChip };

@@ -1124,6 +1124,21 @@ async def main():
                       7003: proc(7002, "node scripts/shots.js --theme dark", 64.0, 420, 255, 160, 610)})
     p._procs = (time.monotonic() + 1e6, (procs, {"cores": 8, "cpu": 41.0, "mem_total": 16 << 30,
                                                  "mem_used": int(10.4 * (1 << 30)), "load": 3.6}))
+    if "STAND_MEMORY" in os.environ:
+        p._procs[1][1].update(mem_total=8 << 30, mem_used=int((8 << 30) * float(os.environ["STAND_MEMORY"]) / 100), mem_scope="limit")
+    async def memory():
+        # The status strip uses made-up data too, never the development computer's memory.
+        machine = p._procs[1][1]
+        return {"mem_total": machine["mem_total"], "mem_used": machine["mem_used"],
+                "mem_scope": machine.get("mem_scope", "system"), "now": time.time()}
+    p.api_memory = memory
+
+    async def stand_memory(pct):
+        # tools/memory_check.py moves the made-up reading: the strip shows only when memory runs low
+        machine = p._procs[1][1]
+        machine["mem_used"] = int(machine["mem_total"] * float(pct) / 100)
+        return {"ok": True}
+    p.api_stand_memory = stand_memory
     agents = [{"sessionId": SID3, "cwd": "/Users/x/blog", "pid": 3001}]
     if os.environ.get("STAND_COPY") == "1":     # the session waiting for you, open in a tab on an unchecked Claude Code
         procs[4001] = proc(1, claude.replace("2.1.301", "2.1.311"), 0.3, 240, 5400, 40)
