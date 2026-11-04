@@ -1,14 +1,13 @@
-"""Other vendors' models inside Claude Code (stage M, step 2), in headless Chrome over DevTools, on the stand with a
-made-up DeepSeek key (STAND_VENDORS=1): New task has "Who does it" above the model — Claude by default; its sheet lists
-DeepSeek with its main model, GLM and Kimi grey without a key (a tap says where to add one); the first pick of DeepSeek in
-a project asks whether its code may go there — "no" changes nothing, "yes" picks it; the model field turns to DeepSeek's
-models; "Make it the default" is kept for the project; the task starts with the vendor and the model. Settings → Other
-vendors: who does new tasks by default — Claude, or DeepSeek for every allowed project; DeepSeek's key is there, GLM's isn't; a bad key is refused with the vendor's words, a good one taken; the list of
-models is saved. A session on DeepSeek's model says so by the field — "DeepSeek · v4-pro", its name ending where Stop
-begins, on a narrow phone too — and its picker lists only DeepSeek's models; Home's "Running now" says which model does
-each task (the owner, 2026-10-30); "Your move" too — an outcome at its foot across from "Got it", a request on its top line
-before how long it waits (Q108) — and a finished task's row at the right end of its second line (Q109), on 320 px too; a
-project's screen the same.
+"""Other vendors' models inside Claude Code (stage M, steps 2 and 7.2), in headless Chrome over DevTools, on the stand with
+a made-up DeepSeek key (STAND_VENDORS=1), where the shop is DeepSeek's project: New task's "Who does it" is the project's
+model — DeepSeek in the shop, Claude in the support desk — and a tap on it opens the project's settings; the model field is
+the project model's own — DeepSeek's models, Codex's model and levels once the blog is Codex's; the task starts with it.
+Settings → Other vendors: the model of new projects — Claude, Codex or DeepSeek; DeepSeek's key is there, GLM's isn't; a
+bad key is refused with the vendor's words, a good one taken; the list of models is saved. A session on DeepSeek's model
+says so by the field — "DeepSeek · v4-pro", its name ending where Stop begins, on a narrow phone too — and its picker lists
+only DeepSeek's models; Home's "Running now" says which model does each task (the owner, 2026-10-30); "Your move" too — an
+outcome at its foot across from "Got it", a request on its top line before how long it waits (Q108) — and a finished
+task's row at the right end of its second line (Q109), on 320 px too; a project's screen the same.
   STAND_VENDORS=1 STAND_HOMES=1 STAND_LANG=ru STAND_PORT=18171 HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out &
   ~/.local/share/pult/venv/bin/python tools/vendors_check.py /tmp/stand.out [out_dir]
 Screenshots go to out_dir (a temporary folder by default). Exit 1 on a failed check."""
@@ -51,51 +50,44 @@ async def main():
         await pg.open(URLS["NEW"])
         verdict("New task has «Кто делает»", await pg.until("!!" + FIELD % "Кто делает", 150))
         await pg.js(SPY)
-        # the project first: the shop
+        # the shop is DeepSeek's (stage M, 7.2): its tasks go to DeepSeek, no choice per task
         await pg.tap(FIELD % "Проект")
         await pg.tap(OPT % "acme-shop", wait=0.6)
         who = await pg.js("(%s).textContent" % (FIELD % "Кто делает"))
-        verdict("… Claude by default", who.startswith("Claude") and "твоя подписка" in who, who)
-        await pg.tap(FIELD % "Кто делает", wait=0.6)
-        rows = await pg.js("[...document.querySelectorAll('.card.pick.who .opt')].map((b) => [b.textContent.trim(), b.classList.contains('vo-off')])")
-        verdict("the sheet: Claude, Codex — its own agent with its model (M4.1) — DeepSeek with its model, GLM and Kimi grey "
-                "without a key, the local model grey while off (M6)",
-                [r[0].split("внутри")[0].split("ключа")[0].split("Claude Code")[0].split("свой агент")[0].split("выключена")[0].strip()
-                 for r in rows] == ["Claude", "Codex", "DeepSeek", "GLM", "Kimi", "Своя модель"]
-                and "свой агент OpenAI · GPT-5.6-Sol" in rows[1][0] and not rows[1][1]
-                and "deepseek-flash[1m]" in rows[2][0] and not rows[2][1] and rows[3][1] and rows[4][1] and rows[5][1], rows)
-        await pg.shot(os.path.join(OUT, "who.png"))
-        await pg.tap(OPT % "GLM", wait=0.6)
-        s = await said(pg)
-        verdict("GLM without a key says where to add one", s[0] == "alert" and "Другие производители" in s[1], s)
-        # DeepSeek in a project not yet allowed: asked once — "no" changes nothing
-        await pg.tap(OPT % "DeepSeek", wait=0.8)
-        s = await said(pg)
-        verdict("DeepSeek asks whether the project's code may go to it", s[0] == "confirm" and "«acme-shop»" in s[1]
-                and "DeepSeek получит код" in s[1], s)
-        verdict("… «no» keeps Claude", (await pg.js("(%s).textContent" % (FIELD % "Кто делает"))).startswith("Claude"))
-        await pg.js("window.__yes = true")
-        await pg.tap(OPT % "DeepSeek", wait=0.8)
-        who = await pg.js("(%s).textContent" % (FIELD % "Кто делает"))
-        verdict("… «yes» picks DeepSeek", who.startswith("DeepSeek") and "внутри Claude Code" in who, who)
-        verdict("… and the computer keeps the project allowed", "may go to other vendors" in journal())
+        verdict("… the shop's model: DeepSeek, the project's", who.startswith("DeepSeek") and "модель проекта «acme-shop»" in who, who)
         model = await pg.js("(%s).textContent" % (FIELD % "Модель DeepSeek"))
-        verdict("the model field is DeepSeek's now", model and model.strip().startswith("deepseek-flash[1m]"), model)
+        verdict("the model field is DeepSeek's", model and model.strip().startswith("deepseek-flash[1m]"), model)
         about = await pg.js("document.querySelector('.form .btn.wide').nextElementSibling.textContent")
         verdict("… and the words under it say where it runs", "на модели DeepSeek" in about and "в VS Code её нет" in about, about)
-        # the project's default, kept on the computer
-        await pg.tap(FIELD % "Кто делает", wait=0.6)
-        await pg.tap("document.querySelector('.card.pick.who button.who-def')", wait=0.8)
-        verdict("«Make it the default» is kept for the project", await pg.until(
-            "!!document.querySelector('.card.pick.who div.who-def') && document.querySelector('.card.pick.who div.who-def').textContent.includes('По умолчанию в «acme-shop»')", 30)
-            and "does its new tasks with deepseek" in journal())
-        await pg.shot(os.path.join(OUT, "who-default.png"))
-        await pg.tap("document.querySelector('.card.pick.who .x')", wait=0.5)
+        await pg.shot(os.path.join(OUT, "who.png"))
+        # the support desk is Claude's
+        await pg.tap(FIELD % "Проект")
+        await pg.tap(OPT % "support-desk", wait=0.6)
+        who = await pg.js("(%s).textContent" % (FIELD % "Кто делает"))
+        verdict("… the desk's: Claude", who.startswith("Claude") and "модель проекта «support-desk»" in who, who)
+        verdict("… its model field is Claude's", await pg.js("!!" + FIELD % "Модель и раздумья"))
+        # "Who does it" leads to the project's settings, where its model is changed (Q143): the blog — nothing runs
+        # there — becomes Codex's
+        await pg.tap(FIELD % "Проект")
+        await pg.tap(OPT % "blog", wait=0.6)
+        await pg.tap(FIELD % "Кто делает", wait=0.8)
+        verdict("a tap on «Кто делает» opens the project's settings", await pg.until(
+            "location.hash.startsWith('#/ps/') && !!document.querySelector('.psets .ps-model')", 100), await pg.js("location.hash"))
+        await pg.js(SPY)
+        await pg.js("window.__yes = true")
+        await pg.tap("document.querySelector('.psets .ps-model')", wait=0.6)
+        await pg.tap(OPT % "Codex", wait=1.0)
+        s = await said(pg)
+        verdict("… Codex for the blog: asked first, where the code goes", s[0] == "confirm" and "уйдёт в OpenAI" in s[1], s)
+        verdict("… and taken", await pg.until("document.querySelector('.psets .ps-model b').textContent === 'Codex'", 50)
+                and "its model claude → codex" in journal(), journal()[-300:])
+        await pg.js("location.hash = '#/new?pkey=' + encodeURIComponent('-Users-x-blog')")
+        await pg.until("!!" + FIELD % "Кто делает", 150)
+        who = await pg.js("(%s).textContent" % (FIELD % "Кто делает"))
+        verdict("New task in the blog: Codex, the project's model", who.startswith("Codex"), who)
         # Codex's own model and level of effort (M4.1; the owner, 2026-10-31: "selectable effort, like Claude's")
-        await pg.tap(FIELD % "Кто делает", wait=0.6)
-        await pg.tap(OPT % "Codex", wait=0.8)
         model = await pg.js("(%s).textContent" % (FIELD % "Модель Codex"))
-        verdict("Codex picked: the field shows its model and the model's own default level", model and model.strip().startswith("GPT-5.6-Sol · Мало"), model)
+        verdict("… the field shows its model and the model's own default level", model and model.strip().startswith("GPT-5.6-Sol · Мало"), model)
         await pg.tap(FIELD % "Модель Codex", wait=0.6)
         cols = await pg.js("[...document.querySelectorAll('.card.pick .pick-col')].map((c) => [...c.querySelectorAll('.opt')].map((b) => b.textContent.trim()))")
         verdict("… its picker: its models, and its levels — Ultra too", bool(cols) and cols[0][:2] == ["GPT-5.6-Sol", "GPT-5.6-Mini"]
@@ -105,9 +97,9 @@ async def main():
         await pg.tap("document.querySelector('.card.pick .x')", wait=0.5)
         model = await pg.js("(%s).textContent" % (FIELD % "Модель Codex"))
         verdict("… the level picked shows in the field", model and model.strip() == "GPT-5.6-Sol · Много", model)
-        await pg.tap(FIELD % "Кто делает", wait=0.6)
-        await pg.tap(OPT % "DeepSeek", wait=0.8)
-        # another of its models, then the task
+        # back in the shop: another of DeepSeek's models, then the task
+        await pg.tap(FIELD % "Проект")
+        await pg.tap(OPT % "acme-shop", wait=0.6)
         await pg.tap(FIELD % "Модель DeepSeek", wait=0.6)
         await pg.tap(OPT % "deepseek-v4-pro[1m]", wait=0.6)
         verdict("a model of DeepSeek's list can be picked", (await pg.js("(%s).textContent" % (FIELD % "Модель DeepSeek"))).strip().startswith("deepseek-v4-pro[1m]"))
@@ -125,13 +117,14 @@ async def main():
         await pg.js("location.hash = '#/settings'")
         verdict("Settings has «Другие производители»", await pg.until("[...document.querySelectorAll('h3')].some((h) => h.textContent === 'Другие производители')", 150))
         await pg.js(SPY)
-        # who does new tasks by default everywhere: Claude, or a vendor with its key — the allowed projects follow it
+        # the model of new projects (Q147): Claude, Codex (here), or a vendor with its key
         seg = await pg.js("[...document.querySelectorAll('.vend-all button')].map((b) => [b.textContent, b.classList.contains('on')])")
-        verdict("«Кто делает новые задачи по умолчанию»: Claude (on) and DeepSeek, which has a key", seg == [["Claude", True], ["DeepSeek", False]], seg)
+        verdict("«Модель новых проектов»: Claude (on), Codex and DeepSeek, which has a key", seg == [["Claude", True], ["Codex", False], ["DeepSeek", False]], seg)
+        verdict("… its label", "Модель новых проектов" in await pg.js("document.querySelector('.vend-all-h').textContent"))
         await pg.tap("[...document.querySelectorAll('.vend-all button')].find((b) => b.textContent === 'DeepSeek')", wait=0.8)
-        verdict("… DeepSeek for everything allowed", await pg.until("document.querySelector('.vend-all button.on').textContent === 'DeepSeek'", 30)
-                and "Новые задачи разрешённых проектов (1) идут ему" in await pg.js("document.querySelector('.vend-all-t').textContent")
-                and "new tasks by default — deepseek (allowed projects following it: 0)" in journal(), journal()[-200:])
+        verdict("… DeepSeek for new projects", await pg.until("document.querySelector('.vend-all button.on').textContent === 'DeepSeek'", 30)
+                and "получит эту модель" in await pg.js("document.querySelector('.vend-all-t').textContent")
+                and "new projects get deepseek" in journal(), journal()[-200:])
         await pg.js("document.querySelector('.vend-all').scrollIntoView({block: 'center'})")
         await asyncio.sleep(0.3)
         await pg.shot(os.path.join(OUT, "settings-all.png"))

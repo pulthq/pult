@@ -4,6 +4,20 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.44 — 2026-11-05
+
+- **A project belongs to one model.** Claude, Codex, DeepSeek, GLM, Kimi or a model of your own does every task of a
+  project — from the app and from Telegram; New task's Who does it shows it and leads to the project's settings, and a
+  model that can't take the task now (no key, turned off) refuses it rather than leaving it to Claude. A new page,
+  Project settings (the gear on the project's screen), changes the model only while nothing runs there, after saying
+  where the code goes; the tasks of the model before stay, read only. On the same page: the helper Claude haiku (on in
+  Claude's projects, off in the rest — on, the tasks' words go to Anthropic), what the project's Telegram topic gets
+  (the request and the outcome, or only "done" — no task's words, no files), the review's permission, tags, pin and
+  hide. A VS Code tab or a terminal with Claude in a project of another model is noticed in its topic and on its screen.
+  Settings' "who does new tasks by default" becomes the model of new projects, which New project's form can change.
+  Existing projects keep what their new tasks went to: their own default, the common one where allowed, the one model
+  all their tasks were on, else Claude.
+
 ## 0.18.43 — 2026-11-05
 
 - **Other vendors' models are kept apart.** A task on DeepSeek, GLM, Kimi or a model of your own runs in a Claude Code

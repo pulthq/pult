@@ -1,12 +1,12 @@
-"""One's own model through Ollama (stage M, step 6), in headless Chrome over DevTools, on the stand's stand-in server.
-STAND_LOCAL=1 — off: "Who does it" lists "Local model" grey, a tap says where to turn it on; Settings → Other vendors has
-its card — off, the address filled in — another computer's address is refused, a silent one says nothing answers, the
-usual one finds Ollama 0.40.14: gemma4-32k fits (its 32K context), the two without a context set don't; it is on, its
-models field and "Turn off" are there, the common default can be it. New task: its row says "on your computer · gemma4-32k,
-free", a tap picks it in a project never allowed to go to other vendors — no question asked — the field and the words
-under the form say so, the task starts on it. "Turn off" turns it off. Light and dark at 412 px.
-STAND_LOCAL=down — on, but the server is silent: "Your move" names the model at the card's foot — "Local · gemma4-32k" —
-and a new task on it isn't started: it says why and offers Claude — "no" starts nothing, "yes" the same task with Claude.
+"""One's own model through Ollama (stage M, steps 6 and 7.2), in headless Chrome over DevTools, on the stand's stand-in
+server. STAND_LOCAL=1 — off: a project's settings list "Local model" grey, a tap says where to turn it on; Settings → Other
+vendors has its card — off, the address filled in — another computer's address is refused, a silent one says nothing
+answers, the usual one finds Ollama 0.40.14: gemma4-32k fits (its 32K context), the two without a context set don't; it is
+on, its models field and "Turn off" are there, the model of new projects can be it. The project's settings: its row says
+"on your computer · gemma4-32k, free", a change to it asks where the code goes — it stays home — and takes; New task there
+says so, the words under the form too, the task starts on it. "Turn off" turns it off, the project keeps it. Light and dark.
+STAND_LOCAL=down — the shop is its project, on, but the server is silent: "Your move" names the model at the card's foot —
+"Local · gemma4-32k" — and a new task on it isn't started: it says why, and nothing starts with Claude in its place (Q143).
   STAND_LOCAL=1 STAND_HOMES=1 STAND_LANG=ru STAND_PORT=18172 HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out &
   ~/.local/share/pult/venv/bin/python tools/local_check.py /tmp/stand.out [out_dir]
   (STAND_LOCAL=down: tools/local_check.py /tmp/stand.out down [out_dir])
@@ -50,24 +50,32 @@ async def said(pg):
     return await pg.js("window.__said.at(-1)") or ["", ""]
 
 
+BLOG = "'-Users-x-blog'"
+MODEL = "document.querySelector('.psets .ps-model')"
+
+
 async def pick_shop(pg):
     await pg.tap(FIELD % "Проект")
     await pg.tap(OPT % "acme-shop", wait=0.6)
 
 
+async def blog_settings(pg):
+    await pg.js("location.hash = '#/ps/' + encodeURIComponent(%s)" % BLOG)
+    await pg.until("!!" + MODEL, 150)
+    await pg.js(SPY)
+
+
 async def off_flow(pg):
     await pg.open(URLS["NEW"])
-    verdict("New task has «Кто делает»", await pg.until("!!" + FIELD % "Кто делает", 150))
-    await pg.js(SPY)
-    await pick_shop(pg)
-    await pg.tap(FIELD % "Кто делает", wait=0.6)
+    await pg.until("!!" + FIELD % "Кто делает", 150)
+    await blog_settings(pg)
+    await pg.tap(MODEL, wait=0.6)
     row = await pg.js("(() => { const b = %s; return b ? [b.textContent.trim(), b.classList.contains('vo-off')] : null; })()" % (OPT % "Своя модель"))
-    verdict("the sheet lists «Своя модель», grey while it is off", bool(row) and row[1] and "выключена — включи в «Настройках»" in row[0], row)
-    verdict("… and says what it is", "на твоём компьютере через Ollama" in (await pg.js("(document.querySelector('.who-local') || {}).textContent") or ""))
+    verdict("the project's models list «Своя модель», grey while it is off", bool(row) and row[1] and "выключена — включи в «Настройках»" in row[0], row)
     await pg.shot(os.path.join(OUT, "who-off.png"))
     await pg.tap(OPT % "Своя модель", wait=0.6)
     s = await said(pg)
-    verdict("… a tap says where to turn it on", s[0] == "alert" and "«Настройки → Другие производители → Своя модель»" in s[1], s)
+    verdict("… a tap says where to turn it on", s[0] == "alert" and "«Настройки → Другие производители»" in s[1], s)
     await pg.tap("document.querySelector('.card.pick .x')", wait=0.4)
 
     # Settings → Other vendors → Local model
@@ -103,7 +111,7 @@ async def off_flow(pg):
     verdict("… its models field and «Выключить»", more == ["gemma4-32k", ["Выключить"]], more)
     verdict("… the computer's journal says what it found", "vendor local: http://127.0.0.1:11434 — Ollama 0.40.14, models gemma4-32k (32768)" in journal(), journal()[-400:])
     seg = await pg.js("[...document.querySelectorAll('.vend-all button')].map((b) => b.textContent)")
-    verdict("the common default can be it now", "Своя модель" in seg, seg)
+    verdict("the model of new projects can be it now", "Своя" in seg, seg)
     await pg.js("(%s).scrollIntoView({block: 'center'})" % CARD)
     await asyncio.sleep(0.3)
     await pg.shot(os.path.join(OUT, "settings-on.png"))
@@ -112,19 +120,24 @@ async def off_flow(pg):
     await pg.shot(os.path.join(OUT, "settings-on-dark.png"))
     await pg.cmd("Emulation.setEmulatedMedia", features=[])
 
-    # New task on it, in a project never allowed to go to other vendors: no question
-    await pg.js("location.hash = '#/new'")
+    # the blog gets it — nothing runs there: asked where the code goes — it stays home
+    await blog_settings(pg)
+    await pg.tap(MODEL, wait=0.6)
+    row = await pg.js("(() => { const b = %s; return [b.textContent.trim(), b.classList.contains('vo-off')]; })()" % (OPT % "Своя модель"))
+    verdict("the project's models: «на твоём компьютере · gemma4-32k, бесплатно», not grey", "на твоём компьютере · gemma4-32k, бесплатно" in row[0] and not row[1], row)
+    await pg.shot(os.path.join(OUT, "who-on.png"))
+    await pg.js("window.__yes = true")
+    await pg.tap(OPT % "Своя модель", wait=0.8)
+    s = await said(pg)
+    verdict("… the change asks, and says the code stays on your computers", s[0] == "confirm" and "код останется на твоих компьютерах" in s[1], s)
+    verdict("… and takes", await pg.until("document.querySelector('.psets .ps-model b').textContent === 'Своя модель'", 50)
+            and "its model claude → local" in journal(), journal()[-300:])
+    # New task there: on it
+    await pg.js("location.hash = '#/new?pkey=' + encodeURIComponent(%s)" % BLOG)
     await pg.until("!!" + FIELD % "Кто делает", 150)
     await pg.js(SPY)
-    await pick_shop(pg)
-    await pg.tap(FIELD % "Кто делает", wait=0.6)
-    row = await pg.js("(() => { const b = %s; return [b.textContent.trim(), b.classList.contains('vo-off')]; })()" % (OPT % "Своя модель"))
-    verdict("the sheet: «на твоём компьютере · gemma4-32k, бесплатно», not grey", "на твоём компьютере · gemma4-32k, бесплатно" in row[0] and not row[1], row)
-    await pg.shot(os.path.join(OUT, "who-on.png"))
-    await pg.tap(OPT % "Своя модель", wait=0.8)
-    verdict("… picked without asking whether the code may go (it stays home)", not await pg.js("window.__said.some((x) => x[0] === 'confirm')"))
     who = await pg.js("(%s).textContent" % (FIELD % "Кто делает"))
-    verdict("… the field says so", who.startswith("Своя модель") and "на твоём компьютере" in who, who)
+    verdict("New task in it: «Своя модель», the project's", who.startswith("Своя модель") and "модель проекта «blog»" in who, who)
     model = await pg.js("(%s).textContent" % (FIELD % "Модель"))
     verdict("… the model field: gemma4-32k", (model or "").startswith("gemma4-32k"), model)
     about = await pg.js("[...document.querySelectorAll('.form > .dim.small')].map((d) => d.textContent).join(' ')")
@@ -140,14 +153,17 @@ async def off_flow(pg):
     await pg.tap("document.querySelector('.form .btn.wide')", wait=1.0)
     verdict("the task starts on it", "vendor=local" in journal(), journal()[-300:])
 
-    # turned off again
+    # turned off again: the project keeps its model, its tasks wait for it
     await pg.js("location.hash = '#/settings'")
     await pg.until("!!(%s)" % CARD, 150)
     await pg.js(SPY)
     await pg.tap("[...(%s).querySelectorAll('.link')].find((b) => b.textContent === 'Выключить')" % CARD, wait=1.0)
     s = await said(pg)
-    verdict("«Выключить»: off, its new tasks go to Claude", s[0] == "alert" and "её новые задачи пойдут Claude" in s[1]
+    verdict("«Выключить»: off, the tasks of its projects won't start", s[0] == "alert" and "задачи её проектов не начнутся" in s[1]
             and await pg.until("(%s).querySelector('.vend-st').textContent === 'выключена'" % CARD, 30), s)
+    await blog_settings(pg)
+    verdict("… the blog keeps it, and says it can't work now", await pg.until(
+        "document.querySelector('.psets .ps-model b').textContent === 'Своя модель' && !!document.querySelector('.psets .pick-why')", 50))
 
 
 async def down_flow(pg):
@@ -167,18 +183,17 @@ async def down_flow(pg):
     await pg.until("!!" + FIELD % "Кто делает", 150)
     await pg.js(SPY)
     await pick_shop(pg)
-    await pg.tap(FIELD % "Кто делает", wait=0.6)
-    await pg.tap(OPT % "Своя модель", wait=0.8)
+    who = await pg.js("(%s).textContent" % (FIELD % "Кто делает"))
+    verdict("New task in the shop: its model, «Своя модель»", who.startswith("Своя модель"), who)
     await pg.js("document.querySelector('.form textarea').focus()")
     await pg.cmd("Input.insertText", text="Поправь опечатки в README")
-    await pg.tap("document.querySelector('.form .btn.wide')", wait=1.0)
-    s = await said(pg)
-    verdict("the server is silent: the task isn't started, it says why and offers Claude", s[0] == "confirm"
-            and "не отвечает по адресу http://127.0.0.1:11434" in s[1] and "Начать эту задачу с Claude?" in s[1], s)
-    verdict("… «no» starts nothing", "NEWTASK" not in journal())
     await pg.js("window.__yes = true")
     await pg.tap("document.querySelector('.form .btn.wide')", wait=1.0)
-    verdict("… «yes» starts the same task with Claude", "vendor=claude" in journal() and "Поправь опечатки в README" in journal(), journal()[-300:])
+    s = await said(pg)
+    verdict("the server is silent: the task isn't started, it says why", s[0] == "alert"
+            and "не отвечает по адресу http://127.0.0.1:11434" in s[1], s)
+    verdict("… and offers no Claude in its place (Q143)", "с Claude" not in s[1] and not await pg.js("window.__said.some((x) => x[0] === 'confirm')"), s)
+    verdict("… nothing started", "NEWTASK" not in journal())
 
 
 async def main():

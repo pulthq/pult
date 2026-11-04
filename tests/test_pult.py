@@ -3039,16 +3039,17 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
                 yield
         key = "sk-" + "d" * 30
         with mock.patch.object(claude_agent_sdk, "ClaudeSDKClient", Fake):
-            # nothing yet: the project isn't allowed, no key
+            # a project is Claude's until the owner gives it another model (stage M, 7.2): a task asked of another is
+            # refused (an app from before 7.2 picked one per task), and without the key the project can't get it
             with self.assertRaises(ValueError) as e:
                 await self.p.api_new(PKEY, "Почини тесты", vendor="deepseek")
-            self.assertIn("разреши", str(e.exception))
-            await self.p.api_vendors_ok(PKEY, True)
+            self.assertIn("не модель этого проекта", str(e.exception))
             with self.assertRaises(ValueError) as e:
-                await self.p.api_new(PKEY, "Почини тесты", vendor="deepseek")
+                await self.p.api_project_model(PKEY, "deepseek")
             self.assertIn("ключа ещё нет", str(e.exception))
             with self.assertRaises(ValueError):
-                await self.p.api_new(PKEY, "Почини тесты", vendor="nope")
+                await self.p.api_project_model(PKEY, "nope")
+            self.assertEqual(self.p.project_model(PKEY), "claude")
             # the key: checked with the vendor, kept in the settings file, never shown back
             with mock.patch.object(V, "check_key", mock.AsyncMock(return_value="deepseek-flash")) as chk:
                 self.assertEqual(await self.p.api_vendor_key("deepseek", key), {"key": True, "model": "deepseek-flash", "warn": None})
@@ -3057,8 +3058,14 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             vs = (await self.p.api_projects())["vendors"]
             self.assertEqual([(v["id"], v["key"]) for v in vs], [("deepseek", True), ("glm", False), ("kimi", False), ("local", False)])
             self.assertNotIn(key, json.dumps(vs) + json.dumps((await self.p.api_settings())["vendors"]))
+            # the project's model — DeepSeek: the owner's choice is the permission for it; a review by another vendor
+            # stays apart (vendors.ok), and the helper Claude haiku is off with it
+            page = await self.p.api_project_model(PKEY, "deepseek")
+            self.assertEqual((page["model"]["id"], page["model"]["cloud"], page["model"]["sub"], page["review"]["ok"], page["haiku"],
+                              page["topic"], page["busy"]), ("deepseek", True, "deepseek-flash[1m]", False, False, "full", []))
+            self.assertFalse(self.p.vendors_ok(PKEY))
             # a new task on DeepSeek: its session runs on the profile, the key in both places, hidden from VS Code
-            sid = (await self.p.api_new(PKEY, "Почини тесты", model="deepseek-v4-pro[1m]", effort="high", vendor="deepseek"))["sid"]
+            sid = (await self.p.api_new(PKEY, "Почини тесты", model="deepseek-v4-pro[1m]", effort="high"))["sid"]
             await until(lambda: started)
             o = started[-1]
             self.assertEqual(self.store.vendor_of(sid), "deepseek")
@@ -3069,17 +3076,14 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((view["id"], view["name"], view["models"][0]), ("deepseek", "DeepSeek", "deepseek-flash[1m]"))
             with self.assertRaises(ValueError):
                 await self.p.api_model(sid, effort="high")              # how hard it thinks is the vendor's own
-            # a Claude task beside it stays Claude's
-            sid_c = (await self.p.api_new(PKEY, "А это — Claude", vendor="claude"))["sid"]
-            await until(lambda: len(started) == 2)
-            self.assertIsNone(self.store.vendor_of(sid_c))
-            self.assertNotIn("ANTHROPIC_BASE_URL", started[-1].env)
-            self.assertEqual(started[-1].env["CLAUDE_CODE_ENTRYPOINT"], "claude-vscode")
-            # the project's default: a task from Telegram (it doesn't say whose) goes to DeepSeek
-            self.assertEqual(await self.p.api_vendor_default(PKEY, "deepseek"), {"vendor": "deepseek", "who": "deepseek"})
-            row = next(x for x in (await self.p.api_projects())["projects"] if x["pkey"] == PKEY) \
-                if (await self.p.api_projects())["projects"] else {"vendor": self.p.vendor_default(PKEY)}
-            self.assertEqual(row["vendor"], "deepseek")
+            # Claude doesn't take a task of this project, even asked by name
+            with self.assertRaises(ValueError) as e:
+                await self.p.api_new(PKEY, "А это — Claude", vendor="claude")
+            self.assertIn("не модель этого проекта", str(e.exception))
+            # a task from Telegram (it doesn't say whose) goes to the project's model
+            row = next((x for x in (await self.p.api_projects())["projects"] if x["pkey"] == PKEY), None)
+            if row:
+                self.assertEqual((row["model"], row["who"]), ("deepseek", "deepseek"))
             sid_t = "77777777-2222-3333-4444-555555555555"
             await self.p.drive(sid_t, str(proj), "из Telegram", None, pkey=PKEY)
             self.assertEqual(self.store.vendor_of(sid_t), "deepseek")
@@ -3089,59 +3093,82 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             copy = next(o for o in started if o.fork_session)
             self.assertEqual((self.store.vendor_of(copy.session_id), copy.env["ANTHROPIC_BASE_URL"]),
                              ("deepseek", "https://api.deepseek.com/anthropic"))
-            # "Disallow" (Codex's second opinion on M2): the project's DeepSeek sessions stop, and none goes on — from the
-            # app, from Telegram, by a copy — until the project is allowed again
+            # the model doesn't change while anything runs in the project (Q138): its sessions are at work
+            with self.assertRaises(ValueError) as e:
+                await self.p.api_project_model(PKEY, "claude")
+            self.assertIn("Сейчас нельзя", str(e.exception))
+            self.assertEqual(self.p.project_model(PKEY), "deepseek")
+            # "Disallow" stops only reviews now: the project's own model goes on
             (TMP / "projects" / PKEY).mkdir(parents=True, exist_ok=True)
             (TMP / "projects" / PKEY / (sid + ".jsonl")).write_text(tline("user", "Почини тесты", ago=60) + "\n")
-            self.assertIn(sid, self.p.driven)
-            await self.p.api_vendors_ok(PKEY, False)
-            await until(lambda: sid not in self.p.driven)
-            for go in (lambda: self.p.api_send(sid, "дальше"),
-                       lambda: self.p.drive(sid, str(proj), "дальше", None, pkey=PKEY, resume=sid, app=True),
-                       lambda: self.p.drive(sid, str(proj), "копия", None, pkey=PKEY, fork=True, app=True)):
-                with self.assertRaises(ValueError) as e:
-                    await go()
-                self.assertIn("больше не отдаётся", str(e.exception))
-            n = len(started)
-            await self.p.continue_session(sid, "дальше", 70, 77)
-            await until(lambda: any("больше не отдаётся" in t for t in self.texts()))
-            self.assertEqual(len(started), n)
             await self.p.api_vendors_ok(PKEY, True)
-            # the common default (the owner, 2026-10-30: one tap if Claude goes away): the allowed projects without a
-            # choice of their own follow it; a project that keeps Claude keeps it; only a vendor with its key
-            await self.p.api_vendor_default(PKEY, None)
-            self.assertIsNone(self.p.vendor_for_new(PKEY))
-            self.assertEqual(await self.p.api_vendor_all("deepseek"), {"vendor": "deepseek", "projects": 1})
-            self.assertEqual((self.p.vendor_for_new(PKEY), self.p.vendor_who(PKEY)), ("deepseek", "deepseek"))
-            row = (await self.p.api_projects())
-            self.assertEqual(row["vendor_all"], "deepseek")
-            self.assertEqual(await self.p.api_vendor_default(PKEY, "claude"), {"vendor": "claude", "who": "claude"})
-            self.assertIsNone(self.p.vendor_for_new(PKEY))
-            await self.p.api_vendor_default(PKEY, None)
-            with self.assertRaises(ValueError):
-                await self.p.api_vendor_all("glm")                         # no key
-            self.assertEqual(self.p.vendor_who("-Users-x-not-allowed"), "claude")
-            # the key removed: no session of DeepSeek starts — from the app it says why, from Telegram too; new tasks
-            # go back to Claude by default, and the common default to it goes
-            self.assertEqual((await self.p.api_vendor_key("deepseek", ""))["key"], False)
-            self.assertNotIn("PULT_VENDOR_KEY_DEEPSEEK", Path(os.environ["PULT_ENV"]).read_text())
+            await self.p.api_vendors_ok(PKEY, False)
+            await asyncio.sleep(0.05)
+            self.assertIn(sid, self.p.driven)
+            self.assertIsNone(self.p.vendor_stop(sid, PKEY))
+            # once nothing runs, the model changes; DeepSeek's tasks are read only then — from the app, from Telegram, by
+            # a copy, by a change of its model — and the topic's plain text no longer goes to one of them
             for dr in list(self.p.driven.values()):
                 dr.task.cancel()
             await asyncio.sleep(0.05)
             self.p.driven.clear()
+            page = await self.p.api_project_model(PKEY, "claude")
+            self.assertEqual((page["model"]["id"], page["haiku"]), ("claude", True))
+            self.assertIsNone(self.p.focus_of(PKEY))
+            for go in (lambda: self.p.api_send(sid, "дальше"),
+                       lambda: self.p.drive(sid, str(proj), "дальше", None, pkey=PKEY, resume=sid, app=True),
+                       lambda: self.p.drive(sid, str(proj), "копия", None, pkey=PKEY, fork=True, app=True),
+                       lambda: self.p.api_model(sid, model="deepseek-flash"),
+                       lambda: self.p.api_resume_at(sid, 0)):
+                with self.assertRaises(ValueError) as e:
+                    await go()
+                self.assertIn("только для чтения", str(e.exception))
+            n = len(started)
+            await self.p.continue_session(sid, "дальше", 70, 77)
+            await until(lambda: any("только для чтения" in t for t in self.texts()))
+            self.assertEqual(len(started), n)
+            self.assertIsNone(self.p.focus_of(PKEY))                  # the refusal didn't take the topic's focus
+            got = await self.p.api_session(sid)
+            self.assertEqual((got["ro"], got["second"]["can"]), ({"name": "DeepSeek", "its": "Claude"}, False))
+            # Claude's task is Claude's again
+            sid_c = (await self.p.api_new(PKEY, "А это — Claude"))["sid"]
+            await until(lambda: len(started) == n + 1)
+            self.assertIsNone(self.store.vendor_of(sid_c))
+            self.assertNotIn("ANTHROPIC_BASE_URL", started[-1].env)
+            self.assertEqual(started[-1].env["CLAUDE_CODE_ENTRYPOINT"], "claude-vscode")
+            self.assertIsNone(self.p.read_only(sid_c, PKEY))
+            # the model of new projects (Q147, before — "who does new tasks by default"): a vendor with its key; a
+            # project already there keeps its own
+            self.assertEqual(await self.p.api_vendor_all("deepseek"), {"vendor": "deepseek"})
+            self.assertEqual(self.p.project_model(PKEY), "claude")
+            self.assertEqual((await self.p.api_projects())["vendor_all"], "deepseek")
+            with self.assertRaises(ValueError):
+                await self.p.api_vendor_all("glm")                         # no key
+            # back to DeepSeek; its key removed: no task of the project starts — nor on Claude in its place (Q143)
+            for dr in list(self.p.driven.values()):
+                dr.task.cancel()
+            await asyncio.sleep(0.05)
+            self.p.driven.clear()
+            await self.p.api_project_model(PKEY, "deepseek")
+            self.assertEqual((await self.p.api_vendor_key("deepseek", ""))["key"], False)
+            self.assertNotIn("PULT_VENDOR_KEY_DEEPSEEK", Path(os.environ["PULT_ENV"]).read_text())
             n = len(started)
             with self.assertRaises(ValueError) as e:
                 await self.p.drive(sid, str(proj), "дальше", None, pkey=PKEY, resume=sid, app=True)
             self.assertIn("ключа больше нет", str(e.exception))
             self.assertFalse(await self.p.drive(sid, str(proj), "дальше", None, pkey=PKEY, resume=sid))
             await until(lambda: any("ключа больше нет" in t for t in self.texts()))
+            with self.assertRaises(ValueError) as e:
+                await self.p.api_new(PKEY, "Новая задача")
+            self.assertIn("ключа ещё нет", str(e.exception))
+            self.assertFalse(await self.p.drive("77777777-2222-3333-4444-555555555556", str(proj), "из Telegram", None, pkey=PKEY))
             await asyncio.sleep(0.1)
             self.assertEqual(len(started), n)                            # nothing started without the key
-            self.assertIsNone(self.p.vendor_for_new(PKEY))
-            self.assertIsNone(self.p.vendor_all())
-            # the project taken back: its default goes too
-            await self.p.api_vendors_ok(PKEY, False)
-            self.assertIsNone(self.p.vendor_default(PKEY))
+            self.assertEqual(self.p.project_model(PKEY), "deepseek")      # the project keeps its model
+            self.assertIsNone(self.p.vendor_all())                       # new projects: Claude again
+            with self.assertRaises(ValueError) as e:                     # nor can it get another model's name back
+                await self.p.api_project_model(PKEY, "glm")
+            self.assertIn("ключа ещё нет", str(e.exception))
             # the owner's own list of models; a bad one is refused
             self.assertEqual(await self.p.api_vendor_models("deepseek", "deepseek-v4-pro[1m], deepseek-flash"),
                              {"models": ["deepseek-v4-pro[1m]", "deepseek-flash"]})
@@ -3203,7 +3230,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
                 mock.patch.object(V, "reach", mock.AsyncMock(return_value=True)) as reach:
             self.assertFalse(self.p.vendor_key("local"))
             with self.assertRaises(ValueError) as e:
-                await self.p.api_new(PKEY, "Почини тесты", vendor="local")
+                await self.p.api_project_model(PKEY, "local")
             self.assertIn("выключена", str(e.exception))
             with self.assertRaises(ValueError) as e:            # only this computer's own address
                 await self.p.api_vendor_local("http://10.20.10.5:11434")
@@ -3226,9 +3253,12 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("32K", r["words"])
             env_file = Path(os.environ["PULT_ENV"])                  # nothing written for it: no key of its own
             self.assertNotIn("PULT_VENDOR_KEY_LOCAL", env_file.read_text() if env_file.exists() else "")
-            # a task in a project never allowed to go to other vendors: its own model needs no permission
+            # a project of one's own model: no permission — the code stays home (stage M, 7.2: the project's model)
             self.assertFalse(self.p.vendors_ok(PKEY))
-            sid = (await self.p.api_new(PKEY, "Почини тесты", vendor="local"))["sid"]
+            page = await self.p.api_project_model(PKEY, "local")
+            self.assertEqual((page["model"]["id"], page["model"]["local"], page["model"]["cloud"], page["model"]["sub"]),
+                             ("local", True, False, "gemma4-32k"))
+            sid = (await self.p.api_new(PKEY, "Почини тесты"))["sid"]
             await until(lambda: started)
             o = started[-1]
             self.assertEqual(self.store.vendor_of(sid), "local")
@@ -3243,32 +3273,33 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.p.llm_view(sid, {}), {"vendor": "Своя", "model": "gemma4-32k"})
             view = (await self.p.api_session(sid))["vendor"]
             self.assertEqual((view["id"], view["short"], view["local"], view["models"]), ("local", "Своя", True, ["gemma4-32k"]))
-            # the project's own default to it needs no permission; the common one reaches only the allowed projects
-            self.assertEqual(await self.p.api_vendor_default(PKEY, "local"), {"vendor": "local", "who": "local"})
+            # a task from Telegram goes to it too; the model of new projects can be it
             sid_t = "77777777-2222-3333-4444-666666666666"
             await self.p.drive(sid_t, str(proj), "из Telegram", None, pkey=PKEY)
             self.assertEqual(self.store.vendor_of(sid_t), "local")
             await until(lambda: len(started) == 2)
-            await self.p.api_vendor_default(PKEY, None)
             self.assertEqual((await self.p.api_vendor_all("local"))["vendor"], "local")
-            self.assertEqual(self.p.vendor_who(PKEY), "claude")
-            await self.p.api_vendors_ok(PKEY, True)
-            self.assertEqual(self.p.vendor_who(PKEY), "local")
-            # the computer with the model is off: nothing starts, the app hears why, Telegram too
+            # the computer with the model is off: nothing starts — nor with Claude in its place; the app hears why,
+            # Telegram too
             reach.return_value = False
             n = len(started)
             with self.assertRaises(ValueError) as e:
-                await self.p.api_new(PKEY, "Ещё", vendor="local")
+                await self.p.api_new(PKEY, "Ещё")
             self.assertIn("не отвечает", str(e.exception))
+            self.assertNotIn("с Claude", str(e.exception))
             self.assertFalse(await self.p.drive("77777777-2222-3333-4444-777777777777", str(proj), "из Telegram", None, pkey=PKEY))
             await until(lambda: any("не отвечает" in t for t in self.texts()))
             self.assertEqual(len(started), n)
-            # turned off: its sessions can't go on, the common default goes back to Claude
+            # turned off: its tasks can't go on nor start, the model of new projects goes back to Claude; the project
+            # keeps its model
             r = await self.p.api_vendor_local(on=False)
             self.assertFalse(r["vendor"]["key"])
             self.assertIsNone(self.p.vendor_all())
             self.assertIn("выключена", self.p.vendor_stop(sid, PKEY))
-            self.assertEqual(self.p.vendor_who(PKEY), "claude")
+            with self.assertRaises(ValueError) as e:
+                await self.p.api_new(PKEY, "Ещё")
+            self.assertIn("выключена", str(e.exception))
+            self.assertEqual(self.p.project_model(PKEY), "local")
         for dr in list(self.p.driven.values()):
             dr.task.cancel()
 
@@ -3310,7 +3341,8 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         home = pultd.HOMES / "local"
         with mock.patch.object(claude_agent_sdk, "ClaudeSDKClient", Fake), \
                 mock.patch.object(V, "reach", mock.AsyncMock(return_value=True)):
-            sid = (await self.p.api_new(PKEY, "Почини тесты", vendor="local"))["sid"]
+            await self.p.api_project_model(PKEY, "local")
+            sid = (await self.p.api_new(PKEY, "Почини тесты"))["sid"]
             await until(lambda: started)
             o = started[-1]
             self.assertEqual((o.env["CLAUDE_CONFIG_DIR"], o.env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"]), (str(home), "1"))
@@ -3330,8 +3362,13 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("CLAUDE_CONFIG_DIR", o.env)
             self.assertEqual(o.env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"], "1")
             self.assertIn("gemma4-32k", o.system_prompt["append"])
-            # Claude's session beside them: the owner's home, no line
-            sid_c = (await self.p.api_new(PKEY, "А это — Claude", vendor="claude"))["sid"]
+            # Claude's session, once the project is Claude's (nothing runs there by then): the owner's home, no line
+            for dr in list(self.p.driven.values()):
+                dr.task.cancel()
+            await asyncio.sleep(0.05)
+            self.p.driven.clear()
+            await self.p.api_project_model(PKEY, "claude")
+            sid_c = (await self.p.api_new(PKEY, "А это — Claude"))["sid"]
             await until(lambda: len(started) == 3)
             self.assertNotIn("CLAUDE_CONFIG_DIR", started[-1].env)
             self.assertNotIn("append", started[-1].system_prompt)
@@ -3353,7 +3390,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         # one's own model's context gauge: its own context, the room its answer takes off (not Claude Code's 200 000)
         self.assertEqual(self.p.ctx_of(sid, "gemma4-32k"), [32768, 8192])
         self.assertEqual(self.p.ctx_room(sid, [32768, 8192]), 24576)
-        # Claude haiku never reads another vendor's task: no result line by the model, no tags
+        # Claude haiku never reads another model's task than its project's: no result line by the model, no tags
         await self.p.api_prefs(brief=True)
         asked = []
 
@@ -3372,6 +3409,175 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.2)
         self.assertEqual(asked, [])
         self.assertEqual(self.p.attn.rec[SID]["line"], "Проверил: всё зелёное.")      # the first sentence, by rules
+        # a project of the local model (stage M, 7.2; Q142): its helper is off by default — its own tasks stay out too;
+        # the owner's switch on — Claude haiku reads them
+        await self.p.api_project_model(PKEY, "local")
+        self.assertFalse((await self.p.api_projset(PKEY))["haiku"])
+        with mock.patch.object(pultd.B, "brief", fake_brief), mock.patch.object(pultd.G, "tag", fake_tag):
+            await run_hook(ev("UserPromptSubmit", prompt="Проверь ещё"))
+            await run_hook(ev("Stop", last_assistant_message="Проверил ещё раз.", background_tasks=[]))
+            await until(lambda: self.p.attn.rec[SID]["line"] == "Проверил ещё раз.")
+            await asyncio.sleep(0.2)
+            self.assertEqual(asked, [])
+            self.assertTrue((await self.p.api_project_prefs(PKEY, haiku=True))["haiku"])
+            await run_hook(ev("UserPromptSubmit", prompt="И ещё"))
+            await run_hook(ev("Stop", last_assistant_message="Готово.", background_tasks=[]))
+            await until(lambda: ("brief", "И ещё") in asked)
+        self.assertIn("tag", [k for k, _ in asked])
+
+    async def test_project_models_before(self):
+        # stage M, 7.2 (Q146): each project's model, made once from what was there before — its own default; the common
+        # one for a project allowed to go to other vendors while its key is here; the one other model every task of it
+        # was on (a tab's transcript Pult never saw is Claude's); else Claude. The project's own default goes
+        self.p.env[V.key_name("deepseek")] = "sk-" + "d" * 30
+        self.store.put("proj.model", None)
+        self.store.put("vendors.default", {"-Users-x-own": "glm", "-Users-x-kept": "claude"})
+        self.store.put("vendors.all", "deepseek")
+        self.store.put("vendors.ok", {"-Users-x-ok": time.time(), "-Users-x-kept": time.time()})
+        for n, (pkey, vid) in enumerate([("-Users-x-local", "local"), ("-Users-x-local", "local"), ("-Users-x-mixed", "deepseek"),
+                                         ("-Users-x-mixed", None), ("-Users-x-tab", "kimi")]):
+            sid = "a%07d-2222-3333-4444-555555555555" % n
+            self.store.touch_session(sid, pkey, path="/Users/x/" + pkey)
+            if vid:
+                self.store.set_vendor(sid, vid)
+        tab = TMP / "projects" / "-Users-x-tab"
+        tab.mkdir(parents=True, exist_ok=True)
+        (tab / "dddddddd-2222-3333-4444-555555555555.jsonl").write_text(tline("user", "из вкладки") + "\n")
+        self.assertEqual(self.p.project_models(), {"-Users-x-own": "glm", "-Users-x-ok": "deepseek", "-Users-x-local": "local"})
+        self.assertIsNone(self.store.get("vendors.default"))
+        self.assertEqual([self.p.project_model(k) for k in ("-Users-x-kept", "-Users-x-mixed", "-Users-x-tab", PKEY)], ["claude"] * 4)
+        self.store.put("vendors.ok", {})                    # made once: what changes after doesn't make it again
+        self.assertEqual(self.p.project_model("-Users-x-ok"), "deepseek")
+        # a task of the model before is read only; Claude's own in a Claude project goes on
+        self.assertEqual(self.p.read_only("a0000002-2222-3333-4444-555555555555"), ("deepseek", "claude"))
+        self.assertIsNone(self.p.read_only("a0000003-2222-3333-4444-555555555555"))
+
+    async def test_project_settings(self):
+        # stage M, 7.2: a project's settings page — its model and the ones it could take, what runs in it, the helper
+        # Claude haiku (on with Claude, off with the rest, or the owner's switch) and what its topic gets; a change
+        # waits for nothing to run and puts the helper back to the new model's default; a VS Code tab with Claude in a
+        # project of another model — the topic hears it once, the task is read only there (Q144)
+        self.store.set_topic(PKEY, "/Users/x/proj", "proj", 77)
+        await self.p.api_prefs(brief=True)
+        page = await self.p.api_projset(PKEY)
+        self.assertEqual((page["name"], page["model"]["id"], page["haiku"], page["haiku_own"], page["topic"], page["busy"],
+                          page["review"]["ok"]), ("proj", "claude", True, False, "full", [], False))
+        self.assertEqual([m["id"] for m in page["models"]], ["claude", "codex", "deepseek", "glm", "kimi", "local"])
+        self.assertIn("ключа ещё нет", next(m for m in page["models"] if m["id"] == "glm")["why"])
+        with self.assertRaises(ValueError):
+            await self.p.api_projset("-Users-x-nope")
+        page = await self.p.api_project_prefs(PKEY, haiku=False, topic="done")
+        self.assertEqual((page["haiku"], page["haiku_own"], page["topic"]), (False, True, "done"))
+        self.assertFalse(self.p.topic_full(PKEY))
+        with self.assertRaises(ValueError):
+            await self.p.api_project_prefs(PKEY, topic="loud")
+        with self.assertRaises(ValueError) as e:                   # "Sort them again" asks Claude haiku
+            await self.p.api_tags_resort(PKEY)
+        self.assertIn("haiku", str(e.exception))
+        self.assertFalse((await self.p.api_tags(PKEY))["model"])
+        await self.p.api_project_prefs(PKEY, haiku=True, topic="full")
+        # a turn runs in a tab: no change of the model — the page and the refusal say what runs
+        self.p.env[V.key_name("deepseek")] = "sk-" + "d" * 30
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        Path(TP).write_text(tline("user", "Почини тесты") + "\n")
+        await run_hook(ev("UserPromptSubmit", prompt="Почини тесты"))
+        await until(lambda: self.p.live.get(SID) and self.p.live[SID].turn)
+        page = await self.p.api_projset(PKEY)
+        self.assertEqual(page["busy"], [{"sid": SID, "title": "Почини тесты"}])
+        with self.assertRaises(ValueError) as e:
+            await self.p.api_project_model(PKEY, "deepseek")
+        self.assertIn("«Почини тесты»", str(e.exception))
+        self.assertEqual(self.p.project_model(PKEY), "claude")
+        await run_hook(ev("Stop", last_assistant_message="Починил.", background_tasks=[]))
+        await until(lambda: self.p.live[SID].turn is None)
+        # nothing runs: the change; the helper back to the new model's default — off; the tab's task is read only
+        page = await self.p.api_project_model(PKEY, "deepseek")
+        self.assertEqual((page["model"]["id"], page["haiku"], page["haiku_own"], page["busy"]), ("deepseek", False, False, []))
+        self.assertEqual(self.p.read_only(SID, PKEY), ("claude", "deepseek"))
+        self.assertEqual((await self.p.api_session(SID))["ro"], {"name": "Claude", "its": "DeepSeek"})
+        # the tab starts again in the project of DeepSeek: the topic hears it once
+        n = len(self.texts())
+        await run_hook(ev("SessionStart", source="resume"))
+        await until(lambda: any("Во вкладке VS Code" in t for t in self.texts()[n:]))
+        self.assertIn("DeepSeek", next(t for t in self.texts() if "Во вкладке VS Code" in t))
+        await run_hook(ev("SessionStart", source="resume"))
+        await asyncio.sleep(0.2)
+        self.assertEqual(sum("Во вкладке VS Code" in t for t in self.texts()), 1)
+        self.assertTrue((await self.p.api_project(PKEY))["tabwarn"])
+        self.assertTrue(next(r for r in (await self.p.api_overview())["mine"] if r["sid"] == SID)["ro"])
+
+    async def test_topic_only_done(self):
+        # stage M, 7.2 (Q145): a project whose topic gets only "done" — none of the task's words in Telegram: no turn
+        # message, the outcome one line "✅ project · done in N"; a permission — that Claude waits, the answer in the app,
+        # decided — one word; a file by `pult send` isn't sent; the pinned card names no task
+        proj = TMP / ("proj-" + self._testMethodName)
+        proj.mkdir()
+        (proj / "a.txt").write_text("секретное")
+        self.store.set_topic(PKEY, str(proj), "proj", 77)
+        await self.p.api_project_prefs(PKEY, topic="done")
+        self.assertFalse(self.p.pager())
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        Path(TP).write_text(tline("user", "Секретный план") + "\n")
+        await run_hook(ev("UserPromptSubmit", prompt="Секретный план"))
+        await run_hook(ev("Stop", last_assistant_message="Сделал секретный план.", background_tasks=[]))
+        await until(lambda: any(t.startswith("✅") for t in self.texts()))
+        await asyncio.sleep(0.2)
+        self.assertEqual([t for t in self.sent() if "екрет" in t], [])
+        self.assertTrue(next(t for t in self.texts() if t.startswith("✅")).startswith("✅ <b>proj</b> · "))
+        hook = await run_hook(ev("PermissionRequest", tool_name="Bash", tool_input={"command": "rm -rf секретное"}), wait=False)
+        await until(lambda: any(t.startswith("✋") for t in self.texts()))
+        req = next(iter(self.p.req_by_rid.values()))
+        self.assertTrue(req.bare)
+        self.assertEqual([t for t in self.sent() if "екрет" in t], [])
+        self.assertIn("Ответ — в приложении", next(t for t in self.texts() if t.startswith("✋")))
+        self.assertIsNone(self.p.act(req, "n", "app", text="нельзя секретное"))
+        await hook.wait()
+        await until(lambda: any("решено" in t for t in self.texts("editMessageText")))
+        self.assertEqual([t for t in self.sent() if "екрет" in t], [])
+        res = await self.p.on_send({"sid": SID, "paths": [str(proj / "a.txt")]})
+        self.assertIn("только «готово»", res["error"])
+        # back to the request and the outcome: the words come again
+        await self.p.api_project_prefs(PKEY, topic="full")
+        await run_hook(ev("UserPromptSubmit", prompt="Открытый план"))
+        await run_hook(ev("Stop", last_assistant_message="Сделал открытый план.", background_tasks=[]))
+        await until(lambda: any("Сделал открытый план" in t for t in self.texts()))
+        # the pinned card with the app: its "Now: «…»" only while the topic gets the words
+        self.p.env.update(PULT_APP_LINK="https://t.me/b/pult", PULT_RELAY_URL="wss://h.example/pult/agent")
+        self.p.set_focus(PKEY, SID)
+
+        async def card():
+            n, e = len(self.texts()), len(self.texts("editMessageText"))
+            await self.p.topic_card(PKEY, 77)
+            got = lambda: [t for t in self.texts()[n:] + self.texts("editMessageText")[e:] if "📂" in t]   # noqa: E731
+            await until(got)
+            return got()
+        self.assertIn("🎯 Сейчас", "".join(await card()))
+        await self.p.api_project_prefs(PKEY, topic="done")
+        got = await card()
+        self.assertTrue(got)
+        self.assertNotIn("🎯 Сейчас", "".join(got))
+
+    async def test_new_project_model(self):
+        # stage M, 7.2 (Q147): a new project gets the model picked in its form — none picked, the model of new projects
+        # from Settings; its first task runs on it; one that can't take a task is refused before anything is made
+        root = TMP / ("home-" + self._testMethodName)
+        (root / "Documents").mkdir(parents=True)
+        with mock.patch.object(pult_api, "NEW_ROOT", root), mock.patch.object(pultd, "SKIP_PREFIXES", ("-nothing-",)), \
+                mock.patch.object(self.p, "drive", mock.AsyncMock()) as drive:
+            d = await self.p.api_dirs()
+            with self.assertRaises(ValueError) as e:
+                await self.p.api_create("Своя дача", parent=d["path"], vendor="deepseek", text="Привет")
+            self.assertIn("ключа ещё нет", str(e.exception))
+            self.assertFalse(os.path.exists(os.path.join(d["path"], "svoya_dacha")))
+            self.p.env[V.key_name("deepseek")] = "sk-" + "d" * 30
+            r = await self.p.api_create("Своя дача", parent=d["path"], vendor="deepseek", text="Привет", model="deepseek-flash")
+            self.assertEqual(self.p.project_model(r["pkey"]), "deepseek")
+            self.assertEqual(drive.call_args.kwargs["model"], "deepseek-flash")
+            await self.p.api_vendor_all("deepseek")
+            r = await self.p.api_create("Вторая дача", parent=d["path"])
+            self.assertEqual(self.p.project_model(r["pkey"]), "deepseek")
+            r = await self.p.api_create("Третья дача", parent=d["path"], vendor="claude")
+            self.assertEqual(self.p.project_model(r["pkey"]), "claude")
 
     def second_project(self, **conf):
         """A project in git whose task changed a file, its session with an outcome and a turn that wrote it, and a
@@ -3600,12 +3806,13 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((got["ok"], got["models"]), (True, ["gpt-5.6-sol", "gpt-5.6-mini"]))     # its default first
         # each model's own levels of effort and its default (the owner, 2026-10-31: "selectable effort, like Claude's")
         self.assertEqual((got["efforts"]["gpt-5.6-sol"][-1], got["effort"]), ("ultra", {"gpt-5.6-sol": "low", "gpt-5.6-mini": "medium"}))
-        with self.assertRaises(ValueError) as e:                    # the project doesn't go to other vendors yet
+        with self.assertRaises(ValueError) as e:                    # the project is Claude's (stage M, 7.2)
             await self.p.api_new(PKEY, "Создай hello.txt", vendor="codex")
         self.assertIn("Codex", str(e.exception))
-        await self.p.api_vendors_ok(PKEY, True)
+        page = await self.p.api_project_model(PKEY, "codex")       # the owner's choice: no permission asked besides
+        self.assertEqual((page["model"]["id"], page["model"]["cloud"], page["review"]["mine"]), ("codex", True, True))
         with self.assertRaises(ValueError):                         # a level its model doesn't have
-            await self.p.api_new(PKEY, "Создай hello.txt", vendor="codex", model="gpt-5.6-mini", effort="ultra")
+            await self.p.api_new(PKEY, "Создай hello.txt", model="gpt-5.6-mini", effort="ultra")
         sid = (await self.p.api_new(PKEY, "Создай hello.txt", vendor="codex", effort="high"))["sid"]
         self.assertEqual(self.store.vendor_of(sid), "codex")
         await until(lambda: any(m.get("method") == "turn/start" for m in sent()))

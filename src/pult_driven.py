@@ -127,6 +127,7 @@ class Req:
         self.picks = R.advised_picks(self.inp.get("questions")) if self.kind == "ask" else {}
         self.ts = time.time()     # since when it waits for the owner
         self.paged = False        # posted to Telegram (as a pager, only when the owner is neither in the app nor here)
+        self.bare = False         # posted without its words: the project's topic gets only "done" (stage M, 7.2)
 
 
 class Live:
@@ -345,7 +346,10 @@ class Driven:
             async for m in c.receive_messages():
                 if isinstance(m, ResultMessage):
                     if m.is_error:
-                        await self.d.notice(self.sid, self.d.t("err.turn", err=R.esc(R.short(m.result or m.subtype, 600))),
+                        # the result's words may be the task's: a topic that gets only "done" hears the kind (7.2)
+                        full = self.d.topic_full(self.d.session_pkey(self.sid))
+                        await self.d.notice(self.sid, self.d.t("err.turn", err=R.esc(R.short(m.result or m.subtype, 600)
+                                                                                     if full else m.subtype or "error")),
                                             self.d.expect.get(self.sid))
                     ctx = ctx_from_usage(m.model_usage, self.model)
                     if ctx:

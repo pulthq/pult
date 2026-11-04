@@ -79,13 +79,15 @@ there. A finished task stays until you mark it **Reviewed**.
 
 ### Any model does the task
 
-New task asks **who does it**: Claude, Codex on your ChatGPT plan, or DeepSeek, GLM or Kimi with your key. DeepSeek,
-GLM and Kimi work inside Claude Code; Codex works in its own program, in a sandbox of the project's folder, and asks
-only to leave it. The turns, the cards, the permissions and the outcome are the same for all of them. A project can
-keep its own default, and every card names the model that did the work. A model of your own runs there too: Ollama on
-this computer, or on another one through a tunnel — free, and the code stays home. DeepSeek, GLM, Kimi and your own model
-each work in a Claude Code home of their own: your global instructions and memory don't go to them, and their work
-doesn't go to Claude.
+Each project belongs to one model — Claude, Codex on your ChatGPT plan, or DeepSeek, GLM or Kimi with your key — and
+it does every task of that project. You pick it in the project's settings and change it there while nothing runs; the
+tasks of the model before stay, read only. DeepSeek, GLM and Kimi work inside Claude Code; Codex works in its own
+program, in a sandbox of the project's folder, and asks only to leave it. The turns, the cards, the permissions and the
+outcome are the same for all of them, and every card names the model that did the work. A model of your own runs there
+too: Ollama on this computer, or on another one through a tunnel — free, and the code stays home. DeepSeek, GLM, Kimi
+and your own model each work in a Claude Code home of their own: your global instructions and memory don't go to them,
+and their work doesn't go to Claude — even the small Claude helper that writes result lines and tags stays out of such
+a project unless you switch it on; its Telegram topic can get only "done", without the task's words.
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="media/f-who.en.dark.png"><img src="media/f-who.en.png" width="330" alt="New task in the app with the sheet Who does it open: Claude on your plan, DeepSeek with its main model, GLM and Kimi grey until their key is in Settings"></picture></p>
 
@@ -172,8 +174,8 @@ Anthropic has its own ways to reach Claude Code away from the keyboard. If they 
 ## Safe by default
 
 Only your Telegram account, only in your group. No port opened; the optional relay stores nothing. No telemetry.
-A project's code goes to another vendor only once you allow that project, and a vendor's session never starts
-without your key. Pult drives the agents already signed in on your computer, with your plans — read their terms and
+A project's code goes to another vendor only as that project's model, which you pick, or for a review you tap and
+allow; a vendor's session never starts without your key. Pult drives the agents already signed in on your computer, with your plans — read their terms and
 decide for yourself. **[Security, privacy and your plans](guide/usage.md#security-and-privacy)** · [SECURITY.md](SECURITY.md)
 
 Pult is an independent open-source project, not affiliated with or endorsed by Anthropic, OpenAI or any other vendor

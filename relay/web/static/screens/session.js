@@ -290,7 +290,7 @@ function FileView({ job }) {
 
 // the session's last outcome at the end of the chat; how long Claude worked — the task's clock at the top, stopped
 // (2026-10-30); a computer before 0.18.34 says here how long the last turn took
-function Outcome({ sid, out, state, now, second }) {
+function Outcome({ sid, out, state, now, second, ro }) {
   const [resume, setResume] = useState(out.resume);
   const [got, setGot] = useState(false);
   const mine = state === "you" || state === "fail";
@@ -302,7 +302,7 @@ function Outcome({ sid, out, state, now, second }) {
     <div class="k">${head}${out.work == null && out.dur ? " · " + t("home.took", { dur: dur(out.dur) }) : ""}</div>
     ${state !== "fail" && out.line && html`<div class="o-l"><b>${t("out.line")}</b> ${out.line}</div>`}
     ${out.need && html`<div class="o-l"><b>${t("out.need")}</b> ${out.need}</div>`}
-    ${out.fail === "rate_limit" ? html`<${ResumeAt} sid=${sid} resume=${resume} reset=${out.reset} onSet=${setResume}/>` : html`<${Replies} sid=${sid} replies=${out.replies}/>`}
+    ${ro ? "" : out.fail === "rate_limit" ? html`<${ResumeAt} sid=${sid} resume=${resume} reset=${out.reset} onSet=${setResume}/>` : html`<${Replies} sid=${sid} replies=${out.replies}/>`}
     ${out.turn_files && html`<${TurnLine} sid=${sid} tf=${out.turn_files}/>`}
     ${(mine || second) && html`<div class="foot quiet">${second ? html`<button class="link sec-ask" onClick=${second}>${ic("eye", 15)} ${t("sec.ask")}</button>` : html`<span></span>`}
       ${!mine ? "" : got ? html`<span class="dim">${ic("check", 14)} ${t("mine.got")}</span>` : html`<button class="link" onClick=${gotIt}>${ic("check", 15)} ${t("mine.got")}</button>`}</div>`}
@@ -618,7 +618,7 @@ function Session({ sid }) {
       <div class="dim small">${t("queue.why", { n: lv.slots })}</div>
       <div class="foot"><span></span><button class="btn" onClick=${jump}>${t("queue.jump")}</button></div></div>`}
     ${out && lv.state !== "work" && lv.state !== "queue" && !info.pending.length && (outState === "you" || outState === "fail" || out.need || (out.replies && out.replies.length) || out.resume || out.turn_files || canSecond)
-      && html`<${Outcome} key=${out.ts} sid=${sid} out=${out} state=${outState} now=${now} second=${canSecond ? () => askSecond() : null}/>`}
+      && html`<${Outcome} key=${out.ts} sid=${sid} out=${out} state=${outState} now=${now} second=${canSecond ? () => askSecond() : null} ro=${!!info.ro}/>`}
     ${sec && sec.job && html`<${Second} sid=${sid} job=${sec.job} now=${now} who=${vend ? vend.name : "Claude"} onAgain=${() => askSecond()}/>`}
     ${pending.map((r) => html`<${Req} key=${r.rid} r=${r} stt=${info.stt} showWhere=${false}/>`)}
     <div ref=${bottom}></div>
@@ -633,12 +633,14 @@ function Session({ sid }) {
         ${full.att && full.att.length ? html`<div class="atts">${full.att.map((x, k) => html`<${Pic} key=${k} a=${x} all=${full.att}/>`)}</div>` : ""}
         <button class="link" onClick=${() => { const el = document.querySelector('.msg.me[data-n="' + full.n + '"]'); closeFull();
           if (el) setTimeout(() => el.scrollIntoView({ block: "start" }), 60); }}>${t("pin.goto")}</button></div>`}
+      ${info.ro ? html`<div class="ro-bar"><span>${ic("lock", 15)} ${t("ro.line", { name: info.ro.name, its: info.ro.its })}</span>
+        <a class="link" href=${"#/ps/" + encodeURIComponent(info.pkey)}>${t("ro.change")}</a></div>` : html`
       <${Thumbs} a=${a}/>
       <textarea ref=${taRef} rows="1" placeholder=${t("write")} value=${text} onPaste=${a.paste} onDragOver=${a.over} onDrop=${a.dropIn} onKeyDown=${sendKey(() => { if (!busy) sendText(false); }, setText)} onInput=${(e) => { setText(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}/>
       <div class="ctl"><${Attach} a=${a} disabled=${busy} keep=${{ k: "s:" + sid, text }}/>${info.stt ? html`<${Mic} v=${v} disabled=${busy}/>` : ""}
         <div class="status">${line1}${line2}</div>
         ${lv.driven && (lv.state === "work" || lv.state === "queue") ? html`<button class="btn danger" onClick=${stop}>${t("stop")}</button>` : ""}
-        <button class="btn send" aria-label=${t("send")} disabled=${busy || (!text.trim() && !a.files.length)} onClick=${() => sendText(false)}><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button></div>
+        <button class="btn send" aria-label=${t("send")} disabled=${busy || (!text.trim() && !a.files.length)} onClick=${() => sendText(false)}><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button></div>`}
     </div>
   </div>`;
 }
