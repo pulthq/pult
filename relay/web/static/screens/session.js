@@ -569,7 +569,7 @@ function Session({ sid }) {
   // the model: the one picked for the session, else the one its last request used; the effort — the same way
   const chosen = info.choice && info.choice.model;
   const vend = info.vendor;                    // another vendor's model (stage M, step 2): its name and the model as it is
-  const modelText = vend ? llmName({ vendor: vend.name, model: chosen || (info.stats && info.stats.model) || vend.models[0] })
+  const modelText = vend ? llmName({ vendor: vend.short || vend.name, model: chosen || (info.stats && info.stats.model) || vend.models[0] })
     : chosen ? chosen.charAt(0).toUpperCase() + chosen.slice(1) + (info.stats && info.stats.model && !modelName(info.stats.model).toLowerCase().startsWith(chosen) ? " ▸" : "")
     : info.stats && info.stats.model ? modelName(info.stats.model) : "";
   // Codex's task (M4.1): the level picked for it, else its model's own default; another vendor's — none of its own

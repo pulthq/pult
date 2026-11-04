@@ -3055,7 +3055,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(chk.call_args.args[1], key)
             self.assertIn("PULT_VENDOR_KEY_DEEPSEEK=" + key, Path(os.environ["PULT_ENV"]).read_text())
             vs = (await self.p.api_projects())["vendors"]
-            self.assertEqual([(v["id"], v["key"]) for v in vs], [("deepseek", True), ("glm", False), ("kimi", False)])
+            self.assertEqual([(v["id"], v["key"]) for v in vs], [("deepseek", True), ("glm", False), ("kimi", False), ("local", False)])
             self.assertNotIn(key, json.dumps(vs) + json.dumps((await self.p.api_settings())["vendors"]))
             # a new task on DeepSeek: its session runs on the profile, the key in both places, hidden from VS Code
             sid = (await self.p.api_new(PKEY, "Почини тесты", model="deepseek-v4-pro[1m]", effort="high", vendor="deepseek"))["sid"]
@@ -3162,6 +3162,116 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         for dr in list(self.p.driven.values()):
             dr.task.cancel()
 
+    async def test_local_model(self):
+        # stage M, step 6: one's own model through Ollama — no key (a fixed stand-in in both places), turned on by a
+        # check that found a model with tools and a context known and big enough; no project's permission (the code
+        # stays home); five tools, one model for every role, the compaction window its context; a task doesn't start
+        # while the server doesn't answer — from the app it says why, from Telegram too
+        import claude_agent_sdk
+        proj = TMP / ("proj-" + self._testMethodName)
+        proj.mkdir()
+        self.store.set_topic(PKEY, str(proj), "proj", 77)
+        started = []
+
+        class Fake:
+            def __init__(self, options):
+                started.append(options)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def query(self, text):
+                pass
+
+            async def interrupt(self):
+                pass
+
+            async def set_model(self, m):
+                pass
+
+            async def receive_messages(self):
+                await asyncio.Event().wait()
+                yield
+        found = {"version": "0.40.14", "models": [{"name": "gemma4-32k", "ctx": 32768, "tools": True},
+                                                   {"name": "qwen3.5:4b", "ctx": None, "tools": True},
+                                                   {"name": "tiny", "ctx": 8192, "tools": True},
+                                                   {"name": "embed", "ctx": 65536, "tools": False}]}
+        with mock.patch.object(claude_agent_sdk, "ClaudeSDKClient", Fake), \
+                mock.patch.object(V, "reach", mock.AsyncMock(return_value=True)) as reach:
+            self.assertFalse(self.p.vendor_key("local"))
+            with self.assertRaises(ValueError) as e:
+                await self.p.api_new(PKEY, "Почини тесты", vendor="local")
+            self.assertIn("выключена", str(e.exception))
+            with self.assertRaises(ValueError) as e:            # only this computer's own address
+                await self.p.api_vendor_local("http://10.20.10.5:11434")
+            self.assertIn("Только адрес", str(e.exception))
+            with self.assertRaises(ValueError):                 # no key of its own to set
+                await self.p.api_vendor_key("local", "k" * 20)
+            # nothing fits: found, but stays off, and says how to make one
+            small = {"version": "0.40.14", "models": [{"name": "tiny", "ctx": 8192, "tools": True}]}
+            with mock.patch.object(V, "check_local", mock.AsyncMock(return_value=small)):
+                r = await self.p.api_vendor_local("http://127.0.0.1:11434")
+            self.assertFalse(r["vendor"]["key"])
+            self.assertIn("num_ctx 32768", r["words"])
+            with mock.patch.object(V, "check_local", mock.AsyncMock(return_value=found)) as chk:
+                r = await self.p.api_vendor_local("http://localhost:11500/")
+            self.assertEqual(chk.call_args.args[0], "http://localhost:11500")
+            v = r["vendor"]
+            self.assertEqual((v["key"], v["local"], v["models"], v["url"], v["name"], v["short"]),
+                             (True, True, ["gemma4-32k"], "http://localhost:11500", "Своя модель", "Своя"))
+            self.assertIn("gemma4-32k", r["words"])
+            self.assertIn("32K", r["words"])
+            env_file = Path(os.environ["PULT_ENV"])                  # nothing written for it: no key of its own
+            self.assertNotIn("PULT_VENDOR_KEY_LOCAL", env_file.read_text() if env_file.exists() else "")
+            # a task in a project never allowed to go to other vendors: its own model needs no permission
+            self.assertFalse(self.p.vendors_ok(PKEY))
+            sid = (await self.p.api_new(PKEY, "Почини тесты", vendor="local"))["sid"]
+            await until(lambda: started)
+            o = started[-1]
+            self.assertEqual(self.store.vendor_of(sid), "local")
+            self.assertEqual((o.model, o.env["ANTHROPIC_BASE_URL"], o.env["ANTHROPIC_AUTH_TOKEN"], o.env["ANTHROPIC_API_KEY"],
+                              o.env["ANTHROPIC_DEFAULT_HAIKU_MODEL"], o.env["CLAUDE_CODE_SUBAGENT_MODEL"],
+                              o.env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"], o.env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"], o.tools),
+                             ("gemma4-32k", "http://localhost:11500", V.LOCAL_KEY, V.LOCAL_KEY, "gemma4-32k", "gemma4-32k",
+                              "32768", "8192", list(V.LOCAL_TOOLS)))
+            self.assertIn("127.0.0.1", o.env["NO_PROXY"])
+            self.assertEqual(reach.call_args.args[0], "http://localhost:11500")
+            self.assertIsNone(self.p.vendor_stop(sid, PKEY))
+            self.assertEqual(self.p.llm_view(sid, {}), {"vendor": "Своя", "model": "gemma4-32k"})
+            view = (await self.p.api_session(sid))["vendor"]
+            self.assertEqual((view["id"], view["short"], view["local"], view["models"]), ("local", "Своя", True, ["gemma4-32k"]))
+            # the project's own default to it needs no permission; the common one reaches only the allowed projects
+            self.assertEqual(await self.p.api_vendor_default(PKEY, "local"), {"vendor": "local", "who": "local"})
+            sid_t = "77777777-2222-3333-4444-666666666666"
+            await self.p.drive(sid_t, str(proj), "из Telegram", None, pkey=PKEY)
+            self.assertEqual(self.store.vendor_of(sid_t), "local")
+            await until(lambda: len(started) == 2)
+            await self.p.api_vendor_default(PKEY, None)
+            self.assertEqual((await self.p.api_vendor_all("local"))["vendor"], "local")
+            self.assertEqual(self.p.vendor_who(PKEY), "claude")
+            await self.p.api_vendors_ok(PKEY, True)
+            self.assertEqual(self.p.vendor_who(PKEY), "local")
+            # the computer with the model is off: nothing starts, the app hears why, Telegram too
+            reach.return_value = False
+            n = len(started)
+            with self.assertRaises(ValueError) as e:
+                await self.p.api_new(PKEY, "Ещё", vendor="local")
+            self.assertIn("не отвечает", str(e.exception))
+            self.assertFalse(await self.p.drive("77777777-2222-3333-4444-777777777777", str(proj), "из Telegram", None, pkey=PKEY))
+            await until(lambda: any("не отвечает" in t for t in self.texts()))
+            self.assertEqual(len(started), n)
+            # turned off: its sessions can't go on, the common default goes back to Claude
+            r = await self.p.api_vendor_local(on=False)
+            self.assertFalse(r["vendor"]["key"])
+            self.assertIsNone(self.p.vendor_all())
+            self.assertIn("выключена", self.p.vendor_stop(sid, PKEY))
+            self.assertEqual(self.p.vendor_who(PKEY), "claude")
+        for dr in list(self.p.driven.values()):
+            dr.task.cancel()
+
     def second_project(self, **conf):
         """A project in git whose task changed a file, its session with an outcome and a turn that wrote it, and a
         stand-in Codex with these settings (stage M): → (the folder, the commit the task began on, its settings file,
@@ -3253,13 +3363,21 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await until(lambda: (self.p.seconds.get(SID) or {}).get("st") == "fail")
         self.assertEqual((await view())["second"]["job"]["why"], "login")
         await until(lambda: any("не получилось" in t for t in self.texts()))
-        self.assertIn("Codex не вошёл в ChatGPT", [t for t in self.texts() if "не получилось" in t][-1])
+        self.assertIn(I.T("second.why.login"), [t for t in self.texts() if "не получилось" in t][-1])
         conf.write_text(json.dumps({"fail": "usageLimitExceeded"}))
         failed = sum("не получилось" in t for t in self.texts())
         await self.p.api_second(SID, "start")
         await until(lambda: (self.p.seconds.get(SID) or {}).get("st") == "fail" and self.p.seconds[SID].get("why") == "limit")
         # its word reaches the topic a moment after the card's state: counted before it, it was a race (2026-10-31)
         await until(lambda: sum("не получилось" in t for t in self.texts()) > failed)
+        # Model capacity must reach both the second-opinion card and its Telegram notification.
+        conf.write_text(json.dumps({"fail": "serverOverloaded"}))
+        failed = sum("не получилось" in t for t in self.texts())
+        await self.p.api_second(SID, "start")
+        await until(lambda: (self.p.seconds.get(SID) or {}).get("why") == "overloaded")
+        self.assertEqual((await view())["second"]["job"]["why"], "overloaded")
+        await until(lambda: sum("не получилось" in t for t in self.texts()) > failed)
+        self.assertIn(I.T("second.why.overloaded"), [t for t in self.texts() if "не получилось" in t][-1])
         # stopped by the owner: no card, no word in the topic; the next one waits for the one running
         conf.write_text(json.dumps({"hang": 30, "steps": 0}))
         told_before = len(self.texts())
@@ -3430,6 +3548,21 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await self.p.api_model(sid, effort="ultra")
         self.assertEqual((await self.p.api_model(sid, effort="medium"))["choice"], {"model": "gpt-5.6-mini", "effort": "medium"})
+        # A failed task preserves its cause in the saved outcome and the phone's session view, without
+        # changing models or starting another turn. The owner can continue in this same thread afterwards.
+        for cause, code in (("serverOverloaded", "codex_overloaded"), ("rateLimitExceeded", "codex_rate"),
+                            ("usageLimitExceeded", "codex_limit"), ("unknownFutureError", "codex_error")):
+            doer(wait=0.1, fail={"codexErrorInfo": cause, "message": "diagnostic-only secret-marker"})
+            turns = sum(m.get("method") == "turn/start" for m in sent())
+            await self.p.api_send(sid, "Попробуй ещё раз")
+            await until(lambda: (self.p.attn.rec.get(sid) or {}).get("fail") == code)
+            await until(lambda: self.p.driven[sid].turn_id is None)
+            self.assertIn(I.T("fail." + code), json.dumps(await self.p.api_session(sid), ensure_ascii=False))
+            self.assertNotIn("secret-marker", json.dumps(await self.p.api_session(sid), ensure_ascii=False))
+            await asyncio.sleep(0.15)
+            self.assertEqual(sum(m.get("method") == "turn/start" for m in sent()), turns + 1)
+            last = [m for m in sent() if m.get("method") == "turn/start"][-1]["params"]
+            self.assertEqual((last["model"], last["effort"]), ("gpt-5.6-mini", "medium"))
         # a message mid-turn goes into the turn that runs (turn/steer); Codex's words say it took it
         doer(wait=1.5)
         self.assertEqual((await self.p.api_send(sid, "Ещё строку"))["how"], "session")
@@ -3659,7 +3792,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             got = await self.p.api_projects()
             self.assertEqual({k: v for k, v in got.items() if k not in ("vendors", "vendor_all", "codex")},
                              {"projects": [], "stt": False, "create": True, "choice": {"model": None, "effort": None}})
-            self.assertEqual([v["id"] for v in got["vendors"]], ["deepseek", "glm", "kimi"])   # stage M, step 2
+            self.assertEqual([v["id"] for v in got["vendors"]], ["deepseek", "glm", "kimi", "local"])   # stage M, steps 2 and 6
             self.p.stt = FakeStt()
             self.assertTrue((await self.p.api_projects())["stt"])
 
@@ -6738,7 +6871,7 @@ class VendorsTest(unittest.TestCase):
     def test_profiles_and_env(self):
         ps = V.profiles({"deepseek": {"models": ["deepseek-v4-pro[1m]", "deepseek-flash", "bad name!"]},
                          "glm": {"url": "http://plain.example"}})
-        self.assertEqual(list(ps), ["deepseek", "glm", "kimi"])
+        self.assertEqual(list(ps), ["deepseek", "glm", "kimi", "local"])
         self.assertEqual(ps["deepseek"]["models"], ["deepseek-v4-pro[1m]", "deepseek-flash"])   # a bad name is dropped
         self.assertEqual(ps["glm"]["url"], "https://api.z.ai/api/anthropic")        # only https is taken
         self.assertEqual(V.clean_models("a-1, b-2\nc[1m]"), ["a-1", "b-2", "c[1m]"])
@@ -6790,6 +6923,74 @@ class VendorsTest(unittest.TestCase):
         with self.assertRaises(V.VendorError) as e:
             run(httpx.MockTransport(down))
         self.assertEqual(e.exception.kind, "net")
+
+    def test_local(self):
+        # one's own model (stage M, step 6): only this computer's address; a model only with tools and a context
+        # known and big enough; one model for every role, its context the compaction window; no key — the stand-in
+        self.assertTrue(all(V.url_ok("local", u) for u in ("http://127.0.0.1:11434", "http://localhost", "http://[::1]:8080/")))
+        self.assertFalse(any(V.url_ok("local", u) for u in ("http://10.20.10.5:11434", "http://127.0.0.1.evil.com",
+                                                             "http://localhost@evil.com", "ftp://127.0.0.1")))
+        self.assertFalse(V.url_ok("deepseek", "http://127.0.0.1:11434"))      # plain http only for one's own model
+        conf = {"local": {"on": True, "url": "http://localhost:11500", "models": ["small", "gemma4-32k", "noctx"],
+                          "ctx": {"small": 8192, "gemma4-32k": 32768}}}
+        p = V.profiles(conf)["local"]
+        self.assertEqual((p["models"], p["on"], p["url"], p["tools"]), (["gemma4-32k"], True, "http://localhost:11500",
+                                                                        list(V.LOCAL_TOOLS)))
+        self.assertFalse(V.profiles({"local": dict(conf["local"], ctx={"small": 8192})})["local"]["on"])
+        self.assertFalse(V.profiles({"local": dict(conf["local"], on=False)})["local"]["on"])
+        e = V.session_env(p, V.LOCAL_KEY)
+        self.assertEqual({k: e[k] for k in ("ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                                            "CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+                                            "CLAUDE_CODE_MAX_OUTPUT_TOKENS", "ANTHROPIC_API_KEY")},
+                         {"ANTHROPIC_DEFAULT_OPUS_MODEL": "gemma4-32k", "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gemma4-32k",
+                          "CLAUDE_CODE_SUBAGENT_MODEL": "gemma4-32k", "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "32768",
+                          "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "8192", "ANTHROPIC_API_KEY": V.LOCAL_KEY})
+        with self.assertRaises(ValueError):                  # a model whose context Pult doesn't know never runs
+            V.session_env(p, V.LOCAL_KEY, "noctx")
+        # what Ollama 0.40.14 answered on 2026-11-04 (cut down): tags, show, an empty /v1/messages — 400
+        asked, shown = [], []
+
+        def ollama(req):
+            asked.append((req.method, req.url.path))
+            path = req.url.path
+            if path == "/api/version":
+                return httpx.Response(200, json={"version": "0.40.14"})
+            if path == "/api/tags":
+                return httpx.Response(200, json={"models": [{"name": "gemma4-32k:latest"}, {"name": "qwen3.5:4b"},
+                                                            {"name": "gpt-oss:120b-cloud"}, {"name": "nomic-embed:latest"}]})
+            if path == "/api/show":
+                m = json.loads(req.content)["model"]
+                shown.append(m)
+                return httpx.Response(200, json={
+                    "gemma4-32k:latest": {"parameters": "top_p                          0.95\nnum_ctx                        32768",
+                                          "capabilities": ["completion", "vision", "tools", "thinking"]},
+                    "qwen3.5:4b": {"parameters": "temperature                    1", "capabilities": ["completion", "tools"]},
+                    "nomic-embed:latest": {"parameters": "num_ctx 8192", "capabilities": ["embedding"]}}[m])
+            if path == "/v1/messages":
+                return httpx.Response(400, json={"type": "error", "error": {"type": "invalid_request_error",
+                                                                            "message": "model is required"}})
+            return httpx.Response(404, text="404 page not found")
+        got = asyncio.run(V.check_local("http://127.0.0.1:11434/", transport=httpx.MockTransport(ollama)))
+        self.assertEqual(got, {"version": "0.40.14", "models": [{"name": "gemma4-32k", "ctx": 32768, "tools": True},
+                                                                {"name": "qwen3.5:4b", "ctx": None, "tools": True},
+                                                                {"name": "nomic-embed", "ctx": 8192, "tools": False}]})
+        self.assertNotIn(("POST", "/api/generate"), asked)              # nothing loaded: no request that runs a model
+        self.assertNotIn("gpt-oss:120b-cloud", shown)                    # a cloud model isn't one's own: not even asked
+        old = lambda req: httpx.Response(404, text="404 page not found") if req.url.path == "/v1/messages" else ollama(req)  # noqa: E731
+        for transport, url, kind in ((httpx.MockTransport(old), "http://127.0.0.1:11434", "proto"),
+                                     (httpx.MockTransport(ollama), "http://10.0.0.2:11434", "url"),
+                                     (httpx.MockTransport(lambda req: httpx.Response(200, text="<html>")), "http://localhost", "proto")):
+            with self.assertRaises(V.VendorError) as e:
+                asyncio.run(V.check_local(url, transport=transport))
+            self.assertEqual(e.exception.kind, kind)
+
+        def down(req):
+            raise httpx.ConnectError("no route")
+        with self.assertRaises(V.VendorError) as e:
+            asyncio.run(V.check_local("http://127.0.0.1:11434", transport=httpx.MockTransport(down)))
+        self.assertEqual(e.exception.kind, "net")
+        self.assertTrue(asyncio.run(V.reach("http://127.0.0.1:11434", transport=httpx.MockTransport(ollama))))
+        self.assertFalse(asyncio.run(V.reach("http://127.0.0.1:11434", transport=httpx.MockTransport(down))))
 
     def test_spend_leaves_other_vendors_out(self):
         # another vendor's replies spend none of the subscription: out of the curve and of "at once"
@@ -6890,6 +7091,47 @@ class CodexTest(unittest.TestCase):
         self.assertIn("read them as they are now: search/index.py", CX.instructions(facts, None, "en"))
         long = CX.instructions(dict(facts, asks=["я" * 9000]), first, "ru")
         self.assertLess(len(long), 9000)
+
+    def test_codex_error_causes(self):
+        # The real failure had server_overloaded in the transcript; app-server uses serverOverloaded.
+        capacity = "Selected model is at capacity. Please try a different model."
+        for field, code in (("codexErrorInfo", "serverOverloaded"), ("codex_error_info", "server_overloaded")):
+            err = {field: code, "message": capacity}
+            self.assertEqual(CX.kind_of(err), "overloaded")
+            self.assertEqual(CX.fail_of(err), "codex_overloaded")
+        cases = [("usageLimitExceeded", "limit"), ("rateLimitExceeded", "rate"), ("unauthorized", "login"),
+                 ("cyberPolicy", "policy"), ("misalignmentPolicyViolation", "policy"),
+                 ("contextWindowExceeded", "context"), ("sessionBudgetExceeded", "budget"),
+                 ("internalServerError", "server"), ("modelNotFound", "model"), ("badRequest", "request"),
+                 ("sandboxError", "sandbox")]
+        for code, kind in cases:
+            with self.subTest(code=code):
+                # Structured causes take priority over misleading words (including HTTP 429 for a usage limit).
+                self.assertEqual(CX.kind_of({"codexErrorInfo": code, "message": "HTTP 429: too many requests"}), kind)
+        for words, kind in ((capacity, "overloaded"), ("Server is overloaded", "overloaded"),
+                            ("You've hit your usage limit", "limit"), ("Rate limit reached", "rate"),
+                            ("HTTP 429", "rate"), ("Please sign in", "login"), ("disk at capacity", "failed")):
+            self.assertEqual(CX.kind_of({"message": words}), kind)
+        for err in (None, "", [], 42, {"message": "something new"}, {"codexErrorInfo": ["serverOverloaded"]},
+                    {"codexErrorInfo": {"futureError": {}}}, {"codexErrorInfo": "policyCapacityUnavailable"}):
+            self.assertEqual(CX.fail_of(err), "codex_error", repr(err))
+        for kind, code in dict(CX.FAILS, failed="codex_error").items():
+            for lang in I.LANGS:
+                task, second = I.S["fail." + code][lang], I.S["second.why." + kind][lang]
+                self.assertEqual(task, second)             # topic and app explain the same cause
+                if kind != "failed":
+                    self.assertNotEqual(task, I.S["fail.codex_error"][lang])
+
+    def test_codex_transport_error_causes(self):
+        for tag in ("httpConnectionFailed", "responseStreamConnectionFailed", "responseStreamDisconnected",
+                    "responseTooManyFailedAttempts"):
+            for status, kind in ((None, "network"), (401, "login"), (403, "access"), (429, "rate"),
+                                 (500, "server"), (503, "server"), (504, "network")):
+                with self.subTest(tag=tag, status=status):
+                    self.assertEqual(CX.kind_of({"codexErrorInfo": {tag: {"httpStatusCode": status}}}), kind)
+        self.assertEqual(CX.kind_of({"codex_error_info": {"http_connection_failed": {"http_status_code": 429}}}), "rate")
+        for details in (None, [], "oops", {"httpStatusCode": "oops"}):
+            self.assertEqual(CX.kind_of({"codexErrorInfo": {"httpConnectionFailed": details}}), "network")
 
     def test_codex_history_and_helpers(self):
         # a task Codex does (stage M, M4.1): its own history file read as a chat — the owner's words (one mid-turn), its
@@ -7046,7 +7288,9 @@ class CodexTest(unittest.TestCase):
         self.assertEqual(rv["target"], {"type": "custom", "instructions": "Read the change."})
         self.assertEqual(next(m for m in sent if m.get("method") == "initialize")["params"]["clientInfo"]["version"], "9")
         self.assertTrue(any(m.get("id") == 99 and "error" in m for m in sent))      # the server's own request: declined
-        for c, kind in (({"login": False}, "login"), ({"fail": "usageLimitExceeded"}, "limit"), ({"fail": "other"}, "failed")):
+        for c, kind in (({"login": False}, "login"), ({"fail": "usageLimitExceeded"}, "limit"),
+                        ({"fail": "serverOverloaded"}, "overloaded"), ({"fail": "rateLimitExceeded"}, "rate"),
+                        ({"fail": "internalServerError"}, "server"), ({"fail": "other"}, "failed")):
             conf.write_text(json.dumps(c))
             with self.assertRaises(CX.CodexError) as e:
                 asyncio.run(CX.review(cmd, str(proj), "x", env=dict(os.environ)))

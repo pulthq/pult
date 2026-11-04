@@ -317,6 +317,8 @@ class Driven:
             model = own if own and own not in ("fable", "opus", "sonnet", "haiku") else p["models"][0]
             kw["env"] = dict(kw["env"], **V.session_env(p, key, model))
             effort = None                        # the vendor's own advice sets it (CLAUDE_CODE_EFFORT_LEVEL)
+            if p.get("tools"):                   # one's own model: the five core tools (probe_local: all 25 — slow, sloppy)
+                kw["tools"] = list(p["tools"])
         if model:
             kw["model"] = model
         if effort:

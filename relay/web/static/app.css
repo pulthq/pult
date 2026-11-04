@@ -421,6 +421,8 @@ button.clip { border: 0; padding: 0; font: inherit; }
 @keyframes blink { 50% { opacity: .15; } }
 .keyrow { display: flex; gap: 8px; margin-top: 10px; }
 .keyrow input { flex: 1; min-width: 0; }
+.keyrow.wrap { flex-wrap: wrap; }
+.keyrow.wrap input, .keyrow.wrap .btn { flex: 1 1 100%; }
 .mic-i { margin-right: 4px; }
 .thumbs { display: flex; gap: 8px; margin-top: 8px; }
 .composer .thumbs { margin-top: 0; }
@@ -967,6 +969,12 @@ button.tagc { border: 0; font-family: inherit; cursor: pointer; }
 .vend-st { font-size: var(--fs-sec); color: var(--muted); }
 .vend-st.on { color: var(--ok); }
 .vend-m { font-size: var(--fs-sec); margin-top: 10px; }
+.vend-found { margin-top: 8px; }
+.vf-row { display: flex; justify-content: space-between; gap: 10px; font-size: var(--fs-sec); padding: 3px 0; min-width: 0; }
+.vf-row > span:first-child { overflow-wrap: anywhere; }
+.vf-row > span:last-child { flex: none; text-align: right; }
+.vf-row.ok > span:first-child { font-weight: 600; }
+.vend-la { margin-top: 10px; }
 .vend-all-h { margin: 0 4px 6px; }
 .vend-all { margin-bottom: 4px; }
 .vend-all-t { margin: 6px 4px 12px; }

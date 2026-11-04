@@ -45,6 +45,7 @@ import pult_render as R
 import pult_spend as S
 import pult_stt as STT
 import pult_tags as G
+import pult_vendors as V
 from pult_tg import Outbox, Store, Tg, TgError   # Telegram and the state database (review 2026-10-27, 6.2)
 import pult_web as PW
 
@@ -90,7 +91,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.40"
+VERSION = "0.18.41"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -2576,6 +2577,11 @@ class Pult(Api, Parts):
             resume, sid = sid, str(uuid.uuid4())
         vid = self.store.vendor_of(resume) if resume else self.vendor_for_new(pkey, vendor)
         msg = self.vendor_stop(resume, pkey) if resume and vid else None      # its key gone, or "Disallow" since
+        if not msg and vid == V.LOCAL:          # one's own model: the computer it runs on may be off, the tunnel closed
+            lp = self.vendor_profiles()[V.LOCAL]
+            if not await V.reach(lp["url"]):
+                log("vendor local: %s doesn't answer — the task isn't started" % lp["url"])
+                msg = self.t("vendor.err.local.down", name=lp["name"], url=lp["url"])
         if msg:
             if app:
                 raise ValueError(msg)

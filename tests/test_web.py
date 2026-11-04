@@ -979,6 +979,14 @@ class AppStringsTest(unittest.TestCase):
         self.assertEqual(len(entries), len(re.findall(r'^\s*"?[\w.]+"?:\s*\{', body, re.M)))   # none unparsed
         for k, (en, ru) in entries.items():
             self.assertEqual(sorted(re.findall(r"\{(\w+)\}", en)), sorted(re.findall(r"\{(\w+)\}", ru)), k)
+        # Second-opinion kinds are built dynamically: every backend cause needs a translated app message — a sentence
+        # of the card's own, the same cause as the daemon's line, never the unknown one's words
+        for kind in set(T.CX.FAILS) | {"failed"}:
+            for lang, value in zip(("en", "ru"), entries["sec.fail." + kind]):
+                said = json.loads('"' + value + '"')
+                self.assertEqual(said.rstrip(".").lower(), T.I.S["second.why." + kind][lang].lower(), kind)
+                if kind != "failed":
+                    self.assertNotEqual(value, entries["sec.fail.failed"][("en", "ru").index(lang)], kind)
         # the app is app.js and its modules (core/ since 6.4 of the review); not the dictionary itself, nor Preact
         app = "\n".join(f.read_text() for f in sorted(web.rglob("*.js")) if f.name != "i18n.js" and "vendor" not in f.parts)
         used = {k for k in re.findall(r'\bt\("([\w.]+)"', app) if not k.endswith(".")}

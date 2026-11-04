@@ -191,6 +191,7 @@ function Vendors({ list, all, okN, onChange, onAll }) {
   const [keys, setKeys] = useState({});
   const [models, setModels] = useState({});
   const [busy, setBusy] = useState("");
+  const [urls, setUrls] = useState({});
   const saveKey = async (v, key) => {
     setBusy(v.id);
     try {
@@ -210,6 +211,35 @@ function Vendors({ list, all, okN, onChange, onAll }) {
     } catch (e) { alertBox(e.message); }
     setBusy("");
   };
+  // one's own model through Ollama (stage M, step 6): no key — its address, checked by the computer: the models Claude
+  // Code can work with and each one's context; it is on while one of them fits
+  const checkLocal = async (v, on) => {
+    setBusy(v.id);
+    try {
+      const r = await api("vendor_local", on ? { url: (urls[v.id] == null ? v.url : urls[v.id]).trim() } : { on: false });
+      onChange(list.map((x) => (x.id === v.id ? r.vendor : x)));
+      setUrls(Object.assign({}, urls, { [v.id]: null })); haptic("success"); alertBox(r.words);
+    } catch (e) { alertBox(e.message); }
+    setBusy("");
+  };
+  const ctxK = (n) => t("kilo.k", { n: Math.round(n / 1024) });
+  const local = (v) => {
+    const u = urls[v.id] == null ? v.url : urls[v.id], m = models[v.id] == null ? v.models.join(", ") : models[v.id];
+    const found = (v.found && v.found.models) || [];
+    return html`<div class="item static vend" key=${v.id}>
+      <div class="vend-h"><b>${v.name}</b><span class=${"vend-st" + (v.key ? " on" : "")}>${t(v.key ? "vend.local.on" : "vend.local.off")}</span></div>
+      <div class="dim vend-m">${t("vend.local.url")}</div>
+      <div class="keyrow wrap"><input ref=${plainField} inputmode="url" value=${u} data-saved=${v.url} onInput=${(e) => setUrls(Object.assign({}, urls, { [v.id]: e.target.value }))}/>
+        <button class="btn" disabled=${!u.trim() || busy === v.id} onClick=${() => checkLocal(v, true)}>${t(v.key ? "vend.local.again" : "vend.local.check")}</button></div>
+      ${found.length > 0 && html`<div class="vend-found">${found.map((x) => html`<div key=${x.name} class=${"vf-row" + (v.models.includes(x.name) ? " ok" : "")}>
+        <span>${x.name}</span><span class="dim">${!x.tools ? t("vend.local.notools") : !x.ctx ? t("vend.local.noctx") : ctxK(x.ctx) + (x.ctx < v.min ? " · " + t("vend.local.small") : "")}</span></div>`)}</div>`}
+      ${v.key ? html`<div class="dim vend-m">${t("vend.local.models")}</div>
+      <div class="keyrow"><input ref=${plainField} value=${m} data-saved=${v.models.join(", ")} onInput=${(e) => setModels(Object.assign({}, models, { [v.id]: e.target.value }))}/>
+        <button class="btn" disabled=${models[v.id] == null || m.trim() === v.models.join(", ") || busy === v.id} onClick=${() => saveModels(v)}>${t("voice.save")}</button></div>
+      <button class="link" disabled=${busy === v.id} onClick=${() => checkLocal(v, false)}>${t("vend.local.turnoff")}</button>` : ""}
+      <div class="dim small vend-la">${t("vend.local.about")}</div>
+    </div>`;
+  };
   // who does new tasks by default everywhere (2026-10-30: one tap if Claude goes away) — the allowed projects follow it
   const setAll = async (id) => {
     if ((all || "claude") === id) return;
@@ -222,6 +252,7 @@ function Vendors({ list, all, okN, onChange, onAll }) {
     <div class="seg vend-all">${[{ id: "claude", name: "Claude" }, ...can].map((v) => html`<button key=${v.id} class=${(all || "claude") === v.id ? "on" : ""} onClick=${() => setAll(v.id)}>${v.name}</button>`)}</div>
     <div class="dim small vend-all-t">${t(all ? "who.all.vendor" : "who.all.claude", { n: okN || 0 })}</div>`}
     <div class="list">${list.map((v) => {
+    if (v.local) return local(v);
     const k = keys[v.id] || "", m = models[v.id] == null ? v.models.join(", ") : models[v.id];
     return html`<div class="item static vend" key=${v.id}>
       <div class="vend-h"><b>${v.name}</b><span class=${"vend-st" + (v.key ? " on" : "")}>${v.key ? t("vend.key.on") : t("vend.key.off")}</span></div>

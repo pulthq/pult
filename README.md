@@ -82,7 +82,8 @@ there. A finished task stays until you mark it **Reviewed**.
 New task asks **who does it**: Claude, Codex on your ChatGPT plan, or DeepSeek, GLM or Kimi with your key. DeepSeek,
 GLM and Kimi work inside Claude Code; Codex works in its own program, in a sandbox of the project's folder, and asks
 only to leave it. The turns, the cards, the permissions and the outcome are the same for all of them. A project can
-keep its own default, and every card names the model that did the work.
+keep its own default, and every card names the model that did the work. A model of your own runs there too: Ollama on
+this computer, or on another one through a tunnel — free, and the code stays home.
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="media/f-who.en.dark.png"><img src="media/f-who.en.png" width="330" alt="New task in the app with the sheet Who does it open: Claude on your plan, DeepSeek with its main model, GLM and Kimi grey until their key is in Settings"></picture></p>
 
@@ -162,7 +163,7 @@ Anthropic has its own ways to reach Claude Code away from the keyboard. If they 
 |---|---|---|---|
 | Where you answer | an app inside Telegram, and the chat | claude.ai/code or the Claude app | Telegram, Discord or iMessage |
 | Which sessions | every VS Code tab and terminal session, picked up by hooks | the ones you connect, or all with its auto-connect setting | a session started with `claude --channels …` |
-| Other vendors | DeepSeek, GLM or Kimi inside Claude Code; Codex reviews the work | — | — |
+| Other vendors | DeepSeek, GLM or Kimi inside Claude Code, or a model of your own through Ollama; Codex reviews the work | — | — |
 | Your sign-in | whatever Claude Code is signed in with | a claude.ai plan; API keys aren't supported | claude.ai or a Console API key |
 | Status | independent, open source | official | official, research preview |
 

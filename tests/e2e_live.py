@@ -19,7 +19,9 @@ A task Codex does (stage M, M4.1): the real Codex of this computer writes a file
 from its sandbox — which can't reach the socket, so through Pult's outbox — its outcome and history come as a session's
 (skipped without Codex). A task on another vendor's model (stage M, step 2): a stand-in for DeepSeek on this computer gets the session's requests with
 Pult's key and never the subscription's token; the outcome comes; the transcript names the vendor's model, and so does its
-row — Claude's session's row its real model, and so does the owner's move on Home.
+row — Claude's session's row its real model, and so does the owner's move on Home. One's own model (stage M, step 6): the
+same stand-in as a local server, in a project never allowed to go to other vendors — Pult's stand-in key, the five core
+tools, one model for every role.
 """
 import asyncio, json, os, shutil, sys, tempfile, time, urllib.parse
 from pathlib import Path
@@ -444,6 +446,30 @@ async def main():
     llm11 = (await p.row_stats(sid11))[1]
     log("модель в строке:", llm11)
     assert llm11 and llm11.get("vendor") == "DeepSeek" and llm11["model"].startswith("deepseek-flash"), "the row doesn't say the vendor's model"
+    # one's own model (stage M, step 6): the same stand-in as a local server, turned on as its check would; a project
+    # never allowed to go to other vendors; the session's real Claude Code asks it with Pult's stand-in key, only with
+    # the five core tools, every role on the one model
+    asked.clear()
+    url = V.PRESETS["deepseek"]["url"]
+    conf = p.store.get("vendors.conf") or {}
+    conf["local"] = {"on": True, "url": url, "models": ["stand-local-32k"], "ctx": {"stand-local-32k": 32768}}
+    p.store.put("vendors.conf", conf)
+    await p.api_vendors_ok(pkey5, False)
+    sid13 = (await p.api_new(pkey5, "Reply with one word: PONG.", vendor="local"))["sid"]
+    await until(lambda: (p.attn.rec.get(sid13) or {}).get("ts"), what="итог сессии на своей модели")
+    msgs = [a for a in asked if a["path"].endswith("/messages")]
+    log("своя модель (подставная): запросов", len(msgs), "· модели", sorted({a["model"] for a in msgs}),
+        "· инструментов", sorted({a["tools"] for a in msgs}), "· max_tokens", sorted({a["max"] for a in msgs}),
+        "· итог:", p.attn.rec[sid13]["line"])
+    assert msgs and all(a["x"] == V.LOCAL_KEY and "sk-ant" not in a["auth"] for a in msgs), "another credential reached the local model"
+    assert {a["model"] for a in msgs} == {"stand-local-32k"}, "a role went to another model"
+    assert max(a["tools"] for a in msgs) == len(V.LOCAL_TOOLS), "the session didn't get the five tools"
+    assert p.store.vendor_of(sid13) == "local"
+    llm13 = (await p.row_stats(sid13))[1]
+    log("модель в строке:", llm13)
+    assert llm13 and llm13.get("vendor") in ("Local", "Своя") and llm13["model"] == "stand-local-32k", "the row doesn't say the local model"
+    assert all(a["max"] <= 8192 for a in msgs if a["tools"]), "an answer may run past the local model's context"
+    await p.api_vendors_ok(pkey5, True)                 # the next one, Codex, works in this project as allowed
     await runner.cleanup()
     # Codex doing a task (stage M, M4.1): the real Codex of this computer, on the owner's ChatGPT plan — a file in the
     # project's folder, written without asking (its sandbox is that folder, Q121); the outcome as Claude's, its own

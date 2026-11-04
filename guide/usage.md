@@ -79,6 +79,13 @@ Codex for a second opinion. So one model can do a task and another check it — 
   by default** does it for every allowed project at once (a project's own choice comes first). A session keeps its vendor when it goes on or
   is copied, never starts without the key and doesn't show in VS Code's list. Anthropic doesn't support this, and
   Claude Code's prompts are written for Claude: for the cheaper tasks, not the hard ones.
+- **A model of your own**: Who does it has **Local model** too — Ollama on this computer, or on another one through a
+  tunnel you keep open (Pult reaches only this computer's own address). Settings → Other vendors → Local model →
+  **Check and turn on** asks the server what it has: a model fits when it can use tools and its context is set to 16K
+  or more (`PARAMETER num_ctx` in its Modelfile) — Ollama cuts a longer request silently, so a model without it isn't
+  taken. No key and no project's permission: the code stays home. Claude Code gets five tools there — commands,
+  reading, editing and writing files, a question to you — and one model does every role; a task doesn't start while
+  the server doesn't answer. Free, but weaker and slower than Claude.
 - **Which model did what**: every card names its model — in Running now at the right of its top line ("Opus 5.5",
   "DeepSeek · v4-pro"), on a finished task's card at its foot across from Reviewed, on a question or a permission
   before how long it waits, on a finished task's row at the right end of its second line; in a session, by the field.
