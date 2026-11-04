@@ -2,15 +2,19 @@
 → "Microphone…" → the recording starts once sound flows (the red dot), the dot breathes with the voice, "Stop" records
 0.3 s more, the words land in the field, the computer logs the recording's figures; silence is not sent; a computer
 before 0.14.2 (STAND_STT_OLD=1) still gets the recording. With a Groq key in ~/.config/pult/env the kept recording is
-also recognized for real, with Pult's prompt — the first word must survive.
+also recognized for real, with Pult's prompt — the first word must survive. With `ask` and Home's URL — the question's
+card on Home: its own answer has the microphone beside it, the words land in its line, Enter sends them as the answer
+(2026-11-04: neither was there; the line is the card's — no Groq then).
   STAND_LANG=ru STAND_STT=/tmp/rec HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out 2>&1 &
   ~/.local/share/pult/venv/bin/python tools/voice_check.py "$(grep '^SESS ' /tmp/stand.out | cut -d' ' -f2)" /tmp/rec [speech|silence]
+  ~/.local/share/pult/venv/bin/python tools/voice_check.py "$(grep '^HOME ' /tmp/stand.out | cut -d' ' -f2)" /tmp/rec speech ask
 Exit 1 on a failed check. Needs macOS `say` and ffmpeg for the WAV."""
 import asyncio, json, os, re, subprocess, sys, tempfile
 import aiohttp
 
 URL, KEEP = sys.argv[1], sys.argv[2]
 SOUND = sys.argv[3] if len(sys.argv) > 3 else "speech"
+ASK = sys.argv[4:5] == ["ask"]           # the question's own answer on Home, not the session's message field
 import _cdp  # noqa: E402  (tools/_cdp.py: where Chrome is, free ports, a profile that goes — review 2026-10-27, Т9)
 CHROME = _cdp.CHROME
 PORT = _cdp.free_port()
@@ -102,25 +106,29 @@ async def main():
             await cmd("Runtime.enable")
             await cmd("Emulation.setDeviceMetricsOverride", width=412, height=915, deviceScaleFactor=2, mobile=True)
             await cmd("Page.navigate", url=URL)
-            verdict("the session shows the microphone", await until("!!document.querySelector('.clip.mic')", 150))
+            mic = ".card.ask .own .clip.mic" if ASK else ".clip.mic"
+            shown = "(() => { const b = document.querySelector('.card.ask .own .btn'); return !!b && getComputedStyle(b).display !== 'none'; })()"
+            verdict("the question's own answer shows the microphone" if ASK else "the session shows the microphone",
+                    await until("!!document.querySelector(%r)" % mic, 150))
+            if ASK:
+                verdict("…and its button waits for words", not await js(shown))
             await js("window.__alerts = []; window.alert = (s) => window.__alerts.push(String(s)); "
                      "const w = window.Telegram && window.Telegram.WebApp; if (w) w.showAlert = (s) => window.__alerts.push(String(s));")
-            mic = ".clip.mic"
             await tap(mic)
             t0 = asyncio.get_event_loop().time()
-            ok = await until("document.querySelector('.clip.mic').classList.contains('rec') && !document.querySelector('.clip.mic').classList.contains('wait')", 60, 0.02)
+            ok = await until("((m) => m.classList.contains('rec') && !m.classList.contains('wait'))(document.querySelector(%r))" % mic, 60, 0.02)
             live = asyncio.get_event_loop().time() - t0
             verdict("the recording starts once sound flows", ok, "%.2f s after the tap" % live)
             scales = set()
             for _ in range(40):                   # 2 s: the phrase
-                scales.add(await js("(document.querySelector('.clip.mic .dot') || {style: {}}).style.transform || ''"))
+                scales.add(await js("(document.querySelector(%r) || {style: {}}).style.transform || ''" % (mic + " .dot")))
                 await asyncio.sleep(0.05)
             if SOUND == "speech":
                 verdict("the dot breathes with the voice", len(scales - {""}) >= 3, sorted(scales)[:4])
             await asyncio.sleep(1.2)              # the phrase ends
             await tap(mic)
             t_stop = asyncio.get_event_loop().time()
-            ta = "document.querySelector('.ctl textarea, textarea')"
+            ta = "document.querySelector('.card.ask .own input')" if ASK else "document.querySelector('.ctl textarea, textarea')"
             if SOUND == "silence":
                 verdict("silence is not sent", await until("window.__alerts.length > 0", 50), await js("window.__alerts"))
                 verdict("…and nothing reached the computer", sorted(os.listdir(KEEP)) == before)
@@ -134,6 +142,15 @@ async def main():
                     held = t_stop - t0 - live
                     got = seconds(rec)
                     verdict("…with 0.3 s after Stop", got >= held + 0.2, "%.2f s recorded, %.2f s from live to Stop" % (got, held))
+                if ASK:
+                    verdict("…and the button shows up", await js(shown))
+                    await js("%s.focus()" % ta)
+                    for kind in ("keyDown", "keyUp"):
+                        await cmd("Input.dispatchKeyEvent", type=kind, key="Enter", code="Enter", windowsVirtualKeyCode=13,
+                                  **({"text": "\r"} if kind == "keyDown" else {}))
+                    verdict("Enter sends them as the answer",
+                            await until("!!document.querySelector('.card.rcpt') || /recording \\d+ heard/.test((document.querySelector('.card.ask .q.done') || {}).textContent)", 50))
+                elif new:
                     key = next((x.split("=", 1)[1].strip().strip('"') for x in open(os.path.expanduser("~/.config/pult/env"))
                                 if x.startswith("PULT_STT_KEY=")), None) if os.path.exists(os.path.expanduser("~/.config/pult/env")) else None
                     if key:

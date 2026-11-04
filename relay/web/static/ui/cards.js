@@ -1,12 +1,13 @@
 // Pult app — the cards that wait for you: a question, a permission request, a plan; the receipt of an answer.
 // Moved from app.js as it was (review 2026-10-27, 6.4).
 import { api } from "../core/conn.js";
-import { go, useHold } from "../core/nav.js";
+import { drafts, go, useHold } from "../core/nav.js";
 import { alertBox, haptic } from "../core/tg.js";
+import { Mic, useRecorder } from "../core/voice.js";
 import { t } from "../i18n.js";
 import { md } from "../md.js";
 import { html, useEffect, useRef, useState } from "../vendor/htm-preact-3.1.1.js";
-import { avatar, dur, ic, keyTap, llmName, nb, pauseChip, tagSt } from "./kit.js";
+import { avatar, dur, ic, keyTap, llmName, nb, pauseChip, plainField, tagSt } from "./kit.js";
 
 
 // ---------- cards: question, permission request, plan ----------
@@ -32,13 +33,26 @@ function useRcpt(list, key = (r) => r.rid) {
   return out;
 }
 
-function Req({ r, onDone, showWhere = true, showProject = true }) {
+// your own words in a card — an answer instead of the options, a note to a "no": a line and the microphone, Enter
+// sends, as on a session's card in "Your move" (the owner, 2026-11-04: Return did nothing here, and no voice). Words
+// dictated after the card went come back from the draft when it shows again
+function Own({ ph, label, busy, stt, draft, onSend }) {
+  const [text, setText] = useState("");
+  const v = useRecorder((w) => setText((c) => (c ? c.replace(/\s+$/, "") + " " : "") + w), draft);
+  useEffect(() => { const d = drafts.take(draft); if (d) setText((c) => (c ? c + " " : "") + d); }, [draft]);
+  const submit = () => { if (text.trim() && !busy) onSend(text.trim()); };
+  return html`<div class="own"><input ref=${plainField} placeholder=${ph} value=${text} enterkeyhint="send" onInput=${(e) => setText(e.target.value)}
+      onKeyDown=${(e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); submit(); } }}/>
+    ${stt ? html`<${Mic} v=${v} disabled=${busy}/>` : ""}
+    <button class="btn ghost" disabled=${busy || !text.trim()} onClick=${submit}>${label}</button></div>`;
+}
+
+function Req({ r, onDone, stt, showWhere = true, showProject = true }) {
   const [busy, setBusy] = useState(false);
-  const [why, setWhy] = useState(null);
+  const [noting, setNoting] = useState(false);     // "Deny with a note" tapped: the field for it is open
   // checked from the start: Claude's advice in a multi-select question ("(Recommended)"), or what Telegram has checked —
   // the computer says which (0.18.4; an older one doesn't, nothing is checked); advice takes one "Done" (the owner, 2026-10-27)
   const [picks, setPicks] = useState(() => Object.fromEntries(Object.entries(r.picks || {}).map(([i, v]) => [i, [...v]])));
-  const [own, setOwn] = useState({});
   const [touched, setTouched] = useState(false);   // ticks changed by hand: a reload would put the first ones back
   const [done, setDone] = useState(null);      // the answer went: "✓ Allowed" in place of the card, until the list drops it
   useHold(touched && !done);
@@ -94,8 +108,7 @@ function Req({ r, onDone, showWhere = true, showProject = true }) {
             }}><b>${qn.multiSelect ? html`${ic(on_ ? "boxon" : "box", 16)} ` : ""}${o.label}</b>${o.description ? html`<span class="dim">${o.description}</span>` : ""}</button>`;
           })}
           ${qn.multiSelect && html`<button class="btn" disabled=${busy || !(picks[i] || []).length} onClick=${() => send({ answers: { [i]: picks[i] } })}>${t("done")}</button>`}
-          <div class="own"><input placeholder=${t("ask.own")} value=${own[i] || ""} onInput=${(e) => setOwn(Object.assign({}, own, { [i]: e.target.value }))}/>
-            <button class="btn ghost" disabled=${busy || !(own[i] || "").trim()} onClick=${() => send({ answers: { [i]: [own[i].trim()] } })}>${t("ask.answer")}</button></div>
+          <${Own} ph=${t("ask.own")} label=${t("ask.answer")} busy=${busy} stt=${stt} draft=${"a:" + r.rid + ":" + i} onSend=${(w) => send({ answers: { [i]: [w] } })}/>
         </div>`)}
     </div>`;
   }
@@ -109,10 +122,8 @@ function Req({ r, onDone, showWhere = true, showProject = true }) {
       <button class="btn danger" disabled=${busy} onClick=${() => send({ act: "n" })}>${isPlan ? t("reject.plan") : t("deny")}</button>
     </div>
     <div class="foot quiet">${r.suggest ? html`<button class="link" disabled=${busy} onClick=${() => send({ act: "a" })}>${t(r.who === "codex" ? "always.task" : "always.short")}</button>` : html`<span></span>`}
-    ${why === null ? html`<button class="link" onClick=${() => setWhy("")}>${isPlan ? t("plan.notes") : t("deny.note.short")}</button>` : ""}</div>
-    ${why === null ? "" : html`
-      <div class="own"><input placeholder=${t("tell.claude")} value=${why} onInput=${(e) => setWhy(e.target.value)}/>
-        <button class="btn ghost" disabled=${busy || !why.trim()} onClick=${() => send({ act: "n", text: why.trim() })}>${t("send")}</button></div>`}
+    ${noting ? "" : html`<button class="link" onClick=${() => setNoting(true)}>${isPlan ? t("plan.notes") : t("deny.note.short")}</button>`}</div>
+    ${noting && html`<${Own} ph=${t("tell.claude")} label=${t("send")} busy=${busy} stt=${stt} draft=${"n:" + r.rid} onSend=${(w) => send({ act: "n", text: w })}/>`}
   </div>`;
 }
 
