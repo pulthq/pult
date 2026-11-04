@@ -118,8 +118,8 @@ sequenceDiagram
   participant CC as Claude Code<br/>(a session from the phone)
   participant V as the doer's vendor<br/>(Anthropic, DeepSeek…)
   participant CX as Codex<br/>(app-server)
-  You->>D: New task · who does it: DeepSeek
-  Note over D: the project allowed for other vendors?<br/>the key there? Else nothing starts
+  You->>D: New task in a project of DeepSeek
+  Note over D: the project's model, its key there?<br/>Else nothing starts — nor Claude in its place
   D->>CC: Agent SDK, with the vendor's address,<br/>your key and its models
   CC->>V: the turns, in Claude Code's own protocol
   CC-->>D: hooks as usual: steps, Stop with the result
@@ -135,8 +135,11 @@ sequenceDiagram
 
 A vendor's session is an ordinary Claude Code session with its environment changed: the vendor's address, your key,
 its models by role (the main one, and the fast one for titles and subagents). The hooks, the transcript, the cards
-and whose move work as they do with Claude. It starts only in a project you allowed, and never without a key: with
-the address and no key, Claude Code would send your Claude sign-in there (checked on a real Claude Code).
+and whose move work as they do with Claude. It starts only in a project whose model you made it, and never without a
+key: with the address and no key, Claude Code would send your Claude sign-in there (checked on a real Claude Code). A
+project belongs to one model: every task of it runs on that model, changed on the project's settings page only while
+nothing runs there; a task of the model before is read only, and Claude's helper that writes result lines and tags
+reads a project's tasks only by the project's switch (on in Claude's projects, off in the rest).
 
 The second opinion is Codex's own review. Pult tells it what the task changed — in git, everything since the commit
 the folder was on when the task began, new files too; without git, the files Claude's edits wrote — and adds your
@@ -210,7 +213,7 @@ flowchart LR
 | The wrapper never gets in the way | any doubt: run the real `claude` in its place; data passes byte for byte |
 | A Claude Code update can't break tabs | writing into tabs turns itself off on an unchecked version, and Pult tells you |
 | Answers don't get stuck | permission hook and dialog race; the first answer wins |
-| A project's code goes to another vendor only where you allowed it | asked once per project, at the first pick of a vendor or the first second opinion; **Disallow** on the project's screen takes it back and stops its vendor sessions and reviews |
+| A project's code goes to another vendor only where you sent it | as the project's model, picked on its settings page with where the code goes said first; or for a review: asked once per project at the first second opinion, every review a tap of yours; **Disallow** on the settings page takes the review's permission back and stops its reviews |
 | No key, no vendor session | Claude Code with a vendor's address and no key would send your Claude sign-in there, so Pult never builds that environment |
 | A restart doesn't kill work | `pult restart` / `stop` / `install.sh` refuse while sessions from the phone are busy (`pult busy`) |
 | The computer stays closed | Telegram: long polling; relay: an outbound WebSocket; no listening ports |

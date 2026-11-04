@@ -69,26 +69,35 @@ phone — on Claude's models or another vendor's, and another model can check wh
 Pult drives each vendor's own program: Claude Code for Claude's models and, inside it, for DeepSeek, GLM and Kimi;
 Codex for a second opinion. So one model can do a task and another check it — from the phone.
 
-- **Other vendors' models**: New task has **Who does it** above the model — Claude, or DeepSeek, GLM or Kimi. Claude
-  Code itself runs the task on their model (they answer its own protocol at an address of theirs), with your key:
-  the turns, the cards, the outcome and the topic work as with Claude, and the model field lists that vendor's models.
-  Put a key in Settings → Other vendors — it is checked with one tiny request and stays on the computer — and edit
-  the list of models there: the first is the main one, the second the fast one (titles, subagents). The first pick in
-  a project asks whether its code may go to other vendors (the same permission as the second opinion's); **Make it
-  the default** sends the project's new tasks there, from Telegram too; Settings → Other vendors → **Who does new tasks
-  by default** does it for every allowed project at once (a project's own choice comes first). A session keeps its vendor when it goes on or
-  is copied, never starts without the key and doesn't show in VS Code's list. Anthropic doesn't support this, and
+- **A project belongs to one model**: Claude, Codex, or DeepSeek, GLM or Kimi — it does every task of the project,
+  from the app and from Telegram. The project's screen names it under the name; the gear opens **Project settings**,
+  where it is changed — only while nothing runs in the project (a turn, a queue, a background task or helper), after
+  saying where the code goes. The tasks of the model before stay, read only: open, read, copy; to go on with one, give
+  the project its model back. New task's **Who does it** shows the project's model and leads to its settings; the model
+  field lists that model's own models (and Codex's levels of effort). DeepSeek, GLM and Kimi run inside Claude Code —
+  they answer its own protocol at an address of theirs — with your key: the turns, the cards, the outcome and the topic
+  work as with Claude. Put a key in Settings → Other vendors — it is checked with one tiny request and stays on the
+  computer — and edit the list of models there: the first is the main one, the second the fast one (titles,
+  subagents). Settings → Other vendors → **The model of new projects** is what a project made in the app gets (its form
+  can pick another). A model without its key, or your own one turned off, can't take the project's task — Claude
+  never takes it in its place. A vendor's session doesn't show in VS Code's list. Anthropic doesn't support this, and
   Claude Code's prompts are written for Claude: for the cheaper tasks, not the hard ones.
+- **Project settings**: besides the model — **Helper Claude (haiku)**, the result line and tags: on in Claude's projects,
+  off in other models' (on, the tasks' requests and outcomes go to Anthropic — asked first); **Topic in Telegram** —
+  "Request and outcome", or "Only “done”": none of the task's words go to Telegram, only "done" and "waits for you", and
+  `pult send` files don't go there either; the **review** — a second opinion only by your tap, and Codex's permission to
+  read the code, with **Disallow**; the project's tags, pin and hide. A VS Code tab or a terminal with Claude in a
+  project of another model is noticed: its topic hears it once, and the project's screen says so.
 - **Kept apart**: a task on another vendor's model runs in a Claude Code home of its own (in Pult's folder): your global
   CLAUDE.md, settings and memory stay out of its requests, and its conversation and memory stay out of `~/.claude`;
-  Claude Code's own requests elsewhere are off, and the model is told who it is. Claude haiku doesn't read these tasks —
-  their result line is the first sentence of the answer, and their tags are yours to set. A task begun before goes on
-  as it was.
-- **A model of your own**: Who does it has **Local model** too — Ollama on this computer, or on another one through a
-  tunnel you keep open (Pult reaches only this computer's own address). Settings → Other vendors → Local model →
+  Claude Code's own requests elsewhere are off, and the model is told who it is. Claude haiku reads these tasks only if
+  you switch it on in the project — otherwise their result line is the first sentence of the answer, and their tags are
+  yours to set. A task begun before goes on as it was.
+- **A model of your own**: a project's model can be **Local model** too — Ollama on this computer, or on another one
+  through a tunnel you keep open (Pult reaches only this computer's own address). Settings → Other vendors → Local model →
   **Check and turn on** asks the server what it has: a model fits when it can use tools and its context is set to 16K
   or more (`PARAMETER num_ctx` in its Modelfile) — Ollama cuts a longer request silently, so a model without it isn't
-  taken. No key and no project's permission: the code stays home. Claude Code gets five tools there — commands,
+  taken. No key: the code stays home. Claude Code gets five tools there — commands,
   reading, editing and writing files, a question to you — and one model does every role; a task doesn't start while
   the server doesn't answer. Free, but weaker and slower than Claude.
 - **Which model did what**: every card names its model — in Running now at the right of its top line ("Opus 5.5",

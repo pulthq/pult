@@ -8,6 +8,7 @@ import { tg } from "./core/tg.js";
 import { UPD_RUN_MAX } from "./core/update.js";
 import { Home } from "./screens/home.js";
 import { NewProject, NewTask, Project, Projects } from "./screens/projects.js";
+import { ProjectSettings } from "./screens/projset.js";
 import { Resources } from "./screens/resources.js";
 import { FileHost, Session, TurnFilesScreen } from "./screens/session.js";
 import { Settings, ddmm } from "./screens/settings.js";
@@ -53,6 +54,7 @@ function App() {
     : r.name === "f" ? html`<${TurnFilesScreen} sid=${r.id} turn=${r.q.get("t")}/>`
     : r.name === "p" ? html`<${Project} key=${r.id + "?" + (r.q.get("tag") || "") + "/" + (r.q.get("topic") || "")} pkey=${r.id} tag=${r.q.get("tag")} topic=${r.q.get("topic")}/>`
     : r.name === "tags" ? html`<${Tags} key=${r.id} pkey=${r.id} open=${r.q.get("open")}/>`
+    : r.name === "ps" ? html`<${ProjectSettings} key=${r.id} pkey=${r.id}/>`
     : r.name === "projects" ? html`<${Projects}/>`
     : r.name === "new" ? html`<${NewTask} pkey=${r.q.get("pkey")}/>`
     : r.name === "newproject" ? html`<${NewProject}/>`

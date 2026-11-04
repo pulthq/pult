@@ -120,7 +120,8 @@ const moveKey = (e) => e.key;
 // needed; ready replies, your own words, "Got it" to put it to rest; the title opens the session. The tags stay on
 // the top line, as in "Running now": in front of the line they ate it (2026-10-26). Which model did the work — at
 // the foot, across from "Got it" (Q108): on the top line, beside how long it waits, it pushed the tags out. Beside the
-// title — the task's clock, stopped while it waits for you, where "Running now" has it ticking (2026-10-30)
+// title — the task's clock, stopped while it waits for you, where "Running now" has it ticking (2026-10-30). Another
+// model's task than its project's (stage M, 7.2) is read only: no answer from here, "Reviewed" puts it away
 function Mine({ r, now, onGot, stt, showProject = true }) {
   const [busy, setBusy] = useState(false);
   const [resume, setResume] = useState(r.resume);
@@ -141,8 +142,9 @@ function Mine({ r, now, onGot, stt, showProject = true }) {
     <div class="card-h tap" role="button" tabindex="0" onClick=${open} onKeyDown=${keyTap(open)}><div class="c-proj"><span class="run-w">${showProject && r.project ? html`<span class="run-who">${avatar(r.project, 18)}<span class="run-p">${r.project}</span></span>` : ""}${tagChips(r.tags)}</span><span class="c-wait">${t("mine.waits", { dur: nb(dur(now - r.since)) })}</span></div>
       <b class="c-title">${r.state === "fail" ? ic("alert", 16) : ""}${r.title}${pauseChip(r.work)}<span class="c-go">${ic("chev", 16)}</span></b></div>
     ${r.need ? html`<div class="ln dim tap" onClick=${open}>${r.line}</div><div class="now tap" onClick=${open}>${r.need}</div>` : html`<div class="now tap" onClick=${open}>${r.line}</div>`}
-    ${r.fail === "rate_limit" ? html`<${ResumeAt} sid=${r.sid} resume=${resume} reset=${r.reset} onSet=${setResume}/>` : html`<${Replies} sid=${r.sid} replies=${r.replies} onSent=${sent}/>`}
-    <${QuickReply} sid=${r.sid} stt=${stt} onSent=${sent}/>
+    ${r.ro ? html`<div class="dim small ro-l">${ic("lock", 13)} ${t("ro.short")}</div>`
+      : r.fail === "rate_limit" ? html`<${ResumeAt} sid=${r.sid} resume=${resume} reset=${r.reset} onSet=${setResume}/>` : html`<${Replies} sid=${r.sid} replies=${r.replies} onSent=${sent}/>`}
+    ${!r.ro && html`<${QuickReply} sid=${r.sid} stt=${stt} onSent=${sent}/>`}
     <div class="foot quiet"><span class="foot-l">${llm && html`<span class="llm">${llm}</span>`}${copy && html`<button class="link copy" onClick=${aboutCopy}>${ic("copy", 15)} ${t("dest.copy")}</button>`}</span><button class="link" disabled=${busy} onClick=${got}>${ic("check", 15)} ${t("mine.got")}</button></div>
   </div></${SwipeRow}>`;
 }

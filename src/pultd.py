@@ -92,7 +92,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.43"
+VERSION = "0.18.44"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -631,7 +631,7 @@ class Pult(Api, Parts):
         text = self.t("topic.intro", name=R.esc(name), path=R.esc(path or "?"))
         buttons = self.card_buttons(pkey)
         sig = "%s|%s" % (self.lang(), buttons[0][0]["url"] if buttons else "")
-        focus = self.focus_of(pkey)
+        focus = self.focus_of(pkey) if self.topic_full(pkey) else None     # only "done": not the task's name (7.2)
         if focus:
             title = R.short(self.session_label(focus), 60)
             text = self.t("card.focus", name=I.q(R.esc(title))) + "\n" + text
@@ -858,17 +858,20 @@ class Pult(Api, Parts):
         except Exception as e:
             log("session title not read:", repr(e))
 
-    def title(self, lv):
+    def title(self, lv, named=True):
         """What to call the session for a human: its name, or the project until it has one. A prompt used as the
-        name ("let's continue", the start of a task) is not repeated — it is shown right next to it anyway."""
-        if lv.named and lv.title:
+        name ("let's continue", the start of a task) is not repeated — it is shown right next to it anyway.
+        named=False — the project's, whatever the session's own name."""
+        if named and lv.named and lv.title:
             return lv.title
         row = self.store.topic(lv.pkey)
         return (row["name"] if row and row["name"] else
                 os.path.basename((lv.cwd or "").rstrip(SEPS)) or lv.pkey.rsplit("-", 1)[-1] or self.t("session.default"))
 
     def head(self, lv):
-        return "<b>%s</b>" % R.esc(self.title(lv))
+        """The session in Telegram, bold — the project's own name where its topic gets only "done" (stage M, 7.2): a
+        session's name is the start of its task, or Claude's summary of it."""
+        return "<b>%s</b>" % R.esc(self.title(lv, self.topic_full(lv.pkey)))
 
     def render_turn(self, lv, t):
         """"⏳ title · working 6 min" → "✔️ title · done in 6 min" (or ⏹ interrupted). The icon comes first, so the
@@ -909,7 +912,7 @@ class Pult(Api, Parts):
         # as a pager (stage V) Telegram gets a turn message only for the owner's own dialog in a topic — a turn that
         # answers their message there; the rest is in the app and on the computer. The loop runs either way: it closes
         # a turn whose session is gone and keeps the app's "now" line fresh
-        quiet = self.pager() and not t.reply_to
+        quiet = self.pager() and not t.reply_to or not self.topic_full(lv.pkey)     # only "done" there (7.2)
         try:
             text = self.render_turn(lv, t)
             if not quiet:
@@ -958,7 +961,7 @@ class Pult(Api, Parts):
     async def vehi(self, lv, t):
         """A long turn: at milestones, a short message with sound if the owner is away from the Mac or the
         session is from Telegram. At the Mac the owner sees the tab anyway, so stay quiet."""
-        if self.pager():
+        if self.pager() or not self.topic_full(lv.pkey):
             return                                 # stage V: the app shows how long it runs; Telegram doesn't ring
         for mark in vehi_marks():
             if t.started + mark < time.time() - 5:
@@ -1051,7 +1054,8 @@ class Pult(Api, Parts):
                 log("session %s moved to the Mac — Pult's process closed" % sid[:8])
                 if dr.bg:
                     # the background tasks lived in Pult's process and closed with it
-                    names = ", ".join(I.q(R.short(b.get("description") or self.t("task.default"), 60)) for b in lv.bg)
+                    names = ", ".join(I.q(R.short(b.get("description") or self.t("task.default"), 60)) for b in lv.bg) \
+                        if self.topic_full(pkey) else ""
                     asyncio.create_task(self.notice(sid, self.t("bg.closed", names=": " + R.esc(names) if names else "")))
                     lv.bg = []
         if name == "SessionStart" or lv.cwd is None:
@@ -1060,6 +1064,8 @@ class Pult(Api, Parts):
             self.store.touch_session(sid, pkey, path=path, driven=lv.driven)
             if not self.store.topic(pkey) and path:
                 self.store.set_topic(pkey, path, self.project_name(pkey, path), None)
+            if not lv.driven:
+                self.tab_warn(sid, pkey)
         if name in ("UserPromptSubmit", "Stop", "StopFailure"):
             self.store.touch_session(sid, pkey)          # the topic's recent sessions, for the "where to send" question
         if name == "UserPromptSubmit" and lv.turn and ev.get("prompt_id") and ev["prompt_id"] == lv.turn.prompt_id:
@@ -1239,6 +1245,11 @@ class Pult(Api, Parts):
         for mid in (t.vehi_ids if t else []):
             if mid:
                 asyncio.create_task(self.drop(mid))
+        if not self.topic_full(lv.pkey):
+            # the project's topic gets only "done" (stage M, 7.2; Q145): none of the task's words — the app has them
+            await self.send(lv.pkey, "%s %s%s" % ("⚠️" if fail else "✅", self.head(lv), when), notify=notify, sid=lv.sid,
+                            reply_to=reply_to, kind="result", buttons=self.with_app(None, lv.sid))
+            return
         tags = self.hashtag_line(lv.sid) if self.prefs()["hashtags"] else ""
         await self.send_long(lv.pkey, "%s %s%s\n%s%s" % ("⚠️" if fail else "✅", self.head(lv), when, you,
                                                           R.esc(bg) + "\n" if bg else ""), text,
@@ -1271,8 +1282,8 @@ class Pult(Api, Parts):
             rec["turn_files"] = files                      # {id, n, size}: the app's line to the turn's files (stage F4)
             self.attn.save()
         self.changed(lv.sid)
-        if not fail and text.strip() and self.prefs()["brief"] and not self.store.vendor_of(lv.sid):
-            # Claude haiku reads only Claude's tasks: another vendor's work never goes to Anthropic (stage M, 7.1)
+        if not fail and text.strip() and self.helper_reads(lv.sid, lv.pkey):
+            # Claude haiku reads a task only by its project's switch, and never another model's task there (stage M, 7.2)
             bg = [b.get("description") or b.get("command") or "" for b in lv.bg]
             asyncio.create_task(self.brief_result(lv, rec["ts"], (t.ask or t.prompt) if t else None, text, bg, waits,
                                                   since=t.started if t else 0.0))
@@ -1304,8 +1315,11 @@ class Pult(Api, Parts):
         """A call in Telegram the owner has dealt with: one line "✔️ title · line" without buttons; with mark (HTML) —
         "→ what they answered or decided", and the call stays so for good."""
         lv = self.live.get(sid) or self.stub(sid, r["pkey"])
-        text = "✔️ <b>%s</b> · %s" % (R.esc(lv.title or self.title(lv)), R.esc(r["line"] or ""))
-        self.edit(r["page"], text + ("\n→ " + mark if mark else ""), [], prio=3 if mark else 6)
+        if self.topic_full(r["pkey"]):
+            text = "✔️ <b>%s</b> · %s" % (R.esc(lv.title or self.title(lv)), R.esc(r["line"] or ""))
+        else:                                       # only "done" (stage M, 7.2): nor the owner's answer
+            text = "✔️ %s · %s" % (self.head(lv), self.t("page.bare.done"))
+        self.edit(r["page"], text + ("\n→ " + mark if mark and self.topic_full(r["pkey"]) else ""), [], prio=3 if mark else 6)
         if mark:
             r["page"] = None
             self.attn.save()
@@ -1356,6 +1370,10 @@ class Pult(Api, Parts):
             text += "\n<b>%s</b>" % R.esc(r["need"])
         rows = []
         replies = r.get("replies") or []
+        if not self.topic_full(r["pkey"]):          # only "done" (stage M, 7.2): no line, no need, no ready replies
+            text = "%s %s · %s" % ("⚠️" if r.get("fail") else "🟠", self.head(lv),
+                                   self.t("page.bare.fail" if r.get("fail") else "page.bare"))
+            replies = []
         for i in range(0, len(replies), 2):
             rows.append([{"text": x, "callback_data": "r:%s:%d" % (sid, i + k)} for k, x in enumerate(replies[i:i + 2])])
         if r.get("fail") == "rate_limit":
@@ -1368,13 +1386,29 @@ class Pult(Api, Parts):
         self.attn.save()
         log("page %s: %s" % (sid[:8], "fail" if r.get("fail") else "your move"))
 
+    def tab_warn(self, sid, pkey):
+        """A session Pult didn't start — a VS Code tab, a terminal — works with Claude in a project of another model
+        (stage M, 7.2; Q144): the project's topic hears it once a session, the app marks the task read only. Claude
+        Code's own work on the computer isn't Pult's to stop."""
+        its = self.project_model(pkey)
+        told = self.store.get("tabwarn") or {}
+        if its == "claude" or sid in told:
+            return
+        told[sid] = time.time()
+        self.store.put("tabwarn", dict(sorted(told.items(), key=lambda kv: kv[1])[-200:]))
+        log("session %s: Claude on the computer in %s, whose model is %s" % (sid[:8], pkey, its))
+        asyncio.create_task(self.send(pkey, self.t("tab.other", its=self.model_name(its))))
+
     async def on_reply_button(self, sid, i):
         """A ready reply tapped under a call in Telegram: it goes into the session as the owner's message."""
         r = self.attn.rec.get(sid) or {}
         replies = r.get("replies") or []
         if not (0 <= i < len(replies)):
             return self.t("note.stale")
-        res = await self.api_send(sid, replies[i])
+        try:
+            res = await self.api_send(sid, replies[i])
+        except ValueError as e:
+            return str(e)
         if res.get("need") == "fork":
             return self.t("note.reply_open")
         self.mark_seen(sid, replies[i])
@@ -1493,7 +1527,7 @@ class Pult(Api, Parts):
             self.tag_example_soon(lv.pkey, lv.sid, text)
             return
         cur = self.store.session_tag(lv.sid)
-        if self.prefs()["brief"] and (words or not (cur and cur["sec"])) and not self.store.vendor_of(lv.sid):
+        if (words or not (cur and cur["sec"])) and self.helper_reads(lv.sid, lv.pkey):
             asyncio.create_task(self.tag_task(lv, text, own=words[0] if words else None))
 
     def tag_by_owner(self, lv, words):
@@ -1718,6 +1752,23 @@ class Pult(Api, Parts):
             return              # the app and the computer show it; posted later if the owner leaves while it waits
         req.paged = True
         rid = req.rid
+        if not self.topic_full(lv.pkey):
+            # the project's topic gets only "done" (stage M, 7.2; Q145): that Claude waits for the owner, not what it asks
+            # or wants to run; the answer — in the app; a reply in words answers the (first) question or explains a "no"
+            req.bare = True
+            what = {"ask": "req.asks", "plan": "req.plan"}.get(req.kind) or \
+                ("req.perm.codex" if self.store.vendor_of(lv.sid) == "codex" else "req.perm")
+            icon = {"ask": "❓", "plan": "📋"}.get(req.kind, "✋")
+            m = await self.send(lv.pkey, self.req_head(req, icon, self.t(what)) + self.t("req.bare"),
+                                buttons=self.with_app(None, lv.sid), notify=notify, prio=0, sid=lv.sid, kind="perm")
+            if m:
+                req.msgs.append((m, 0 if req.kind == "ask" else None))
+                self.req_by_msg[m] = (req, req.msgs[-1][1])
+                if req.closed:
+                    self.close_req_msgs(req, *req.closed, only=[req.msgs[-1]])
+            if not req.msgs:
+                req.paged = False              # nothing reached Telegram: offered again later
+            return
         if req.kind == "ask":
             for i, q in enumerate(req.inp.get("questions") or []):
                 m = await self.send(lv.pkey, self.req_head(req, "❓", self.t("req.asks")) + R.question_text(q, req.picks.get(i)),
@@ -1814,7 +1865,9 @@ class Pult(Api, Parts):
         req.closed = (note, answers)
         lv = self.live.get(req.sid)
         for m, i in only or req.msgs:
-            if i is not None:
+            if req.bare:                           # posted without its words: decided, without them too (7.2)
+                text = self.req_head(req, {"ask": "❓", "plan": "📋"}.get(req.kind, "✋")) + self.t("req.bare.done")
+            elif i is not None:
                 q = (req.inp.get("questions") or [])[i]
                 got = (answers or {}).get(q.get("question")) or ", ".join(req.chosen.get(i, []))
                 text = "%s%s\n%s%s" % (self.req_head(req, "❓"), R.question_text(q, req.chosen.get(i), done=True),
@@ -1842,7 +1895,10 @@ class Pult(Api, Parts):
         req.chosen[i] = values
         qs = req.inp.get("questions") or []
         m = next((m for m, k in req.msgs if k == i), None)
-        if m:
+        if m and req.bare:                         # only "done" in the topic (7.2): the answers stay out of it
+            if len(req.chosen) == len(qs):
+                self.edit(m, self.req_head(req, "❓") + self.t("req.bare.done"), [], prio=3)
+        elif m:
             self.edit(m, "%s%s\n→ <b>%s</b>" % (self.req_head(req, "❓"), R.question_text(qs[i], values, done=True),
                                                R.esc(", ".join(values))), [], prio=3)
         self.changed(req.sid)
@@ -2231,6 +2287,8 @@ class Pult(Api, Parts):
         after that the reaction on the message and the turn replying to it are enough (0.9.4)."""
         pkey = topic["pkey"]
         target, first = self.focus_of(pkey), False
+        if target and self.read_only(target, pkey):     # another model's task (stage M, 7.2): not where it goes
+            target = None
         if not target:
             open_ = self.open_writable(pkey)
             target, first = (open_[0], True) if len(open_) == 1 else (None, False)
@@ -2238,12 +2296,13 @@ class Pult(Api, Parts):
             await self.ask_target(topic, body, origin, here)
             return
         await self.continue_session(target, body, origin, here)
-        if first:
+        if first and self.topic_full(pkey):
             name = I.q(R.esc(R.short(self.session_label(target), 50)))
             await self.send(None, self.t("focus.first", name=name), reply_to=origin, here=here)
 
     def open_writable(self, pkey):
-        """Sessions of the project that a message reaches right now: tabs with Pult's wrapper, sessions from Telegram."""
+        """Sessions of the project that a message reaches right now: tabs with Pult's wrapper, sessions from Telegram —
+        not another model's task than the project's (read only, stage M, 7.2)."""
         out = []
         for t in self.tabs.values():
             if t.sid and (self.session_pkey(t.sid) or sanitize(t.cwd or "")) == pkey and t.sid not in out:
@@ -2251,7 +2310,7 @@ class Pult(Api, Parts):
         for sid in self.driven:
             if self.session_pkey(sid) == pkey and sid not in out:
                 out.append(sid)
-        return out
+        return [sid for sid in out if not self.read_only(sid, pkey)]
 
     def session_label(self, sid):
         """Which session of the topic it is: its name or first prompt (as on the "where to" buttons) — not the
@@ -2310,11 +2369,15 @@ class Pult(Api, Parts):
         live = {a.get("sessionId") for a in await self.agents()}
         tabbed = {t.sid for t in self.tabs.values() if t.sid}
         for r in self.store.db.execute("SELECT sid, title, last_seen FROM sessions WHERE pkey=? "
-                                       "ORDER BY last_seen DESC LIMIT 4", (topic["pkey"],)).fetchall():
+                                       "ORDER BY last_seen DESC LIMIT 12", (topic["pkey"],)).fetchall():
             sid = r["sid"]
+            if len(rows) == 4 or self.read_only(sid, topic["pkey"]):     # another model's task: read only (7.2)
+                continue
             lv = self.live.get(sid)
             mark = "📱" if sid in self.driven else "💻" if sid in tabbed else "🖥" if sid in live else "▫️"
             title = (lv.title if lv else None) or r["title"] or self.t("session.default")
+            if not self.topic_full(topic["pkey"]):          # only "done" in the topic (7.2): not the task's words
+                title = self.t("session.default")
             tok = self.offer(("sess", sid, body, origin, here))
             rows.append([{"text": "%s %s · %s" % (mark, R.short(title, 36), when(r["last_seen"])),
                           "callback_data": "t:" + tok}])
@@ -2507,16 +2570,16 @@ class Pult(Api, Parts):
         if not path:
             await self.send(None, self.t("err.no_folder"), reply_to=origin, here=here)
             return
+        why = self.vendor_stop(sid, pkey)
+        if why:            # another model's task than the project's (read only), or its key gone — before it takes the
+            await self.send(pkey, why, reply_to=origin, here=here)       # topic's focus: plain text would hit it again
+            return
         self.set_focus(pkey, sid)
         if origin:
             self.store.map_msg(origin, sid, "owner")     # a reply to one's own message continues the same session
         trow = self.store.topic(pkey)
         quote = bool(trow and trow["thread"] == here)    # a reply in the same topic the session lives in
         dr = self.driven.get(sid)
-        why = self.vendor_stop(sid, pkey)
-        if why:                                          # a vendor's session that can't go on (its key, "Disallow")
-            await self.send(pkey, why, reply_to=origin, here=here)
-            return
         if dr and not getattr(dr, "closing", False):
             mark = "✍" if dr.busy else "👀"
             self.out_add(sid, text, tg=origin, react=mark)
@@ -2585,8 +2648,14 @@ class Pult(Api, Parts):
         pkey = pkey or sanitize(path)
         if fork:
             resume, sid = sid, str(uuid.uuid4())
-        vid = self.store.vendor_of(resume) if resume else self.vendor_for_new(pkey, vendor)
-        msg = self.vendor_stop(resume, pkey) if resume and vid else None      # its key gone, or "Disallow" since
+        vid, msg = None, None
+        if resume:                    # a continuation or a copy keeps its task's model: read only if not the project's
+            vid, msg = self.store.vendor_of(resume), self.vendor_stop(resume, pkey)
+        else:
+            try:                      # the project's model (stage M, 7.2) — never Claude in place of one that can't now
+                vid = self.vendor_for_new(pkey, vendor)
+            except ValueError as e:
+                msg = str(e)
         if not msg and vid == V.LOCAL:          # one's own model: the computer it runs on may be off, the tunnel closed
             lp = self.vendor_profiles()[V.LOCAL]
             if not await V.reach(lp["url"]):
@@ -3073,7 +3142,8 @@ class Pult(Api, Parts):
                          "open": sid in opened, "model": bool(rec.get("model")),
                          "bg": [R.short(b.get("description") or b.get("command") or self.t("task.default"), 80) for b in lv.bg],
                          "bgk": [b.get("type") or "shell" for b in lv.bg],
-                         "cwd": lv.cwd, "tags": self.tags_of(sid, tagged), **turn})
+                         "cwd": lv.cwd, "tags": self.tags_of(sid, tagged),
+                         "ro": bool(self.read_only(sid, lv.pkey)), **turn})       # another model's task: read only (7.2)
         return rows
 
     def name_of(self, pkey, rows=()):
@@ -3158,6 +3228,10 @@ class Pult(Api, Parts):
             return {"error": self.t("cli.send.usage")}
         if len(paths) > F.SEND_MANY:
             return {"error": self.t("send.err.many", n=F.SEND_MANY)}
+        if not self.topic_full(pkey):
+            # the project's topic gets only "done" (stage M, 7.2; Q145): a file is the task's own — the agent says where it is
+            log("pult send from %s: not sent — the project's topic gets only “done”" % sid[:8])
+            return {"error": self.t("send.err.bare")}
         res = await self.send_files(sid, pkey, project, paths, msg.get("caption"))
         res.pop("paths", None)
         if res["refused"]:

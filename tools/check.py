@@ -53,6 +53,7 @@ CHECKS = {
     "worktime": ({"STAND_VENDORS": "1", "STAND_HOMES": "1", "STAND_REPORT": "1", "STAND_LANG": "ru"}, "out", []),   # one clock per task (Q117)
     "paste": ({"STAND_HOMES": "1", "STAND_LANG": "ru"}, "out", []),      # a screenshot by ⌘V or a drag (Q127)
     "helpers": ({"STAND_HELPERS": "1", "STAND_LANG": "ru"}, "out", []),  # helpers in the background, seen mid-turn (Q128)
+    "projset": ({"STAND_VENDORS": "1", "STAND_HOMES": "1", "STAND_REPORT": "1", "STAND_DESK": "deepseek", "STAND_LANG": "ru"}, "out", []),   # 7.2
     "parts": None,
     "update": None,
     "vcheck": None,

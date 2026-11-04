@@ -978,3 +978,29 @@ button.tagc { border: 0; font-family: inherit; cursor: pointer; }
 .vend-all-h { margin: 0 4px 6px; }
 .vend-all { margin-bottom: 4px; }
 .vend-all-t { margin: 6px 4px 12px; }
+
+/* a project belongs to one model (stage M, step 7.2): its model under the name on the project's screen, the gear to its
+   settings; the settings page; a task of another model — read only */
+.ph .ph-t { min-width: 0; }
+.ph .ph-model { display: block; padding: 2px 0 0; font-size: var(--fs-sec); text-align: left; }
+.ph .ph-model .warn { color: var(--warn); }
+.ph .pinb + .pinb { margin-left: 6px; }
+.ph .gearb svg { width: 20px; height: 20px; }
+.vline.warn .ic { color: var(--warn); }
+.psets h3 { margin-top: 18px; }
+.psets .ps-model { margin-bottom: 6px; }
+.psets .ps-model > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.psets .ps-busy { color: var(--attn-ink); }
+.psets .ps-note { margin-top: 6px; }
+.psets .ps-topic { margin-bottom: 6px; }
+.psets .ps-review { margin-bottom: 6px; }
+.psets .ps-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; text-align: left; }
+.psets .ps-row > span { display: inline-flex; align-items: center; gap: 8px; }
+.psets .ps-row .ic { color: var(--muted); }
+.who-f > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ro-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 2px;
+  font-size: var(--fs-sec); color: var(--muted); }
+.ro-bar > span { min-width: 0; }
+.ro-bar .ic { vertical-align: -2px; margin-right: 2px; }
+.ro-bar .link { flex: none; padding: 6px 0; }
+.ro-l { margin: 6px 0 2px; } .ro-l .ic { vertical-align: -2px; }

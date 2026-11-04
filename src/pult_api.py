@@ -452,7 +452,8 @@ class Api:
                         "path": path, "last": mtime, "open": c.get("open", 0), "work": c.get("work", 0), "ask": c.get("ask", 0),
                         "mine": sum(1 for r in rs if r["state"] in A.MINE), "line": last["line"] if last else "",
                         "turns": self.attn.day_of(pkey)[0], "pinned": pins.get(pkey, 0), "hidden": hides.get(pkey, 0),
-                        "vendor": self.vendor_default(pkey), "who": self.vendor_who(pkey), "vok": self.vendors_ok(pkey)})
+                        # model: who does its tasks (stage M, 7.2); who — the same, for an app from before it
+                        "model": self.project_model(pkey), "who": self.project_model(pkey), "vok": self.vendors_ok(pkey)})
         # the pinned first, the newest pin on top (stage Zh, Q98); then what needs you, then what works, then what
         # is open, then by recency; the hidden last — the app folds them (Q101)
         out.sort(key=lambda r: (-r["pinned"], r["hidden"] > 0, -(r["mine"] > 0), -(r["work"] + r["ask"] > 0), -(r["open"] > 0), -r["last"]))
@@ -572,6 +573,9 @@ class Api:
                 "tagset": self.tag_list(pkey, list(shown) + [x["sid"] for x in earlier]),
                 "tags_n": len(self.store.tag_vocab(pkey)), "tag_job": self.tag_jobs.get(pkey),
                 "pinned": bool(self.store.pins().get(pkey)), "hidden": bool(self.store.hides().get(pkey)),
+                # the project's model (stage M, 7.2), and whether Claude works in it on the computer though it is another's
+                "model": self.model_view(self.project_model(pkey)),
+                "tabwarn": any(r["ro"] and not r["driven"] for r in live + mine),
                 "vendors_ok": self.vendors_ok(pkey)}
 
     async def api_sessions(self, pkey):
@@ -711,7 +715,9 @@ class Api:
         self.tags_sort_soon(pkey)
         note = self.tag_note.get(pkey)
         return {"pkey": pkey, "name": self.project_label(pkey), "secs": [x for _, x in sorted(secs, key=lambda p: p[0])],
-                "hidden": gone, "sug": sug, "tidy": pkey in self.tidying, "model": self.prefs()["brief"],
+                # model: Claude haiku can sort them — on in Settings, and the project lets it (stage M, 7.2: haiku)
+                "hidden": gone, "sug": sug, "tidy": pkey in self.tidying, "model": self.prefs()["brief"] and self.haiku_on(pkey),
+                "haiku": self.haiku_on(pkey),
                 "job": self.tag_jobs.get(pkey), "note": note[1] if note and time.time() - note[0] < TAG_NOTE else None}
 
     async def api_tags_edit(self, pkey, op, sec, topic=None, name=None, c=None, to_sec=None, to_topic=None):
@@ -805,7 +811,8 @@ class Api:
         """The project's earlier tasks without tags get them once, by themselves, when the owner opens the project or
         its tags with the model on (Q93: the filter sees the whole history); a "Sort them again" a restart cut short
         goes on the same way. One job a project, in the background; a model that gave nothing — not again at once."""
-        if not self.prefs()["brief"] or pkey in self.tag_jobs or self.D.skip_pkey(pkey) or not self.project_path(pkey):
+        if not self.prefs()["brief"] or not self.haiku_on(pkey) or pkey in self.tag_jobs or self.D.skip_pkey(pkey) \
+                or not self.project_path(pkey):
             return
         resort = self.store.get("tags.resort." + pkey)
         if self.store.get("tags.old." + pkey) and not resort:
@@ -822,6 +829,8 @@ class Api:
         self.tags_pkey(pkey)
         if not self.prefs()["brief"]:
             raise ValueError(self.t("tags.e.model"))
+        if not self.haiku_on(pkey):                     # the project keeps its tasks from Claude haiku (stage M, 7.2)
+            raise ValueError(self.t("tags.e.haiku"))
         if pkey in self.tag_jobs:
             raise ValueError(self.t("tags.e.busy"))
         if not self.project_path(pkey):
@@ -885,7 +894,7 @@ class Api:
             self.D.BRIEF_DIR.mkdir(parents=True, exist_ok=True)
             if new_list:
                 items = await asyncio.to_thread(list_sessions, path, G.LIST_TASKS)
-                items = [x for x in items if not self.store.vendor_of(x.session_id)]     # Claude's tasks only (stage M, 7.1)
+                items = [x for x in items if self.helper_reads(x.session_id, pkey)]      # not another model's (7.1–7.2)
                 readme, claude_md = await asyncio.to_thread(self.project_docs, path)
                 vocab = self.store.tag_vocab(pkey)
                 own = [{"n": s["n"], "topics": [t for t in s["topics"] if t["own"]]} for s in vocab
@@ -914,9 +923,10 @@ class Api:
                 job.pop("list", None)
                 self.changed()
             items = await asyncio.to_thread(list_sessions, path, G.OLD_MAX)
-            # another vendor's earlier task (one from before 7.1 is still in ~/.claude) never goes to Claude haiku
+            # another model's earlier task (one from before 7.1 is still in ~/.claude) never goes to Claude haiku, nor any
+            # of a project that keeps its tasks from it (stage M, 7.2)
             todo = [x for x in items if not ((self.store.session_tag(x.session_id) or {"sec": None})["sec"])
-                    and not self.store.vendor_of(x.session_id)]
+                    and self.helper_reads(x.session_id, pkey)]
             job["total"] = len(todo)
             self.changed()
             for i in range(0, len(todo), G.BATCH):
@@ -1000,7 +1010,13 @@ class Api:
                 "switch_effort": switch_effort, "default": dflt, "stt": self.stt_state()["on"],
                 "ctx": {"window": ctx[0], "max_out": ctx[1], "usable": self.ctx_room(sid, ctx)} if ctx else None,
                 "pending": [self.req_item(r) for r in lv.pending.values() if not r.fut.done()],
-                "out": self.out_view(sid), "second": await self.second_view(sid, rec, lv), "vendor": self.vendor_view(sid)}
+                "out": self.out_view(sid), "second": await self.second_view(sid, rec, lv), "vendor": self.vendor_view(sid),
+                # ro: another model's task than its project's — read only (stage M, 7.2; Q148): its model and the project's
+                "ro": self.ro_view(sid, lv.pkey)}
+
+    def ro_view(self, sid, pkey):
+        ro = self.read_only(sid, pkey)
+        return {"name": self.model_name(ro[0]), "its": self.model_name(ro[1])} if ro else None
 
     async def api_answer(self, rid, act=None, answers=None, text=None):
         req = self.req_by_rid.get(rid)
@@ -1081,13 +1097,13 @@ class Api:
         return model, effort
 
     async def api_new(self, pkey, text, files=None, model=None, effort=None, vendor=None):
-        """vendor — who does it (stage M, step 2): "claude", a vendor's id, or nothing (an older app) — the project's
-        default."""
+        """A new task in a project, on the project's model (stage M, 7.2): vendor — what an app from before 7.2 picked;
+        another than the project's model is refused. model, effort — the model's own choice for this task."""
         text = (text or "").strip()
         path = self.project_path(pkey)
         if not (text or files) or not path or not os.path.isdir(path):
             raise ValueError(self.t("err.need_project_text"))
-        if vendor in ("codex", None):
+        if self.project_model(pkey) == "codex":
             await self.codex_state()
         vid = self.vendor_for_new(pkey, vendor)
         if vid == "codex":                                   # its own model and level of effort, checked against its list
@@ -1113,6 +1129,9 @@ class Api:
             raise ValueError(self.t("err.bad_sid"))
         if model is KEEP and effort is KEEP:
             raise ValueError("no model or effort")
+        ro = self.read_only(sid)
+        if ro:                                           # another model's task than its project's: read only (7.2)
+            raise ValueError(self.t("model.err.ro", name=self.model_name(ro[0]), its=self.model_name(ro[1])))
         if self.store.vendor_of(sid) == "codex":         # Codex's own models and levels (stage M, M4.1)
             return await self.codex_choice(sid, model, effort)
         m, e = self.check_choice(None if model is KEEP else model, None if effort is KEEP else effort)
@@ -1201,27 +1220,235 @@ class Api:
             return V.LOCAL_KEY if self.vendor_profiles()[V.LOCAL]["on"] else None
         return (self.env.get(V.key_name(vid)) or "").strip() or None if vid else None
 
-    def vendor_default(self, pkey):
-        """The project's own choice for its new tasks: a vendor's id, "claude" (Claude, whatever the common default
-        says), or None — it follows the common one."""
-        vid = (self.store.get("vendors.default") or {}).get(pkey)
-        return vid if vid in V.PRESETS or vid in ("claude", "codex") else None
+    # ----- a project belongs to one model (stage M, step 7.2; Q138, Q143, Q146–Q148) -----
+    # Every task of a project runs on its model — from the app and from Telegram, never another one in its place; the
+    # owner changes it on the project's settings page while nothing runs there. The model gets the project's code because
+    # the owner picked it for the project (the change says where the code goes): "may go to other vendors" (vendors.ok)
+    # is a review's alone now — Codex's second opinion. A task of another model than the project's — done before a
+    # change, or in a VS Code tab — is read only: open, read, copy its words; to go on, the project gets its model back
+
+    def is_model(self, vid):
+        return vid in ("claude", "codex") or vid in V.PRESETS
+
+    def project_models(self):
+        """{pkey: model} of the projects that aren't Claude's. Made once from what was there before 7.2 (models_before)."""
+        got = self.store.get("proj.model")
+        if not isinstance(got, dict):
+            got = self.models_before()
+            self.store.put("proj.model", got)
+            self.store.put("vendors.default", None)        # a project's own default became its model
+            log("projects' models: %s" % (", ".join("%s — %s" % kv for kv in sorted(got.items())) or "Claude everywhere"))
+        return got
+
+    def project_model(self, pkey):
+        """The model a project's tasks run on: "claude", "codex" or another vendor's id."""
+        vid = self.project_models().get(pkey)
+        return vid if self.is_model(vid) else "claude"
+
+    def models_before(self):
+        """Each project's model when 7.2 comes (Q146): the one its new tasks went to — its own default, or the common
+        one for a project allowed to go to other vendors while its key was here — else the one other model every task
+        of it was on (no task of Claude's there, in Pult's store or in ~/.claude), else Claude — then left out."""
+        out, decided = {}, set()
+        for pkey, vid in (self.store.get("vendors.default") or {}).items():
+            if self.is_model(vid):              # "Disallow" took a vendor's default away: what is left was reachable
+                decided.add(pkey)
+                if vid != "claude":
+                    out[pkey] = vid
+        common = self.store.get("vendors.all")
+        if common in V.PRESETS and self.vendor_ready(common):
+            for pkey in self.store.get("vendors.ok") or {}:
+                if pkey not in decided:
+                    out[pkey] = common
+                    decided.add(pkey)
+        tasks = {}
+        for r in self.store.db.execute("SELECT s.sid, s.pkey, v.vendor FROM sessions s LEFT JOIN session_vendor v ON v.sid = s.sid"):
+            tasks.setdefault(r["pkey"], {})[r["sid"]] = r["vendor"] or "claude"
+        for pkey, by in tasks.items():
+            if pkey in decided or not pkey:
+                continue
+            for f in (self.D.CLAUDE_PROJECTS / pkey).glob("*.jsonl"):
+                by.setdefault(f.stem, "claude")              # a tab's task Pult hasn't seen is Claude's
+            if len(set(by.values())) == 1 and next(iter(by.values())) != "claude":
+                out[pkey] = next(iter(by.values()))
+        return out
+
+    def model_name(self, vid, short=False):
+        """A model's name for the owner: "Claude", "Codex", "DeepSeek", "Local model"…"""
+        if vid in (None, "claude"):
+            return "Claude"
+        if vid == "codex":
+            return "Codex"
+        p = self.vendor_profiles().get(vid)
+        return (p.get("short") if short else None) or p["name"] if p else vid
+
+    def model_why(self, vid):
+        """Why a model can't take a task now — its key gone, one's own model off, Codex missing — or None. A project's
+        task waits for it: Claude never takes it in its place (Q143)."""
+        if vid in (None, "claude"):
+            return None
+        if vid == "codex":
+            return None if self.codex_ready() else self.t("vendor.err.codex")
+        if self.vendor_key(vid):
+            return None
+        return self.t("vendor.err.local.off") if vid == V.LOCAL else self.t("vendor.err.key", name=self.model_name(vid))
 
     def vendor_all(self):
-        """Who does new tasks by default everywhere (Settings → Other vendors; the owner, 2026-10-30: one tap if
-        Claude goes away): a vendor's id, or None — Claude. Only projects allowed to go to other vendors follow it."""
+        """The model new projects get (Settings; Q147 — before 7.2 "who does new tasks by default everywhere"): a
+        vendor's id or "codex" — one that can take a task — or None: Claude."""
         vid = self.store.get("vendors.all")
-        return vid if vid in V.PRESETS else None
+        return vid if vid in V.PRESETS or vid == "codex" else None
 
-    def vendor_who(self, pkey):
-        """Who does a project's new task when nothing else is said: the project's own choice, else the common default
-        — a vendor only while its key is here and the project allowed — → a vendor's id, or "claude"."""
-        own = self.vendor_default(pkey)
-        vid = own or self.vendor_all()
-        # one's own model keeps the code home: a project's own choice of it needs no permission; the common default
-        # still reaches only the projects allowed to go to other vendors
-        home = own == V.LOCAL
-        return vid if vid and vid != "claude" and self.vendor_ready(vid) and (home or self.vendors_ok(pkey)) else "claude"
+    def task_model(self, sid):
+        """The model a task ran on: "claude", "codex" or another vendor's id."""
+        return self.store.vendor_of(sid) or "claude"
+
+    def read_only(self, sid, pkey=None):
+        """A task of another model than its project's (Q148): (its model, the project's) — or None, it can go on."""
+        if not pkey:
+            row = self.store.session(sid)
+            pkey = row["pkey"] if row else None
+        if not pkey:
+            return None
+        mine, its = self.task_model(sid), self.project_model(pkey)
+        return (mine, its) if mine != its else None
+
+    def haiku_on(self, pkey):
+        """The project's helper Claude haiku — its result lines and tags (Q142): the owner's switch on its settings
+        page, else on in Claude's projects and off in the rest."""
+        own = (self.store.get("proj.haiku") or {}).get(pkey)
+        return own if isinstance(own, bool) else self.project_model(pkey) == "claude"
+
+    def helper_reads(self, sid, pkey):
+        """Whether Claude haiku may read this task — its request and its outcome — for a result line or its tags: the
+        model is on in Settings, the project's switch is on, and the task is Claude's or its project's model's: another
+        model's task in it (one before a change) stays out of it (stage M, 7.1–7.2)."""
+        return bool(self.prefs()["brief"] and pkey and self.haiku_on(pkey)
+                    and self.task_model(sid) in ("claude", self.project_model(pkey)))
+
+    def topic_full(self, pkey):
+        """What the project's topic in Telegram gets (Q145): the request and the outcome, as before 7.2 — or, False,
+        only "done" and what needs the owner, without the task's words."""
+        return (self.store.get("proj.topic") or {}).get(pkey) != "done"
+
+    def model_view(self, vid):
+        """A model for the project's settings page and "Who does it": its name, what it runs as (the vendor's main
+        model, Codex's own), why it can't take a task now; cloud — the project's code goes to another company."""
+        p = self.vendor_profiles().get(vid) if vid in V.PRESETS else None
+        sub = (p["models"][0] if p["models"] else None) if p else next(iter(self.codex_models()), None) if vid == "codex" else None
+        return {"id": vid, "name": self.model_name(vid), "short": self.model_name(vid, short=True), "sub": sub,
+                "why": self.model_why(vid), "local": bool(p and p.get("local")),
+                "cloud": vid == "codex" or bool(p and not p.get("local"))}
+
+    async def project_busy(self, pkey):
+        """What runs in a project now — [{"sid", "title"}]: a turn or a question waiting for the owner, a queue, a
+        background task or helper — in Pult's own sessions, VS Code tabs and terminals alike — and a review of it. A
+        project's model changes only when nothing does (Q138), the way `pult busy` counts what a restart would break;
+        a tab gone without its SessionEnd keeps its background list for ever, so that counts only while it is open."""
+        alive = {a.get("sessionId") for a in await self.agents()}
+        out = {}
+
+        def add(sid):
+            lv = self.live.get(sid) or self.stub(sid, pkey)
+            out.setdefault(sid, {"sid": sid, "title": R.short(lv.title or self.t("session.default"), 60)})
+        for sid, d in self.driven.items():
+            lv = self.live.get(sid)
+            if getattr(d, "closing", False) or ((lv and lv.pkey) or self.session_pkey(sid) or self.D.sanitize(d.path)) != pkey:
+                continue
+            if d.busy or not d.q.empty() or d.bg:
+                add(sid)
+        for sid, lv in self.live.items():
+            if lv.pkey != pkey:
+                continue
+            bg = [b for b in lv.bg if b.get("status") not in R._TASK_END] if sid in self.driven or sid in alive else []
+            if lv.turn is not None or bg or any(not r.fut.done() for r in lv.pending.values()):
+                add(sid)
+        for sid, task in self.second_tasks.items():
+            if not task.done() and (self.seconds.get(sid) or {}).get("pkey") == pkey:
+                add(sid)
+        return list(out.values())
+
+    async def api_projset(self, pkey):
+        """A project's settings page (stage M, 7.2; slide 4 of isolation-presentation.html): its model and the ones it
+        could change to, what runs in it now (a change waits for nothing to run), the helper Claude haiku, what its
+        topic gets, its review, pinned and hidden, its tags."""
+        if not await self.known_project(pkey):
+            raise ValueError(self.t("err.no_project"))
+        await self.codex_state()
+        vid, own = self.project_model(pkey), (self.store.get("proj.haiku") or {}).get(pkey)
+        info = self._codex[1] or {}
+        return {"pkey": pkey, "name": self.name_of(pkey), "model": self.model_view(vid),
+                "models": [self.model_view(v) for v in ("claude", "codex") + tuple(V.ORDER)],
+                "busy": await self.project_busy(pkey), "haiku": self.haiku_on(pkey), "haiku_own": isinstance(own, bool),
+                "brief": bool(self.prefs()["brief"]), "topic": "full" if self.topic_full(pkey) else "done",
+                "review": {"ok": self.vendors_ok(pkey), "codex": bool(info.get("path")), "mine": vid == "codex"},
+                "pinned": bool(self.store.pins().get(pkey)), "hidden": bool(self.store.hides().get(pkey)),
+                "tags_n": len(self.store.tag_vocab(pkey))}
+
+    async def api_project_model(self, pkey, model):
+        """The project's model, from its settings page (Q138): only while nothing runs in it — no turn, no queue, no
+        background task or helper (as `pult busy` counts them) — and to a model that can take a task now. Its helper
+        Claude haiku goes back to the new model's default: on with Claude, off with the rest. The tasks of the one
+        before stay where they are, read only (Q148). → the page."""
+        if not await self.known_project(pkey):
+            raise ValueError(self.t("err.no_project"))
+        if not self.is_model(model):
+            raise ValueError("bad model")
+        if model == "codex":
+            await self.codex_state()
+        cur = self.project_model(pkey)
+        if model != cur:
+            why = self.model_why(model)
+            if why:
+                raise ValueError(why)
+            busy = await self.project_busy(pkey)
+            if busy:
+                raise ValueError(self.t("ps.err.busy", what=busy[0]["title"]) if len(busy) == 1
+                                 else self.t("ps.err.busy.n", what=busy[0]["title"], m=len(busy) - 1))
+            got = dict(self.project_models())
+            if model == "claude":
+                got.pop(pkey, None)
+            else:
+                got[pkey] = model
+            self.store.put("proj.model", got)
+            haiku = self.store.get("proj.haiku") or {}
+            if haiku.pop(pkey, None) is not None:
+                self.store.put("proj.haiku", haiku)
+            for sid, dr in list(self.driven.items()):     # idle processes of the model before: their tasks are read only
+                row = self.store.session(sid)
+                if row and row["pkey"] == pkey and self.read_only(sid, pkey):
+                    dr.task.cancel()
+            focus = self.focus_of(pkey)
+            if focus and self.read_only(focus, pkey):      # plain text in the topic no longer goes to it
+                self.clear_focus(focus)
+            log("app: project %s — its model %s → %s" % (pkey, cur, model))
+            self.changed()
+        return await self.api_projset(pkey)
+
+    async def api_project_prefs(self, pkey, haiku=None, topic=None):
+        """The project's own switches (7.2): the helper Claude haiku (Q142) and what its topic in Telegram gets (Q145):
+        "full" — the request and the outcome, "done" — only "done" and what needs the owner. → the page."""
+        if not await self.known_project(pkey):
+            raise ValueError(self.t("err.no_project"))
+        if haiku is not None:
+            if not isinstance(haiku, bool):
+                raise ValueError("bad haiku")
+            got = self.store.get("proj.haiku") or {}
+            got[pkey] = haiku
+            self.store.put("proj.haiku", got)
+            log("app: project %s — the helper Claude haiku %s" % (pkey, "on" if haiku else "off"))
+        if topic is not None:
+            if topic not in ("full", "done"):
+                raise ValueError("bad topic")
+            got = self.store.get("proj.topic") or {}
+            if topic == "full":
+                got.pop(pkey, None)
+            else:
+                got[pkey] = topic
+            self.store.put("proj.topic", got)
+            log("app: project %s — its topic gets %s" % (pkey, "the request and the outcome" if topic == "full" else "only “done”"))
+        self.changed()
+        return await self.api_projset(pkey)
 
     def vendor_ready(self, vid):
         """A vendor can take a task now: its key is here — or, Codex, it is here and Pult can use it."""
@@ -1324,47 +1551,31 @@ class Api:
                 "key": bool(self.vendor_key(vid)), "local": bool(p.get("local"))} if p else None
 
     def vendor_stop(self, sid, pkey=None):
-        """Why a session on another vendor's model can't go on — its key is gone, or its project no longer goes to other
-        vendors (Codex's second opinion on M2: a continuation after "Disallow" sent the code there again) — or None."""
+        """Why a task can't go on from here — a continuation, a copy, a message into it — or None: it is another model's
+        than its project's (read only, Q148), or its model can't take it now (its key gone, one's own model off, Codex
+        missing). "Disallow" stops only reviews now (7.2): before, a continuation after it sent the code again (Codex's
+        second opinion on M2)."""
+        ro = self.read_only(sid, pkey)
+        if ro:
+            return self.t("model.err.ro", name=self.model_name(ro[0]), its=self.model_name(ro[1]))
         vid = self.store.vendor_of(sid)
-        if not vid:
-            return None
-        p = self.vendor_profiles().get(vid)
-        name = "Codex" if vid == "codex" else p["name"] if p else vid
-        if vid == "codex":
-            if not self.codex_ready():
-                return self.t("vendor.err.codex")
-        elif not self.vendor_key(vid):
-            return self.t("vendor.err.local.off") if vid == V.LOCAL else self.t("vendor.err.gone", name=name)
-        if vid == V.LOCAL:                         # the code stays home: no permission to take back
-            return None
-        row = self.store.session(sid)
-        pkey = pkey or (row["pkey"] if row else None)
-        return None if pkey and self.vendors_ok(pkey) else self.t("vendor.err.revoked", name=name)
+        if not vid or vid == "codex":
+            return self.model_why(vid)
+        if not self.vendor_key(vid):
+            return self.t("vendor.err.local.off") if vid == V.LOCAL else self.t("vendor.err.gone", name=self.model_name(vid))
+        return None
 
     def vendor_for_new(self, pkey, vendor=None):
-        """Whose model a new session runs on — "claude" or a vendor asked for, checked; None (an app or a message from
-        Telegram that doesn't say): the project's own default, else the common one (vendor_who). → a vendor's id, or
-        None for Claude."""
-        if vendor == "claude":
-            return None
-        if vendor is None:
-            vid = self.vendor_who(pkey)
-            return None if vid == "claude" else vid
-        if vendor == "codex":
-            if not self.vendors_ok(pkey):
-                raise ValueError(self.t("vendor.err.allow", name="Codex"))
-            if not self.codex_ready():
-                raise ValueError(self.t("vendor.err.codex"))
-            return vendor
-        p = self.vendor_profiles().get(vendor)
-        if not p:
-            raise ValueError("bad vendor")
-        if not self.vendors_ok(pkey) and vendor != V.LOCAL:
-            raise ValueError(self.t("vendor.err.allow", name=p["name"]))
-        if not self.vendor_key(vendor):
-            raise ValueError(self.t("vendor.err.local.off") if vendor == V.LOCAL else self.t("vendor.err.key", name=p["name"]))
-        return vendor
+        """Whose model a project's new task runs on — the project's own (Q143) → a vendor's id, or None for Claude. A
+        vendor asked for that isn't the project's model is refused (an app from before 7.2 picks one per task), and so
+        is a model that can't take a task now: Claude never takes it in its place."""
+        vid = self.project_model(pkey)
+        if vendor not in (None, "", vid):
+            raise ValueError(self.t("model.err.not", name=self.model_name(vendor), its=self.model_name(vid)))
+        why = self.model_why(vid)
+        if why:
+            raise ValueError(why)
+        return None if vid == "claude" else vid
 
     def vendor_model(self, vid, model):
         """A model the owner picked for a vendor's session — one of its list, or a name that could be one; None — its
@@ -1464,38 +1675,23 @@ class Api:
     def vendor_row(self, vid):
         return next((r for r in self.vendors_list() if r["id"] == vid), None)
 
-    async def api_vendor_default(self, pkey, vendor=None):
-        """Who does a project's new tasks by default (the sheet "Who does it" in New task): a vendor — the project
-        allowed and its key here — "claude", or None — as the common default says. → {"vendor", "who"}."""
-        if vendor not in (None, "", "claude"):
-            self.vendor_for_new(pkey, vendor)          # checks the vendor, the project's permission, the key
-        elif not await self.known_project(pkey):
-            raise ValueError(self.t("err.no_project"))
-        d = self.store.get("vendors.default") or {}
-        if vendor in (None, ""):
-            d.pop(pkey, None)
-        else:
-            d[pkey] = vendor
-        self.store.put("vendors.default", d)
-        log("app: project %s does its new tasks with %s" % (pkey, {"claude": "Claude"}.get(vendor, vendor or "the common default")))
-        return {"vendor": self.vendor_default(pkey), "who": self.vendor_who(pkey)}
-
     async def api_vendor_all(self, vendor=None):
-        """Who does new tasks by default everywhere (Settings → Other vendors): a vendor with its key here, or None —
-        Claude. Only the projects allowed to go to other vendors follow it; a project's own choice comes first."""
+        """The model new projects get (Settings; Q147): a vendor that can take a task — its key here, one's own model
+        on, Codex here — or None: Claude. A project already there keeps its own. → {"vendor"}."""
         if vendor in ("", "claude"):
             vendor = None
         if vendor is not None:
-            p = self.vendor_profiles().get(vendor)
-            if not p:
+            if vendor != "codex" and vendor not in V.PRESETS:
                 raise ValueError("bad vendor")
-            if not self.vendor_key(vendor):
-                raise ValueError(self.t("vendor.err.local.off") if vendor == V.LOCAL else self.t("vendor.err.key", name=p["name"]))
+            if vendor == "codex":
+                await self.codex_state()
+            why = self.model_why(vendor)
+            if why:
+                raise ValueError(why)
         self.store.put("vendors.all", vendor)
-        n = sum(1 for k in (self.store.get("vendors.ok") or {}) if not self.vendor_default(k))
-        log("app: new tasks by default — %s (allowed projects following it: %d)" % (vendor or "Claude", n))
+        log("app: new projects get %s" % (vendor or "claude"))
         self.changed()
-        return {"vendor": vendor, "projects": n}
+        return {"vendor": vendor}
 
     # ----- a second opinion (stage M, step 1; Q104, Q105): Codex reads what the task changed -----
     # A button under a session's outcome asks Codex — OpenAI's agent, on the owner's ChatGPT subscription — to read the
@@ -1562,6 +1758,7 @@ class Api:
         info = await self.codex_state()
         job = self.second_job(sid)
         mine = self.store.vendor_of(sid) == "codex"            # Codex did it: Claude's second opinion is step 4.2 (Q122)
+        mine = mine or bool(self.read_only(sid, lv.pkey))      # another model's task: its findings would go nowhere (7.2)
         return {"can": bool(info["path"] and rec and lv.turn is None and self.store.turn(sid)) and not mine,
                 "why": info["why"] if info["path"] else None, "v": info["v"],
                 "job": {k: job.get(k) for k in ("st", "ts", "t0", "dur", "steps", "model", "summary", "items", "why",
@@ -1629,9 +1826,9 @@ class Api:
         return {"ok": True}
 
     async def api_vendors_ok(self, pkey, on=False):
-        """Whether a project may go to other vendors (stage M, Q105 b): given in "Who does it" or by the second
-        opinion's first tap, taken back by the project's line "Disallow" — then its review stops, and its new tasks
-        go to Claude again (its default to a vendor goes). → {"on"}."""
+        """Whether another vendor may review a project (stage M, Q105 b; since 7.2 a review's alone — the project's
+        model gets its code by the owner's choice of it): given by the second opinion's first tap, taken back by
+        "Disallow" on the project's settings page — then its review stops, now and from the queue. → {"on"}."""
         if on and not await self.known_project(pkey):
             raise ValueError(self.t("err.no_project"))
         ok = self.store.get("vendors.ok") or {}
@@ -1640,19 +1837,12 @@ class Api:
         else:
             ok.pop(pkey, None)
         self.store.put("vendors.ok", ok)
-        log("app: project %s %s" % (pkey, "may go to other vendors" if on else "stays with Claude only"))
+        log("app: project %s %s" % (pkey, "may be reviewed by other vendors" if on else "is reviewed by no other vendor"))
         if not on:                           # taken back: no review of it goes on, nor starts later from the queue
             for sid, task in list(self.second_tasks.items()):
                 if (self.seconds.get(sid) or {}).get("pkey") == pkey:
                     task.cancel()
-            d = self.store.get("vendors.default") or {}
-            if d.pop(pkey, None):
-                self.store.put("vendors.default", d)
-            for sid, dr in list(self.driven.items()):       # its sessions on another vendor's model stop now
-                row = self.store.session(sid)
-                if self.store.vendor_of(sid) and row and row["pkey"] == pkey:
-                    dr.task.cancel()
-                    log("vendor session %s stopped: the project stays with Claude only" % sid[:8])
+        self.changed()
         return {"on": bool(on)}
 
     async def second_run(self, sid, job, path, project, info):
@@ -1717,10 +1907,14 @@ class Api:
             lv = self.live.get(sid) or self.stub(sid, job.get("pkey"))
             head = "👁 <b>%s</b> · " % R.esc(lv.title or self.title(lv))         # as the session's screen names it
             items = job.get("items") or []
+            if not self.topic_full(lv.pkey):       # only "done" in the topic (stage M, 7.2): no title, no findings
+                head, items = "👁 %s · " % self.head(lv), [] if job["st"] == "fail" else [None] * len(items)
             if job["st"] == "fail":
                 text = head + self.t("second.tg.fail", why=R.esc(self.t("second.why." + job.get("why", "failed"))))
             elif not items:
                 text = head + self.t("second.tg.none")
+            elif None in items:
+                text = head + self.t("second.tg.done", n=len(items), findings=I.plural(len(items), "finding"))
             else:
                 text = head + self.t("second.tg.done", n=len(items), findings=I.plural(len(items), "finding")) + "\n" + \
                     "\n".join("%d. %s" % (n, R.esc(R.short(it["title"], 140))) for n, it in enumerate(items[:SECOND_LINES], 1)) + \
@@ -1741,6 +1935,9 @@ class Api:
             self.attn.save()
             self.changed(sid)
             return {"ok": True, "at": None}
+        why = self.vendor_stop(sid)
+        if why:                                  # read only (another model's task, 7.2), its key gone: not later either
+            raise ValueError(why)
         at = float(at or 0) or self.limit_reset()
         if not at:
             try:
@@ -1831,11 +2028,12 @@ class Api:
         return None
 
     async def api_create(self, title=None, name=None, parent=None, how="empty", about=None, link=None, text=None,
-                         files=None, model=None, effort=None, big=False):
+                         files=None, model=None, effort=None, big=False, vendor=None):
         """A new project: a folder with git (how=empty), the same with a first turn that writes CLAUDE.md from the
         owner's description (describe), or a clone (clone — a job, the app asks api_job). Its topic in the group
         comes at once, named by the title; a first task starts a session there, as "+" does. Nothing that exists
-        is touched: a taken folder or project key is a refusal."""
+        is touched: a taken folder or project key is a refusal. vendor — the project's model (stage M, 7.2; Q147):
+        "claude", "codex" or a vendor's id, one that can take a task now; none said — the model of new projects."""
         title, about, text = (title or "").strip(), (about or "").strip(), (text or "").strip()
         given = title                   # a clone without a title: the folder keeps the repository's name as it is
         if how not in ("empty", "describe", "clone"):
@@ -1855,7 +2053,20 @@ class Api:
         name = (name or "").strip() or (await self.api_folder(given, link if how == "clone" else None))["name"]
         if N.bad_name(name):
             raise ValueError(self.t("new.err.name"))
-        model, effort = self.check_choice(model, effort)
+        vid = vendor or self.vendor_all() or "claude"
+        if not self.is_model(vid):
+            raise ValueError("bad vendor")
+        if vid == "codex":
+            await self.codex_state()
+        if self.model_why(vid):
+            raise ValueError(self.model_why(vid))
+        if vid == "codex":                          # its own model and level of effort, checked against its list
+            model = self.vendor_model(vid, model)
+            effort = self.codex_effort(model or next(iter(self.codex_models()), None), effort)
+        elif vid != "claude":
+            model, effort = self.vendor_model(vid, model), None
+        else:
+            model, effort = self.check_choice(model, effort)
         parent = self.place(parent)
         dest = os.path.join(parent, name)
         if os.path.lexists(dest):
@@ -1867,7 +2078,7 @@ class Api:
         # the first turn's words, once the folder is there: a file from the app goes into the new project's inbox
         first = ((lambda: N.describe_prompt(title, about)) if how == "describe" else
                  (lambda: self.with_uploads(text, files, dest)) if text or files else None)
-        done = lambda git: self.project_made(pkey, dest, title, parent, how, first, model, effort, git)
+        done = lambda git: self.project_made(pkey, dest, title, parent, how, first, model, effort, git, vid)
         if how == "clone":
             if not big:
                 mb = await self.repo_mb(src[2])
@@ -1967,12 +2178,19 @@ class Api:
             log("new project: clone: %r" % e)
             job.update(state="fail", error=self.t("new.err.clone", why=type(e).__name__))
 
-    async def project_made(self, pkey, dest, title, parent, how, first, model, effort, git):
-        """The folder is there: remember the project under its title, open its topic, start the first turn."""
+    async def project_made(self, pkey, dest, title, parent, how, first, model, effort, git, vid="claude"):
+        """The folder is there: remember the project under its title and its model, open its topic, start the first
+        turn — on its model."""
         row = self.store.topic(pkey)
         self.store.set_topic(pkey, dest, title, row["thread"] if row and row["path"] == dest else None)
         self.store.put("new_parent", parent)
-        log("new project: %s (%s%s)" % (dest, how, "" if git else ", no git"))
+        got = dict(self.project_models())
+        if vid == "claude":
+            got.pop(pkey, None)
+        else:
+            got[pkey] = vid
+        self.store.put("proj.model", got)
+        log("new project: %s (%s%s) · %s" % (dest, how, "" if git else ", no git", vid))
         try:
             await self.thread_for(pkey, dest)
         except Exception as e:
@@ -2237,6 +2455,7 @@ class Api:
         return self.lang()
 
     async def api_settings(self):
+        await self.codex_state()                    # the model of new projects may be Codex (stage M, 7.2)
         hooks = self.hooks_on()
         try:
             with self.D.LOG_FILE.open("rb") as f:
@@ -2256,7 +2475,7 @@ class Api:
                 "mac": {"idle": idle, "away": await self.away(), "mode": self.mode()},
                 "telegram": "proxy" if len(self.tg.clients) > 1 and self.tg.cur == 0 else "direct",
                 "stt": self.stt_state(), "cc": self.cc_choice(), "vendors": self.vendors_list(), "vendor_all": self.vendor_all(),
-                "vendors_ok_n": len(self.store.get("vendors.ok") or {}),
+                "codex": self.codex_view(),
                 "log": [x for x in lines if "Bearer" not in x][-40:]}
 
     async def api_prefs(self, **kw):

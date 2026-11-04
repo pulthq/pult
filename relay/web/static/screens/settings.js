@@ -187,7 +187,7 @@ function Parts() {
 
 // other vendors' models inside Claude Code (stage M, step 2): each vendor's key — checked by the computer with one tiny
 // request and kept there, never shown again — and its list of models, the main one first and the fast one second
-function Vendors({ list, all, okN, onChange, onAll }) {
+function Vendors({ list, all, codex, onChange, onAll }) {
   const [keys, setKeys] = useState({});
   const [models, setModels] = useState({});
   const [busy, setBusy] = useState("");
@@ -240,17 +240,18 @@ function Vendors({ list, all, okN, onChange, onAll }) {
       <div class="dim small vend-la">${t("vend.local.about")}</div>
     </div>`;
   };
-  // who does new tasks by default everywhere (2026-10-30: one tap if Claude goes away) — the allowed projects follow it
+  // the model new projects get (stage M, 7.2; Q147 — before, "who does new tasks by default"): a project already there
+  // keeps its own, changed in its settings
   const setAll = async (id) => {
     if ((all || "claude") === id) return;
     try { const r = await api("vendor_all", { vendor: id === "claude" ? null : id }); onAll(r.vendor); haptic("success"); }
     catch (e) { alertBox(e.message); }
   };
-  const can = list.filter((v) => v.key);
+  const can = (codex && codex.ok ? [{ id: "codex", name: "Codex" }] : []).concat(list.filter((v) => v.key));
   return html`<h3>${t("vend.title")}</h3>
     ${can.length > 0 && html`<div class="lbl vend-all-h">${t("who.all")}</div>
-    <div class="seg vend-all">${[{ id: "claude", name: "Claude" }, ...can].map((v) => html`<button key=${v.id} class=${(all || "claude") === v.id ? "on" : ""} onClick=${() => setAll(v.id)}>${v.name}</button>`)}</div>
-    <div class="dim small vend-all-t">${t(all ? "who.all.vendor" : "who.all.claude", { n: okN || 0 })}</div>`}
+    <div class="seg vend-all">${[{ id: "claude", name: "Claude" }, ...can].map((v) => html`<button key=${v.id} class=${(all || "claude") === v.id ? "on" : ""} onClick=${() => setAll(v.id)}>${v.short || v.name}</button>`)}</div>
+    <div class="dim small vend-all-t">${t(all ? "who.all.vendor" : "who.all.claude")}</div>`}
     <div class="list">${list.map((v) => {
     if (v.local) return local(v);
     const k = keys[v.id] || "", m = models[v.id] == null ? v.models.join(", ") : models[v.id];
@@ -337,7 +338,7 @@ function Settings() {
       <div class="keyrow"><input ref=${plainField} maxlength="280" placeholder=${t("voice.words.ph")} value=${words === null ? d.stt.words : words} data-saved=${d.stt.words} onInput=${(e) => setWords(e.target.value)}/>
         <button class="btn" disabled=${words === null || words.trim() === d.stt.words || kbusy} onClick=${saveWords}>${t("voice.save")}</button></div>
     </div>` : ""}</div>
-    ${d.vendors && html`<${Vendors} list=${d.vendors} all=${d.vendor_all} okN=${d.vendors_ok_n} onChange=${(vs) => set(Object.assign({}, d, { vendors: vs, vendor_all: vs.some((x) => x.id === d.vendor_all && x.key) ? d.vendor_all : null }))}
+    ${d.vendors && html`<${Vendors} list=${d.vendors} all=${d.vendor_all} codex=${d.codex} onChange=${(vs) => set(Object.assign({}, d, { vendors: vs, vendor_all: d.vendor_all === "codex" || vs.some((x) => x.id === d.vendor_all && x.key) ? d.vendor_all : null }))}
       onAll=${(v) => set(Object.assign({}, d, { vendor_all: v }))}/>`}
     <${Logins}/>
     <h3>${t("status")}</h3><div class="list"><div class="item static">

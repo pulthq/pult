@@ -41,6 +41,9 @@ STAND_VENDORS=1 (stage M, step 2): DeepSeek has a made-up key (GLM and Kimi none
 network, and a session ran on DeepSeek's model (SESSV) — its next turn runs now, from the app, on deepseek-v4-pro[1m];
 the session that waits for you (SESS4) ran on DeepSeek too, the weekly report on Fable — the cards and rows name the model;
 "Who does it" in New task — Codex a stand-in that can do a task (M4.1) — Settings → Other vendors (tools/vendors_check.py).
+STAND_MODEL=deepseek|glm|kimi|local|codex (stage M, 7.2): the shop's model (with STAND_VENDORS=1 it is DeepSeek's, with
+STAND_LOCAL=on|down one's own; the other projects are Claude's), STAND_DESK=<model> — the support desk's: the project's
+settings page, a task of another model read only (tools/projset_check.py).
 STAND_LOCAL=1 (stage M, step 6): one's own model through Ollama, off — its check answers at http://127.0.0.1:11434 as Ollama
 0.40.14 did (gemma4-32k with a 32K context; two models without one), any other address doesn't; =on — checked and on, the
 session that waits for you ran on it; =down — on, but the server doesn't answer: a new task on it is refused
@@ -594,6 +597,18 @@ async def main():
     store.put("lang_tg", LANG)                                   # the language of the bot and the app
     store.set_topic(T.PKEY, SHOP, "acme-shop", 77)
     store.set_topic(PKEY2, DESK, "support-desk", 78)
+    # stage M, 7.2: a project belongs to one model — the shop is DeepSeek's, where its DeepSeek tasks live (STAND_VENDORS=1),
+    # or one's own model's, where its task ran (STAND_LOCAL=on|down); STAND_MODEL=<model> — the shop's; the rest are Claude's
+    models = {}
+    if os.environ.get("STAND_VENDORS") == "1":
+        models[T.PKEY] = "deepseek"
+    if os.environ.get("STAND_LOCAL") in ("on", "down"):
+        models[T.PKEY] = "local"
+    if os.environ.get("STAND_MODEL"):
+        models[T.PKEY] = os.environ["STAND_MODEL"]
+    if os.environ.get("STAND_DESK"):
+        models[PKEY2] = os.environ["STAND_DESK"]
+    store.put("proj.model", models)
     if os.environ.get("STAND_HOMES") == "1":                 # stage Zh: real folders — the Projects screen lists only those
         for pk, name in ((T.PKEY, "acme-shop"), (PKEY2, "support-desk"), ("-Users-x-blog", "blog")):
             home = Path(os.environ["PULT_HOME"]).parent / name
@@ -1010,8 +1025,9 @@ async def main():
     p.api_turn_files, p.api_send_files = stand_turn_files, stand_send
 
     async def stand_new(pkey, text, files=None, model=None, effort=None, vendor=None):   # never launches Claude here
-        if vendor not in (None, "claude"):
-            p.vendor_for_new(pkey, vendor)            # the computer's own checks: the project allowed, the key there
+        if p.project_model(pkey) == "codex":
+            await p.codex_state()
+        vendor = p.vendor_for_new(pkey, vendor) or "claude"     # the computer's own checks: the project's model, its key
         if vendor == "local":                         # the daemon's drive(): nothing starts while the server is silent
             import pult_vendors as V
             lp = p.vendor_profiles()["local"]

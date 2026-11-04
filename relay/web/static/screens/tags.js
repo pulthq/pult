@@ -155,7 +155,7 @@ function Tags({ pkey, open: open0 }) {
           <button class="link" disabled=${busy} onClick=${() => edit({ op: "show", sec: h.sec, topic: h.topic })}>${t("tags.show")}</button></div></div>`)}</div>
         <div class="dim small">${t("tags.hidden.about")}</div>`}`}
     ${(d.secs.length > 0 || d.hidden.length > 0) && html`<div class="tbtns"><button class="btn ghost" disabled=${busy || !!d.job || !d.model} onClick=${resort}>${ic("auto", 16)} ${t("tags.resort")}</button></div>
-      ${!d.model && html`<div class="dim small">${t("tags.resort.off")}</div>`}`}
+      ${!d.model && html`<div class="dim small">${t(d.haiku === false ? "tags.resort.haiku" : "tags.resort.off")}</div>`}`}
     <div class="dim small tfoot">${t("tags.foot")}</div>
     ${sheet && sheet.k === "topic" && g && x && html`<${TopicSheet} pkey=${pkey} g=${g} x=${x} busy=${busy} onAct=${act} onClose=${closeSheet}/>`}
     ${sheet && sheet.k === "rename" && html`<${RenameSheet} key=${sheet.sec + "/" + (sheet.topic || "")} sec=${sheet.sec} topic=${sheet.topic} busy=${busy}
