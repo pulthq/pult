@@ -32,6 +32,7 @@ import pult_hook
 import pult_i18n as I
 import pult_load as L
 import pult_new as N
+import pult_os
 import pult_render as R
 import pult_spend as S
 import pult_stt as STT
@@ -365,9 +366,13 @@ class Api:
     @staticmethod
     def load_sum(mac, rows):
         return {"cpu": round(mac["cpu"], 1), "cores": mac["cores"], "load": round(mac["load"], 1),
-                "mem_used": mac["mem_used"], "mem_total": mac["mem_total"],
+                "mem_used": mac["mem_used"], "mem_total": mac["mem_total"], "mem_scope": mac.get("mem_scope", "system"),
                 "claude": {"n": len(rows), "cpu": round(sum(r["cpu"] for r in rows), 1),
                            "mem": sum(r["mem"] for r in rows)}}
+
+    async def api_memory(self):
+        reading = await asyncio.to_thread(pult_os.memory)
+        return dict(reading, now=time.time()) if reading else None
 
     async def api_load(self, sid=None):
         """The load view: the computer and every session on it; with sid — that session and its background tasks."""

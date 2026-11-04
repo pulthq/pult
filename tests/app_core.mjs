@@ -65,13 +65,17 @@ globalThis.history = {
 const store = new Map();
 globalThis.sessionStorage = { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) };
 // the relay's socket: what the app sends, and what it is told; "on screen" every 20 s and the language at a login are
-// answered at once, as the computer does — left waiting, they would count as calls on their way
+// answered at once, as the computer does — left waiting, they would count as calls on their way; a ping — by the
+// relay itself. `silent` — a link that died; `slow` — a computer slow to answer behind a live relay
 class FakeWS {
   constructor(url) { this.url = url; this.readyState = 0; this.sent = []; FakeWS.all.push(this); }
+  close() { this.readyState = 3; this.onclose?.({ code: 1000 }); }
   send(s) {
     const m = JSON.parse(s);
     this.sent.push(m);
-    if (m.t === "req" && (m.op === "presence" || m.op === "lang")) realImmediate(() => this.onmessage({ data: JSON.stringify({ t: "res", id: m.id, data: null }) }));
+    if (this.silent) return;
+    if (m.t === "ping") realImmediate(() => this.onmessage({ data: JSON.stringify({ t: "pong" }) }));
+    if (!this.slow && m.t === "req" && (m.op === "presence" || m.op === "lang")) realImmediate(() => this.onmessage({ data: JSON.stringify({ t: "res", id: m.id, data: null }) }));
   }
 }
 FakeWS.all = [];
@@ -114,6 +118,7 @@ const N = await import(new URL("core/nav.js", base));
 const V = await import(new URL("core/voice.js", base));
 const U = await import(new URL("core/update.js?v=100", base));      // this window runs the copy ?v=100
 const { html, render } = await import(new URL("vendor/htm-preact-3.1.1.js", base));
+const { memoryLevel } = await import(new URL("ui/memory.js", base));
 
 const results = [];
 async function check(name, fn) {
@@ -121,8 +126,8 @@ async function check(name, fn) {
 }
 // what is still waiting for the computer's answer gets one: the checks after it start clean
 const answerAll = (w) => { for (const r of asked(w)) if (C.conn.wait.has(r.id)) tell(w, { t: "res", id: r.id, data: null }); };
-async function readyOn(w) {
-  w.readyState = 1; w.onopen(); tell(w, { t: "hello", mac: true }); tell(w, { t: "ready" }); await settle(); answerAll(w);
+async function readyOn(w, hello = {}) {
+  w.readyState = 1; w.onopen(); tell(w, { t: "hello", mac: true, ...hello }); tell(w, { t: "ready" }); await settle(); answerAll(w);
 }
 const close = (w, code) => { w.readyState = 3; w.onclose({ code }); };
 
@@ -199,6 +204,7 @@ await check("connection: a login starts the count anew; \"too many windows\" (44
   await later(500);
   await readyOn(ws());
   close(ws(), 4429);
+  assert.equal(C.conn.state, "busy", "capacity is not a network outage");
   const wait = newest().at - clock.now;
   assert.ok(wait >= 15000 && wait <= 30000, "waited " + wait);
   await later(wait);
@@ -232,6 +238,75 @@ await check("connection: logged out everywhere — the key goes, no knocking aga
 });
 
 // ---------- where you are ----------
+await check("memory: unavailable values stay unknown; warning and critical levels are distinct", async () => {
+  for (const m of [null, {}, { mem_used: 0, mem_total: 0 }, { mem_used: -1, mem_total: 100 }]) assert.equal(memoryLevel(m), null);
+  for (const [used, level] of [[0, ""], [84, ""], [85, "warn"], [94, "warn"], [95, "bad"], [101, "bad"]]) {
+    assert.deepEqual(memoryLevel({ mem_used: used, mem_total: 100 }), { pct: Math.min(100, used), level });
+  }
+});
+await check("connection: a handshake that never finishes is replaced; late open cannot log in", async () => {
+  C.reconnect();
+  const old = ws();
+  await later(15_000);
+  assert.notEqual(ws(), old);
+  assert.equal(old.readyState, 3);
+  old.onopen();
+  assert.equal(old.sent.length, 0);
+  await readyOn(ws());
+});
+await check("connection: a hidden idle window releases its slot until it is shown", async () => {
+  tabTo(false);
+  const old = ws();
+  close(old, 4001);
+  await later(60_000);
+  assert.equal(ws(), old, "no background reconnect loop");
+  tabTo(true);
+  assert.notEqual(ws(), old);
+  await readyOn(ws());
+});
+await check("connection: manual reconnect retires the old socket and fails requests without replaying them", async () => {
+  const old = ws();
+  const result = C.api("send", { text: "once" }).catch((e) => e);
+  C.reconnect();
+  assert.equal((await result).lost, true);
+  assert.equal(old.readyState, 3);
+  await readyOn(ws());
+  assert.equal(asked(ws(), "send").length, 0);
+  assert.equal(C.conn.wait.size, 0);
+});
+await check("connection: an OPEN socket that stops answering the relay's ping is replaced in 30 s", async () => {
+  C.reconnect();
+  await readyOn(ws(), { pong: true });
+  const old = ws();
+  assert.ok(old.sent.some((m) => m.t === "ping"), "the link is checked at once");
+  old.silent = true;
+  await later(29_000);
+  assert.equal(ws(), old, "pinged at 20 s, 10 s to answer");
+  await later(2_000);
+  assert.notEqual(ws(), old);
+  assert.equal(old.readyState, 3);
+  await readyOn(ws(), { pong: true });
+});
+await check("connection: a computer slow to answer is no broken link — the relay answers the ping", async () => {
+  const cur = ws();
+  cur.slow = true;
+  await later(65_000);
+  assert.equal(ws(), cur);
+  cur.slow = false;
+  answerAll(cur);
+});
+await check("connection: a relay before 0.18.40 (no pong in its hello) is never pinged", async () => {
+  C.reconnect();
+  await readyOn(ws());
+  const cur = ws();
+  cur.silent = true;
+  await later(65_000);
+  assert.equal(ws(), cur);
+  assert.equal(cur.sent.filter((m) => m.t === "ping").length, 0);
+  cur.silent = false;
+  answerAll(cur);
+});
+
 await check("where: a session's link from Telegram opens that session", async () => {
   assert.equal(location.hash, "#/s/" + SID);
   assert.deepEqual(N.stack, ["#/s/" + SID]);

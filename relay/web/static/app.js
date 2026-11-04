@@ -2,7 +2,7 @@
 // transcripts, answers to questions and permission requests, new tasks, usage. Data comes from the Mac via the relay.
 import { html, render, useState, useEffect } from "./vendor/htm-preact-3.1.1.js";
 import { t } from "./i18n.js";
-import { on, useConn } from "./core/conn.js";
+import { on, reconnect, useConn } from "./core/conn.js";
 import { back, useRoute } from "./core/nav.js";
 import { tg } from "./core/tg.js";
 import { UPD_RUN_MAX } from "./core/update.js";
@@ -14,6 +14,7 @@ import { Settings, ddmm } from "./screens/settings.js";
 import { Tags } from "./screens/tags.js";
 import { hhmm, ic } from "./ui/kit.js";
 import { Load } from "./ui/load.js";
+import { MemoryStatus } from "./ui/memory.js";
 import { EditHost, ViewHost } from "./ui/pics.js";
 
 // a short note at the bottom of the screen for a moment — an answer went — outliving the card it came from
@@ -29,12 +30,13 @@ function Banner() {
   const upd = c.updating && Date.now() - c.updating < UPD_RUN_MAX && ["connecting", "offline", "auth", "nomac"].includes(c.state);
   const text = c.state === "denied" ? t(["expired", "out", "locked"].includes(c.why) ? "banner.denied." + c.why : "banner.denied")
     : upd ? t(c.updSrv ? "banner.srv" : "banner.updating")
-    : ["connecting", "offline", "auth", "nomac"].includes(c.state) ? t("banner." + c.state) : "";
-  const stale = c.fresh && ["offline", "nomac"].includes(c.state) ? " " + t("banner.stale", { hm: hhmm(new Date(c.fresh)) }) : "";
+    : ["connecting", "offline", "auth", "nomac", "busy"].includes(c.state) ? t("banner." + c.state) : "";
+  const stale = c.fresh && ["connecting", "offline", "nomac", "busy"].includes(c.state) ? " " + t("banner.stale", { hm: hhmm(new Date(c.fresh)) }) : "";
   const g = c.gone && c.state === "nomac" && !upd ? new Date(c.gone) : null;
   const gone = g ? " " + t("banner.gone", { when: g.toDateString() === new Date().toDateString() ? hhmm(g) : ddmm(c.gone / 1000) + ", " + hhmm(g) }) : "";
   // installing is no alarm: the calm colour, not the computer-offline red it had (2026-10-27)
-  return text ? html`<div class=${"banner " + (upd ? "updating" : c.state)} role="status">${text}${gone}${stale}</div>` : "";
+  return text ? html`<div class=${"banner " + (upd ? "updating" : c.state)} role="status">${text}${gone}${stale}
+    ${!upd && ["offline", "connecting", "busy", "auth"].includes(c.state) && html` <button class="link" onClick=${reconnect}>${t("conn.retry")}</button>`}</div>` : "";
 }
 
 function App() {
@@ -59,7 +61,7 @@ function App() {
     : r.name === "settings" ? html`<${Settings}/>`
     : html`<${Home}/>`;
   const tab = (name, h, label, icon) => html`<a class=${(r.name === name ? "on" : "") + (name === "new" ? " new" : "")} href=${h}><span class="ti">${ic(icon, 22)}</span><span class="tl">${label}</span></a>`;
-  return html`<${Banner}/><main class=${r.name === "s" ? "with-composer" : ""}>${screen}</main>
+  return html`<${Banner}/><${MemoryStatus}/><main class=${r.name === "s" ? "with-composer" : ""}>${screen}</main>
     ${r.name !== "s" && html`<nav class="tabs">${tab("home", "#/", t("tab.home"), "home")}${tab("projects", "#/projects", t("tab.projects"), "folder")}${tab("usage", "#/usage", t("tab.res"), "gauge")}${tab("new", "#/new", t("tab.new"), "plus")}</nav>`}
     <${EditHost}/><${ViewHost}/><${FileHost}/><${Toast}/>`;
 }

@@ -22,6 +22,7 @@ PY = sys.executable
 # check: the stand's switches, what the check takes — "out" (the stand's output) or the name of a URL it prints — and
 # its own arguments after that. None: the check raises the stands it needs itself
 CHECKS = {
+    "memory": ({"STAND_LANG": "ru", "STAND_MEMORY": "96"}, "out", []),
     "fileview": ({"STAND_FILES": "1"}, "SESS", []),
     "compose": ({"STAND_LANG": "ru"}, "out", []),
     "newproject": ({"STAND_LANG": "ru"}, "NEWPROJ", []),

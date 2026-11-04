@@ -38,6 +38,9 @@ WEB = Path(os.environ.get("PULT_WEB_DIR") or Path(__file__).resolve().parent / "
 # a reconnect). An app window may live in Telegram for days and reconnect with the initData it was opened with
 MAX_AGE = 7 * 24 * 3600
 MAX_CLIENTS = 6            # app windows at once: the owner's phone and maybe Telegram on the Mac
+# a full relay gives the owner's new window the place of the one silent longest: Telegram keeps a closed app's webview,
+# which answers WebSocket pings for good, so only "on screen" (every 20 s while the app is shown) counts as a word
+SILENT = 60                # s without "on screen" before a window may lose its place to a new one (4001)
 HELLO_WAIT = 10            # s for a new connection to say who it is
 WAITING_PER_IP = 3         # connections that haven't said who they are yet: per address and in all
 # each may bring a frame of up to 8 MB before it says who it is: 6 of them and the relay (~45 MB) stay within its
@@ -185,6 +188,7 @@ class Relay:
         self.pending = {}                   # cid → connection waiting for the Mac to confirm the login
         self.inits = {}                     # cid → what the window said (initData, resume key, address, client):
         self.ids = itertools.count(1)       # when the Mac reconnects, it checks the login again
+        self.heard = {}                     # cid → when the window came in or last said it is on screen (monotonic)
         self.waiting = collections.Counter()    # address → connections that haven't said who they are yet
         self.wanted = (None, 0.0)           # the release last written to want.json, and when
         self.told = None                    # the updater's report as last sent to the Mac
@@ -266,8 +270,7 @@ class Relay:
         ws = web.WebSocketResponse(heartbeat=25, max_msg_size=8 * 1024 * 1024)   # a message may carry pictures
         await ws.prepare(request)
         ip = client_ip(request)
-        if len(self.clients) + len(self.pending) >= MAX_CLIENTS or known(ip) and self.waiting[ip] >= WAITING_PER_IP \
-                or sum(self.waiting.values()) >= WAITING_MAX:
+        if known(ip) and self.waiting[ip] >= WAITING_PER_IP or sum(self.waiting.values()) >= WAITING_MAX:
             await ws.close(code=4429, message=b"too many")
             return ws
         cid = next(self.ids)
@@ -285,15 +288,24 @@ class Relay:
                 await ws.send_str(json.dumps({"t": "denied", "why": "expired"} if ok and owner else {"t": "denied"}))
                 log("login rejected: signature %s, owner %s, fresh %s, %s" % (ok, owner, fresh, ip))
                 return ws
+            # the places are counted once the window has proved it is the owner's: a stranger takes none and frees none
+            gone = self.room()
+            if gone is False:
+                await ws.close(code=4429, message=b"too many")
+                return ws
             c = hello.get("client") or {}             # where the app is opened from; never the initData itself
             client = {"platform": str(c.get("platform") or "")[:20], "version": str(c.get("version") or "")[:20]}
             key = hello.get("resume")
             log("app window %d: %s %s, %s" % (cid, client["platform"], client["version"], ip))
             self.pending[cid] = ws
+            self.heard[cid] = time.monotonic()
             self.inits[cid] = {"init": hello.get("init"), "ip": ip, "client": client,
                                "resume": key if isinstance(key, str) and len(key) <= 100 else None}
+            if gone is not None:
+                await gone.close(code=4001, message=b"replaced")     # the app reopens it when it is shown again
             mac = await self.to_mac(dict(self.inits[cid], t="open", cid=cid, build=build()))
-            hello = {"t": "hello", "cid": cid, "mac": mac}
+            # pong: this relay answers the app's ping itself — a link that stops answering is broken, a slow Mac isn't
+            hello = {"t": "hello", "cid": cid, "mac": mac, "pong": True}
             if not mac and "away" in self.mac_off():
                 hello["away"] = self.mac_off()["away"]
             await ws.send_str(json.dumps(hello))
@@ -301,10 +313,16 @@ class Relay:
                 if m.type != WSMsgType.TEXT:
                     continue
                 msg = json.loads(m.data)
+                if isinstance(msg, dict) and msg.get("t") == "ping":
+                    await ws.send_str(json.dumps({"t": "pong"}))
+                    continue
                 if cid not in self.clients:
                     continue                          # the Mac has not confirmed the login yet
                 if not isinstance(msg, dict) or msg.get("t") != "req":
                     continue                          # a window only asks: what else the Mac hears comes from the relay
+                # a hidden webview may still load its screen now and then: only "on screen" says the app is in use
+                if msg.get("op") == "presence" and isinstance(msg.get("args"), dict) and msg["args"].get("on") is True:
+                    self.heard[cid] = time.monotonic()
                 msg["cid"] = cid
                 if not await self.to_mac(msg):
                     await ws.send_str(json.dumps(self.mac_off()))
@@ -316,6 +334,7 @@ class Relay:
             self.pending.pop(cid, None)
             self.clients.pop(cid, None)
             self.inits.pop(cid, None)
+            self.heard.pop(cid, None)
             await self.to_mac({"t": "close", "cid": cid})
         return ws
 
@@ -324,6 +343,23 @@ class Relay:
         if self.waiting[ip] <= 0:
             del self.waiting[ip]
         return True
+
+    def room(self):
+        """A place for one more window: None — there is one; a window to close — all MAX_CLIENTS are taken and this one
+        has said nothing for SILENT s (it is out of the lists already: the new window takes its place now, before any
+        wait); False — every window is in use. Before 0.18.40 a full relay refused every new window until the old
+        ones went, and a webview Telegram kept never went (2026-11-04)."""
+        windows = {**self.clients, **self.pending}
+        if len(windows) < MAX_CLIENTS:
+            return None
+        cid = min(windows, key=lambda c: self.heard.get(c, 0.0))
+        silent = time.monotonic() - self.heard.get(cid, 0.0)
+        if silent < SILENT:
+            return False
+        log("app window %d: silent %d s — its place goes to a new one" % (cid, silent))
+        self.clients.pop(cid, None)
+        self.pending.pop(cid, None)
+        return windows[cid]
 
     # ----- Mac -----
 

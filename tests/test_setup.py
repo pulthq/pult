@@ -292,6 +292,7 @@ class SettingsTest(Base):
         self.assertIn('ExecStart="/home/a b/venv/bin/python" "-u" "/home/a b/pult%%d$$X.py"\n', text)
         self.assertIn('Environment="PATH=/x:/usr/bin" "PULT_LABEL=pult"\n', text)
         self.assertIn("Restart=always\n", text)
+        self.assertIn("OOMPolicy=continue\n", text)
         self.assertIn("StartLimitIntervalSec=0\n", text)
         self.assertIn("StandardOutput=append:/home/a b/.local/state/pult/pult.log\n", text)
         self.assertIn("WantedBy=default.target\n", text)

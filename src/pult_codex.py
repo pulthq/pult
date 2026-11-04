@@ -32,8 +32,11 @@ import pult_render as R
 import pult_web as PW
 
 VERIFIED = ("0.148.0-alpha.9",)     # Codex versions a live review went through (2026-10-30); others — schema_ok
-# where Codex lives when the PATH doesn't have it: ChatGPT.app carries its own (macOS); npm, Homebrew, a user's bin
-APP = ("/Applications/ChatGPT.app/Contents/Resources/codex", "~/Applications/ChatGPT.app/Contents/Resources/codex")
+# where Codex lives when the PATH doesn't have it: ChatGPT.app carries its own (macOS) — since 26.924 (Codex 0.158) a
+# script in codex-cli/bin that runs CodexCLI.app's, before it at the top of Resources: with only the old place Pult found
+# no Codex after the app updated itself (2026-11-04); npm, Homebrew, a user's bin
+APP = tuple(r + "/ChatGPT.app/Contents/Resources/" + p for r in ("/Applications", "~/Applications")
+            for p in ("codex-cli/bin/codex", "codex"))
 MORE_PATH = ("/opt/homebrew/bin", "/usr/local/bin", "~/.local/bin", "~/.npm-global/bin", "~/.bun/bin")
 EDIT_TOOLS = {"Edit": "file_path", "MultiEdit": "file_path", "Write": "file_path", "NotebookEdit": "notebook_path"}
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"    # git's empty tree: "since the start" in a repository born later

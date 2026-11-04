@@ -57,6 +57,10 @@ button:focus-visible, a:focus-visible, label:focus-visible, [role="button"]:focu
 .banner { position: sticky; top: 0; z-index: 5; padding: 9px 14px; font-size: var(--fs-sec); text-align: center;
   background: var(--card); border-bottom: 1px solid var(--line); color: var(--muted); }
 .banner.nomac, .banner.denied { color: var(--danger); }
+.memory-status { padding: 6px 14px; font-size: var(--fs-cap); color: var(--muted); border-bottom: 1px solid var(--line); }
+.memory-status a { color: inherit; } .memory-status span { display: block; margin-top: 3px; }
+.memory-status.warn { color: var(--warn); } .memory-status.bad { color: var(--danger); }
+.memory-status.stale { color: var(--muted); }
 
 /* the Home strip: two tiles, a small label over a value, and the gear — nothing is cut on a 360 px phone */
 .where { margin: 2px 0 6px; }

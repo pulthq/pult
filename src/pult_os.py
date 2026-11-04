@@ -625,6 +625,69 @@ def _mac_processes():
 _ticks = [None]           # Linux: the previous reading — "now" is the difference between two readings
 
 
+def _linux_memory(proc=Path("/proc")):
+    """Available memory, including readable cgroup v2 ancestors. LXC may virtualize meminfo while hiding its
+    outer cgroup limit; keep that reading when no tighter limit is visible. No process walk or external command."""
+    mem = {}
+    for line in (proc / "meminfo").read_text().splitlines():
+        key, _, value = line.partition(":")
+        if key in ("MemTotal", "MemAvailable"):
+            mem[key] = int(value.split()[0]) * 1024
+    total, available = mem.get("MemTotal"), mem.get("MemAvailable")
+    if not total or available is None:
+        return None
+    best = {"mem_total": total, "mem_used": max(0, total - available), "mem_scope": "system"}
+    try:
+        group = next(line[3:] for line in (proc / "self/cgroup").read_text().splitlines() if line.startswith("0::"))
+        for line in (proc / "self/mountinfo").read_text().splitlines():
+            fields, _, fs = line.partition(" - ")
+            if not fs.startswith("cgroup2 "):
+                continue
+            unescape = lambda s: re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), s)
+            root, mount = (Path(unescape(s)) for s in fields.split()[3:5])
+            try:
+                relative = Path(group).relative_to(root)
+            except ValueError:
+                continue
+            if ".." in relative.parts:
+                continue
+            folder = mount / relative
+            while True:
+                try:
+                    limit = int((folder / "memory.max").read_text())  # "max" is unlimited
+                    used = int((folder / "memory.current").read_text())
+                    # Inactive file cache can be reclaimed; shared memory is not subtracted.
+                    stats = dict(row.split() for row in (folder / "memory.stat").read_text().splitlines())
+                    used = max(0, used - max(0, int(stats.get("inactive_file", 0))))
+                    if 0 < limit <= total and max(0, limit - used) < available:
+                        available = max(0, limit - used)
+                        best = {"mem_total": limit, "mem_used": min(limit, used), "mem_scope": "limit"}
+                except (OSError, ValueError):
+                    pass
+                if folder == mount:
+                    break
+                folder = folder.parent
+    except (OSError, ValueError, StopIteration):
+        pass
+    return best
+
+
+def memory():
+    """Lightweight memory reading for the app's status strip; None when unavailable."""
+    try:
+        if KIND == "linux":
+            return _linux_memory()
+        if KIND == "mac":
+            info = (run("sysctl", "-n", "hw.memsize", "kern.memorystatus_level") or "").split()
+            if len(info) == 2:
+                total, free = map(int, info)
+                if total > 0 and 0 <= free <= 100:
+                    return {"mem_total": total, "mem_used": total * (100 - free) // 100, "mem_scope": "system"}
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def _linux_read():
     rows = {}
     for name in os.listdir("/proc"):
@@ -672,16 +735,9 @@ def _linux_processes():
     a, b = prev[2], cur[2]
     busy = sum(b) - sum(a)
     idle = (b[3] + b[4]) - (a[3] + a[4])            # idle and iowait
-    mem = {}
-    with open("/proc/meminfo") as f:
-        for x in f:
-            k, _, v = x.partition(":")
-            if k in ("MemTotal", "MemAvailable"):
-                mem[k] = int(v.split()[0]) * 1024
-    total = mem.get("MemTotal")
+    mem = memory() or {"mem_total": None, "mem_used": None}
     return procs, {"cores": os.cpu_count() or 1, "cpu": 100.0 * (busy - idle) / busy if busy > 0 else 0.0,
-                   "mem_total": total, "mem_used": total - mem["MemAvailable"] if total and "MemAvailable" in mem
-                   else None, "load": os.getloadavg()[0]}
+                   **mem, "load": os.getloadavg()[0]}
 
 
 # ---------- the service that keeps the daemon running ----------
@@ -775,7 +831,7 @@ class Systemd:
                  "[Service]", "ExecStart=" + " ".join(sd_quote(str(a), True) for a in argv),
                  "WorkingDirectory=" + str(cwd).replace("%", "%%"),
                  "Environment=" + " ".join(sd_quote("%s=%s" % kv) for kv in env.items()),
-                 "Restart=always", "RestartSec=10", "Nice=5",
+                 "Restart=always", "RestartSec=10", "Nice=5", "OOMPolicy=continue",
                  "StandardOutput=append:" + str(log).replace("%", "%%"),
                  "StandardError=append:" + str(log).replace("%", "%%"), "",
                  "[Install]", "WantedBy=default.target", ""]
