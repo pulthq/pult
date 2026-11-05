@@ -2294,6 +2294,65 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([(r["state"], r["llm"]) for r in (await self.p.api_overview())["board"][0]["rows"]], [("idle", fable)])
         self.assertEqual([r["llm"] for r in (await self.p.api_project(PKEY))["today"]], [fable])
 
+    async def test_waiting_context(self):
+        # how full a task's context is (Q151–Q152: the line along a card's bottom edge) — on the cards that wait for the
+        # owner too: a request on Home and on the project's screen, an outcome in "Your move", then its finished row;
+        # the number VS Code shows; no window known yet — none
+        self.p._procs = (time.monotonic() + 1e6, None)
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        Path(TP).write_text(tline("user", "Сделай отчёт") + "\n" + json.dumps({
+            "type": "assistant", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+            "message": {"id": "m1", "model": "claude-opus-5-5", "role": "assistant", "content": [],
+                        "usage": {"input_tokens": 2, "cache_read_input_tokens": 120000, "output_tokens": 900}}}) + "\n")
+        await run_hook(ev("SessionStart", source="startup"))
+        await run_hook(ev("UserPromptSubmit", prompt="Сделай отчёт"))
+        hook = await run_hook(ev("PermissionRequest", tool_name="Bash", tool_input={"command": "make report"}), wait=False)
+        await until(lambda: self.p.req_by_rid)
+        self.assertEqual([x["ctx"] for x in (await self.p.api_overview())["pending"]], [None])
+        self.p.set_ctx(SID, 200000, 32000, model="claude-opus-5-5")              # the turn's result said its window
+        self.assertEqual([x["ctx"] for x in (await self.p.api_overview())["pending"]], [72])     # 120 902 of 167 000
+        self.assertEqual([x["ctx"] for x in (await self.p.api_project(PKEY))["pending"]], [72])
+        rid = next(iter(self.p.req_by_rid))
+        await self.p.on_callback({"id": "c1", "from": {"id": OWNER}, "data": "p:%s:y" % rid})
+        await hook.wait()
+        await run_hook(ev("Stop", last_assistant_message="**Отчёт готов.** Какой формат дальше — PDF или таблица?"))
+        await until(lambda: SID in self.p.attn.rec)
+        self.assertEqual([(r["sid"], r["ctx"]) for r in (await self.p.api_overview())["mine"]], [(SID, 72)])
+        self.assertEqual([r["ctx"] for r in (await self.p.api_project(PKEY))["mine"]], [72])
+        await self.p.api_seen(SID)                                                   # "Reviewed" → a finished row
+        self.assertEqual([r["ctx"] for r in (await self.p.api_overview())["board"][0]["rows"]], [72])
+
+    async def test_codex_context(self):
+        # a Codex task's context (Q151): Codex counts it itself — after each request a token_count in its history, the
+        # request's tokens of its window; the last count wins, one without them (info null) is passed over; a history
+        # without one — none; it is read again only once the file has changed
+        d = TMP / ("cx-" + self._testMethodName)
+        d.mkdir(exist_ok=True)
+        path = d / "rollout-2026-11-05T10-00-00-0000c0de-1111-7222-8333-444455556666.jsonl"
+
+        def count(used, window=258400):
+            return json.dumps({"timestamp": "2026-11-05T15:19:20.000Z", "type": "event_msg", "payload": {
+                "type": "token_count", "rate_limits": {}, "info": None if used is None else {
+                    "total_token_usage": {"total_tokens": used * 3}, "last_usage_includes_reasoning": True,
+                    "last_token_usage": {"input_tokens": used - 13, "cached_input_tokens": 12416, "output_tokens": 13,
+                                         "reasoning_output_tokens": 0, "total_tokens": used},
+                    "model_context_window": window}}})
+        said = json.dumps({"timestamp": "2026-11-05T15:19:21.000Z", "type": "event_msg",
+                           "payload": {"type": "agent_message", "message": "Готово."}})
+        path.write_text("\n".join([json.dumps({"type": "session_meta", "payload": {"id": "th"}}), said]) + "\n")
+        self.assertIsNone(PW.codex_ctx(str(path)))                                  # no count yet
+        path.write_text("\n".join([count(17548), said, count(129200), count(None), said]) + "\n")
+        self.assertEqual(PW.codex_ctx(str(path)), 50)                               # 129 200 of 258 400
+        with path.open("a") as f:
+            f.write(count(250000) + "\n")
+        self.assertEqual(PW.codex_ctx(str(path)), 97)
+        self.assertIsNone(PW.codex_ctx(str(d / "rollout-gone.jsonl")))
+        sid = "cccccccc-1111-4111-8111-111111111111"                     # the row of a Codex task says it
+        self.store.touch_session(sid, PKEY, path="/Users/x/proj")
+        self.store.set_vendor(sid, "codex")
+        self.store.put("codex." + sid, {"thread": "th", "path": str(path), "model": "gpt-5.6-sol"})
+        self.assertEqual(await self.p.row_stats(sid), (97, {"vendor": "Codex", "model": "gpt-5.6-sol"}))
+
     async def test_new_project(self):
         # stage S: a folder in a place picked inside the home folder, git, the topic named by the title at once, the
         # project in the lists before Claude ever ran there; with a description — the first turn writes CLAUDE.md

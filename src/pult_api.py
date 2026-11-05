@@ -95,8 +95,8 @@ class Api:
                 opened.append(dict(self.live_item(lv), project=os.path.basename((a.get("cwd") or "").rstrip(self.D.SEPS))))
         load = await self.load_state()
         pending = [self.req_item(r) for r in self.req_by_rid.values() if not r.fut.done()]
-        for x in pending:                            # which model asks: a question's card says it too (Q108)
-            _, x["llm"] = await self.row_stats(x["sid"])
+        for x in pending:                            # which model asks: a question's card says it too (Q108), and how
+            x["ctx"], x["llm"] = await self.row_stats(x["sid"])      # full its context is — along its bottom edge (Q151)
             x["work"] = self.work_total(x["sid"])     # and the task's clock, stopped while it waits
         return {"mac": {"idle": idle, "away": await self.away(), "mode": self.mode()}, "now": time.time(),
                 "lang": self.lang(), "load": self.load_sum(load[2], load[3]) if load else None,
@@ -146,14 +146,15 @@ class Api:
                 "started": j.started, "ended": j.ended, "code": j.code, "last": j.last, "tail": j.tail[-30:]}
 
     async def row_stats(self, sid):
-        """A shown row's figures from its transcript: how full the session's context is, % — the number VS Code shows;
-        None if unknown — and which model does its work (llm_view)."""
+        """A shown row's figures from its transcript: how full the session's context is, % — the number VS Code shows
+        (the line along its card's bottom edge, Q151); a Codex task's — by Codex's own count; None if unknown — and
+        which model does its work (llm_view)."""
         try:
             path, _ = self.transcript_of(sid)
         except ValueError:
             return None, self.llm_view(sid, None)
-        if PW.is_codex(path):
-            return None, self.llm_view(sid, None)             # Codex's own figures aren't Claude Code's (stage M, M4.1)
+        if PW.is_codex(path):            # Codex's own figures aren't Claude Code's (stage M, M4.1): its count, its history
+            return await asyncio.to_thread(PW.codex_ctx, path), self.llm_view(sid, None)
         st = await asyncio.to_thread(self.stats.get, path)
         await self.work_ready(sid, path)             # the clock has the turns from before Pult counted them (work_into)
         ctx = self.ctx_of(sid, (st or {}).get("model"))
@@ -209,8 +210,8 @@ class Api:
                              "work": sum(1 for r in rs if r["state"] in ("work", "bg", "queue")),
                              "mine": sum(1 for r in rs if r["state"] in A.MINE), "turns": turns, "secs": secs})
         mine = A.sort_rows([dict(r, project=p["name"]) for p in projects for r in p["rows_all"] if r["state"] in ("you", "fail")])
-        for r in mine:                               # which model did the work and how long: its card says it too (Q108)
-            _, r["llm"] = await self.row_stats(r["sid"])
+        for r in mine:                               # which model did the work and how long: its card says it too (Q108);
+            r["ctx"], r["llm"] = await self.row_stats(r["sid"])      # how full its context is (Q151)
             self.work_into(r)
         projects = A.sort_projects(projects)
         pins, hides = self.store.pins(), self.store.hides()
@@ -541,8 +542,8 @@ class Api:
         for r in live + today:
             r["ctx"], r["llm"] = await self.row_stats(r["sid"])
             self.work_into(r)
-        for r in mine + pending:                     # the cards that wait for the owner name the model too (Q108)
-            _, r["llm"] = await self.row_stats(r["sid"])
+        for r in mine + pending:                     # the cards that wait for the owner name the model too (Q108) and
+            r["ctx"], r["llm"] = await self.row_stats(r["sid"])      # show how full its context is (Q151)
             r["work"] = self.work_total(r["sid"])
         shown = {r["sid"] for r in mine + live + today} | {r["sid"] for r in pending}
         earlier = []

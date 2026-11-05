@@ -7,7 +7,7 @@ import { Mic, useRecorder } from "../core/voice.js";
 import { plural, t } from "../i18n.js";
 import { html, useEffect, useRef, useState } from "../vendor/htm-preact-3.1.1.js";
 import { Req, TagPick, useRcpt } from "../ui/cards.js";
-import { GEAR, GLYPH, Loading, MODES, ModePick, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, dot, dur, durShort, hhmm, ic, keyTap, llmName, nb, pauseChip, pct, plainField, queueChip, quiet, tagChips, toDate, useNow, workChip } from "../ui/kit.js";
+import { GEAR, GLYPH, Loading, MODES, ModePick, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, ctxBar, dot, dur, durShort, hhmm, ic, keyTap, llmName, nb, pauseChip, pct, plainField, queueChip, quiet, tagChips, toDate, useNow, workChip } from "../ui/kit.js";
 import { BgSheet, bgCount, bgLine, memPct } from "../ui/load.js";
 import { UpdRow } from "../ui/upd.js";
 
@@ -146,6 +146,7 @@ function Mine({ r, now, onGot, stt, showProject = true }) {
       : r.fail === "rate_limit" ? html`<${ResumeAt} sid=${r.sid} resume=${resume} reset=${r.reset} onSet=${setResume}/>` : html`<${Replies} sid=${r.sid} replies=${r.replies} onSent=${sent}/>`}
     ${!r.ro && html`<${QuickReply} sid=${r.sid} stt=${stt} onSent=${sent}/>`}
     <div class="foot quiet"><span class="foot-l">${llm && html`<span class="llm">${llm}</span>`}${copy && html`<button class="link copy" onClick=${aboutCopy}>${ic("copy", 15)} ${t("dest.copy")}</button>`}</span><button class="link" disabled=${busy} onClick=${got}>${ic("check", 15)} ${t("mine.got")}</button></div>
+    ${ctxBar(r.ctx)}
   </div></${SwipeRow}>`;
 }
 
@@ -185,6 +186,7 @@ function BoardRow({ r, now, onBg, onTags }) {
     <div class="item-h"><b class="one">${rowIcon(r)}${r.title}</b><span class="meta">${ctxWarn(r)}${right}</span></div>
     ${(r.line || (r.tags && r.tags.length > 0) || llm) && html`<div class="ln-row"><div class="ln">${tagChips(r.tags)}${r.line}</div>${llm && html`<span class="llm">${llm}</span>`}</div>`}
     ${r.bg && r.bg.length > 0 && html`<div class="bg tap" role="button" tabindex="0" onClick=${bgTap} onKeyDown=${keyTap(bgTap)}>${bgLine(r.bg)} ${ic("chev", 14)}</div>`}
+    ${ctxBar(r.ctx)}
   </div>`;
   return onTags ? html`<${SwipeRow} what="task" acts=${tagsAct(r, onTags)}>${body}</${SwipeRow}>` : body;
 }
@@ -214,6 +216,7 @@ function RunRow({ r, now, onBg, onTags, showProject = true }) {
     ${said && html`<div class="run-now">${said}</div>`}
     ${r.state === "bg" && r.bg && r.bg.length > 0 && html`<div class="bg tap" role="button" tabindex="0" onClick=${bgTap} onKeyDown=${keyTap(bgTap)}>${bgLine(r.bg)} ${ic("chev", 14)}</div>`}
     ${r.state === "work" && r.bgk && r.bgk.length > 0 && html`<div class="bg tap" role="button" tabindex="0" onClick=${bgTap} onKeyDown=${keyTap(bgTap)}>${ic("bg", 14)} ${t("bg.n", { list: bgCount(r.bgk) })} ${ic("chev", 14)}</div>`}
+    ${ctxBar(r.ctx)}
   </div>`;
   return onTags ? html`<${SwipeRow} what="task" acts=${tagsAct(r, onTags)}>${body}</${SwipeRow}>` : body;
 }

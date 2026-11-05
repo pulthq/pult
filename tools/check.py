@@ -51,6 +51,7 @@ CHECKS = {
     "gotit": ({"STAND_REPORT": "1", "STAND_LANG": "ru"}, "out", []),   # every finished task waits for "Got it" (2026-10-30)
     "states": ({"STAND_TAGS": "1", "STAND_ASK2": "1", "STAND_LANG": "ru"}, "out", []),   # a task's state in colour (Q110–Q112)
     "worktime": ({"STAND_VENDORS": "1", "STAND_HOMES": "1", "STAND_REPORT": "1", "STAND_LANG": "ru"}, "out", []),   # one clock per task (Q117)
+    "ctx": ({"STAND_VENDORS": "1", "STAND_HOMES": "1", "STAND_REPORT": "1", "STAND_CTX": "1", "STAND_LANG": "ru"}, "out", []),   # the context's line (Q151)
     "paste": ({"STAND_HOMES": "1", "STAND_LANG": "ru"}, "out", []),      # a screenshot by ⌘V or a drag (Q127)
     "helpers": ({"STAND_HELPERS": "1", "STAND_LANG": "ru"}, "out", []),  # helpers in the background, seen mid-turn (Q128)
     "projset": ({"STAND_VENDORS": "1", "STAND_HOMES": "1", "STAND_REPORT": "1", "STAND_DESK": "deepseek", "STAND_LANG": "ru"}, "out", []),   # 7.2

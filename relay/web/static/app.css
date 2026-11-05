@@ -84,6 +84,19 @@ button:focus-visible, a:focus-visible, label:focus-visible, [role="button"]:focu
 .card.mine { box-shadow: inset 4px 0 0 var(--attn); }
 .card.mine.fail { box-shadow: inset 4px 0 0 var(--danger); }
 .card.mine .now { font-weight: 500; }
+/* how full a task's context is (Q151–Q152): the card's stripe goes on round its bottom corner and along the edge, as far
+   as the context is used, over a faint track of what is left — the card clips it to its rounded corners; in "Running
+   now" and on the board — the line between the rows, from the list's own bar */
+.card.mine, .card.ask, .card.perm { position: relative; overflow: hidden; }
+.item.run, .brow { position: relative; }
+.cx { --cx: var(--muted); position: absolute; left: 0; right: 0; bottom: 0; height: 3px; pointer-events: none;
+  background: color-mix(in srgb, var(--cx) 18%, transparent); }
+.cx::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: var(--p); background: var(--cx); border-radius: 0 2px 2px 0; }
+.card .cx { --cx: var(--attn); }
+.card.mine.fail .cx { --cx: var(--danger); }
+.item .cx { height: 2px; }       /* a row's: just above the rule between the rows, a slide's wrapper or the list clips nothing */
+.run .cx { --cx: var(--ok); }
+.cx.bad { --cx: var(--danger); }
 /* a task's state in colour (Q110): a section is a zone of its state — what runs is green, what waits for you warm,
    history plain. The owner, 2026-10-30: only the small grey heading told them apart, and it scrolls away. A zone
    tints --card, so a card, a list and a row's sliding layer in it all take the colour; fields and choices stay plain

@@ -381,6 +381,45 @@ def is_codex(path):
     return bool(path) and os.path.basename(str(path)).startswith("rollout-")
 
 
+CX_TAIL = 512 * 1024            # bytes at the end of a Codex history where its last count of tokens is looked for
+_cx_ctx = {}                    # path → (size, mtime, %): a history is read again only once it has grown
+
+
+def codex_ctx(path):
+    """How full a Codex task's context is, % (Q151) — Codex counts it itself: after each request its history gets an
+    event_msg token_count, the request's tokens (info.last_token_usage.total_tokens) and its window
+    (info.model_context_window; 258 400 on this Mac's Codex 0.166). A rough figure: Claude Code's gauge keeps a room for
+    the answer, this one doesn't. None — no count in the last CX_TAIL bytes."""
+    try:
+        st = os.stat(path)
+        key = (st.st_size, st.st_mtime_ns)
+        if (_cx_ctx.get(path) or (None,))[:2] == key:
+            return _cx_ctx[path][2]
+        with open(path, "rb") as f:
+            f.seek(max(0, st.st_size - CX_TAIL))
+            data = f.read(CX_TAIL)
+    except OSError:
+        return None
+    pct = None
+    for line in reversed(data.split(b"\n")):
+        if b'"token_count"' not in line:
+            continue
+        try:
+            p = json.loads(line).get("payload")
+        except (ValueError, AttributeError):
+            continue
+        info = p.get("info") if isinstance(p, dict) and p.get("type") == "token_count" else None
+        used = (info.get("last_token_usage") or {}).get("total_tokens") if isinstance(info, dict) else None
+        window = info.get("model_context_window") if isinstance(info, dict) else None
+        if isinstance(used, int) and isinstance(window, int) and window > 0:
+            pct = min(100, round(used * 100 / window))
+            break                                   # a count without them (info null) — an earlier one
+    if len(_cx_ctx) > 200:
+        _cx_ctx.clear()
+    _cx_ctx[path] = key + (pct,)
+    return pct
+
+
 def codex_step(inp):
     """What a step of Codex's own `exec` tool did → (tool, input) in Claude Code's words, so the app and the turn's
     lines show it the same way: a command ("Bash", its cmd) or a patch ("Edit", the first file; "files" — all of them).
