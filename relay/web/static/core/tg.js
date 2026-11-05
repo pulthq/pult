@@ -14,7 +14,29 @@ setLang(String((tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initData
 const haptic = (k) => tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred(k);
 // a light tick under the finger: a slide has gone past its mark (stage Zh, step 3)
 const tick = () => tg && tg.HapticFeedback && tg.HapticFeedback.selectionChanged();
-const alertBox = (s) => (tg && tg.showAlert ? tg.showAlert(s) : alert(s));
-const confirmBox = (s) => new Promise((ok) => (tg && tg.showConfirm ? tg.showConfirm(s, ok) : ok(confirm(s))));
+// Telegram's popup takes a message of up to 256 characters and a title of up to 64, and throws past them
+// (WebAppPopupParamInvalid): the box never shows and the tap does nothing. A longer text goes up as a popup with its
+// first paragraph for the title and the rest cut to fit; whatever Telegram still refuses — the browser's own box
+const MSG = 256, TITLE = 64;
+const long = (s) => {
+  const i = s.indexOf("\n\n"), fit = (m) => (m.length <= MSG ? m : m.slice(0, MSG - 1) + "…");
+  return i > 0 && i <= TITLE ? { title: s.slice(0, i), message: fit(s.slice(i + 2)) } : { message: fit(s) };
+};
+const alertBox = (s) => {
+  s = String(s);
+  try {
+    if (tg && s.length <= MSG && tg.showAlert) return tg.showAlert(s);
+    if (tg && tg.showPopup) return tg.showPopup(Object.assign(long(s), { buttons: [{ type: "close" }] }));
+  } catch (e) { /* the browser's box below */ }
+  alert(s);
+};
+const confirmBox = (s) => new Promise((ok) => {
+  s = String(s);
+  try {
+    if (tg && s.length <= MSG && tg.showConfirm) return tg.showConfirm(s, ok);
+    if (tg && tg.showPopup) return tg.showPopup(Object.assign(long(s), { buttons: [{ id: "ok", type: "ok" }, { type: "cancel" }] }), (id) => ok(id === "ok"));
+  } catch (e) { /* the browser's box below */ }
+  ok(confirm(s));
+});
 
 export { alertBox, confirmBox, haptic, tg, tick };

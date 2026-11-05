@@ -1,6 +1,6 @@
 // Pult — the app's four state machines (relay/web/static/core/) checked in node, inside a browser made up here: the
-// connection, where you are, this phone's copy following the server, voice (review 2026-10-27, 6.4). Time moves only
-// when a check moves it; no DOM, no network, no microphone.
+// connection, where you are, this phone's copy following the server, voice (review 2026-10-27, 6.4); and Telegram's
+// boxes, with the app's long questions in them. Time moves only when a check moves it; no DOM, no network, no microphone.
 //   node tests/app_core.mjs        (tests/test_web.py runs it; exit 1 and the failures when one fails)
 import assert from "node:assert/strict";
 
@@ -112,7 +112,7 @@ globalThis.FileReader = class { readAsDataURL(b) { b.arrayBuffer().then((x) => {
 
 // ---------- the modules, the way the app loads them ----------
 const base = new URL("../relay/web/static/", import.meta.url);
-const { t } = await import(new URL("i18n.js", base));
+const { setLang, t } = await import(new URL("i18n.js", base));
 const C = await import(new URL("core/conn.js", base));
 const N = await import(new URL("core/nav.js", base));
 const V = await import(new URL("core/voice.js", base));
@@ -430,6 +430,79 @@ await check("update: a copy still changing on the server (a deploy writes file b
   assert.equal(location.reloads, n, "not while it changes");
   await later(8_200);
   assert.equal(location.reloads, n + 1);
+});
+
+// ---------- Telegram's boxes (core/tg.js): its popup takes up to 256 characters and a title of up to 64, and throws past
+// them — the box never shows and the tap does nothing (a project's model change, 2026-11-05) ----------
+// as telegram-web-app.js does it: showAlert and showConfirm are its showPopup, which checks the words before it shows
+function telegramBoxes() {
+  const W = window.Telegram.WebApp, was = W.showAlert;
+  const box = { up: [], browser: [], open: null };
+  W.showPopup = (p, cb) => {
+    if (box.open) throw new Error("WebAppPopupOpened");
+    const title = String(p.title || "").trim(), message = String(p.message || "").trim();
+    if (title.length > 64 || !message || message.length > 256) throw new Error("WebAppPopupParamInvalid");
+    box.up.push({ title, message, buttons: (p.buttons || [{ type: "close" }]).map((b) => b.type) });
+    box.open = cb || (() => {});
+  };
+  W.showAlert = (s, cb) => W.showPopup({ message: s }, cb && (() => cb()));
+  W.showConfirm = (s, cb) => W.showPopup({ message: s, buttons: [{ id: "ok", type: "ok" }, { type: "cancel" }] }, cb && ((id) => cb(id === "ok")));
+  box.close = (id) => { const cb = box.open; box.open = null; cb(id); };
+  globalThis.alert = (s) => box.browser.push(["alert", s]);
+  globalThis.confirm = (s) => (box.browser.push(["confirm", s]), true);
+  box.done = () => { delete W.showPopup; delete W.showConfirm; W.showAlert = was; delete globalThis.alert; delete globalThis.confirm; };
+  return box;
+}
+
+await check("boxes: Telegram's own up to its 256; past it a popup with the question for its title; refused — the browser's", async () => {
+  const T = await import(new URL("core/tg.js", base));
+  const b = telegramBoxes();
+  const ask = (s) => T.confirmBox(s).catch((e) => "threw " + e.message);   // before 0.18.47 it threw, unseen
+  try {
+    let p = ask("Merge it?");
+    assert.deepEqual(b.up.at(-1), { title: "", message: "Merge it?", buttons: ["ok", "cancel"] });
+    b.close("ok");
+    assert.equal(await p, true);
+    const q = "Change the project's model to DeepSeek?", rest = "DeepSeek will see the project's files. ".repeat(6).trim();
+    p = ask(q + "\n\n" + rest);
+    assert.deepEqual(b.up.at(-1), { title: q, message: rest, buttons: ["ok", "cancel"] }, "the rest whole, under its question");
+    b.close(null);                                         // closed without a button: "no"
+    assert.equal(await p, false);
+    T.alertBox(q + "\n\n" + rest);
+    assert.deepEqual(b.up.at(-1), { title: q, message: rest, buttons: ["close"] });
+    b.close(null);
+    T.alertBox("a".repeat(300));                           // no short first paragraph: cut to fit rather than refused
+    assert.equal(b.up.at(-1).message, "a".repeat(255) + "…");
+    p = ask(q + "\n\n" + rest);                            // a popup open already: Telegram throws — the browser's box
+    assert.deepEqual(b.browser, [["confirm", q + "\n\n" + rest]]);
+    assert.equal(await p, true);
+    assert.equal(b.up.length, 4);
+  } finally { b.done(); }
+});
+
+await check("boxes: a model change and the copy question fit Telegram's box whole, in both languages — nothing cut", async () => {
+  const S = await import(new URL("screens/projset.js", base));
+  const H = await import(new URL("screens/home.js", base));
+  // as core/tg.js sends it: whole in Telegram's own box, or a short first paragraph for the title and the rest whole
+  const whole = (s) => { const i = s.indexOf("\n\n"); return s.length <= 256 || (i > 0 && i <= 64 && s.length - i - 2 <= 256); };
+  const models = [{ id: "claude", name: "Claude" }, { id: "codex", name: "Codex" }, { id: "deepseek", name: "DeepSeek" }, { id: "glm", name: "GLM" },
+    { id: "kimi", name: "Kimi" }, { id: "local", name: "Local model", local: true }, { id: "local", name: "Своя модель", local: true }];
+  const cut = [];
+  try {
+    for (const lang of ["en", "ru"]) {
+      setLang(lang);
+      for (const a of models) for (const m of models) for (const haiku of [true, false]) {
+        const s = a.id === m.id ? "" : S.changeText({ model: a, haiku }, m);
+        if (!whole(s)) cut.push([lang, a.id + " → " + m.id + (haiku ? ", the helper on" : ""), s.length]);
+      }
+      // the reason comes first and is longer than a title: the whole question has to fit Telegram's own box
+      for (const why of [undefined, "failed", "checking", "version", "reload", "folder", "off", "nowrap", "terminal"]) {
+        const s = H.forkAsk({ why, v: "2.1.310", step: "x".repeat(64) });
+        if (s.length > 256) cut.push([lang, "a copy: " + why, s.length]);
+      }
+    }
+  } finally { setLang("en"); }
+  assert.deepEqual(cut, []);
 });
 
 // ---------- voice ----------

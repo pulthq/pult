@@ -25,13 +25,7 @@ URLS = _cdp.stand_urls(STAND, ("NEW", "HOME"))
 OUT = rest[0] if rest else tempfile.mkdtemp(prefix="pult-local-")
 os.makedirs(OUT, exist_ok=True)
 verdict = _cdp.Verdicts()
-SPY = """(() => { window.__said = []; window.__yes = false;
-  window.alert = (s) => { window.__said.push(['alert', String(s)]); };
-  window.confirm = (s) => (window.__said.push(['confirm', String(s)]), window.__yes);
-  const w = window.Telegram && window.Telegram.WebApp;
-  if (w) { w.showAlert = (s, cb) => { window.__said.push(['alert', String(s)]); cb && cb(); };
-           w.showConfirm = (s, cb) => (window.__said.push(['confirm', String(s)]), cb(window.__yes)); }
-  return true; })()"""
+SPY = _cdp.SPY
 FIELD = "(() => [...document.querySelectorAll('.form .field')].find((b) => b.previousElementSibling && b.previousElementSibling.textContent.trim() === %r))()"
 OPT = "[...document.querySelectorAll('.card.pick .opt')].find((b) => b.textContent.trim().startsWith(%r))"
 CARD = "[...document.querySelectorAll('.item.vend')].find((x) => x.querySelector('b').textContent === 'Своя модель')"

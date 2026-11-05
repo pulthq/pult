@@ -96,4 +96,4 @@ function ProjectSettings({ pkey }) {
   </div>`;
 }
 
-export { ProjectSettings };
+export { ProjectSettings, changeText };
