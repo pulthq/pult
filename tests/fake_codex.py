@@ -6,14 +6,16 @@ account/rateLimits/read. Standard library only.
 FAKE_CODEX_CONF names a JSON file that shapes it, read anew on every start: version; schema — "old" leaves out the custom
 review target; login — false: not signed in; fail — a codexErrorInfo ("usageLimitExceeded", "unauthorized") or "other";
 wait — seconds the review takes; hang — seconds it stays silent before going on (past a test's timeout); ask — it
-asks an approval of its own; steps — commands it runs; review — its answer; log — a file where
+asks an approval of its own; steps — commands it runs; review — its answer; big — bytes its answer to account/read
+grows by (longer than a test's LINE_MAX); log — a file where
 every request lands as a JSON line (the tests read the sandbox and the instructions there; initialize — with the PULT_
 names of its environment). launcher(folder, conf) makes
 the command that runs it on any system — a shell script, or a .cmd on Windows.
 
 As the one who does a task (stage M, M4.1): thread/start and thread/resume (a history file like Codex's own, in conf's
-"sessions" folder), turn/start — its turn runs beside the reading of requests, so it can wait for the answer to an
-approval it asks and hear turn/steer and turn/interrupt — and model/list. conf "doer" shapes the turn: approve —
+"sessions" folder; resume_bytes — the history thread/resume returns unless asked for excludeTurns), turn/start — its
+turn runs beside the reading of requests, so it can wait for the answer to an approval it asks and hear turn/steer and
+turn/interrupt — and model/list. conf "doer" shapes the turn: approve —
 "command" or "file", what it asks before it acts; file — the file it writes (hello.txt); wait — seconds the turn
 works; fail — a codexErrorInfo the turn ends with; say — its last words."""
 import json
@@ -218,7 +220,11 @@ def serve(c):
         if meth == "thread/start" and prm.get("sandbox") == "workspace-write":
             say({"id": i, "result": doer.open(prm)})
         elif meth == "thread/resume":
-            say({"id": i, "result": doer.open(prm, prm.get("threadId"))})
+            result = doer.open(prm, prm.get("threadId"))
+            if c.get("resume_bytes") and not prm.get("excludeTurns"):
+                result["thread"]["turns"] = [{"id": "old", "items": [
+                    {"type": "agentMessage", "id": "old-message", "text": "x" * c["resume_bytes"]}]}]
+            say({"id": i, "result": result})
         elif meth == "turn/start":
             text = " ".join(str(x.get("text") or "") for x in prm.get("input") or [] if isinstance(x, dict))
             say({"id": i, "result": {"turn": {"id": "tu-%d" % (doer.n + 1), "status": "inProgress", "items": []}}})
@@ -242,7 +248,7 @@ def serve(c):
             say({"id": i, "result": {"userAgent": "fake_codex/0"}})
         elif meth == "account/read":
             say({"id": i, "result": {"account": None if c.get("login") is False else {"type": "chatgpt", "planType": "plus"},
-                                     "requiresOpenaiAuth": True}})
+                                     "requiresOpenaiAuth": True, "pad": "x" * int(c.get("big") or 0)}})
         elif meth == "thread/start":
             say({"id": i, "result": {"thread": {"id": "th-1"}, "model": "gpt-5.6-sol", "reasoningEffort": "high",
                                      "cwd": prm.get("cwd"), "sandbox": {"type": prm.get("sandbox")},

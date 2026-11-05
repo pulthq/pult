@@ -4,6 +4,14 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.45 — 2026-11-05
+
+- **Long Codex tasks take the next message after a pause.** Reopening a task's conversation, Pult had Codex send its
+  whole history, which Pult doesn't use — the task's screen reads Codex's own file. A long conversation's history
+  (27 MB in one case) was more than Pult reads in one message, so every message after a pause or a restart failed after
+  30 seconds. Codex now sends only the conversation's details; its context stays. And when a message from Codex is too
+  long to read, the error says so rather than only "no answer in 30 s".
+
 ## 0.18.44 — 2026-11-05
 
 - **A project belongs to one model.** Claude, Codex, DeepSeek, GLM, Kimi or a model of your own does every task of a
