@@ -450,6 +450,7 @@ class AppServer:
         self.wait = {}
         self.events = asyncio.Queue()
         self.asked = []                    # the server's own requests, declined (the journal says which)
+        self.lost = 0                      # its messages longer than LINE_MAX, dropped unread
         self.err = collections.deque(maxlen=12)
         self.tasks = []
         self.on_request = on_request
@@ -472,6 +473,7 @@ class AppServer:
                 try:
                     line = await self.p.stdout.readline()
                 except ValueError:             # longer than LINE_MAX: that one message is lost, not the review
+                    self.lost += 1
                     continue
                 if not line:
                     break
@@ -531,12 +533,16 @@ class AppServer:
         self.n += 1
         i, fut = self.n, asyncio.get_running_loop().create_future()
         self.wait[i] = fut
+        lost = self.lost
         await self.send({"id": i, "method": method, "params": params})
         try:
             m = await asyncio.wait_for(fut, timeout)
         except asyncio.TimeoutError:
             self.wait.pop(i, None)
-            raise CodexError("start", "no answer to %s in %d s" % (method, timeout))
+            # a message too long to read came meanwhile — most likely the answer itself: say so, not "no answer" alone
+            # (a long task's thread/resume returned its whole history, 27 MB, before excludeTurns — 2026-11-05)
+            big = ": Codex sent a message over %g MB, too long to read" % (LINE_MAX / 2 ** 20) if self.lost > lost else ""
+            raise CodexError("start", "no answer to %s in %d s%s" % (method, timeout, big))
         if "error" in m:
             e = m.get("error") or {}
             raise CodexError(kind_of(e), "%s: %s" % (method, e.get("message") or e))

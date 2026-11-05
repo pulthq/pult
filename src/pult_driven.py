@@ -593,7 +593,8 @@ class CodexDriven(Driven):
         rules = [CX.RULES] if os.path.isfile(os.path.join(self.path, "CLAUDE.md")) else []
         params["developerInstructions"] = "\n\n".join(rules + [CX.SEND_RULE])
         if self.resume and keep.get("thread"):
-            r = await s.request("thread/resume", dict(params, threadId=keep["thread"]))
+            # History comes from the rollout file; returning it here can exceed the transport's line limit.
+            r = await s.request("thread/resume", dict(params, threadId=keep["thread"], excludeTurns=True))
         else:
             if self.want_model:
                 params["model"] = self.want_model

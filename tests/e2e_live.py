@@ -16,8 +16,9 @@ A file made in a session goes to the project's topic with `pult send`, and the t
 With the model on, a new task gets its section and topic as soon as its request is in, and again with the result (stage T);
 the first open of the project sorts its earlier tasks without tags, in a batch (T2).
 A task Codex does (stage M, M4.1): the real Codex of this computer writes a file in the project and sends it with `pult send`
-from its sandbox — which can't reach the socket, so through Pult's outbox — its outcome and history come as a session's
-(skipped without Codex). A task on another vendor's model (stage M, step 2): a stand-in for DeepSeek on this computer gets the session's requests with
+from its sandbox — which can't reach the socket, so through Pult's outbox — its outcome and history come as a session's;
+after a pause its next message reopens the same conversation, without the history in Codex's answer, and is answered from
+the conversation's context (skipped without Codex). A task on another vendor's model (stage M, step 2): a stand-in for DeepSeek on this computer gets the session's requests with
 Pult's key and never the subscription's token; the outcome comes; the transcript names the vendor's model, and so does its
 row — Claude's session's row its real model, and so does the owner's move on Home. One's own model (stage M, step 6): the
 same stand-in as a local server — Pult's stand-in key, the five core tools, one model for every role. Each vendor's task
@@ -523,6 +524,23 @@ async def main():
         assert os.path.isfile(made) and open(made).read().strip() == "hi", "Codex didn't write the file"
         assert [i["k"] for i in items].count("user") == 1 and any(i["k"] == "text" for i in items), "the screen lacks the chat"
         assert llm12 and llm12["vendor"] == "Codex", "the row doesn't say Codex"
+        # after a pause (its process closed, as DRIVEN_IDLE does) the next message reopens the same conversation —
+        # thread/resume with excludeTurns: a long history in its answer ran past LINE_MAX (2026-11-05)
+        thread12, ts12 = (p.store.get("codex." + sid12) or {}).get("thread"), p.attn.rec[sid12]["ts"]
+        p.driven[sid12].task.cancel()
+        await until(lambda: sid12 not in p.driven, 30, what="задача Codex закрылась")
+        how = (await p.api_send(sid12, "Which word did my previous message ask you to put into the file? Reply with "
+                                       "that word only, in capital letters, and run nothing."))["how"]
+        await until(lambda: p.attn.rec[sid12]["ts"] != ts12, what="итог задачи Codex после паузы")
+        items = (await p.api_session(sid12))["page"]["items"]
+        said = [i.get("text") or "" for i in items if i["k"] == "text"][-1:]
+        lost = p.driven[sid12].server.lost if sid12 in p.driven and p.driven[sid12].server else None
+        log("Codex после паузы: %s · беседа та же: %s · ответ %r · выброшено длинных сообщений: %s" % (
+            how, (p.store.get("codex." + sid12) or {}).get("thread") == thread12, said, lost))
+        assert how == "resume", "the task didn't reopen its conversation"
+        assert (p.store.get("codex." + sid12) or {}).get("thread") == thread12, "a new conversation, not the same one"
+        assert [i["k"] for i in items].count("user") == 2, "the screen lacks the message after the pause"
+        assert said and "HI" in said[0], "the answer after the pause doesn't know the conversation"
     log("тем создано:", len([1 for m, _ in calls if m == "createForumTopic"]), "· вызовов Telegram:", len(calls))
     for d in list(p.driven.values()):
         d.task.cancel()

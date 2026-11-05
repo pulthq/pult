@@ -3792,7 +3792,8 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.store.set_topic(PKEY, str(proj), "proj", 77)
         log = TMP / ("codex-%s.jsonl" % self._testMethodName)
         cmd, conf = codex_conf(TMP / ("codex-" + self._testMethodName), log=str(log),
-                               sessions=str(TMP / ("cx-sessions-" + self._testMethodName)), doer={"approve": "file", "wait": 0.3})
+                               sessions=str(TMP / ("cx-sessions-" + self._testMethodName)), resume_bytes=8192,
+                               doer={"approve": "file", "wait": 0.3})
         self.p.env["PULT_CODEX"] = cmd
 
         def sent():
@@ -3893,11 +3894,14 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         doer(wait=0.2)
         self.p.driven[sid].task.cancel()
         await until(lambda: sid not in self.p.driven)
-        self.assertEqual((await self.p.api_send(sid, "После перерыва"))["how"], "resume")
-        await until(lambda: any(m.get("method") == "thread/resume" for m in sent()))
-        self.assertEqual(next(m for m in sent() if m.get("method") == "thread/resume")["params"]["threadId"], thread)
-        await until(lambda: any(m.get("method") == "turn/start" and "После перерыва" in json.dumps(m, ensure_ascii=False)
-                                for m in sent()))
+        # A long history exceeds the transport's line limit; resuming needs metadata only, and must still reach
+        # the next turn in the same thread. The session screen reads history from its rollout file.
+        with mock.patch.object(CX, "LINE_MAX", 4096):
+            self.assertEqual((await self.p.api_send(sid, "После перерыва"))["how"], "resume")
+            await until(lambda: any(m.get("method") == "thread/resume" for m in sent()))
+            self.assertEqual(next(m for m in sent() if m.get("method") == "thread/resume")["params"]["threadId"], thread)
+            await until(lambda: any(m.get("method") == "turn/start" and "После перерыва" in json.dumps(m, ensure_ascii=False)
+                                    for m in sent()))
 
     async def test_second_opinion_nested_repos(self):
         # one big project whose parts are repositories of their own (2026-10-31): the folder's own history doesn't
@@ -7623,6 +7627,29 @@ class CodexTest(unittest.TestCase):
         with self.assertRaises(CX.CodexError) as e:
             asyncio.run(CX.review(str(d / "no-such-codex"), str(proj), "x", env=dict(os.environ)))
         self.assertEqual(e.exception.kind, "start")
+
+    def test_answer_too_long(self):
+        """A message from Codex longer than LINE_MAX is dropped unread: the request it answered says so, not only "no
+        answer in 30 s" (a long task's thread/resume returned 27 MB of history, 2026-11-05) — and the next request is
+        answered: that one message is lost, not the connection."""
+        d = TMP / "codex-long"
+        cmd, _ = codex_conf(d, big=8192)
+
+        async def go():
+            s = await CX.AppServer.start(cmd, str(d), dict(os.environ))
+            try:
+                hello = {"clientInfo": {"name": "pult"}}
+                await s.request("initialize", hello)      # it is up: its start under a loaded suite took longer than 1 s
+                with self.assertRaises(CX.CodexError) as e:
+                    await s.request("account/read", {}, timeout=2)
+                return e.exception, await s.request("initialize", hello)
+            finally:
+                await s.close()
+        with mock.patch.object(CX, "LINE_MAX", 4096):
+            e, then = asyncio.run(go())
+        self.assertEqual(e.kind, "start")
+        self.assertIn("no answer to account/read in 2 s: Codex sent a message over", e.text)
+        self.assertEqual(then, {"userAgent": "fake_codex/0"})
 
 
 class TabCheckTest(unittest.IsolatedAsyncioTestCase):
