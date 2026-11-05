@@ -580,6 +580,7 @@ const S = {
   "dest.tab": { en: "VS Code tab", ru: "вкладка VS Code" },
   "dest.copy": { en: "goes as a copy", ru: "уйдёт копией" },
   "ctx.pct": { en: "{pct} % of {win}", ru: "{pct} % из {win}" },
+  "ctx.used": { en: "Context {pct} % full", ru: "Контекст заполнен на {pct} %" },
   model: { en: "Model", ru: "Модель" },
   close: { en: "Close", ru: "Закрыть" },
   effort: { en: "Effort", ru: "Раздумья" },

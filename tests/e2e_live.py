@@ -18,7 +18,8 @@ the first open of the project sorts its earlier tasks without tags, in a batch (
 A task Codex does (stage M, M4.1): the real Codex of this computer writes a file in the project and sends it with `pult send`
 from its sandbox — which can't reach the socket, so through Pult's outbox — its outcome and history come as a session's;
 after a pause its next message reopens the same conversation, without the history in Codex's answer, and is answered from
-the conversation's context (skipped without Codex). A task on another vendor's model (stage M, step 2): a stand-in for DeepSeek on this computer gets the session's requests with
+the conversation's context (skipped without Codex); its row says how full its context is, by Codex's own count, as the
+owner's move on Home does by Claude Code's (Q151). A task on another vendor's model (stage M, step 2): a stand-in for DeepSeek on this computer gets the session's requests with
 Pult's key and never the subscription's token; the outcome comes; the transcript names the vendor's model, and so does its
 row — Claude's session's row its real model, and so does the owner's move on Home. One's own model (stage M, step 6): the
 same stand-in as a local server — Pult's stand-in key, the five core tools, one model for every role. Each vendor's task
@@ -227,6 +228,10 @@ async def main():
     assert mine.get(sid4) and mine[sid4][0] == "you" and "PONG" in mine[sid4][1].upper(), "no outcome for a real turn"
     # its card names the model that did it (Q108): the real transcript's own
     assert mine[sid4][2] and str(mine[sid4][2].get("model")).startswith("claude-") and "vendor" not in mine[sid4][2], "the owner's move doesn't say the model"
+    # and how full its context is (Q151: the line along the card's bottom edge) — the real result's window
+    ctx4 = next(r.get("ctx") for r in ov["mine"] if r["sid"] == sid4)
+    log("контекст на карточке: %s %%" % ctx4)
+    assert isinstance(ctx4, int) and 1 <= ctx4 <= 100, "the owner's move doesn't say how full the context is"
     await p.api_session(sid4)
     assert sid4 in {r["sid"] for r in (await p.api_overview())["mine"]}, "opening the session put it away"
     await p.api_seen(sid4)
@@ -517,13 +522,14 @@ async def main():
         assert sent12, "pult send from Codex's sandbox didn't deliver the file"
         made = os.path.join(p.project_path(pkey5), "codex.txt")
         items = (await p.api_session(sid12))["page"]["items"]
-        llm12 = (await p.row_stats(sid12))[1]
-        log("Codex %s: итог «%s» · файл %s · шаги %s · строка %s · раздумья %s (по умолчанию %s, уровни %s)" % (
+        ctx12, llm12 = await p.row_stats(sid12)
+        log("Codex %s: итог «%s» · файл %s · шаги %s · строка %s, контекст %s %% · раздумья %s (по умолчанию %s, уровни %s)" % (
             (await p.codex_state())["v"], p.attn.rec[sid12]["line"], os.path.isfile(made),
-            [i.get("step") for i in items if i["k"] == "tool"][:4], llm12, level, dflt, "/".join(levels)))
+            [i.get("step") for i in items if i["k"] == "tool"][:4], llm12, ctx12, level, dflt, "/".join(levels)))
         assert os.path.isfile(made) and open(made).read().strip() == "hi", "Codex didn't write the file"
         assert [i["k"] for i in items].count("user") == 1 and any(i["k"] == "text" for i in items), "the screen lacks the chat"
         assert llm12 and llm12["vendor"] == "Codex", "the row doesn't say Codex"
+        assert isinstance(ctx12, int) and 1 <= ctx12 <= 100, "the row doesn't say how full Codex's context is (its own count)"
         # after a pause (its process closed, as DRIVEN_IDLE does) the next message reopens the same conversation —
         # thread/resume with excludeTurns: a long history in its answer ran past LINE_MAX (2026-11-05)
         thread12, ts12 = (p.store.get("codex." + sid12) or {}).get("thread"), p.attn.rec[sid12]["ts"]

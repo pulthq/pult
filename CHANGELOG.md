@@ -4,6 +4,14 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.46 — 2026-11-05
+
+- **How full a task's context is, at a glance.** On Home and a project's screen, the coloured stripe of a card that
+  waits for you goes on round its bottom corner and along the edge, as far as the task's context is filled — the same
+  figure as Claude Code's gauge in VS Code — over a faint track of what is left; red from 90 %, when the agent is about
+  to compact the conversation. In Running now the line runs under each task, in place of the rule between the rows.
+  Codex tasks show it too, by Codex's own count.
+
 ## 0.18.45 — 2026-11-05
 
 - **Long Codex tasks take the next message after a pause.** Reopening a task's conversation, Pult had Codex send its

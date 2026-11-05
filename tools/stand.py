@@ -34,6 +34,9 @@ printer's has one); STAND_PINS=blog,shop — these pinned, in that order, the la
 (tools/pins_check.py).
 STAND_COPY=1: the session that waits for you is open in a VS Code tab on a Claude Code Pult isn't checked on — its card
 says "goes as a copy" before you type, and sending says why (tools/copy_check.py).
+STAND_CTX=1 (Q151): the tasks' contexts filled each its own way — the question 33 %, the permission 72 %, the weekly report
+13 %, the search 94 %, the dark theme at work 55 %, the task on DeepSeek 8 % — for the line along a card's bottom edge
+(tools/ctx_check.py); without it every reply reads 120 000 tokens.
 STAND_SECOND=1 (stage M, step 1): the shop is a git repository whose search the task changed, and Codex is a stand-in
 (tests/fake_codex.py) that reads it for about five seconds and finds two things; the session that waits for you (SESS4)
 offers "Second opinion · Codex" under its outcome (tools/second_check.py). STAND_SECOND=allowed — the shop already allowed.
@@ -182,12 +185,18 @@ def line(kind, content, ago=0):
                        "message": {"role": kind, "content": content}})
 
 
+# STAND_CTX=1: the tasks' contexts filled each its own way — from a few per cent to the brink of compacting (the line
+# along a card's bottom edge, Q151); else every reply reads 120 000 tokens, as before
+CTX_READ = {"t1": 52000, "s4b": 156000, "s5": 21000, "s7": 89000, "sv1": 58000} if os.environ.get("STAND_CTX") == "1" else {}
+
+
 def aline(text, mid, out, ago=0):
     """A model reply with token counts — the session card and "today by project" count these."""
     return json.dumps({"type": "assistant", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - ago)),
                        "message": {"id": mid, "model": "claude-opus-5-5", "role": "assistant",
                                    "content": [{"type": "text", "text": text}],
-                                   "usage": {"input_tokens": 2, "cache_read_input_tokens": 120000, "output_tokens": out}}})
+                                   "usage": {"input_tokens": 2, "cache_read_input_tokens": CTX_READ.get(mid, 120000),
+                                             "output_tokens": out}}})
 
 
 def week_of_work(root, now):
@@ -1119,6 +1128,9 @@ async def main():
     await T.run_hook(ev("PostToolUse", SID7, tool_name="Edit", tool_input={"file_path": SHOP + "/admin/theme.css"}))
     (await taken(p, SID7)).turn.started -= 400
     p.set_ctx(SID7, 200000, 32000, model="claude-opus-5-5")
+    if CTX_READ:                                     # the weekly report's Fable and the task on DeepSeek report their windows too
+        p.set_ctx(SID5, 200000, 32000, model="claude-fable-5-1")
+        p.set_ctx(SIDV, 786432, 32000, model="deepseek-flash")
     if os.environ.get("STAND_HELPERS") == "1":      # its helpers and a command, started in the background mid-turn
         await stand_helpers(p, d)
     # how long Claude worked on each task before these turns (made up, 2026-10-30): "working N" of one at work goes on

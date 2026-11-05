@@ -7,7 +7,7 @@ import { Mic, useRecorder } from "../core/voice.js";
 import { t } from "../i18n.js";
 import { md } from "../md.js";
 import { html, useEffect, useRef, useState } from "../vendor/htm-preact-3.1.1.js";
-import { avatar, dur, ic, keyTap, llmName, nb, pauseChip, plainField, tagSt } from "./kit.js";
+import { avatar, ctxBar, dur, ic, keyTap, llmName, nb, pauseChip, plainField, tagSt } from "./kit.js";
 
 
 // ---------- cards: question, permission request, plan ----------
@@ -110,6 +110,7 @@ function Req({ r, onDone, stt, showWhere = true, showProject = true }) {
           ${qn.multiSelect && html`<button class="btn" disabled=${busy || !(picks[i] || []).length} onClick=${() => send({ answers: { [i]: picks[i] } })}>${t("done")}</button>`}
           <${Own} ph=${t("ask.own")} label=${t("ask.answer")} busy=${busy} stt=${stt} draft=${"a:" + r.rid + ":" + i} onSend=${(w) => send({ answers: { [i]: [w] } })}/>
         </div>`)}
+      ${ctxBar(r.ctx)}
     </div>`;
   }
   const isPlan = r.kind === "plan";
@@ -124,6 +125,7 @@ function Req({ r, onDone, stt, showWhere = true, showProject = true }) {
     <div class="foot quiet">${r.suggest ? html`<button class="link" disabled=${busy} onClick=${() => send({ act: "a" })}>${t(r.who === "codex" ? "always.task" : "always.short")}</button>` : html`<span></span>`}
     ${noting ? "" : html`<button class="link" onClick=${() => setNoting(true)}>${isPlan ? t("plan.notes") : t("deny.note.short")}</button>`}</div>
     ${noting && html`<${Own} ph=${t("tell.claude")} label=${t("send")} busy=${busy} stt=${stt} draft=${"n:" + r.rid} onSend=${(w) => send({ act: "n", text: w })}/>`}
+    ${ctxBar(r.ctx)}
   </div>`;
 }
 

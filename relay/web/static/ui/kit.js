@@ -80,6 +80,11 @@ const nb = (s) => String(s).replace(/ /g, "\u00a0");
 const bytes = (b) => nb(b >= 1024 ** 3 ? t("gb", { n: num(b / 1024 ** 3, 1) }) : t("mb", { n: Math.max(0, Math.round((b || 0) / 1024 ** 2)) }));
 const pct = (x) => (x >= 10 ? Math.round(x) : num(x || 0, 1)) + "\u00a0%";
 const level = (p) => (p >= 90 ? "bad" : p >= 70 ? "warn" : "");
+// how full a task's context is — the number VS Code shows (the owner's idea, Q151–Q152): the card's own stripe goes on
+// round its bottom corner, as far as the context is used, over a faint track of what is left; red from 90 %, where
+// Claude Code is about to compact the conversation (an amber step from 70 % read as a wrong colour on the warm card).
+// No number: the task's own screen has it. Not known yet — none
+const ctxBar = (p) => (p == null ? "" : html`<i class=${"cx" + (p >= 90 ? " bad" : "")} role="img" aria-label=${t("ctx.used", { pct: p })} style=${{ "--p": Math.max(p, 2) + "%" }}></i>`);
 const modelName = (m) => {
   if (!m) return "";
   const [name, ...ver] = m.replace(/^claude-/, "").replace(/-\d{8}$/, "").split("-");     // a transcript may say the date too
@@ -474,4 +479,4 @@ function Loading({ err }) {
     : ["offline", "connecting", "busy"].includes(c.state) ? t("loading.connection") : t("loading"))}</div>`;
 }
 
-export { About, ChoicePick, CodexCols, Dots, GEAR, GLYPH, Loading, MODES, ModePick, ModelPick, Sheet, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, bytes, choiceText, codexModel, copyRich, dayLabel, dot, dotted, dur, durShort, effortName, hhmm, home, hue, ic, keyTap, kilo, level, llmName, modelName, nb, num, pauseChip, pct, plainField, queueChip, quiet, resetText, sendKey, TAG_H, tagChips, tagJob, tagSt, toDate, useNow, workChip };
+export { About, ChoicePick, CodexCols, Dots, GEAR, GLYPH, Loading, MODES, ModePick, ModelPick, Sheet, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, bytes, choiceText, codexModel, copyRich, ctxBar, dayLabel, dot, dotted, dur, durShort, effortName, hhmm, home, hue, ic, keyTap, kilo, level, llmName, modelName, nb, num, pauseChip, pct, plainField, queueChip, quiet, resetText, sendKey, TAG_H, tagChips, tagJob, tagSt, toDate, useNow, workChip };

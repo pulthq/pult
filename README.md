@@ -73,7 +73,8 @@ An app inside Telegram is the main screen; the chat is for the calls. The app ne
 ### Whose move, at a glance
 
 What runs right now, each task with its model, then what waits for you — answer a permission or a question right
-there. A finished task stays until you mark it **Reviewed**.
+there. A finished task stays until you mark it **Reviewed**. A line along each card's bottom edge shows how full the
+task's context is, red when the agent is about to compact the conversation.
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="media/f-home.en.dark.png"><img src="media/f-home.en.png" width="330" alt="Home in the app: the tasks running now in green, each with its model — one on Opus 5.5, one on DeepSeek · v4-pro — and a long command; what happened while you were away; then, warm, your move: Claude asks a question"></picture></p>
 
