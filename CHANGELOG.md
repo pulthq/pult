@@ -4,6 +4,13 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.47 — 2026-11-05
+
+- **Changing a project's model asks again.** Telegram's own box takes up to 256 characters and throws past them, so the
+  question never showed when a project changed to Codex or another vendor with the helper Claude haiku on — the default
+  in Claude's projects (259–280 characters): the sheet closed and the model stayed. A longer text in the app now goes up
+  as a popup with its question for the title and the rest whole; what Telegram still refuses shows in the browser's box.
+
 ## 0.18.46 — 2026-11-05
 
 - **How full a task's context is, at a glance.** On Home and a project's screen, the coloured stripe of a card that

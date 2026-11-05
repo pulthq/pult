@@ -24,13 +24,7 @@ URLS = _cdp.stand_urls(STAND, ("PROJ",))
 OUT = sys.argv[2] if len(sys.argv) > 2 else tempfile.mkdtemp(prefix="pult-projset-")
 os.makedirs(OUT, exist_ok=True)
 verdict = _cdp.Verdicts()
-SPY = """(() => { window.__said = []; window.__yes = false;
-  window.alert = (s) => { window.__said.push(['alert', String(s)]); };
-  window.confirm = (s) => (window.__said.push(['confirm', String(s)]), window.__yes);
-  const w = window.Telegram && window.Telegram.WebApp;
-  if (w) { w.showAlert = (s, cb) => { window.__said.push(['alert', String(s)]); cb && cb(); };
-           w.showConfirm = (s, cb) => (window.__said.push(['confirm', String(s)]), cb(window.__yes)); }
-  return true; })()"""
+SPY = _cdp.SPY
 OPT = "[...document.querySelectorAll('.card.pick .opt')].find((b) => b.textContent.trim().startsWith(%r))"
 MODEL = "document.querySelector('.psets .ps-model')"
 NOW = "document.querySelector('.psets .ps-model b').textContent"
@@ -155,6 +149,7 @@ async def main():
         verdict("DeepSeek: asked first — the code goes to it, Claude's conversations stay, the helper turns off",
                 s[0] == "confirm" and "Сменить модель проекта на «DeepSeek»?" in s[1] and "его код уйдёт в DeepSeek" in s[1]
                 and "Переписка и память модели «Claude» останутся у неё" in s[1] and "Помощник Claude haiku выключится" in s[1], s)
+        verdict("… too long for Telegram's confirm (256): a popup with the question for its title", s[2:] == ["popup"], s)
         verdict("… «no» changes nothing", await pg.js(NOW) == "Claude" and "its model claude → deepseek" not in journal())
         await pg.js("window.__yes = true")
         await pg.tap(MODEL, wait=0.6)

@@ -23,14 +23,7 @@ URLS = _cdp.stand_urls(STAND, ("NEW",))
 OUT = sys.argv[2] if len(sys.argv) > 2 else tempfile.mkdtemp(prefix="pult-vendors-")
 os.makedirs(OUT, exist_ok=True)
 verdict = _cdp.Verdicts()
-# Telegram's alert and confirm, and the browser's in their place: what they said is kept, the confirm answers __yes
-SPY = """(() => { window.__said = []; window.__yes = false;
-  window.alert = (s) => { window.__said.push(['alert', String(s)]); };
-  window.confirm = (s) => (window.__said.push(['confirm', String(s)]), window.__yes);
-  const w = window.Telegram && window.Telegram.WebApp;
-  if (w) { w.showAlert = (s, cb) => { window.__said.push(['alert', String(s)]); cb && cb(); };
-           w.showConfirm = (s, cb) => (window.__said.push(['confirm', String(s)]), cb(window.__yes)); }
-  return true; })()"""
+SPY = _cdp.SPY
 FIELD = "(() => [...document.querySelectorAll('.form .field')].find((b) => b.previousElementSibling && b.previousElementSibling.textContent.trim() === %r))()"
 OPT = "[...document.querySelectorAll('.card.pick .opt')].find((b) => b.textContent.trim().startsWith(%r))"
 SAID = "window.__said.at(-1)"

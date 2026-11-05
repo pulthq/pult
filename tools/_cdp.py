@@ -181,3 +181,20 @@ def stand_urls(path, names=None):
     with open(path, encoding="utf-8") as f:
         rows = [ln.split(" ", 1) for ln in f.read().split("\n") if " http" in ln]
     return {k: v for k, v in rows if names is None or k in names}
+
+
+# Telegram's boxes as its telegram-web-app.js has them (2026-11-05, Renat's patch): a message over 256 characters or a
+# title over 64 throws and no box shows — a stub that took any length passed a model change Telegram never showed;
+# showPopup — how core/tg.js sends a longer text up. What a box said goes to window.__said as [kind, words(, "popup")],
+# a confirm answers window.__yes; the browser's own boxes in their place. `await pg.js(SPY)` once the page is up.
+SPY = """(() => { window.__said = []; window.__yes = false;
+  window.alert = (s) => { window.__said.push(['alert', String(s)]); };
+  window.confirm = (s) => (window.__said.push(['confirm', String(s)]), window.__yes);
+  const w = window.Telegram && window.Telegram.WebApp;
+  // as Telegram does: a message over 256 characters or a title over 64 throws, and no box shows
+  const fits = (m, t) => { if (String(m).length > 256 || String(t || '').length > 64) throw new Error('WebAppPopupParamInvalid'); };
+  if (w) { w.showAlert = (s, cb) => { fits(s); window.__said.push(['alert', String(s)]); cb && cb(); };
+           w.showConfirm = (s, cb) => { fits(s); window.__said.push(['confirm', String(s)]); cb(window.__yes); };
+           w.showPopup = (p, cb) => { fits(p.message, p.title); const yes = p.buttons.some((b) => b.id === 'ok');
+             window.__said.push([yes ? 'confirm' : 'alert', (p.title ? p.title + '\\n\\n' : '') + p.message, 'popup']); cb && cb(yes && window.__yes ? 'ok' : ''); }; }
+  return true; })()"""
