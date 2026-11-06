@@ -37,21 +37,65 @@ class Tg:
     def __init__(self, token, proxy=None, transport=None):
         self.base = "https://api.telegram.org/bot%s/" % token
         self.file_base = "https://api.telegram.org/file/bot%s/" % token
-        t = httpx.Timeout(70, connect=10)
-        if transport is not None:
-            self.clients = [httpx.AsyncClient(transport=transport, timeout=t)]
-        else:
-            self.clients = ([httpx.AsyncClient(proxy=proxy, timeout=t)] if proxy else []) + \
-                           [httpx.AsyncClient(timeout=t)]
+        self.timeout = httpx.Timeout(70, connect=10)
+        self.transport = transport
+        # what each client is made of, so a stuck one can be made anew (renew): a proxy URL, None — directly
+        self.routes = [None] if transport is not None else ([proxy] if proxy else []) + [None]
+        self.clients = [self._client(r) for r in self.routes]
         self.cur = 0
+        self._closing = set()
+
+    def _client(self, proxy):
+        if self.transport is not None:
+            return httpx.AsyncClient(transport=self.transport, timeout=self.timeout)
+        return httpx.AsyncClient(proxy=proxy, timeout=self.timeout)
+
+    @staticmethod
+    def _pool_state(client, url):
+        """What the client's connection pool holds — for the journal when it has no room. Private httpx/httpcore
+        attributes: anything unexpected is said so, never raised."""
+        try:
+            pool = client._transport_for_url(httpx.URL(url))._pool
+            conns = [repr(c) for c in pool.connections]
+            return "%d connections, %d requests waiting: %s" % (
+                len(conns), len(getattr(pool, "_requests", ())), "; ".join(conns[:8]) or "-")
+        except Exception as e:
+            return "unreadable (%r)" % e
+
+    def _renew(self, i, stuck):
+        """A client whose pool stays full after the proxy has failed for a while: the slots are held by connections
+        that are no more (2026-11-06: one socket to the proxy, yet every request waited 70 s and got PoolTimeout,
+        for three hours, until a restart). A fresh client takes its place; the old one is closed in the background."""
+        if i >= len(self.routes) or self.clients[i] is not stuck:
+            return                      # another request has renewed it already (or a client added by hand: a test)
+        self.clients[i] = self._client(self.routes[i])
+        if self.transport is not None:
+            return                      # the transport is shared with the fresh client: closing the old would close it
+        task = asyncio.get_running_loop().create_task(self._close(stuck))
+        self._closing.add(task)
+        task.add_done_callback(self._closing.discard)
+
+    @staticmethod
+    async def _close(client):
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(client.aclose(), 30)
 
     async def _post(self, url, **kw):
         last = None
         for k in range(len(self.clients)):
             i = (self.cur + k) % len(self.clients)
+            client = self.clients[i]
             try:
-                r = await self.clients[i].post(url, **kw)
+                r = await client.post(url, **kw)
             except (httpx.ConnectError, httpx.ProxyError, httpx.ConnectTimeout, httpx.ReadError) as e:
+                last = e
+                continue
+            except httpx.PoolTimeout as e:
+                # no room in the pool: the request never left, so the other route may take it. The client is renewed —
+                # before, it stayed stuck until Pult was restarted
+                log("Telegram: no room in the %s route's pool, made anew; it held %s" % (
+                    "proxy" if i < len(self.routes) and self.routes[i] else "direct", self._pool_state(client, url)))
+                self._renew(i, client)
                 last = e
                 continue
             except httpx.HTTPError as e:
