@@ -3,7 +3,7 @@
 import { useEffect, useState } from "../vendor/htm-preact-3.1.1.js";
 import { conn, emit, on } from "./conn.js";
 import { holds, layers } from "./nav.js";
-import { mic } from "./voice.js";
+import { micLive } from "./voice.js";
 
 // stage U: an update from the app. Pult knows the folder it was installed from; a commit there that changed its
 // files is offered here. "run" — the computer restarts Pult: the banner says so instead of "offline" for a while
@@ -42,7 +42,7 @@ function idleHere() {
   if (layers.length > 0 || holds > 0 || conn.wait.size) return false;
   // a session read away from its end: a reload would open it at the end and lose the place — on Home, or at the end
   if (/^#\/s\//.test(location.hash) && window.innerHeight + window.scrollY < document.body.scrollHeight - 200) return false;
-  if (mic && mic.getTracks().some((tr) => tr.enabled && tr.readyState === "live")) return false;
+  if (micLive()) return false;
   const a = document.activeElement;
   if (a && /^(TEXTAREA|INPUT|SELECT)$/.test(a.tagName)) return false;
   // a field that shows what is saved — Settings' list of a vendor's models, the voice's own words — isn't words typed

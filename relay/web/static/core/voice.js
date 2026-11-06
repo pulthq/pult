@@ -22,49 +22,50 @@ const REC_TAIL = 300;        // ms still recorded after "Stop": the last word is
 // and the recording isn't sent: over silence Whisper makes up film subtitle credits
 const VOICE_DB = -50, VOICE_MIN = 3;
 const MIC_AUDIO = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
-// Telegram on Android asks "allow the microphone?" at every new getUserMedia, even one already allowed in this very
-// session (the owner saw it at each tap, 2026-10-18). So the microphone is asked for once and kept while the app is on
-// the screen: recordings reuse the stream, muted in between; it is let go when the app goes to the background or after
-// MIC_HOLD without a recording — the next tap asks again, once
-// Telegram's own code (DrKLO/Telegram 12.10.4, BotWebViewContainer.onPermissionRequest) asks at every request and keeps
-// nothing, and the owner's visits are 20–60 s: so the question comes at almost every first recording of a visit. The
-// owner keeps it so (decision Q58) rather than hold the microphone in the background
-const MIC_HOLD = 10 * 60 * 1000;
-let mic = null, micTimer = 0;
-const dropMic = () => { clearTimeout(micTimer); meterOff(); if (actx && actx.state === "running") actx.suspend().catch(() => {}); if (mic) { mic.getTracks().forEach((tr) => tr.stop()); mic = null; } };
-// → [the stream, ms the phone took when it was asked anew (the owner's answer to Telegram's question in it) or null]
+// The microphone and the page's sound are let go the moment a recording ends. A page that captures sound makes the
+// phone's headphones its "communication device" (Chromium's AudioManagerAndroid: wired, then USB, then Bluetooth —
+// whose call profile is mono and muffled), and Android (14 QPR3 on, AudioDeviceBroker) keeps that route while the app
+// records or plays anything — the level meter's AudioContext too — and 6 s more. Until 0.18.48 the stream was kept,
+// muted, 10 min after a recording so that Telegram wouldn't ask again: the owner heard YouTube go bad in their
+// headphones after every recording (2026-11-06) and chose to have them let go at once (Q155). Telegram on Android asks
+// "allow the microphone?" at every getUserMedia and keeps nothing (DrKLO/Telegram 12.10.4,
+// BotWebViewContainer.onPermissionRequest), so it asks before every recording now
+const mics = new Set();      // the streams of the recordings going on: one, two only if two fields record at once
+// → [the stream, ms the phone took to give it: the owner's answer to Telegram's question is in it]
 async function getMic() {
-  clearTimeout(micTimer);
-  if (mic && mic.getTracks().some((tr) => tr.readyState === "live")) { mic.getTracks().forEach((tr) => { tr.enabled = true; }); return [mic, null]; }
   const t0 = Date.now();
-  mic = await navigator.mediaDevices.getUserMedia({ audio: MIC_AUDIO });
-  return [mic, Date.now() - t0];
+  const s = await navigator.mediaDevices.getUserMedia({ audio: MIC_AUDIO });
+  mics.add(s);
+  return [s, Date.now() - t0];
 }
-const restMic = () => { if (mic) mic.getTracks().forEach((tr) => { tr.enabled = false; }); clearTimeout(micTimer); micTimer = setTimeout(dropMic, MIC_HOLD); };
-document.addEventListener("visibilitychange", () => { if (document.hidden) dropMic(); });
-// the level meter: one AudioContext for the page, an analyser on the current microphone. Nothing is played — the
+// lets go of these streams; with none left, the page's sound stops too
+function dropMic(...streams) {
+  for (const s of streams) { s.getTracks().forEach((tr) => tr.stop()); mics.delete(s); }
+  if (!mics.size && actx && actx.state === "running") actx.suspend().catch(() => {});
+}
+const micLive = () => [...mics].some((s) => s.getTracks().some((tr) => tr.readyState === "live"));
+document.addEventListener("visibilitychange", () => { if (document.hidden) dropMic(...mics); });
+// the level meter: one AudioContext for the page, an analyser on each recording's microphone. Nothing is played — the
 // meter only tells when sound starts to flow, whether there was a voice, and how loud (for the computer's log)
-let actx = null, meter = null;
+let actx = null;
 function audioCtx() {
   const AC = window.AudioContext || window.webkitAudioContext;
   if (!actx && AC) { try { actx = new AC(); } catch (e) { actx = null; } }
-  if (actx && actx.state === "suspended") actx.resume().catch(() => {});
+  // even while it reads "running": a suspend still on its way would otherwise leave this recording without sound
+  if (actx && actx.state !== "closed") actx.resume().catch(() => {});
   return actx;
 }
 function meterOn(stream) {
-  if (meter && meter.stream === stream) return meter;
-  meterOff();
   const ac = audioCtx();
   if (!ac) return null;
   try {
     const src = ac.createMediaStreamSource(stream), an = ac.createAnalyser();
     an.fftSize = 2048;
     src.connect(an);
-    meter = { stream, src, an, buf: new Float32Array(an.fftSize) };
-  } catch (e) { meter = null; }
-  return meter;
+    return { src, an, buf: new Float32Array(an.fftSize) };
+  } catch (e) { return null; }
 }
-function meterOff() { if (meter) { try { meter.src.disconnect(); } catch (e) { /* already gone */ } meter = null; } }
+const meterOff = (m) => { if (m) { try { m.src.disconnect(); } catch (e) { /* already gone */ } } };
 // the last ~43 ms: the loudest sample (0 while the microphone is still waking up) and the level, dBFS
 function loudness(m) {
   m.an.getFloatTimeDomainData(m.buf);
@@ -108,13 +109,15 @@ function useRecorder(onText, draft) {
     setSt("wait");
     let stream, asked;
     try { [stream, asked] = await getMic(); } catch (e) { dropMic(); idle(); return say("rec.denied"); }
+    // the screen went while Telegram asked: nobody is left to tap "Stop"
+    if (!alive.current) { dropMic(stream); return idle(); }
     // the wait for sound counts from the microphone given, not from the tap: Telegram's question took its own time,
     // and "speak" right after it, before sound flows, was what lost the first syllable
     const t0 = Date.now();
     const mime = REC_MIME.find((m) => MediaRecorder.isTypeSupported(m)) || "";
     let rec;
     try { rec = new MediaRecorder(stream, Object.assign({ audioBitsPerSecond: 32000 }, mime ? { mimeType: mime } : {})); }
-    catch (e) { dropMic(); idle(); return say("rec.unsupported"); }
+    catch (e) { dropMic(stream); idle(); return say("rec.unsupported"); }
     const m = meterOn(stream), chunks = [];
     const x = (cur.current = { rec, timer: 0, started: false, stopping: false, live: 0, heard: false, secs: 0,
                                loud: 0, voice: null, first: -200, peak: -200 });
@@ -126,15 +129,14 @@ function useRecorder(onText, draft) {
     rec.onstart = () => { x.started = true; };
     rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
     rec.onstop = async () => {
-      clearInterval(x.timer); restMic(); cur.current = null;
+      clearInterval(x.timer); meterOff(m); dropMic(stream); cur.current = null;
       if (dot.current) { dot.current.style.transform = ""; dot.current.style.animation = ""; }
       const blob = new Blob(chunks, { type: rec.mimeType || mime || "audio/webm" });
       if (blob.size < 1000 || !x.live) { idle(); return say("rec.empty"); }
       if (x.heard && x.loud < VOICE_MIN) { idle(); return say("rec.silent"); }
       if (alive.current) setSt("busy");
       const r1 = (v) => Math.round(v * 10) / 10;
-      const notes = { secs: r1((Date.now() - x.live) / 1000) };
-      if (asked !== null) notes.asked = asked;
+      const notes = { secs: r1((Date.now() - x.live) / 1000), asked };
       if (x.heard) Object.assign(notes, { ready: x.live - t0, voice: x.voice, first: r1(x.first), peak: r1(x.peak) });
       try {
         const url = await new Promise((ok, no) => { const f = new FileReader(); f.onload = () => ok(f.result); f.onerror = no; f.readAsDataURL(blob); });
@@ -185,4 +187,4 @@ function Mic({ v, disabled, wide }) {
     ${wide ? html`<span>${label}</span>` : ""}</button>`;
 }
 
-export { MIC_HOLD, Mic, REC_MAX, VOICE_DB, VOICE_MIN, dropMic, getMic, loudness, mic, restMic, sttSend, useRecorder };
+export { Mic, REC_MAX, VOICE_DB, VOICE_MIN, dropMic, getMic, loudness, micLive, sttSend, useRecorder };

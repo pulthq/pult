@@ -4,7 +4,9 @@
 before 0.14.2 (STAND_STT_OLD=1) still gets the recording. With a Groq key in ~/.config/pult/env the kept recording is
 also recognized for real, with Pult's prompt — the first word must survive. With `ask` and Home's URL — the question's
 card on Home: its own answer has the microphone beside it, the words land in its line, Enter sends them as the answer
-(2026-11-04: neither was there; the line is the card's — no Groq then).
+(2026-11-04: neither was there; the line is the card's — no Groq then). Once a recording ends the page holds neither its
+microphone nor a running AudioContext — with either, Android keeps the owner's headphones on the call profile (Q155) —
+and a second recording asks anew and gets its sound again.
   STAND_LANG=ru STAND_STT=/tmp/rec HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out 2>&1 &
   ~/.local/share/pult/venv/bin/python tools/voice_check.py "$(grep '^SESS ' /tmp/stand.out | cut -d' ' -f2)" /tmp/rec [speech|silence]
   ~/.local/share/pult/venv/bin/python tools/voice_check.py "$(grep '^HOME ' /tmp/stand.out | cut -d' ' -f2)" /tmp/rec speech ask
@@ -20,6 +22,17 @@ CHROME = _cdp.CHROME
 PORT = _cdp.free_port()
 PHRASE = "Посмотри логи демона на Орионе, потом сделай коммит."
 failures = []
+# what the page was given: each microphone and each AudioContext, watched from before its first script
+WATCH = """(() => {
+  window.__mics = []; window.__ctxs = [];
+  const gum = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+  navigator.mediaDevices.getUserMedia = async (c) => { const s = await gum(c); window.__mics.push(s); return s; };
+  const AC = window.AudioContext;
+  window.AudioContext = class extends AC { constructor(...a) { super(...a); window.__ctxs.push(this); } };
+})()"""
+LET_GO = ("window.__mics.length > 0 && window.__mics.every((s) => s.getTracks().every((t) => t.readyState === 'ended'))"
+          " && window.__ctxs.every((c) => c.state !== 'running')")
+HOLDS = "JSON.stringify([window.__mics.map((s) => s.getTracks().map((t) => t.readyState)), window.__ctxs.map((c) => c.state)])"
 
 
 def verdict(name, ok, *info):
@@ -105,6 +118,7 @@ async def main():
             await cmd("Page.enable")
             await cmd("Runtime.enable")
             await cmd("Emulation.setDeviceMetricsOverride", width=412, height=915, deviceScaleFactor=2, mobile=True)
+            await cmd("Page.addScriptToEvaluateOnNewDocument", source=WATCH)
             await cmd("Page.navigate", url=URL)
             mic = ".card.ask .own .clip.mic" if ASK else ".clip.mic"
             shown = "(() => { const b = document.querySelector('.card.ask .own .btn'); return !!b && getComputedStyle(b).display !== 'none'; })()"
@@ -128,6 +142,8 @@ async def main():
             await asyncio.sleep(1.2)              # the phrase ends
             await tap(mic)
             t_stop = asyncio.get_event_loop().time()
+            verdict("the microphone and the page's sound are let go once it ends", await until(LET_GO, 40, 0.05),
+                    "%.2f s after Stop" % (asyncio.get_event_loop().time() - t_stop), await js(HOLDS))
             ta = "document.querySelector('.card.ask .own input')" if ASK else "document.querySelector('.ctl textarea, textarea')"
             if SOUND == "silence":
                 verdict("silence is not sent", await until("window.__alerts.length > 0", 50), await js("window.__alerts"))
@@ -150,7 +166,25 @@ async def main():
                                   **({"text": "\r"} if kind == "keyDown" else {}))
                     verdict("Enter sends them as the answer",
                             await until("!!document.querySelector('.card.rcpt') || /recording \\d+ heard/.test((document.querySelector('.card.ask .q.done') || {}).textContent)", 50))
-                elif new:
+                if not ASK:                       # the next recording: asked anew, the suspended sound woken by the tap
+                    await tap(mic)
+                    t1 = asyncio.get_event_loop().time()
+                    ok = await until("((m) => m.classList.contains('rec') && !m.classList.contains('wait'))(document.querySelector(%r))" % mic, 60, 0.02)
+                    took = asyncio.get_event_loop().time() - t1
+                    verdict("a second recording asks anew and starts once sound flows",   # not the 1.5 s fallback
+                            ok and took < 1.4 and await js("window.__mics.length") == 2, "%.2f s after the tap" % took)
+                    scales = set()
+                    for _ in range(40):
+                        scales.add(await js("(document.querySelector(%r) || {style: {}}).style.transform || ''" % (mic + " .dot")))
+                        await asyncio.sleep(0.05)
+                    verdict("…the dot breathes again: the meter has its sound back", len(scales - {""}) >= 3, sorted(scales)[:4])
+                    await asyncio.sleep(0.5)
+                    await tap(mic)
+                    verdict("…its words land too", await until("(%s.value.match(/recording \\d+ heard/g) || []).length === 2" % ta, 80),
+                            await js("%s.value" % ta))
+                    verdict("…and it lets go too", await until(LET_GO, 40, 0.05), await js(HOLDS))
+                    verdict("…one AudioContext for the page", await js("window.__ctxs.length") == 1)
+                if not ASK and new:
                     key = next((x.split("=", 1)[1].strip().strip('"') for x in open(os.path.expanduser("~/.config/pult/env"))
                                 if x.startswith("PULT_STT_KEY=")), None) if os.path.exists(os.path.expanduser("~/.config/pult/env")) else None
                     if key:

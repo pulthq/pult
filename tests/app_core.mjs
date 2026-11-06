@@ -92,13 +92,13 @@ const alerts = [], opened = [];
 window.Telegram = { WebApp: { initData: "init-data", initDataUnsafe: { user: { language_code: "en" }, start_param: "s_" + SID },
   platform: "android", version: "8.0", ready() {}, expand() {}, onEvent() {}, BackButton: { show() {}, hide() {} },
   HapticFeedback: { notificationOccurred() {}, impactOccurred() {} }, showAlert: (s) => alerts.push(s), openLink: (u) => opened.push(u) } };
-// the microphone, its sound and the recorder
-const audio = { level: 0 }, asks = [], recs = [];
+// the microphone, its sound and the recorder; audio.gate — Telegram's question still on the screen
+const audio = { level: 0, gate: null }, asks = [], recs = [], streams = [], ctxs = [];
 class Track { constructor() { this.readyState = "live"; this.enabled = true; } stop() { this.readyState = "ended"; } }
-class Stream { constructor() { this.tracks = [new Track()]; } getTracks() { return this.tracks; } }
+class Stream { constructor() { this.tracks = [new Track()]; streams.push(this); } getTracks() { return this.tracks; } }
 Object.defineProperty(globalThis, "navigator", { configurable: true, writable: true,
-  value: { mediaDevices: { getUserMedia: async (c) => { asks.push(c); return new Stream(); } } } });
-globalThis.AudioContext = class { constructor() { this.state = "running"; }
+  value: { mediaDevices: { getUserMedia: async (c) => { asks.push(c); if (audio.gate) await audio.gate; return new Stream(); } } } });
+globalThis.AudioContext = class { constructor() { this.state = "running"; ctxs.push(this); }
   resume() { this.state = "running"; return Promise.resolve(); } suspend() { this.state = "suspended"; return Promise.resolve(); }
   createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
   createAnalyser() { return { fftSize: 2048, getFloatTimeDomainData(buf) { buf.fill(audio.level); } }; } };
@@ -403,6 +403,7 @@ await check("update: not under a layer, a held recording or countdown, typed wor
     [() => { doc.activeElement = { tagName: "TEXTAREA" }; return () => { doc.activeElement = null; }; }, "a field in focus"],
     [() => { location.replace("#/s/" + SID); doc.body.scrollHeight = 5000; return () => { doc.body.scrollHeight = 600; }; }, "reading far from the end"],
     [() => { C.api("slow-call").catch(() => {}); return () => answerAll(ws()); }, "a call on its way"],
+    [() => { let s; V.getMic().then(([x]) => { s = x; }); return () => V.dropMic(s); }, "a live microphone"],
   ];
   for (const [put, what] of blockers) {
     const n = location.reloads;
@@ -506,26 +507,20 @@ await check("boxes: a model change and the copy question fit Telegram's box whol
 });
 
 // ---------- voice ----------
-await check("voice: the microphone is asked for once, rests muted, goes after 10 min or when the app leaves the screen", async () => {
+await check("voice: each recording asks for a microphone of its own, without the phone's sound processing, and lets it go; the app leaving the screen lets go of all", async () => {
   const before = asks.length;
   const [s1, took] = await V.getMic();
-  assert.equal(asks.length, before + 1);
+  const [s2] = await V.getMic();
+  assert.equal(asks.length, before + 2, "nothing is kept: asked each time");
   assert.deepEqual(asks.at(-1), { audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
   assert.equal(typeof took, "number");
-  V.restMic();
-  assert.equal(s1.tracks[0].enabled, false, "muted between recordings");
-  await later(V.MIC_HOLD - 1000);
-  const [s2, again] = await V.getMic();
-  assert.equal(s2, s1);
-  assert.equal(again, null, "not asked again");
-  assert.equal(s1.tracks[0].enabled, true);
-  V.restMic();
-  await later(V.MIC_HOLD);
-  assert.equal(s1.tracks[0].readyState, "ended", "let go after 10 min");
-  assert.equal(V.mic, null);
-  await V.getMic();
+  V.dropMic(s1);
+  assert.equal(s1.tracks[0].readyState, "ended");
+  assert.equal(s2.tracks[0].readyState, "live", "another field's recording keeps its own");
+  assert.ok(V.micLive());
   tabTo(false);
-  assert.equal(V.mic, null, "let go when the app leaves the screen");
+  assert.equal(s2.tracks[0].readyState, "ended", "let go when the app leaves the screen");
+  assert.ok(!V.micLive());
   tabTo(true);
   await readyOn(ws());
 });
@@ -566,6 +561,56 @@ await check("voice: words spoken go to the field, and the reload guard lets go w
   await later(50);
   assert.equal(rec.words, "buy milk");
   assert.equal(rec.r.st, "idle");
+  assert.equal(N.holds, 0);
+});
+await check("voice: the microphone and the page's sound go the moment a recording ends, before its words come back — headphones leave the call profile (Q155); the next one asks again", async () => {
+  const n = asks.length;
+  audio.level = 0.05;
+  const tap = rec.r.toggle();
+  await later(100);
+  await tap;
+  await later(1000);
+  const s = streams.at(-1), ac = ctxs.at(-1);
+  assert.equal(s.tracks[0].readyState, "live");
+  assert.equal(ac.state, "running", "the level meter's sound runs while it records");
+  rec.r.toggle();
+  await later(400);
+  assert.equal(s.tracks[0].readyState, "ended", "the microphone is let go at once");
+  assert.equal(ac.state, "suspended", "and the page plays nothing");
+  assert.ok(!V.micLive());
+  assert.equal(rec.r.st, "busy", "the words are still on their way");
+  tell(ws(), { t: "res", id: asked(ws(), "stt").at(-1).id, data: { text: "one" } });
+  await later(50);
+  await record(0.05, 1);
+  assert.equal(asks.length, n + 2, "asked again: nothing is kept between recordings");
+  assert.equal(ctxs.length, 1, "one AudioContext for the page, woken by each tap");
+  assert.equal(ac.state, "suspended");
+  assert.equal(typeof asked(ws(), "stt").at(-1).args.notes.asked, "number", "the computer's log has the question's time");
+  tell(ws(), { t: "res", id: asked(ws(), "stt").at(-1).id, data: { text: "two" } });
+  await later(50);
+  assert.equal(rec.r.st, "idle");
+});
+await check("voice: the screen goes while Telegram asks for the microphone — nothing is recorded, the microphone goes at once", async () => {
+  const box = { childNodes: [], firstChild: null, appendChild() {}, insertBefore() {}, removeChild() {} };
+  const gone = {};
+  function Gone() { gone.r = V.useRecorder(() => {}, "gone"); return null; }
+  render(html`<${Gone}/>`, box);
+  await later(200);
+  let answer;
+  audio.gate = new Promise((ok) => { answer = ok; });
+  const n = recs.length;
+  const tap = gone.r.toggle();
+  await later(100);
+  assert.equal(gone.r.st, "wait", "Telegram's question is on the screen");
+  render(null, box);
+  await later(200);
+  audio.gate = null;
+  answer();
+  await tap;
+  await later(100);
+  assert.equal(recs.length, n, "no recording started");
+  assert.equal(streams.at(-1).tracks[0].readyState, "ended");
+  assert.ok(!V.micLive());
   assert.equal(N.holds, 0);
 });
 await check("voice: sound but no voice — \"nothing was heard\", nothing sent", async () => {
