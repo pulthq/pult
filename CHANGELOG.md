@@ -4,6 +4,14 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.49 — 2026-11-06
+
+- **Telegram comes back by itself after the proxy has been down.** A proxy that answers the tunnel request and then drops
+  it — as one does when its own way out is down — left each such try in the client's connection pool for good. After
+  about a hundred of them every request to Telegram waited 70 s and failed without trying the direct route, and Pult
+  heard nothing from Telegram and sent nothing until it was restarted. Such a request now goes the other route (it never
+  left), and the stuck client is made anew; the journal says what its pool held.
+
 ## 0.18.48 — 2026-11-06
 
 - **Headphones sound right again after a voice recording.** The app kept the microphone open, muted, for ten minutes after

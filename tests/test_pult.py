@@ -6,6 +6,7 @@
 import asyncio
 import atexit
 import base64
+import contextlib
 import gc
 import io
 import json
@@ -5904,6 +5905,112 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         tg.clients.append(httpx.AsyncClient(transport=httpx.MockTransport(via("direct"))))
         self.assertTrue(await tg.call("getMe"))
         self.assertEqual(calls, ["proxy", "direct"])
+
+    async def test_telegram_stuck_pool_renewed(self):
+        # 2026-11-06: after the proxy failed for a while, its client's pool stayed full — every request waited 70 s for
+        # a PoolTimeout, for three hours, until a restart. Now the request goes the other route (it never left), and
+        # the stuck client is made anew: the next request goes through
+        stuck = [True]
+        calls = []
+
+        def proxy(req):
+            calls.append("proxy")
+            if stuck[0]:
+                raise httpx.PoolTimeout("no room")
+            return httpx.Response(200, json={"ok": True, "result": "via proxy"})
+
+        def direct(req):
+            calls.append("direct")
+            return httpx.Response(200, json={"ok": True, "result": "direct"})
+        tg = pultd.Tg("T", proxy="http://127.0.0.1:9")
+        tg.clients = [httpx.AsyncClient(transport=httpx.MockTransport(proxy)),
+                      httpx.AsyncClient(transport=httpx.MockTransport(direct))]
+        old = tg.clients[0]
+        made = []
+        tg._client = lambda route: made.append(route) or httpx.AsyncClient(transport=httpx.MockTransport(proxy))
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(await tg.call("getMe"), "direct")
+        self.assertEqual(calls, ["proxy", "direct"])
+        self.assertEqual(made, ["http://127.0.0.1:9"])                 # the proxy's own client, made anew
+        self.assertIsNot(tg.clients[0], old)
+        self.assertIn("no room in the proxy route's pool", out.getvalue())
+        self.assertNotIn("T/", out.getvalue())                        # never the token's URL
+        await asyncio.sleep(0)
+        await asyncio.gather(*tg._closing)
+        self.assertTrue(old.is_closed)                                 # the stuck one closed in the background
+        tg._renew(0, old)                                              # renewed already: a second PoolTimeout does nothing
+        self.assertEqual(len(made), 1)
+        self.assertEqual(tg.cur, 1)                                     # the route switch is as before
+        stuck[0] = False
+        tg.cur = 0                                                     # back on the proxy: the fresh client takes it
+        self.assertEqual(await tg.call("getMe"), "via proxy")
+        # only one route, still stuck: a TgError without a code, as every failure on the way
+        tg = pultd.Tg("T", transport=httpx.MockTransport(lambda req: (_ for _ in ()).throw(httpx.PoolTimeout("t"))))
+        first = tg.clients[0]
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(pultd.TgError) as c:
+            await tg.call("getMe")
+        self.assertIsNone(c.exception.code)
+        self.assertIsNot(tg.clients[0], first)
+
+    async def test_telegram_pool_leak_through_a_proxy(self):
+        # the leak itself, on httpx's real pool: a proxy that answers CONNECT with 200 at once and then closes the
+        # tunnel (sing-box does so when its own way out is down) leaves every such try in the pool for good — httpcore
+        # 1.0.9 keeps it ACTIVE, never closed or expired. Here the pool has 3 places instead of 100 and waits 0.3 s
+        # instead of 70: after three tries in an outage it is full, and a request no longer reaches the proxy at all.
+        # The client made anew reaches it again
+        seen = []
+
+        async def proxy(reader, writer):
+            seen.append(1)
+            with contextlib.suppress(Exception):
+                await reader.readuntil(b"\r\n\r\n")
+                writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                await writer.drain()
+                await asyncio.wait_for(reader.read(65536), 5)          # the TLS hello read: the close is a clean one
+            writer.close()
+        server = await asyncio.start_server(proxy, "127.0.0.1", 0)
+        url = "http://127.0.0.1:%d" % server.sockets[0].getsockname()[1]
+        net, made = [False], []
+
+        def direct(req):
+            if not net[0]:
+                raise httpx.ConnectError("no network")
+            return httpx.Response(200, json={"ok": True, "result": "direct"})
+
+        def client(route):
+            made.append(route)
+            if route is None:
+                return httpx.AsyncClient(transport=httpx.MockTransport(direct))
+            return httpx.AsyncClient(proxy=route, timeout=httpx.Timeout(5, connect=2, pool=0.3),
+                                     limits=httpx.Limits(max_connections=3))
+        tg = pultd.Tg("T", proxy=url)
+        tg._client = client
+        tg.clients = [client(r) for r in tg.routes]
+        stuck = tg.clients[0]
+        try:
+            for _ in range(3):                                         # an outage: neither route goes through
+                with self.assertRaises(pultd.TgError):
+                    await tg.call("getMe")
+            self.assertEqual(len(seen), 3)
+            net[0] = True                                              # the network is back
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(await tg.call("getMe"), "direct")    # before: no answer (PoolTimeout), until a restart
+            self.assertEqual(len(seen), 3)                             # the full pool never reached the proxy
+            self.assertIn("no room in the proxy route's pool, made anew; it held 3 connections", out.getvalue())
+            self.assertNotIn("T/", out.getvalue())                    # never the token's URL
+            self.assertIsNot(tg.clients[0], stuck)
+            await asyncio.gather(*tg._closing)
+            self.assertTrue(stuck.is_closed)
+            net[0], tg.cur = False, 0                                  # the proxy first again: the fresh pool reaches it
+            with self.assertRaises(pultd.TgError):
+                await tg.call("getMe")
+            self.assertEqual(len(seen), 4)
+            self.assertEqual(made, [url, None, url])                   # only the proxy's client was made anew
+        finally:
+            for c in tg.clients:
+                await c.aclose()
+            server.close()
+            await server.wait_closed()
 
     async def test_no_topic_nothing_breaks(self):
         # a topic that can't be made — no network on the way, or a refusal (no right to manage topics): send() says
