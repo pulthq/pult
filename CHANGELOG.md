@@ -4,6 +4,17 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.48 — 2026-11-06
+
+- **Headphones sound right again after a voice recording.** The app kept the microphone open, muted, for ten minutes after
+  each recording, so that Telegram wouldn't ask for it again, and its level meter's audio running with it. Opening the
+  microphone makes the headphones the phone's call device, and Android keeps them so while the app records or plays
+  anything — on Bluetooth, the headset profile, mono and muffled — so music or a video playing meanwhile sounded like a
+  phone call until the app was left. The microphone and
+  the app's audio are now let go the moment a recording ends, and the headphones are back to normal within seconds;
+  Telegram on Android asks "allow the microphone?" before each recording instead. Leaving a screen while Telegram asks no
+  longer starts a recording nobody can stop.
+
 ## 0.18.47 — 2026-11-05
 
 - **Changing a project's model asks again.** Telegram's own box takes up to 256 characters and throws past them, so the
