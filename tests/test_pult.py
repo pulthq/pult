@@ -501,7 +501,7 @@ class HelpersTest(unittest.TestCase):
         with mock.patch.object(pult_driven, "HOOK_PY", "/x y/venv/bin/python"), \
                 mock.patch.object(pult_driven, "HOOK", "/x y/pult_hook.py"):
             me = types.SimpleNamespace(path="/x", sid=SID, resume=None, fork=False, _wait_hook=None,
-                                       d=types.SimpleNamespace(wanted=lambda m, e: (m, e),
+                                       d=types.SimpleNamespace(wanted=lambda m, e: (m, e), app_cli=lambda: None,
                                                                store=types.SimpleNamespace(vendor_of=lambda sid: None)))
             opts = pultd.Driven.options(me)
         h = json.loads(opts.settings)["hooks"]["Stop"][0]["hooks"][0]
@@ -2087,14 +2087,18 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_prefs(self):
         self.assertEqual(self.p.prefs(), {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": None, "pace": 90,
-                                          "model": None, "effort": None, "gh": True, "vcheck": True, "hashtags": True})
+                                          "model": None, "effort": None, "gh": True, "vcheck": True, "hashtags": True,
+                                          "ccfresh": True})
         self.p.env["PULT_FORCE_AWAY"] = "0"                                           # you are at the Mac
         self.assertFalse(await self.p.loud())
         self.assertTrue(await self.p.loud(driven=True))                     # auto: a session from Telegram — with sound
         res = await self.p.api_prefs(mode="phone", vehi="да", lang="xx", brief="да", evil=True, pace="90", gh="off",
-                                     hashtags="yes")                                # garbage is rejected
+                                     hashtags="yes", ccfresh="on")                  # garbage is rejected
         self.assertEqual(res, {"vehi": True, "mode": "phone", "lang": None, "brief": False, "pager": None, "pace": 90,
-                               "model": None, "effort": None, "gh": True, "vcheck": True, "hashtags": True})
+                               "model": None, "effort": None, "gh": True, "vcheck": True, "hashtags": True,
+                               "ccfresh": True})
+        self.assertFalse((await self.p.api_prefs(ccfresh=False))["ccfresh"])        # stage A2: the app on the SDK's own
+        await self.p.api_prefs(ccfresh=True)
         self.assertFalse((await self.p.api_prefs(hashtags=False))["hashtags"])      # stage T, T3: no hashtags under results
         await self.p.api_prefs(hashtags=True)
         self.assertFalse((await self.p.api_prefs(gh=False))["gh"])                  # stage U3: no looks at GitHub
@@ -5595,11 +5599,15 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         conf.write_text(json.dumps({"folders": ["/Users/x"], "versions": ["2.1.310"]}))
         vs.parent.mkdir(parents=True, exist_ok=True)
         vs.write_text('{"claudeCode.claudeProcessWrapper": "/x/%s"}' % pultd.TAB_FILE)
-        steps = [{"k": k, "ok": True, "s": 1, "note": ""} for k in ("service", "own", "send", "model", "effort", "race")]
-        reports = {"2.1.311": {"ok": True, "race": True, "error": None, "steps": steps},
-                   "2.1.312": {"ok": False, "race": False, "error": None,
+        steps = [{"k": k, "ok": True, "s": 1, "note": ""} for k in ("service", "own", "send", "model", "effort", "race", "app")]
+        reports = {"2.1.311": {"ok": True, "race": True, "app": True, "error": None, "steps": steps},
+                   "2.1.312": {"ok": False, "race": False, "app": True, "error": None,
                                "steps": steps[:3] + [{"k": "model", "ok": False, "s": 1, "note": "claude-haiku-5-5"}]},
-                   "2.1.313": {"ok": None, "race": None, "error": "login", "steps": []}}
+                   "2.1.313": {"ok": None, "race": None, "app": None, "error": "login", "steps": []},
+                   # stage A2: the tabs' steps pass, a session from the app doesn't; and one a release allowed
+                   "2.1.314": {"ok": True, "race": True, "app": False, "error": None,
+                               "steps": steps[:6] + [{"k": "app", "ok": False, "s": 1, "note": "resume: PEAR"}]},
+                   "2.1.315": {"ok": True, "race": True, "app": True, "error": None, "steps": steps}}
         runs, real = [], asyncio.create_subprocess_exec
 
         class Proc:
@@ -5616,11 +5624,19 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             runs.append(cmd)
             v = cmd[-1]
             rep = dict(reports[v], version=v, ts=time.time())
-            pult_setup.tab_checked(v, rep)              # as the real `pult tab check` does
+            pult_setup.tab_checked(v, rep)              # as the real `pult tab check` does — and its copy (stage A2)
+            if rep.get("app"):
+                pult_os.keep_claude(pultd.HOME, v, program(v))
+            elif rep.get("app") is False:
+                pult_os.drop_claude(pultd.HOME, v)
             return Proc(json.dumps(rep).encode() + b"\n")
 
+        def program(v):
+            return ext / ("anthropic.claude-code-%s-darwin-arm64" % v) / "resources" / "native-binary" / pult_os.CLAUDE_EXE
+
         def downloaded(v):
-            (ext / ("anthropic.claude-code-%s-darwin-arm64" % v)).mkdir(parents=True, exist_ok=True)
+            program(v).parent.mkdir(parents=True, exist_ok=True)
+            program(v).write_text("claude " + v)
 
         async def check():
             await self.p.tab_version_check()
@@ -5628,8 +5644,11 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
 
         def rec(v):
             return (json.loads(conf.read_text()).get("checked") or {}).get(v)
+        mine = pultd.HOME / "claude"
+        self.addCleanup(shutil.rmtree, mine, True)                  # Pult's copies: no other test starts on them
         with mock.patch.multiple(pultd, TAB_CONF=conf, EDITOR_DIRS=[vs.parent]), mock.patch.object(pult_parts, "EXT_DIRS", [ext]), \
-                mock.patch.object(pult_setup, "TAB_CONF", conf), mock.patch("asyncio.create_subprocess_exec", fake_exec):
+                mock.patch.object(pult_setup, "TAB_CONF", conf), mock.patch("asyncio.create_subprocess_exec", fake_exec), \
+                mock.patch.object(pult_parts, "bundled_cli", lambda: "2.1.300"):
             downloaded("2.1.311")
             await check()
             self.assertEqual(len(runs), 1)
@@ -5640,6 +5659,23 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             await check()
             self.assertEqual(len(runs), 1)                                            # allowed: nothing more to check
             self.assertFalse([t for t in self.texts() if "2.1.311" in t])             # passed: said nowhere
+            # stage A2: a session from the app worked on it — new sessions from the app start on Pult's copy of it
+            self.assertEqual(self.p.app_cli(), mine / "2.1.311" / pult_os.CLAUDE_EXE)
+            self.assertEqual((mine / "2.1.311" / pult_os.CLAUDE_EXE).read_text(), "claude 2.1.311")
+            self.assertEqual(pultd.Driven(self.p, SID, "/Users/x/proj").options().cli_path, str(self.p.app_cli()))
+            SID2 = "22222222-3333-4444-5555-666666666666"
+            self.store.set_vendor(SID2, "local")                  # another vendor's session stays on the SDK's own
+            with mock.patch.object(self.p, "vendor_profiles", lambda: {"local": {"models": ["m"], "tools": ["Bash"]}}), \
+                    mock.patch.object(self.p, "vendor_key", lambda vid: "k"), mock.patch.object(self.p, "vendor_stop", lambda sid: False), \
+                    mock.patch.object(self.p, "vendor_home", lambda *a: None), mock.patch.object(V, "session_env", lambda *a: {}):
+                self.assertIsNone(pultd.Driven(self.p, SID2, "/Users/x/proj").options().cli_path)
+            self.store.set_vendor(SID2, None)
+            await self.p.api_prefs(ccfresh=False)                                     # the owner keeps the SDK's own
+            self.assertIsNone(self.p.app_cli())
+            self.assertIsNone(pultd.Driven(self.p, SID, "/Users/x/proj").options().cli_path)
+            await self.p.api_prefs(ccfresh=True)
+            with mock.patch.object(pult_parts, "bundled_cli", lambda: "2.1.311"):      # the SDK carries it already
+                self.assertIsNone(self.p.app_cli())
             downloaded("2.1.312")
             await check()
             await until(lambda: len([t for t in self.texts() if "2.1.312" in t]) >= 2)
@@ -5677,6 +5713,69 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             await check()
             self.assertEqual(len(runs), 5)
             self.assertFalse([t for t in self.texts() if "2.1.313" in t])
+            # stage A2: the tabs' steps pass, a session from the app fails — allowed for the tabs, the app stays where it
+            # is, the owner hears it once (Q160), and "Check again" is about it
+            self.p._procs = (time.monotonic() + 1e6, ({}, {}))
+            self.p._agents = (time.monotonic() + 1e6, [])
+            self.assertEqual(self.p.app_cli(), mine / "2.1.312" / pult_os.CLAUDE_EXE)  # the tabs failed there, the app not
+            downloaded("2.1.314")
+            await check()
+            self.assertEqual((len(runs), rec("2.1.314")["ok"], rec("2.1.314")["app"], rec("2.1.314")["step"]),
+                             (6, True, False, None))
+            await until(lambda: any("сессия из приложения" in t for t in self.texts()))
+            told = [t for t in self.texts() if "сессия из приложения" in t]
+            self.assertEqual(len(told), 1)
+            self.assertIn("<b>2.1.314</b>", told[0])
+            self.assertIn("остаются на 2.1.312", told[0])
+            self.assertEqual(self.p.app_cli(), mine / "2.1.312" / pult_os.CLAUDE_EXE)
+            self.assertFalse((mine / "2.1.314").exists())
+            await check()
+            self.assertEqual(len(runs), 6)                                            # failed: waits for "Check again"
+            row = next(r for r in pultd.Pult.parts_rows(await self.p.parts_facts()) if r["k"] == "cc")
+            self.assertEqual((row["checked"]["2.1.314"]["app"], row["app"]["v"], row["app"]["own"], row["cli"]),
+                             (False, "2.1.312", True, "2.1.312"))
+            res = await self.p.api_tab_check()
+            self.assertEqual((res["ok"], res["v"]), (True, "2.1.314"))
+            await until(lambda: not self.p.tab_checking)
+            self.assertEqual(len([t for t in self.texts() if "сессия из приложения" in t]), 1)   # told once per version
+            # a version allowed for the tabs that hasn't been through the app's step (a release allowed it): checked
+            # once for the app — unless the owner keeps the app on the SDK's own
+            c = json.loads(conf.read_text())
+            c["versions"] += ["2.1.315", "2.1.316"]
+            conf.write_text(json.dumps(c))
+            downloaded("2.1.315")
+            await check()
+            self.assertEqual((len(runs), runs[-1][-1]), (8, "2.1.315"))
+            self.assertEqual(self.p.app_cli(), mine / "2.1.315" / pult_os.CLAUDE_EXE)
+            await check()
+            self.assertEqual(len(runs), 8)
+            await self.p.api_prefs(ccfresh=False)
+            downloaded("2.1.316")
+            await check()
+            self.assertEqual(len(runs), 8)
+            await self.p.api_prefs(ccfresh=True)
+            # Pult's copies: the newest two stay, and one a running program started from; the rest go
+            self.assertEqual(sorted(pult_os.claude_copies(pultd.HOME)), ["2.1.311", "2.1.312", "2.1.315"])
+            busy = str(mine / "2.1.311" / pult_os.CLAUDE_EXE)
+            self.p._procs = (time.monotonic() + 1e6, ({901: {"ppid": 1, "cmd": busy + " --output-format stream-json"}}, {}))
+            await self.p.cc_tidy()
+            self.assertEqual(sorted(pult_os.claude_copies(pultd.HOME)), ["2.1.311", "2.1.312", "2.1.315"])
+            self.p._procs = (time.monotonic() + 1e6, ({}, {}))
+            await self.p.cc_tidy()
+            self.assertEqual(sorted(pult_os.claude_copies(pultd.HOME)), ["2.1.312", "2.1.315"])
+            # what is out (npm): kept with the time Pult first saw it, asked once in six hours, shown in the table
+            looks = []
+
+            def npm(proxy=None):
+                looks.append(proxy)
+                return "2.1.319"
+            with mock.patch.object(pult_parts, "npm_latest", npm):
+                await self.p.cc_latest_look()
+                await self.p.cc_latest_look()
+            self.assertEqual(len(looks), 1)
+            self.assertEqual(self.store.get("cc_latest")["v"], "2.1.319")
+            row = next(r for r in pultd.Pult.parts_rows(await self.p.parts_facts()) if r["k"] == "cc")
+            self.assertEqual((row["latest"]["v"], row["app"]["v"]), ("2.1.319", "2.1.315"))
 
     async def test_telegram_start_waits(self):
         # Telegram out of reach at start (after logging in to Windows the VPN comes up later, 2026-10-21): the bot's
@@ -7935,27 +8034,189 @@ class TabCheckTest(unittest.IsolatedAsyncioTestCase):
 
         async def race(self):
             return True
+        apps = []
+
+        async def app(self):                            # stage A2: a session the way Pult runs one from the app
+            ok = apps.pop(0) if apps else True
+            self.steps.append({"k": "app", "ok": ok, "s": 1, "note": ""})
+            return ok
         forgot, made, init = [], [], C.Check.__init__
 
         def made_by(self, *a):
             init(self, *a)
             made.append(self.tmp)
+        cli = "/x/anthropic.claude-code-2.1.311-darwin-arm64/claude"
         with mock.patch.object(C.Check, "tab", tab), mock.patch.object(C.Check, "race", race), \
+                mock.patch.object(C.Check, "app", app), \
                 mock.patch.object(C, "forget", forgot.append), mock.patch.object(C.Check, "__init__", made_by):
             outcomes[:] = [True]
-            rep = await C.run("/x/anthropic.claude-code-2.1.311-darwin-arm64/claude", "/w/pult_tab.py", "py")
-            self.assertEqual((rep["version"], rep["ok"], rep["race"], rep["error"]), ("2.1.311", True, True, None))
+            rep = await C.run(cli, "/w/pult_tab.py", "py")
+            self.assertEqual((rep["version"], rep["ok"], rep["race"], rep["app"], rep["error"]), ("2.1.311", True, True, True, None))
             outcomes[:] = [False, True]                 # one odd answer: passes on the second try
-            rep = await C.run("/x/anthropic.claude-code-2.1.311-darwin-arm64/claude", "/w/pult_tab.py", "py")
-            self.assertEqual((rep["ok"], len(rep["steps"]), "first" in rep), (True, 1, False))
+            rep = await C.run(cli, "/w/pult_tab.py", "py")
+            self.assertEqual((rep["ok"], [s["k"] for s in rep["steps"]], "first" in rep), (True, ["own", "app"], False))
             outcomes[:] = [False, False]
-            rep = await C.run("/x/anthropic.claude-code-2.1.311-darwin-arm64/claude", "/w/pult_tab.py", "py")
-            self.assertEqual((rep["ok"], rep["first"][0]["ok"]), (False, False))
+            rep = await C.run(cli, "/w/pult_tab.py", "py")
+            self.assertEqual((rep["ok"], rep["first"][0]["ok"], rep["app"]), (False, False, True))   # the app's own say
+            outcomes[:], apps[:] = [True], [False, True]          # the app's step gets its second try too
+            rep = await C.run(cli, "/w/pult_tab.py", "py")
+            self.assertEqual((rep["app"], [s["k"] for s in rep["steps"]], "app_first" in rep), (True, ["own", "app"], False))
+            outcomes[:], apps[:] = [True], [False, False]
+            rep = await C.run(cli, "/w/pult_tab.py", "py")
+            self.assertEqual((rep["ok"], rep["app"], rep["app_first"]["ok"]), (True, False, False))
             outcomes[:] = [C.Trouble("login", "Please run /login")]
-            rep = await C.run("/x/anthropic.claude-code-2.1.311-darwin-arm64/claude", "/w/pult_tab.py", "py")
-            self.assertEqual((rep["ok"], rep["error"], rep["race"]), (None, "login", None))
-        self.assertEqual(len(forgot), 4)                # every run cleans up after itself
-        self.assertTrue(len(made) == 4 and not any(d.exists() for d in made))
+            rep = await C.run(cli, "/w/pult_tab.py", "py")
+            self.assertEqual((rep["ok"], rep["error"], rep["race"], rep["app"]), (None, "login", None, None))
+        self.assertEqual(len(forgot), 6)                # every run cleans up after itself
+        self.assertTrue(len(made) == 6 and not any(d.exists() for d in made))
+
+    async def test_app_step(self):
+        # stage A2: the check's app step without Claude — the session as the daemon starts one from the app (its
+        # options), the hooks heard on the check's socket, the same session continued; and how its failures read
+        import claude_agent_sdk as SDK
+        import pult_tabcheck as C
+        from claude_agent_sdk import ResultMessage
+        heard = []
+
+        class Reader:
+            def __init__(self, msg):
+                self.line = (json.dumps(msg) + "\n").encode()
+
+            async def readline(self):
+                return self.line
+
+        class Writer:
+            def close(self):
+                pass
+
+        class FakeSDK:
+            mode, seen = "ok", []
+
+            def __init__(self, options):
+                self.o = options
+                FakeSDK.seen.append(options)
+
+            async def __aenter__(self):
+                if FakeSDK.mode == "crash":
+                    raise RuntimeError("claude exited with 1")
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def query(self, text):
+                pass
+
+            async def receive_response(self):
+                o, mode = self.o, FakeSDK.mode
+                sid = "someone-else" if mode == "other" else o.session_id or o.resume
+                if mode == "login":
+                    yield ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1, is_error=True, num_turns=1,
+                                        session_id=sid, result="Invalid API key · Please run /login")
+                    return
+                if mode != "nohooks":
+                    for ev in ("SessionStart", "UserPromptSubmit", "Stop"):
+                        await heard[-1](Reader({"event": {"hook_event_name": ev, "session_id": sid},
+                                                "driven": o.env.get("PULT_DRIVEN") == "1"}), Writer())
+                word = ("PEAR" if mode == "forgot" else "KIWI") if o.resume else "ONE"
+                yield ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1, is_error=False, num_turns=1,
+                                    session_id=sid, result=word)
+
+        class Server:
+            def close(self):
+                pass
+
+        async def link(handler, path):
+            heard.append(handler)
+            return Server()
+
+        async def step(mode):
+            FakeSDK.mode, FakeSDK.seen = mode, []
+            ch = C.Check("/x/anthropic.claude-code-2.1.318-darwin-arm64/claude", "/w/pult_tab.py", "py", lambda *a: None)
+            self.addCleanup(shutil.rmtree, ch.tmp, True)
+            try:
+                return await ch.app(), ch.steps
+            except C.Trouble as e:
+                return "trouble " + e.kind, ch.steps
+        with mock.patch.object(SDK, "ClaudeSDKClient", FakeSDK), mock.patch.object(pultd, "start_link", link), \
+                mock.patch.object(C, "WAIT", 2):
+            ok, steps = await step("ok")
+            self.assertEqual((ok, steps[0]["k"], steps[0]["note"]), (True, "app", "hooks: UserPromptSubmit 2, Stop 2"))
+            first, second = FakeSDK.seen
+            self.assertEqual((first.cli_path, first.model, first.effort, first.tools, first.setting_sources),
+                             ("/x/anthropic.claude-code-2.1.318-darwin-arm64/claude", "haiku", "low", [], ["project"]))
+            self.assertEqual((first.system_prompt, first.permission_mode),
+                             ({"type": "preset", "preset": "claude_code"}, pult_driven.PERMISSION_MODE))
+            self.assertEqual(json.loads(first.settings)["hooks"], pult_driven.injected_hooks())      # Pult's own hooks
+            self.assertEqual((first.env["PULT_DRIVEN"], first.env["CLAUDE_CODE_ENTRYPOINT"]), ("1", "claude-vscode"))
+            self.assertNotEqual(first.env["PULT_SOCK"], pultd.SOCK)                  # the check's socket, not the daemon's
+            self.assertEqual((second.resume, second.session_id), (first.session_id, None))   # the same session continued
+            ok, steps = await step("other")
+            self.assertEqual(ok, False)
+            self.assertIn("not ours", steps[0]["note"])
+            ok, steps = await step("forgot")
+            self.assertEqual((ok, steps[0]["note"]), (False, "resume: PEAR"))
+            ok, steps = await step("nohooks")
+            self.assertEqual((ok, steps[0]["note"]), (False, "hooks: UserPromptSubmit 0, Stop 0"))
+            self.assertEqual((await step("login"))[0], "trouble login")
+            ok, steps = await step("crash")
+            self.assertEqual((ok, steps[0]["note"]), (False, "RuntimeError: claude exited with 1"))
+
+    def test_copies(self):
+        # stage A2: Pult's own copy of a checked Claude Code — a hard link where it can, a name that is a version only
+        home = Path(tempfile.mkdtemp(dir=TMP))
+        src = home / "ext" / pult_os.CLAUDE_EXE
+        src.parent.mkdir()
+        src.write_text("claude")
+        got = pult_os.keep_claude(home, "2.1.318", src)
+        self.assertEqual((got, got.read_text()), (home / "claude" / "2.1.318" / pult_os.CLAUDE_EXE, "claude"))
+        if os.name != "nt":
+            self.assertTrue(os.path.samefile(got, src))                       # no room taken while VS Code keeps its own
+        src.unlink()                                                          # VS Code removes its folder: ours stays
+        self.assertEqual(pult_os.keep_claude(home, "2.1.318", src), got)
+        self.assertIsNone(pult_os.keep_claude(home, "../evil", got))
+        (home / "claude" / "2.1.319").mkdir()                                 # a folder without the program — not a copy
+        self.assertEqual(pult_os.claude_copies(home), {"2.1.318": got})
+        pult_os.drop_claude(home, "..")
+        self.assertTrue(got.exists())
+        pult_os.drop_claude(home, "2.1.318")
+        self.assertEqual(pult_os.claude_copies(home), {})
+
+    def test_npm_latest(self):
+        # stage A2: what is out — through Pult's proxy, else directly; anything but a version is no answer
+        import pult_parts as P
+        tries = []
+
+        class Answer:
+            def __init__(self, body):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, n):
+                return self.body
+
+        def opener(handler):
+            proxy = handler.proxies.get("https")
+
+            class O:
+                def open(self, url, timeout):
+                    tries.append(proxy)
+                    if proxy:
+                        raise OSError("the proxy is down")
+                    return Answer(b'{"name": "@anthropic-ai/claude-code", "version": "2.1.319"}')
+            return O()
+        with mock.patch("urllib.request.build_opener", opener):
+            self.assertEqual(P.npm_latest("http://127.0.0.1:3128"), "2.1.319")
+            self.assertEqual(tries, ["http://127.0.0.1:3128", None])
+            self.assertEqual(P.npm_latest(), "2.1.319")
+        with mock.patch("urllib.request.build_opener", lambda h: types.SimpleNamespace(
+                open=lambda url, timeout: Answer(b'{"version": "<b>2.1.319</b>"}'))):
+            self.assertIsNone(P.npm_latest())
 
 
 if __name__ == "__main__":

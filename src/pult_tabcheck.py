@@ -13,14 +13,18 @@ probe_race.py check, on the new version's own claude and through Pult's installe
   effort  — apply_flag_settings through the wrapper: the next request's effort is the one asked, null goes back to the
             settings;
   race    — the PermissionRequest hook and the permission window race, and the first answer decides (every session
-            relies on it, not only tabs: told when it fails; writing into tabs doesn't wait for it).
+            relies on it, not only tabs: told when it fails; writing into tabs doesn't wait for it);
+  app     — a session the way the daemon runs one from the app, straight on the new claude (stage A2): Claude Code's
+            system prompt, Pult's hooks put in through settings and heard by the check's socket, a session id of its
+            own, the effort flag — then the same session continued. Passed, Pult keeps a copy of this claude, and new
+            sessions from the app start on it instead of the Claude Code the SDK carries (pult_os.keep_claude).
 The Agent SDK stands in for the extension — it starts claude the way the extension does: stream-json both ways,
 --replay-user-messages, --permission-prompt-tool=stdio — and a socket of the check's own for the daemon. Apart from
 everything: a temporary folder, the user's settings and hooks unread (setting_sources), PULT_OFF=1 for the hook, and the
 transcripts of the check's own sessions removed afterwards (the effort step reads its requests' effort there). What it
 can't see is the tab's own window (the webview): that stays with a release's look at the extension's code, which can
-block a version (pult_setup.TAB_BLOCKED). About a minute, about ten short requests on haiku and one on sonnet, one
-claude process at a time.
+block a version (pult_setup.TAB_BLOCKED). About a minute and a half, about a dozen short requests on haiku and one on
+sonnet, one claude process at a time.
 
 The daemon runs it (pultctl.py tab check --json) when VS Code has downloaded a version tab.json doesn't list; the owner
 by hand with `pult tab check` or "Check again" in the app. Needs the Agent SDK: Pult's own Python.
@@ -36,10 +40,10 @@ import time
 import uuid
 from pathlib import Path
 
-STEPS = ("service", "own", "send", "model", "effort", "race")
+STEPS = ("service", "own", "send", "model", "effort", "race", "app")
 TAB_STEPS = STEPS[:5]           # writing into tabs depends on these
 WAIT = 90                       # s for one answer of the model
-TOTAL = 300                     # s for the whole check (the daemon gives the process a little more)
+TOTAL = 360                     # s for the whole check (the daemon gives the process a little more)
 SWITCH_WAIT = 10                # s for the wrapper to say a switch is done
 # where Claude Code keeps transcripts — the same place as pultd.CLAUDE_PROJECTS: tests and the stand set PULT_PROJECTS,
 # and forget() deletes the check's own transcripts there (review 2026-10-27, Т8)
@@ -158,6 +162,16 @@ class Check:
         self.say(k, ok, note)
         return ok
 
+    def sock(self, run):
+        """The check's own "daemon" socket in run. A unix socket's path is at most 104 bytes: a long temporary folder
+        gets a short one of its own — a folder only this user enters, not a name anyone on the machine could guess in
+        /tmp (review 2026-10-27, Б10)."""
+        if len(str(run / "d.sock")) < 100:
+            return str(run / "d.sock")
+        short = tempfile.mkdtemp(prefix="pc-", dir="/tmp")
+        self.extra.append(short)
+        return os.path.join(short, "d.sock")
+
     # ---- service: a utility command through the wrapper
 
     async def service(self, spawn, env):
@@ -186,14 +200,7 @@ class Check:
         (proj / ".claude" / "settings.json").write_text(json.dumps({"effortLevel": "medium"}))
         conf, log = run / "tab.json", run / "tab.log"
         conf.write_text(json.dumps({"folders": [str(proj)], "versions": [self.v]}))
-        # a unix socket's path is at most 104 bytes: a long temporary folder gets a short one of its own — a folder
-        # only this user enters, not a name anyone on the machine could guess in /tmp (review 2026-10-27, Б10)
-        if len(str(run / "d.sock")) < 100:
-            sock = str(run / "d.sock")
-        else:
-            short = tempfile.mkdtemp(prefix="pc-", dir="/tmp")
-            self.extra.append(short)
-            sock = os.path.join(short, "d.sock")
+        sock = self.sock(run)
         env = {"PULT_TAB_CONF": str(conf), "PULT_SOCK": sock, "PULT_OFF": "1", "PULT_TAB_LOG": str(log)}
         spawn = spawner(run, self.wrapper, self.cli, self.py)
         if not await self.service(spawn, env):
@@ -396,14 +403,103 @@ class Check:
         self.say("race", ok, ", ".join(notes))
         return ok
 
+    # ---- app: a session the way the daemon runs one from the app, straight on claude (stage A2)
+
+    async def app(self):
+        """One session as the daemon starts one from the app (pult_driven.options): Claude Code's system prompt, Pult's
+        hooks put in through settings and heard by the check's own socket, a session id chosen here, the effort flag,
+        permissions through can_use_tool — then the same session continued (resume). True when both turns answered in
+        that session, the continuation remembered the first one, and the hooks of both came as Pult's own session's;
+        Trouble when claude couldn't answer at all."""
+        from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, PermissionResultAllow, ResultMessage
+        import pult_driven
+        from pultd import start_link
+        self.runs += 1
+        run = self.tmp / ("app-%d" % self.runs)
+        proj = run / "proj"
+        proj.mkdir(parents=True)
+        sock = self.sock(run)
+        heard, err = [], []
+
+        async def daemon(reader, writer):
+            try:
+                m = json.loads(await reader.readline())
+            except ValueError:
+                m = None
+            ev = m.get("event") if isinstance(m, dict) else None
+            if isinstance(ev, dict):
+                heard.append((ev.get("hook_event_name"), ev.get("session_id"), m.get("driven")))
+            writer.close()
+
+        async def allow(tool, inp, ctx):
+            return PermissionResultAllow()
+
+        async def turn(opts, prompt):
+            async with ClaudeSDKClient(options=opts) as c:
+                await c.query(prompt)
+                async for m in c.receive_response():
+                    if isinstance(m, ResultMessage):
+                        self.sids.add(m.session_id)
+                        text = str(m.result or "")
+                        if m.is_error:
+                            kind = trouble(text + " " + " ".join(err[-20:]))
+                            if kind:
+                                raise Trouble(kind, text)
+                        return m.session_id, not m.is_error, text
+            return None, False, "no result"
+
+        def hooks(sid):
+            return {k: sum(1 for e in heard if e[0] == k and e[1] == sid and e[2]) for k in ("UserPromptSubmit", "Stop")}
+
+        server = await start_link(daemon, sock)
+        t0, sid = time.monotonic(), str(uuid.uuid4())
+        # no tools at all, as in the tab's steps: the turns are words, and nothing may run here
+        base = dict(cli_path=str(self.cli), cwd=str(proj), model="haiku", effort="low",
+                    system_prompt={"type": "preset", "preset": "claude_code"},
+                    permission_mode=pult_driven.PERMISSION_MODE, can_use_tool=allow, setting_sources=["project"],
+                    settings=json.dumps({"hooks": pult_driven.injected_hooks()}), tools=[],
+                    env={"PULT_DRIVEN": "1", "PULT_SOCK": sock, "CLAUDE_CODE_ENTRYPOINT": "claude-vscode"},
+                    max_buffer_size=pult_driven.SDK_LINE_MAX, stderr=err.append)
+        try:
+            got, fine, text = await asyncio.wait_for(turn(ClaudeAgentOptions(session_id=sid, **base),
+                                                          "Remember the word KIWI. Reply with exactly one word: ONE"), WAIT)
+            if got != sid or not fine or "ONE" not in text.upper():
+                return self.step("app", False, t0, "start: " + (text[:80] if got == sid else "session %s, not ours" % got))
+            got, fine, text = await asyncio.wait_for(turn(ClaudeAgentOptions(resume=sid, **base),
+                                                          "Which word did I ask you to remember? Reply with exactly that "
+                                                          "one word."), WAIT)
+            if got != sid or not fine or "KIWI" not in text.upper():
+                return self.step("app", False, t0, "resume: " + (text[:80] if got == sid else "session %s, not ours" % got))
+            for _ in range(50):                         # a hook may come a moment after the answer
+                if min(hooks(sid).values()) >= 2:
+                    break
+                await asyncio.sleep(0.1)
+            n = hooks(sid)
+            return self.step("app", min(n.values()) >= 2, t0, "hooks: " + ", ".join("%s %d" % kv for kv in n.items()))
+        except asyncio.TimeoutError:
+            kind = trouble(" ".join(err[-20:]))
+            if kind:
+                raise Trouble(kind, " ".join(err[-3:]))
+            return self.step("app", False, t0, "no answer in %d s" % WAIT)
+        except Trouble:
+            raise
+        except Exception as e:                          # the SDK couldn't start claude, or lost it
+            kind = trouble(repr(e) + " " + " ".join(err[-20:]))
+            if kind:
+                raise Trouble(kind, repr(e))
+            return self.step("app", False, t0, "%s: %s" % (type(e).__name__, str(e)[:120]))
+        finally:
+            server.close()
+
 
 async def run(cli, wrapper, py, say=None):
     """The check of one claude binary: {"version", "ok" (writing into tabs works through the wrapper; None — couldn't
-    check), "race" (True, False, None — not clear), "error" (login, limit, network, timeout, crash — or None), "steps":
-    [{"k", "ok", "s", "note"}], "ts"}. A failed tab step gets a second try in a fresh session before it counts — one
-    odd answer of the model is not a broken Claude Code."""
+    check), "race" (True, False, None — not clear), "app" (a session from the app works on it: True, False; None —
+    couldn't check), "error" (login, limit, network, timeout, crash — or None), "steps": [{"k", "ok", "s", "note"}],
+    "ts"}. A failed tab step, and a failed app step, gets a second try in a fresh session before it counts — one odd
+    answer of the model is not a broken Claude Code."""
     ch = Check(cli, wrapper, py, say or (lambda *a: None))
-    rep = {"version": ch.v, "ok": None, "race": None, "error": None, "steps": ch.steps, "ts": time.time()}
+    rep = {"version": ch.v, "ok": None, "race": None, "app": None, "error": None, "steps": ch.steps, "ts": time.time()}
     try:
         ok = await ch.tab()
         if not ok:
@@ -415,6 +511,14 @@ async def run(cli, wrapper, py, say=None):
                 rep["first"] = first
         rep["ok"] = bool(ok)
         rep["race"] = await ch.race()
+        app = await ch.app()
+        if not app:
+            first = ch.steps.pop()
+            ch.say("again", None)
+            app = await ch.app()
+            if not app:
+                rep["app_first"] = first
+        rep["app"] = bool(app)
     except Trouble as e:
         rep["error"], rep["note"] = e.kind, e.text[:200]
     except asyncio.CancelledError:

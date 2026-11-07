@@ -106,6 +106,47 @@ def newest_extension(dirs):
     return best
 
 
+CLAUDE_EXE = "claude.exe" if KIND == "windows" else "claude"
+
+
+def claude_copies(home):
+    """Pult's own copies of the Claude Code versions that passed its check's app step (stage A2), which sessions from
+    the app start on: {version: program}, as home/claude/<version>/claude."""
+    out = {}
+    for p in (Path(home) / "claude").glob("*"):
+        if re.fullmatch(r"\d+(\.\d+){1,3}", p.name) and (p / CLAUDE_EXE).is_file():
+            out[p.name] = p / CLAUDE_EXE
+    return out
+
+
+def keep_claude(home, v, src):
+    """Pult's own copy of Claude Code v, made from src — the program VS Code downloaded. VS Code removes an old
+    version's folder when it starts and knows nothing of the sessions Pult runs on it. A hard link where the file system
+    allows — no room taken while VS Code keeps its own — else a copy. → the copy, or None for a name that isn't a
+    version."""
+    if not re.fullmatch(r"\d+(\.\d+){1,3}", str(v)):
+        return None
+    d = Path(home) / "claude" / v
+    dst = d / CLAUDE_EXE
+    if dst.is_file():
+        return dst
+    d.mkdir(parents=True, exist_ok=True)
+    part = d / (CLAUDE_EXE + ".part")
+    part.unlink(missing_ok=True)
+    try:
+        os.link(src, part)
+    except OSError:                         # another volume, or a file system without hard links
+        shutil.copy2(src, part)
+    os.replace(part, dst)
+    return dst
+
+
+def drop_claude(home, v):
+    """Pult's copy of Claude Code v goes (a release blocked the version, or it failed the app step on a new check)."""
+    if re.fullmatch(r"\d+(\.\d+){1,3}", str(v)):
+        shutil.rmtree(Path(home) / "claude" / v, ignore_errors=True)
+
+
 def run(*cmd, timeout=5):
     """stdout of a command, or None when it can't run or fails."""
     try:

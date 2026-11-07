@@ -1,7 +1,8 @@
 """Pult's parts and its updates — what the Settings screen "Pult and its parts" shows and does, and what keeps Pult
 current: an update installed from the app (stage U), the relay's server following this computer and the releases on
-GitHub (U3), every part against what is installed (U2), and the check of a Claude Code version VS Code has downloaded,
-before a window reloads onto it (stage A); out of pultd.py unchanged (review 2026-10-27, 6.2).
+GitHub (U3), every part against what is installed (U2), the check of a Claude Code version VS Code has downloaded,
+before a window reloads onto it (stage A), and the Claude Code sessions from the app start on — the newest one that
+passed the check's app step, and what is out (stage A2); out of pultd.py unchanged (review 2026-10-27, 6.2).
 
 Parts is a mixin, like pult_api's Api: the daemon is `class Pult(Api, Parts)`, these stay its methods, and each side
 calls the other through self. This module never imports pultd — the daemon runs as __main__, and `import pultd` would
@@ -16,6 +17,7 @@ import os
 import re
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 import pult_hook
@@ -26,7 +28,9 @@ import pult_update as U
 EXT_DIRS = pult_os.extension_dirs()
 TAB_CHECK_EVERY = 600    # s; whether VS Code has downloaded a Claude Code version tab.json doesn't list (stage A)
 TAB_RETRY = 3600         # s; a check that couldn't run (no login, a limit, the network) is tried again after this
-TAB_CHECK_LIMIT = 360    # s for the check's process (it gives itself pult_tabcheck.TOTAL and cleans up)
+TAB_CHECK_LIMIT = 420    # s for the check's process (it gives itself pult_tabcheck.TOTAL and cleans up)
+CC_LATEST_EVERY = 6 * 3600   # s; what Claude Code version is out (stage A2) — npm, where Claude Code is released
+NPM_LATEST = "https://registry.npmjs.org/@anthropic-ai/claude-code/latest"   # ~3.5 KB
 ANNOUNCE_EVERY = 600     # s; the relay's server is reminded of the release this computer runs while it runs another (U3)
 # the server's updater failed for a reason of the moment: it tries again on the next reminder, nobody is told
 SRV_TRANSIENT = ("network", "pip", "no_mac_before", "git", "no_git", "no_mac_retry")
@@ -64,6 +68,31 @@ def vnum(v):
         return tuple(int(x) for x in str(v).split("."))
     except ValueError:
         return ()
+
+
+@functools.cache
+def bundled_cli():
+    """The Claude Code the Agent SDK carries — what sessions from the app start on without a copy of Pult's own."""
+    try:
+        from claude_agent_sdk._cli_version import __cli_version__
+        return __cli_version__
+    except Exception:
+        return None
+
+
+def npm_latest(proxy=None, url=NPM_LATEST):
+    """The newest Claude Code out — the version npm's "latest" names (stage A2); None when npm can't be asked. Through
+    Pult's proxy when it has one, as Telegram goes, else directly."""
+    for p in ([proxy] if proxy else []) + [None]:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({"https": p} if p else {}))
+        try:
+            with opener.open(url, timeout=15) as r:
+                v = json.loads(r.read(256 * 1024)).get("version")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(v, str) and re.fullmatch(r"\d+(\.\d+){1,3}", v):
+            return v
+    return None
 
 
 class Parts:
@@ -405,11 +434,18 @@ class Parts:
             sdk = importlib.metadata.version("claude-agent-sdk")
         except Exception:
             sdk = None
-        try:
-            from claude_agent_sdk._cli_version import __cli_version__ as cli
-        except Exception:
-            cli = None
-        return sdk, cli
+        return sdk, bundled_cli()
+
+    def app_cli(self):
+        """The Claude Code a session from the app starts on (stage A2): the newest copy Pult keeps — that version passed
+        the check's app step on this computer — when it's newer than the one the SDK carries, and the owner hasn't kept
+        the app on the SDK's own (Settings); None — the SDK's own."""
+        if not self.prefs()["ccfresh"]:
+            return None
+        base = vnum(bundled_cli() or "0")
+        kept = pult_os.claude_copies(self.D.HOME)
+        v = max((v for v in kept if vnum(v) > base), key=vnum, default=None)
+        return kept[v] if v else None
 
     async def cc_facts(self, age=30):
         """Claude Code on this computer: the extension versions VS Code runs now (by their processes, and the tabs with
@@ -431,10 +467,16 @@ class Parts:
             verified, checked = [], {}
         wrapped = bool(await asyncio.to_thread(pult_os.files_with, self.D.EDITOR_DIRS, self.D.TAB_FILE))
         sdk, cli = await asyncio.to_thread(self.sdk_versions)
+        own = self.app_cli()                       # the prefs are the store's: in this thread; the folder is small
+        app = own.parent.name if own else cli
+        checked = checked if isinstance(checked, dict) else {}
+        # "cli" is what sessions from the app start on: an app before stage A2 shows it as their Claude Code
         v = {"running": sorted(running, key=vnum), "verified": sorted(verified, key=vnum), "wrapped": wrapped,
-             "newest": await asyncio.to_thread(pult_os.newest_extension, EXT_DIRS), "sdk": sdk, "cli": cli,
-             "checked": checked if isinstance(checked, dict) else {}, "checking": self.tab_checking,
-             "auto": self.prefs()["vcheck"]}
+             "newest": await asyncio.to_thread(pult_os.newest_extension, EXT_DIRS), "sdk": sdk, "cli": app,
+             "checked": checked, "checking": self.tab_checking, "auto": self.prefs()["vcheck"],
+             "app": {"v": app, "own": bool(own), "on": self.prefs()["ccfresh"], "bundled": cli,
+                     "ts": (checked.get(app) or {}).get("ts") if own else None},
+             "latest": self.store.get("cc_latest")}
         self._cc = (time.monotonic(), v)
         return v
 
@@ -577,7 +619,8 @@ class Parts:
         rows.append({"k": "cc", "st": st, "have": have, "off": off, "fresh": fresh, "newest": cc["newest"],
                      "verified": cc["verified"][-1] if cc["verified"] else None, "wrapped": cc["wrapped"],
                      "sdk": cc["sdk"], "cli": cc["cli"], "checking": checking, "auto": cc.get("auto"),
-                     "checked": {v: checked[v] for v in {have, fresh, cc["newest"], *off} if v in checked}})
+                     "checked": {v: checked[v] for v in {have, fresh, cc["newest"], *off} if v in checked},
+                     "app": cc.get("app"), "latest": cc.get("latest")})
         gh = g.get("gh")
         if gh and gh.get("last"):
             rows.append({"k": "gh", "st": "info" if gh["waiting"] else "ok", "have": gh["last"], "date": gh["date"],
@@ -598,13 +641,49 @@ class Parts:
                 await self.tab_version_check()
             except Exception as e:
                 log("version check for tabs:", repr(e))
+            try:
+                await self.cc_latest_look()
+                await self.cc_tidy()
+            except Exception as e:
+                log("Claude Code versions:", repr(e))
             await asyncio.sleep(TAB_CHECK_EVERY)
+
+    async def cc_latest_look(self):
+        """What Claude Code version is out (stage A2) — once in CC_LATEST_EVERY, from npm: "Pult and its parts" shows it
+        beside what the app and the tabs run. A new one is kept with the time Pult first saw it; no answer — the last."""
+        if self.cc_look is not None and time.monotonic() - self.cc_look < CC_LATEST_EVERY:
+            return
+        self.cc_look = time.monotonic()
+        v = await asyncio.to_thread(npm_latest, self.env.get("PULT_PROXY") or None)
+        if not v or (self.store.get("cc_latest") or {}).get("v") == v:
+            return
+        self.store.put("cc_latest", {"v": v, "seen": time.time()})
+        log("Claude Code %s is out (npm)" % v)
+        self._cc = (0.0, None)
+        if self.web:
+            self.web.emit("update")
+
+    async def cc_tidy(self):
+        """Pult's own copies of Claude Code (stage A2): the newest two stay, and any a running program was started from;
+        the others go — a session continued later starts on the newest one."""
+        kept = await asyncio.to_thread(pult_os.claude_copies, self.D.HOME)
+        if len(kept) <= 2:
+            return
+        snap = await self.snapshot()
+        cmds = "\n".join((pr.get("cmd") or "") for pr in ((snap or [{}])[0] or {}).values())
+        for v in sorted(kept, key=vnum)[:-2]:
+            if str(kept[v]) not in cmds:
+                await asyncio.to_thread(pult_os.drop_claude, self.D.HOME, v)
+                log("Claude Code %s: Pult's copy removed — a newer one is kept" % v)
 
     async def tab_version_check(self):
         """VS Code has downloaded a Claude Code version tab.json doesn't list: the wrapper stays out of tabs on it until
         it's checked. Pult checks it here (stage A, pult_tabcheck) — while open windows still run the old one, so
-        writing into tabs never goes off. One that failed waits for "Check again"; one it couldn't check is tried again
-        in an hour. With the check off (Settings), the owner is told once, as before 0.18.1."""
+        writing into tabs never goes off. One allowed for the tabs but not yet through the check's app step (allowed
+        before stage A2, or by a release) is checked too, for the sessions from the app — unless the owner keeps them
+        on the SDK's own Claude Code, or it's no newer than that one (stage A2). One that failed waits for "Check
+        again"; one it couldn't check is tried again in an hour. With the check off (Settings), the owner is told once,
+        as before 0.18.1."""
         try:
             conf = json.loads(self.D.TAB_CONF.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -613,17 +692,21 @@ class Parts:
             return
         wrapped = bool(pult_os.files_with(self.D.EDITOR_DIRS, self.D.TAB_FILE))
         v = pult_os.newest_extension(EXT_DIRS)
-        if not wrapped or not v or v in (conf.get("versions") or []):
+        if not wrapped or not v:
+            return
+        rec = (conf.get("checked") or {}).get(v) or {}
+        allowed = v in (conf.get("versions") or [])
+        for_app = self.prefs()["ccfresh"] and rec.get("app") is None and vnum(v) > vnum(bundled_cli() or "0")
+        if allowed and not for_app:
             return
         if self.prefs()["vcheck"]:
-            rec = (conf.get("checked") or {}).get(v) or {}
-            if rec.get("ok") is False and not rec.get("error"):
+            if (rec.get("ok") is False or rec.get("app") is False) and not rec.get("error"):
                 return                                  # failed: "Check again" in the app, or pult tab check
             if rec.get("error") and time.time() - (rec.get("ts") or 0) < TAB_RETRY:
                 return
             self.tab_check(v)
             return
-        if self.store.get("tab_warned") == v:
+        if allowed or self.store.get("tab_warned") == v:
             return
         self.store.put("tab_warned", v)
         log("Claude Code extension %s is not verified — writing into tabs is off on it" % v)
@@ -674,22 +757,31 @@ class Parts:
         if not rep:
             return
         steps = rep.get("steps") or []
-        log("tab check %s: %s — %s" % (v, {True: "passed", False: "FAILED", None: "couldn't check"}[rep.get("ok")],
-                                        rep.get("error") or ", ".join("%s %s" % (x.get("k"), x.get("ok")) for x in steps)))
+        log("tab check %s: %s%s — %s" % (v, {True: "passed", False: "FAILED", None: "couldn't check"}[rep.get("ok")],
+                                          {True: ", the app's step passed", False: ", the app's step FAILED"}.get(rep.get("app"), ""),
+                                          rep.get("error") or ", ".join("%s %s" % (x.get("k"), x.get("ok")) for x in steps)))
         if rep.get("ok") is False and self.store.get("tab_check_told") != v:
             self.store.put("tab_check_told", v)
-            step = next((x.get("k") for x in steps if x.get("ok") is False and x.get("k") != "race"), "own")
+            step = next((x.get("k") for x in steps if x.get("ok") is False and x.get("k") not in ("race", "app")), "own")
             await self.send(None, self.t("tab.check.fail", v=R.esc(v), step=self.t("tab.step." + step)), notify=True)
+        if rep.get("app") is False and self.store.get("app_check_told") != v:
+            # the sessions from the app stay where they are (stage A2): one word to the owner, once per version (Q160)
+            self.store.put("app_check_told", v)
+            own = self.app_cli()
+            have = own.parent.name if own else bundled_cli() or "?"
+            await self.send(None, self.t("tab.check.app", v=R.esc(v), have=R.esc(have)), notify=True)
         if rep.get("race") is False and self.store.get("tab_race_told") != v:
             self.store.put("tab_race_told", v)
             await self.send(None, self.t("tab.check.race", v=R.esc(v)), notify=True)
 
     async def api_tab_check(self):
         """"Check again" in Settings → Pult and its parts: the version the tabs run that the wrapper is out of, else
-        the newest one VS Code has downloaded."""
+        the newest one VS Code has downloaded — not allowed for the tabs, or failed the app's step (stage A2)."""
         cc = await self.cc_facts(age=0)
         off = [v for v in cc["running"] if v not in cc["verified"]]
-        v = off[-1] if off else cc["newest"] if cc["newest"] not in cc["verified"] else None
+        new = cc["newest"]
+        app_failed = ((cc.get("checked") or {}).get(new) or {}).get("app") is False      # stage A2: the app's step
+        v = off[-1] if off else new if new and (new not in cc["verified"] or app_failed) else None
         if not v:
             return {"ok": False, "note": self.t("tab.check.nothing")}
         return {"ok": self.tab_check(v), "v": v, "note": None if self.tab_checking == v else self.t("tab.check.busy")}

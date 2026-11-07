@@ -98,6 +98,9 @@ async def main():
                 await cmd("Page.navigate", url="about:blank")
                 await cmd("Page.navigate", url=url)
                 await asyncio.sleep(0.3)
+                # Telegram's script blocks the page until it comes: through a slow proxy it came after the catchers
+                # below, and the app's boxes went to a Telegram.WebApp they didn't cover (2026-11-07)
+                await until("document.readyState === 'complete'", 300)
                 # the app asks through Telegram's own boxes when it runs in Telegram, else the browser's — catch both;
                 # every question is answered "Cancel"
                 await js("window.__said = []; window.alert = (s) => window.__said.push(['alert', String(s)]);"

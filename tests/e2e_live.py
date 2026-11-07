@@ -24,6 +24,9 @@ Pult's key and never the subscription's token; the outcome comes; the transcript
 row — Claude's session's row its real model, and so does the owner's move on Home. One's own model (stage M, step 6): the
 same stand-in as a local server — Pult's stand-in key, the five core tools, one model for every role. Each vendor's task
 runs once the project is given that model, as its settings page does (stage M, 7.2), when nothing runs there.
+E2E_CLAUDE=<a Claude Code program, say the one VS Code downloaded>: every session of Claude's own from the app starts on
+Pult's own copy of it, as on a computer where it passed the check's app step (stage A2), other vendors' on the one the SDK
+carries; unset — all on the one the SDK carries.
 """
 import asyncio, json, os, shutil, sys, tempfile, time, urllib.parse
 from pathlib import Path
@@ -92,6 +95,24 @@ def options(self):
 
 
 pultd.Driven.options = options
+
+# stage A2: Pult's own copy of the Claude Code named, as `pult tab check` keeps one that passed the app's step
+WANT = None
+if os.environ.get("E2E_CLAUDE"):
+    import pult_os
+    import pult_tabcheck
+    WANT = str(pult_os.keep_claude(TMP / "home", pult_tabcheck.version_of(os.environ["E2E_CLAUDE"]),
+                                   os.environ["E2E_CLAUDE"]))
+used, used_vendors = set(), set()     # the programs the sessions from the app started on: Claude's own, other vendors'
+
+
+def options_seen(self):
+    o = options(self)
+    (used_vendors if "ANTHROPIC_BASE_URL" in (o.env or {}) else used).add(o.cli_path)
+    return o
+
+
+pultd.Driven.options = options_seen
 
 
 async def model_of(p, pkey, model):
@@ -422,6 +443,7 @@ async def main():
         asked.append({"path": req.path, "x": req.headers.get("x-api-key"), "auth": req.headers.get("authorization") or "",
                       "model": body.get("model"), "sys": sysp[:160], "max": body.get("max_tokens"),
                       "tools": len(body.get("tools") or []), "who": "you are not Claude" in sysp,
+                      "names": sorted(t.get("name") or "?" for t in body.get("tools") or []),
                       "owner_md": bool(owner_md) and owner_md in json.dumps(body, ensure_ascii=False)})
         if not req.path.endswith("/messages"):
             return web.json_response({"input_tokens": 9} if req.path.endswith("count_tokens") else {}, status=200)
@@ -490,7 +512,8 @@ async def main():
         "· итог:", p.attn.rec[sid13]["line"])
     assert msgs and all(a["x"] == V.LOCAL_KEY and "sk-ant" not in a["auth"] for a in msgs), "another credential reached the local model"
     assert {a["model"] for a in msgs} == {"stand-local-32k"}, "a role went to another model"
-    assert max(a["tools"] for a in msgs) == len(V.LOCAL_TOOLS), "the session didn't get the five tools"
+    assert max(a["tools"] for a in msgs) == len(V.LOCAL_TOOLS), \
+        "the session didn't get the five tools: %s" % max((a["names"] for a in msgs), key=len)
     assert p.store.vendor_of(sid13) == "local"
     assert p.transcript_of(sid13)[0].startswith(str(pultd.HOMES / "local")) and all(a["who"] for a in msgs if a["tools"]) \
         and not any(a["owner_md"] for a in msgs), "the local model's session isn't isolated"
@@ -547,6 +570,10 @@ async def main():
         assert (p.store.get("codex." + sid12) or {}).get("thread") == thread12, "a new conversation, not the same one"
         assert [i["k"] for i in items].count("user") == 2, "the screen lacks the message after the pause"
         assert said and "HI" in said[0], "the answer after the pause doesn't know the conversation"
+    log("сессии из приложения — на:", ", ".join(sorted(str(u or "SDK's own") for u in used)),
+        "· других производителей — на:", ", ".join(sorted(str(u or "SDK's own") for u in used_vendors)))
+    assert used == {WANT}, "Claude's sessions from the app didn't all start on %s" % (WANT or "the SDK's own")
+    assert used_vendors <= {None}, "another vendor's session left the SDK's own Claude Code"
     log("тем создано:", len([1 for m, _ in calls if m == "createForumTopic"]), "· вызовов Telegram:", len(calls))
     for d in list(p.driven.values()):
         d.task.cancel()

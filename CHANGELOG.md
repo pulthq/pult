@@ -4,6 +4,21 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.50 — 2026-11-07
+
+- **Tasks from the app run on a fresh Claude Code.** They ran on the Claude Code the Agent SDK carries inside Pult, and
+  only a Pult release moved it — weeks behind what VS Code had already downloaded, and nothing at the computer could
+  update it. Pult's check of a new version VS Code downloads now also runs a session the way Pult runs one from the app
+  — its system prompt, Pult's hooks, a session id of its own, then the same session continued. When that passes, Pult
+  keeps its own copy of the version (a hard link where it can), and new and continued tasks from the app start on it:
+  a day or so after the version is out. Tasks already running finish on theirs; one that fails the step leaves the app
+  where it was, with one message. "A fresh Claude Code for the app" in Settings goes back to the built-in one. Tasks on
+  other vendors' models and on your own stay on the built-in Claude Code: their isolation and their five tools are
+  checked on it, and a newer one gives your own model a sixth tool of its own.
+- **Which Claude Code is out.** Every six hours Pult asks npm (one small request, through Pult's proxy when it has one),
+  and the Claude Code row of "Pult and its parts" says it beside what the app and the tabs run.
+- `pult report` names the versions Pult keeps for the app, and the check's app step in its line.
+
 ## 0.18.49 — 2026-11-06
 
 - **Telegram comes back by itself after the proxy has been down.** A proxy that answers the tunnel request and then drops

@@ -818,6 +818,20 @@ async def main():
                 "2.1.311": {"ts": now - 7200, "ok": True, "race": True, "error": None, "step": None}}),
             "check_err": dict(calm, cc=(["2.1.310"], ["2.1.301", "2.1.310"], "2.1.311"), checked={
                 "2.1.311": {"ts": now - 600, "ok": None, "race": None, "error": "login", "step": None}}),
+            # stage A2: what sessions from the app start on (tools/vcheck_check.py) — Pult's copy of a version that passed
+            # the app's step, beside what's out; the app's step failed on the newest; nothing newer than the SDK's own yet
+            "app_own": dict(calm, cc=(["2.1.318"], ["2.1.301", "2.1.310", "2.1.318"], "2.1.318"), checked={
+                "2.1.318": {"ts": now - 5400, "ok": True, "race": True, "app": True, "error": None, "step": None}},
+                app={"v": "2.1.318", "own": True, "on": True, "bundled": "2.1.300", "ts": now - 5400},
+                latest={"v": "2.1.319", "seen": now - 3 * 3600}),
+            "app_fail": dict(calm, cc=(["2.1.318"], ["2.1.301", "2.1.310", "2.1.318", "2.1.319"], "2.1.319"), checked={
+                "2.1.318": {"ts": now - 86400, "ok": True, "race": True, "app": True, "error": None, "step": None},
+                "2.1.319": {"ts": now - 900, "ok": True, "race": True, "app": False, "error": None, "step": None}},
+                app={"v": "2.1.318", "own": True, "on": True, "bundled": "2.1.300", "ts": now - 86400},
+                latest={"v": "2.1.319", "seen": now - 5 * 3600}),
+            "app_sdk": dict(calm, cc=(["2.1.310"], ["2.1.301", "2.1.310"], "2.1.310"),
+                            app={"v": "2.1.300", "own": False, "on": True, "bundled": "2.1.300", "ts": None},
+                            latest={"v": "2.1.319", "seen": now - 3600}),
             "bad": {"git": {"mac": lag(0, 0, []), "web": None, "web_told": True, "relay": None,
                             "gh": {"last": pultd.VERSION, "date": time.strftime("%Y-%m-%d"), "waiting": 0}},
                     "tabs": [True] * 3 + [None], "missing": ["StopFailure", "PreCompact"], "cc": (["2.1.301", "2.1.310"], ["2.1.301"], "2.1.310")},
@@ -839,8 +853,9 @@ async def main():
         hooks = [e for e in pult_hook.EVENTS if e not in facts["missing"]]
         running, verified, newest = facts["cc"]
         wrapped = facts.get("wrapped", True)
-        cc = {"running": running, "verified": verified, "newest": newest, "wrapped": wrapped, "sdk": "0.2.167", "cli": "2.1.300",
-              "checked": dict(facts.get("checked") or {}), "checking": facts.get("checking"), "auto": True}
+        cc = {"running": running, "verified": verified, "newest": newest, "wrapped": wrapped, "sdk": "0.2.167",
+              "cli": (facts.get("app") or {}).get("v", "2.1.300"), "checked": dict(facts.get("checked") or {}),
+              "checking": facts.get("checking"), "auto": True, "app": facts.get("app"), "latest": facts.get("latest")}
 
         async def stand_facts():
             return {"upd": await p.update_view(), "git": g, "relay": True, "tabs": tabs, "hooks": hooks, "cc": cc, "srv": p.srv}
@@ -854,7 +869,9 @@ async def main():
                  [{"k": "cc", "v": nxt[0], "fail": True, "next": True}] if nxt else [])
 
         async def stand_tab_check():                 # "Check again": a made-up check that passes in 3 s, no Claude
-            v = next((x for x in running if x not in verified), None) or (newest if newest not in verified else None)
+            app_failed = (cc["checked"].get(newest) or {}).get("app") is False             # stage A2: the app's step
+            v = next((x for x in running if x not in verified), None) or (
+                newest if newest not in verified or app_failed else None)
             if not v:
                 return {"ok": False, "note": p.t("tab.check.nothing")}
             print("CHECK", v, flush=True)
@@ -864,7 +881,12 @@ async def main():
                 await asyncio.sleep(3)
                 cc["checking"] = None
                 cc["checked"][v] = {"ts": time.time(), "ok": True, "race": True, "error": None, "step": None}
-                verified.append(v)
+                if cc["app"]:                        # stage A2: it passed the app's step too — the app moves to it
+                    cc["checked"][v]["app"] = True
+                    cc["app"] = dict(cc["app"], v=v, own=True, ts=time.time())
+                    cc["cli"] = v
+                if v not in verified:
+                    verified.append(v)
                 if p.web:
                     p.web.emit("update")
             asyncio.ensure_future(done())

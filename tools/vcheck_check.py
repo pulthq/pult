@@ -2,8 +2,10 @@
 stand, with real taps. A stand for each state (STAND_PARTS): the check running — "checking…", no line on Home; it
 failed at a step — "failed", the step, "Check again", Home's line saying writing goes off once a window reloads;
 "Check again" — "checking…", then passed: "checked here" and the tabs move to it after a reload; passed with the tabs
-on it — "checked here"; couldn't check (not logged in) — why, when, "Check again". The switch in Settings. English
-once, for keys left as keys.
+on it — "checked here"; couldn't check (not logged in) — why, when, "Check again". The switch in Settings. Stage A2:
+what's out and what sessions from the app start on — Pult's copy of a checked version; the app's step failed on the
+newest one — the app stays, "Check again" moves it; nothing newer than the Claude Code built into Pult yet; the app's
+switch. English once, for keys left as keys.
   ~/.local/share/pult/venv/bin/python tools/vcheck_check.py [out_dir]
 The facts are made up and the stand's "Check again" passes in 3 s without Claude; the check itself is
 tests/test_pult.py (TabCheckTest) and `pult tab check` on a real Claude Code. Screenshots go to out_dir (a temporary
@@ -202,6 +204,57 @@ async def main():
                 text = await more() + await chip()
                 verdict("English: no key left as a key", "pt.cc." not in text and "tab.step." not in text and "check.why." not in text, text)
                 verdict("English: the step in words", "switching the model" in text, text)
+            finally:
+                _cdp.stop(proc)
+
+            # 6. stage A2: sessions from the app on Pult's copy of a checked version, beside what's out; the switch
+            proc, urls = stand("app_own")
+            try:
+                verdict("app: the table", await settings(urls))
+                text = await more()
+                verdict("app: what's out", "Последний вышедший Claude Code — 2.1.319" in text, text)
+                verdict("app: on the copy checked here", "Сессии из приложения — на 2.1.318, проверенной здесь" in text, text)
+                verdict("app: no button", not await js(again))
+                await shot("8-app-own")
+                sw2 = "[...document.querySelectorAll('.sw-row')].find((r) => r.textContent.includes('Свежий Claude Code для приложения'))"
+                verdict("Settings: the app's switch is there and on",
+                        await js("(%s)?.querySelector('.sw-h')?.getAttribute('aria-checked')" % sw2) == "true")
+                await js("(%s)?.scrollIntoView({block: 'center'})" % sw2)
+                await shot("9-app-switch")
+            finally:
+                _cdp.stop(proc)
+
+            # 7. the app's step failed on the newest: the app stays where it is; "Check again" — passed, the app moves
+            proc, urls = stand("app_fail")
+            try:
+                verdict("app failed: the table", await settings(urls))
+                text = await more()
+                verdict("app failed: the row says the app stays",
+                        "2.1.319 не прошёл здесь проверку сессии из приложения" in text and "остаются на 2.1.318" in text, text)
+                verdict("app failed: Check again", "Проверить снова" in (await js(again + "?.textContent") or ""))
+                await shot("10-app-failed")
+                await tap_at(again)
+                verdict("app failed: Check again — passed, the app moves to it",
+                        await until(row + "?.querySelector('.part-x')?.textContent.includes('Сессии из приложения — на 2.1.319')", 80),
+                        await more())
+            finally:
+                _cdp.stop(proc)
+
+            # 8. nothing newer than the Claude Code built into Pult has passed yet
+            proc, urls = stand("app_sdk")
+            try:
+                verdict("app on Pult's own: the table", await settings(urls))
+                text = await more()
+                verdict("app on Pult's own: says so", "на встроенном в Пульт Claude Code 2.1.300 (SDK 0.2.167)" in text, text)
+                await shot("11-app-sdk")
+            finally:
+                _cdp.stop(proc)
+            proc, urls = stand("app_fail", "en")
+            try:
+                await settings(urls)
+                text = await more()
+                verdict("English (A2): no key left as a key", "pt.cc." not in text and "tab.step." not in text, text)
+                verdict("English (A2): the app's lines in words", "a session from the app" in text and "The newest Claude Code out" in text, text)
             finally:
                 _cdp.stop(proc)
             verdict("no script errors", not errors, errors)
