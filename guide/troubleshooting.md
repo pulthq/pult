@@ -15,5 +15,6 @@
 | Something else | `pult report`, then [open an issue](https://github.com/pulthq/pult/issues/new/choose). |
 
 **Several people?** No: one Pult has one owner. **Extra cost?** Hardly: Pult uses what the sessions use, and reading
-your limits makes no model request. Its own: a check of each new Claude Code version — about ten short requests every
-few days (Settings can turn it off) — and the one-line summary, if you turn it on.
+your limits makes no model request. Its own: a check of each new Claude Code version — about a dozen short requests
+every few days (Settings can turn it off), a look at which version is out every six hours (one small request to npm) —
+and the one-line summary, if you turn it on.

@@ -308,6 +308,14 @@ class Driven:
                   max_buffer_size=SDK_LINE_MAX, stderr=lambda s: None)
         model, effort = self.d.wanted(getattr(self, "want_model", None), getattr(self, "want_effort", None))
         vid = self.d.store.vendor_of(self.sid)
+        cli = None if vid else self.d.app_cli()
+        if cli:
+            # stage A2: Claude's own sessions start on the newest Claude Code VS Code has downloaded that passed Pult's
+            # check of a session from the app here, from Pult's own copy — not the SDK's own, which only a release of Pult
+            # moves. Other vendors' and one's own model stay on the SDK's: their isolation and their five tools are
+            # probed on it, and 2.1.318 gives one's own model a sixth tool of its own (DeferredToolPlaceholder, e2e_live
+            # 2026-11-07)
+            kw["cli_path"] = str(cli)
         if vid:
             # another vendor's model (stage M, step 2): its profile in the environment, the owner's key in both of
             # Claude Code's places; never without the key — the subscription's own token would go there (pult_vendors)

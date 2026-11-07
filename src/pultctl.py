@@ -68,7 +68,9 @@ def tab_state():
 def cmd_tab_check(args):
     """pult tab check [VERSION | path to claude] [--json] [--dry]: Pult checks a Claude Code version on this computer
     (stage A, pult_tabcheck) — the newest one VS Code has downloaded when none is named — and allows it for the tabs
-    when it passes. --json: the report as one line, for the daemon; --dry: tab.json is left as it was."""
+    when it passes; when a session from the app works on it, Pult keeps a copy of it, and new sessions from the app
+    start there (stage A2). --json: the report as one line, for the daemon; --dry: tab.json and the copies are left
+    as they were."""
     import asyncio
     import pult_tabcheck as C
     as_json, dry = "--json" in args, "--dry" in args
@@ -96,6 +98,7 @@ def cmd_tab_check(args):
                "steps": [{"k": "blocked", "ok": False, "s": 0, "note": "a Pult release blocks this version"}]}
         if not dry:
             S.tab_checked(v, rep)
+            S.pult_os.drop_claude(S.HOME, v)
         return done(rep, T("cli.check.blocked", v=v), 1)
     say = None
     if not as_json:
@@ -107,6 +110,13 @@ def cmd_tab_check(args):
     except asyncio.TimeoutError:
         rep = {"version": v, "ok": None, "race": None, "error": "timeout", "steps": [], "ts": time.time()}
     if not dry:
+        if rep.get("app"):
+            try:
+                S.pult_os.keep_claude(S.HOME, v, cli)
+            except OSError as e:                # a full disk, say: couldn't check — the daemon tries again in an hour
+                rep.update(app=None, error="copy", note=str(e)[:200])
+        elif rep.get("app") is False:
+            S.pult_os.drop_claude(S.HOME, v)
         S.tab_checked(v, rep)
     if rep.get("error"):
         return done(rep, T("cli.check.err", v=v, why=T("check.why." + rep["error"])), 2)
@@ -114,6 +124,8 @@ def cmd_tab_check(args):
     text = T("cli.check.ok", v=v) if rep["ok"] else T("cli.check.fail", v=v, step=T("tab.step." + (step or "own")))
     if rep.get("race") is False:
         text += "\n" + T("cli.check.race", v=v)
+    if rep.get("app") is not None:
+        text += "\n" + T("cli.check.app.ok" if rep["app"] else "cli.check.app.fail", v=v)
     return done(rep, text, 0 if rep["ok"] else 1)
 
 

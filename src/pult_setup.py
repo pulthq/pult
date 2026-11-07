@@ -971,7 +971,10 @@ def tab_verified_add():
     """An install brings the Claude Code versions its release checked the tab wrapper on: they join tab.json's list,
     which keeps the ones allowed by hand. Before, only `pult tab setup` put them there, so a release checked on a new
     version changed nothing for those who had Pult already (2026-10-26). No tab.json — writing into tabs isn't set
-    up — or one Pult can't read: nothing is written. Returns the versions added."""
+    up — or one Pult can't read: nothing is written. Returns the versions added. A version a release blocks loses
+    Pult's own copy too: sessions from the app don't start on it (stage A2)."""
+    for v in TAB_BLOCKED:
+        pult_os.drop_claude(HOME, v)
     try:
         conf = json.loads(TAB_CONF.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -988,10 +991,11 @@ def tab_verified_add():
 
 def tab_checked(v, rep):
     """A check of Claude Code v on this computer (pult_tabcheck, stage A) into tab.json: "checked"[v] — when, passed or
-    not, the first step that failed, whether the permission race held, or why it couldn't check; passed — v joins
-    "versions", so tabs that start on it get the wrapper. Couldn't check (no login, a limit, the network) — only the
-    record: the daemon tries again later. No tab.json — writing into tabs isn't set up — or one Pult can't read:
-    nothing. True when v was allowed."""
+    not, the first step of a tab that failed, whether the permission race held, whether a session from the app works
+    on it (stage A2; a check before it doesn't say), or why it couldn't check; passed — v joins "versions", so tabs
+    that start on it get the wrapper. Couldn't check (no login, a limit, the network) — only the record: the daemon
+    tries again later. No tab.json — writing into tabs isn't set up — or one Pult can't read: nothing. True when v was
+    allowed."""
     try:
         conf = json.loads(TAB_CONF.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -1000,7 +1004,10 @@ def tab_checked(v, rep):
         return False
     steps = rep.get("steps") or []
     rec = {"ts": round(rep.get("ts") or time.time()), "ok": rep.get("ok"), "race": rep.get("race"),
-           "error": rep.get("error"), "step": next((x.get("k") for x in steps if x.get("ok") is False and x.get("k") != "race"), None)}
+           "error": rep.get("error"),
+           "step": next((x.get("k") for x in steps if x.get("ok") is False and x.get("k") not in ("race", "app")), None)}
+    if "app" in rep:
+        rec["app"] = rep["app"]
     checked = conf.get("checked") if isinstance(conf.get("checked"), dict) else {}
     checked[v] = rec
     conf["checked"] = dict(sorted(checked.items(), key=lambda kv: vkey(kv[0]))[-10:])     # the last ten versions
@@ -1213,7 +1220,10 @@ def report_lines():
         # stage A: what Pult's own checks of new Claude Code versions found here — for an issue when one fails
         "tab checks: %s" % (" · ".join("%s %s" % (v, "passed" if r.get("ok") else "couldn't (%s)" % r.get("error") if r.get("error")
                                                    else "failed at %s" % (r.get("step") or "?")) + ("" if r.get("race") is not False else ", race failed")
+                                       + ("" if r.get("app") is not False else ", app failed")
                                        for v, r in sorted((conf.get("checked") or {}).items(), key=lambda kv: vkey(kv[0]))[-5:]) or "—"),
+        # stage A2: the Claude Code sessions from the app start on — Pult's own copies of the versions that passed
+        "app's claude: %s" % (", ".join(sorted(pult_os.claude_copies(HOME), key=vkey)) or "the SDK's own"),
     ]
     if env.get("PULT_BOT_TOKEN"):
         routes = ([("via proxy", env["PULT_PROXY"])] if env.get("PULT_PROXY") else []) + [("direct", "")]
@@ -1243,7 +1253,7 @@ HOME_FILES = ("pultd.py", "pult_hook.py", "pult_render.py", "pult_web.py", "pult
               "update.json.tmp", "health.json.tmp", "prev", ".new", ".install-new",
               "pultctl.py", "pult_tab.py", "pult-tab.sh", "pult-tab.exe", "pult-tab.exe.new", "requirements.txt", "state.db",
               "state.db-journal", "state.db-wal", "state.db-shm", "pult.sock", "pult.sock.tmp", "venv", "__pycache__",
-              "outbox")
+              "outbox", "claude")
 CONF_FILES = ("env", "env.tmp", "tab.json", "tab-off")
 TAB_STUB = ('#!/bin/sh\n# Pult was removed. This stub runs Claude Code directly, so VS Code tabs keep working:\n'
             '# remove the claudeCode.claudeProcessWrapper line from the VS Code settings, then delete this folder.\n'

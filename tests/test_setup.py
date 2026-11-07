@@ -1551,16 +1551,32 @@ class TabTest(Base):
                "steps": [{"k": "own", "ok": True}, {"k": "model", "ok": False}, {"k": "race", "ok": False}]}
         self.assertFalse(S.tab_checked("2.1.312", bad))
         self.assertFalse(S.tab_checked("2.1.313", {"ok": None, "error": "login", "ts": 300, "steps": []}))
+        # stage A2: a check with the app's step says how it went — its failure isn't the tabs' step
+        app_bad = {"ok": True, "race": True, "app": False, "error": None, "ts": 400,
+                   "steps": [{"k": "own", "ok": True}, {"k": "app", "ok": False}]}
+        self.assertTrue(S.tab_checked("2.1.314", app_bad))
         conf = json.loads(S.TAB_CONF.read_text())
-        self.assertEqual(conf["versions"], ["2.1.310", "2.1.311"])
+        self.assertEqual(conf["versions"], ["2.1.310", "2.1.311", "2.1.314"])
         self.assertEqual((conf["checked"]["2.1.312"]["step"], conf["checked"]["2.1.313"]["error"]), ("model", "login"))
+        self.assertEqual((conf["checked"]["2.1.314"]["app"], conf["checked"]["2.1.314"]["step"]), (False, None))
+        self.assertNotIn("app", conf["checked"]["2.1.311"])                       # a check before stage A2 doesn't say
         with mock.patch.object(S, "TAB_BLOCKED", ("2.1.311",)):
             self.assertFalse(S.tab_checked("2.1.311", ok))                       # a release blocked it: never allowed
+            src = S.HOME / "ext-311" / S.pult_os.CLAUDE_EXE
+            src.parent.mkdir(parents=True, exist_ok=True)
+            src.write_text("claude")
+            S.pult_os.keep_claude(S.HOME, "2.1.311", src)
+            S.pult_os.keep_claude(S.HOME, "2.1.315", src)
             with mock.patch.object(sys.stdin, "isatty", lambda: False):
                 self.run_cli(S.cmd_install)
-            self.assertEqual(json.loads(S.TAB_CONF.read_text())["versions"], list(S.TAB_VERIFIED))   # the install took it out
+            self.assertEqual(json.loads(S.TAB_CONF.read_text())["versions"],          # the install took it out
+                             sorted({*S.TAB_VERIFIED, "2.1.314"}, key=S.vkey))
+            self.assertEqual(sorted(S.pult_os.claude_copies(S.HOME)), ["2.1.315"])       # and Pult's copy of it (A2)
         _, out = self.run_cli(S.cmd_report)                    # `pult report` carries them, for an issue
-        self.assertIn("tab checks: 2.1.311 passed · 2.1.312 failed at model, race failed · 2.1.313 couldn't (login)", out)
+        self.assertIn("tab checks: 2.1.311 passed · 2.1.312 failed at model, race failed · 2.1.313 couldn't (login) · "
+                      "2.1.314 passed, app failed", out)
+        self.assertIn("app's claude: 2.1.315", out)
+        S.pult_os.drop_claude(S.HOME, "2.1.315")
         for i in range(12):
             S.tab_checked("2.2.%d" % i, {"ok": None, "error": "network", "ts": i, "steps": []})
         checked = json.loads(S.TAB_CONF.read_text())["checked"]
@@ -1579,18 +1595,36 @@ class TabTest(Base):
         S.TAB_CONF.write_text(json.dumps({"folders": ["~"], "versions": ["2.1.310"]}))
         asked = []
 
-        def fake(ok, step=None):
+        def fake(ok, step=None, app=True):
             async def run(cli, wrapper, py, say=None):
                 asked.append((C.version_of(cli), str(wrapper)))
                 say and say("own", True)
                 steps = [{"k": "own", "ok": True, "s": 1, "note": ""}] + ([{"k": step, "ok": False, "s": 1, "note": "x"}] if step else [])
-                return {"version": C.version_of(cli), "ok": ok, "race": True, "error": None, "steps": steps, "ts": 5}
+                return {"version": C.version_of(cli), "ok": ok, "race": True, "app": app, "error": None, "steps": steps, "ts": 5}
             return run
         with mock.patch.object(C, "run", fake(True)):
             res, out = self.run_cli(pultctl.cmd_tab, ["check", "--json"])
         self.assertEqual((res, json.loads(out.strip().splitlines()[-1])["ok"]), (0, True))
         self.assertEqual(asked[-1], ("2.1.311", str(S.HOME / "pult_tab.py")))       # the newest, through the installed wrapper
         self.assertIn("2.1.311", json.loads(S.TAB_CONF.read_text())["versions"])
+        # stage A2: a session from the app worked on it — Pult keeps a copy, and new sessions from the app start there
+        self.assertEqual(sorted(S.pult_os.claude_copies(S.HOME)), ["2.1.311"])
+        with mock.patch.object(C, "run", fake(True, app=False)):
+            res, out = self.run_cli(pultctl.cmd_tab, ["check", "2.1.311"])
+        self.assertEqual(res, 0)
+        self.assertIn(S.T("cli.check.app.fail", v="2.1.311"), out)
+        self.assertEqual(S.pult_os.claude_copies(S.HOME), {})                        # failed on a new check: the copy goes
+        with mock.patch.object(C, "run", fake(True)):
+            res, out = self.run_cli(pultctl.cmd_tab, ["check", "2.1.311", "--dry"])
+        self.assertIn(S.T("cli.check.app.ok", v="2.1.311"), out)
+        self.assertEqual(S.pult_os.claude_copies(S.HOME), {})                        # --dry: no copy either
+        # no room for the copy: couldn't check — the record says why, and the daemon tries again in an hour
+        with mock.patch.object(C, "run", fake(True)), \
+                mock.patch.object(S.pult_os, "keep_claude", mock.Mock(side_effect=OSError(28, "No space left on device"))):
+            res, out = self.run_cli(pultctl.cmd_tab, ["check", "2.1.311"])
+        rec = json.loads(S.TAB_CONF.read_text())["checked"]["2.1.311"]
+        self.assertEqual((res, rec["error"], rec["app"]), (2, "copy", None))
+        self.assertIn(S.T("check.why.copy"), out)
         S.TAB_CONF.write_text(json.dumps({"folders": ["~"], "versions": ["2.1.310"]}))
         with mock.patch.object(C, "run", fake(False, "model")):
             res, out = self.run_cli(pultctl.cmd_tab, ["check", "2.1.311", "--dry"])

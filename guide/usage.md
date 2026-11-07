@@ -62,7 +62,10 @@ phone — on Claude's models or another vendor's, and another model can check wh
   branch Pult was installed from. A new release installs from there with one tap (macOS, Linux; a clone finds releases
   on GitHub by itself), and your app server takes the same one from GitHub
   ([once: `install.sh --auto`](../deploy/relay/README.md#updates)). A Claude Code version VS Code has downloaded is
-  checked on your computer before the tabs move to it; "Check new Claude Code versions" turns that off.
+  checked on your computer before the tabs move to it; "Check new Claude Code versions" turns that off. When a session
+  from the app works on it too, new and continued tasks from the app start on it — instead of the Claude Code built
+  into Pult, which only a Pult release moves; "A fresh Claude Code for the app" turns that off. Tasks on other vendors'
+  models and on your own stay on the built-in one. The same row says which Claude Code is out.
 
 ## Who does the task, who checks it
 

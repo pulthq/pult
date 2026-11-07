@@ -11,6 +11,7 @@ a local relay with the test keys — and the app runs in headless Chrome with re
 Everything goes at the end: the service, its file in ~/Library/LaunchAgents, the folders. ~5 min; while it runs, one
 more daemon (~100 MB) and a venv (~200 MB on disk).
   ~/.local/share/pult/venv/bin/python tools/update_live.py [--keep]
+  PULT_PROXY=<proxy>: the test service goes to Telegram through it, as the owner's Pult does
 The owner's Pult is never touched: another label, folder and socket. Exit 1 on a failed check."""
 import asyncio, base64, hashlib, hmac, json, os, shutil, subprocess, sys, tempfile, time, urllib.parse
 from pathlib import Path
@@ -86,8 +87,12 @@ async def main(keep):
                 k, v = ln.split(" ", 1)
                 urls[k] = v.strip()
         (T / "logs").mkdir(parents=True)
+        # PULT_PROXY when the run has one: the service goes to Telegram as the owner's does — where Telegram answers only
+        # through a proxy, its refused try came too late for "General was told" (2026-11-07)
         (T / "env").write_text("PULT_BOT_TOKEN=%s\nPULT_ALLOWED_USER_IDS=%s\nPULT_LABEL=%s\nPULT_RELAY_URL=ws://127.0.0.1:%d/pult/agent\n"
-                               "PULT_RELAY_SECRET=s3cret\n" % (token, owner, LABEL, RELAY_PORT))
+                               "PULT_RELAY_SECRET=s3cret\n%s" % (token, owner, LABEL, RELAY_PORT,
+                                                               "PULT_PROXY=%s\n" % os.environ["PULT_PROXY"]
+                                                               if os.environ.get("PULT_PROXY") else ""))
         os.chmod(T / "env", 0o600)
         subprocess.run(["git", "clone", "-q", "--branch", git(REPO, "rev-parse", "--abbrev-ref", "HEAD"), str(REPO), str(repo)], check=True)
         home.mkdir()

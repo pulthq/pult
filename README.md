@@ -138,7 +138,8 @@ An empty folder with git, a `CLAUDE.md` written from your words, or a clone — 
 Every part in one table: the computer, the app and its server, this phone's copy, the VS Code tabs, the hooks,
 Claude Code. A new release goes in with one tap (macOS, Linux) and your app server follows
 ([once: `install.sh --auto`](deploy/relay/README.md#updates)); a Claude Code version VS Code has downloaded is
-checked here before your tabs move to it, and a new Codex against its own protocol before its first review.
+checked here before your tabs move to it — and the tasks from the app move to it too, a day or so after it's out instead
+of waiting for a Pult release — and a new Codex against its own protocol before its first review.
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="media/f-parts.en.dark.png"><img src="media/f-parts.en.png" width="330" alt="Settings in the app: the table of Pult's parts — the computer, the app and the relay on the server, this phone, the VS Code tabs, the hooks, Claude Code, the release — each with what it runs and whether it is as in main; the switch that checks new Claude Code versions"></picture></p>
 

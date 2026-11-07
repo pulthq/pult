@@ -77,11 +77,22 @@ function srvMore(r) {
 // computer found (stage A) — passed, failed at a step, couldn't run, running now — with "Check again"
 const ccRec = (r, v) => (r.checked && v && r.checked[v]) || null;
 const ccFailed = (r) => [...(r.off || []), r.fresh].some((v) => { const c = ccRec(r, v); return !!c && c.ok === false && !c.error; });
+// stage A2: what is out, and the Claude Code sessions from the app start on — the newest version that passed the check
+// of a session from the app here (Pult's own copy of it), or the one built into Pult; a computer before it says neither
+function ccApp(r) {
+  const a = r.app, l = r.latest;
+  const out = l && l.v ? html`<div class="dim upd-note">${t("pt.cc.latest", { v: l.v, when: dayOrTime(l.seen) })}</div>` : "";
+  if (!a) return html`${out}${r.cli ? html`<div class="dim upd-note">${t("pt.cc.app", { cli: r.cli, sdk: r.sdk })}</div>` : ""}`;
+  const line = a.own ? (a.ts ? t("pt.cc.appown", { v: a.v, when: dayOrTime(a.ts) }) : t("pt.cc.appown.nots", { v: a.v }))
+    : t(a.on ? "pt.cc.appsdk" : "pt.cc.appoff", { v: a.v || "?", sdk: r.sdk || "?" });
+  return html`${out}<div class="dim upd-note">${line}</div>`;
+}
 function CcMore({ r, set }) {
   const [busy, setBusy] = useState(false);
-  if (!r.wrapped) return html`<div class="dim">${t("pt.cc.nowrap.about")}</div>${r.cli ? html`<div class="dim upd-note">${t("pt.cc.app", { cli: r.cli, sdk: r.sdk })}</div>` : ""}`;
+  if (!r.wrapped) return html`<div class="dim">${t("pt.cc.nowrap.about")}</div>${ccApp(r)}`;
   const off = r.off || [];
-  const v = r.checking || off[off.length - 1] || r.fresh;          // the version a check is about
+  const nc = ccRec(r, r.newest), appFail = !!nc && nc.app === false && !nc.error;    // stage A2: the app's step failed
+  const v = r.checking || off[off.length - 1] || r.fresh || (appFail ? r.newest : undefined);   // the version a check is about
   const c = ccRec(r, v);
   const hereV = [r.have, r.newest].find((x) => (ccRec(r, x) || {}).ok), here = ccRec(r, hereV);
   const again = async () => {
@@ -93,14 +104,15 @@ function CcMore({ r, set }) {
   const check = r.checking ? html`<div class="upd-note">${t("pt.cc.checking", { v: r.checking })}</div>`
     : c && c.error ? html`<div class="upd-note">${t("pt.cc.err", { v, when: dayOrTime(c.ts), why: t("check.why." + c.error) })}</div>`
     : c && c.ok === false ? html`<div class="upd-note bad">${t("pt.cc.failedin", { v, when: dayOrTime(c.ts), step: t("tab.step." + (c.step || "own")) })}</div>`
+    : c && c.app === false ? html`<div class="upd-note bad">${t("pt.cc.appfail", { v, when: dayOrTime(c.ts), have: (r.app && r.app.v) || r.cli || "?" })}</div>`
     : v && r.auto === false ? html`<div class="dim upd-note">${t("pt.cc.manual")}</div>` : "";
-  const canAgain = r.auto !== undefined && v && !r.checking && (!c || c.ok === false || c.error || !auto);
+  const canAgain = r.auto !== undefined && v && !r.checking && (!c || c.ok === false || c.error || c.app === false || !auto);
   return html`${off.length ? html`<div>${t("pt.cc.offin", { v: off.join(", "), ok: r.verified || "?" })}</div>`
       : html`<div>${t("pt.cc.runs", { v: r.have, ok: r.verified || "?" })}</div>`}
     ${here ? html`<div class="dim upd-note">${t("pt.cc.herein", { v: hereV, when: dayOrTime(here.ts) })}${hereV !== r.have ? " " + t("pt.cc.next.ok") : ""}</div>` : ""}
     ${r.fresh && !r.checking && !c ? html`<div class="dim upd-note">${t(auto && r.auto !== undefined ? "pt.cc.next.auto" : "pt.cc.next", { v: r.fresh })}</div>` : ""}
     ${check}
-    ${r.cli ? html`<div class="dim upd-note">${t("pt.cc.app", { cli: r.cli, sdk: r.sdk })}</div>` : ""}
+    ${ccApp(r)}
     ${canAgain ? html`<button class="btn wide" disabled=${busy} onClick=${again}>${t(c ? "pt.cc.again" : "pt.cc.check")}</button>` : ""}
     ${v && !r.checking && (r.auto === undefined || (c && c.ok === false) || !auto) ? who("term", t("pt.cc.who", { v })) : ""}`;
 }
@@ -311,7 +323,7 @@ function Settings() {
   return html`<div><h2>${t("settings")}</h2>
     <${Parts}/>
     ${d.gh && d.gh.release ? html`<div class="list">${sw("gh", t("gh"), d.gh.at && d.prefs.gh ? t(d.gh.ok ? "gh.at" : "gh.fail", { hm: hhmm(toDate(d.gh.at)) }) : t("gh.short"), t("gh.about"))}</div>` : ""}
-    ${"vcheck" in d.prefs ? html`<div class="list">${sw("vcheck", t("vcheck"), t("vcheck.short"), t("vcheck.about"))}</div>` : ""}
+    ${"vcheck" in d.prefs ? html`<div class="list">${sw("vcheck", t("vcheck"), t("vcheck.short"), t("vcheck.about"))}${"ccfresh" in d.prefs ? sw("ccfresh", t("ccfresh"), t("ccfresh.short"), t("ccfresh.about")) : ""}</div>` : ""}
     ${"model" in d.prefs ? html`<h3>${t("model.pick")}</h3>
     <button class="field" onClick=${openPick}><span>${choiceText(d.prefs.model, d.prefs.effort)}</span><span class="dim">${ic("down", 18)}</span></button>
     <div class="dim small">${t("def.about")}</div>

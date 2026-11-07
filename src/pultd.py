@@ -92,7 +92,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.49"
+VERSION = "0.18.50"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -104,12 +104,13 @@ MENU_CHECK_EVERY = 1800  # s; the app button in the owner's chat is still ours (
 CONFLICT_WARN_EVERY = 6 * 3600   # s; "someone else reads this bot" at most this often
 WEB_MANIFEST = HOME / "web-manifest.json"   # what the last deploy put on the relay (written by the deploy script)
 PREFS = {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": None, "pace": S.PACE_LOW,
-         "model": None, "effort": None, "gh": True, "vcheck": True, "hashtags": True}   # owner prefs:
+         "model": None, "effort": None, "gh": True, "vcheck": True, "hashtags": True, "ccfresh": True}   # owner prefs:
 # milestones, location (auto/mac/phone), language, a model's line for each result, Telegram as a pager (None — on where the
 # app is set up), the % at a limit's reset that is still "on pace" (stage R), the model and the effort for sessions Pult
 # starts when the session has no choice of its own (None — Claude Code's settings; VS Code tabs keep theirs), whether a
 # clone of Pult's GitHub repository looks there for new releases (stage U3), whether Pult checks a Claude Code version
-# VS Code has downloaded, before a window reloads onto it (stage A, Q78: on)
+# VS Code has downloaded, before a window reloads onto it (stage A, Q78: on), whether sessions from the app start on the
+# newest Claude Code that passed the check's app step here rather than the SDK's own (stage A2, Q158: on)
 MODES = ("auto", "mac", "phone")
 REPO_URL = os.environ.get("PULT_REPO_URL") or "https://github.com/pulthq/pult"   # where /feedback sends bugs and ideas
 
@@ -386,6 +387,7 @@ class Pult(Api, Parts):
         self._parts = (0.0, None, None)  # the source folder against what's installed and served (stage U2): time, key, facts
         self._cc = (0.0, None)         # Claude Code on this computer (cc_facts), kept half a minute
         self.tab_checking = None       # the Claude Code version Pult checks for the tabs right now (stage A)
+        self.cc_look = None            # when Pult last asked npm what Claude Code is out (stage A2), monotonic
         self.srv = None                # the relay's server (stage U3): {"can": [...], "upd": the updater's report}
         self.told = (None, 0.0)        # the release the relay's server was last told this computer runs, and when
         self.srv_rel = (0.0, None, None)   # what to tell it (Parts.release_for_server): when found, for what, what
