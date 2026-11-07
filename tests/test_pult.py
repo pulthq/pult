@@ -8144,7 +8144,7 @@ class TabCheckTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((ok, steps[0]["k"], steps[0]["note"]), (True, "app", "hooks: UserPromptSubmit 2, Stop 2"))
             first, second = FakeSDK.seen
             self.assertEqual((first.cli_path, first.model, first.effort, first.tools, first.setting_sources),
-                             ("/x/anthropic.claude-code-2.1.318-darwin-arm64/claude", "haiku", "low", [], ["project"]))
+                             (str(Path("/x/anthropic.claude-code-2.1.318-darwin-arm64/claude")), "haiku", "low", [], ["project"]))
             self.assertEqual((first.system_prompt, first.permission_mode),
                              ({"type": "preset", "preset": "claude_code"}, pult_driven.PERMISSION_MODE))
             self.assertEqual(json.loads(first.settings)["hooks"], pult_driven.injected_hooks())      # Pult's own hooks
