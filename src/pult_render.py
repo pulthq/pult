@@ -219,6 +219,23 @@ def bg_started(tool, inp, resp):
     return None
 
 
+# what Claude Code itself keeps open on a page Claude published (the Artifact tool): its new versions and the comments
+# sent to Claude, and Claude's presence on it — a socket held while the process lives (Claude Code 2.1.300, 2.1.318)
+_WATCH = ("live updates for artifact ", "presence on artifact ")
+
+
+def bg_watch(task):
+    """A background "task" that is only a watch on a published page (_WATCH): the SDK's background_tasks_changed marks
+    it ambient (a monitor_ws), the Stop hook's background_tasks lists it as a monitor with no mark. It does no work and
+    has no end of its own, so it neither keeps a session's process nor puts the session "in the background": a session
+    from the app that published a page sat there 13 h, and an install would have waited for it (2026-11-08)."""
+    if not isinstance(task, dict):
+        return False
+    kind = task.get("task_type") or task.get("type")
+    return (task.get("ambient") is True and kind == "monitor_ws") or \
+        (kind in ("monitor", "monitor_ws") and str(task.get("description") or "").startswith(_WATCH))
+
+
 # ---------- Claude's markdown → Telegram HTML ----------
 
 def _inline(s):

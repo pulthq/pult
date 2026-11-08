@@ -92,7 +92,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.50"
+VERSION = "0.18.51"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -1152,9 +1152,11 @@ class Pult(Api, Parts):
         elif name == "Stop":
             self.resolve_all(lv, self.t("req.decided_mac"))
             if "background_tasks" in ev:                 # the field exists since Claude Code 2.1.30x (probe 2026-10-16)
-                # the list Claude Code keeps; what Pult learned at a task's start (a helper's model) stays with it
+                # the list Claude Code keeps; what Pult learned at a task's start (a helper's model) stays with it; a
+                # watch on a page Claude published is no work (R.bg_watch)
                 was = {b.get("id"): b for b in lv.bg}
-                lv.bg = [dict(was.get(b.get("id")) or {}, **b) for b in ev.get("background_tasks") or [] if isinstance(b, dict)]
+                lv.bg = [dict(was.get(b.get("id")) or {}, **b) for b in ev.get("background_tasks") or []
+                         if isinstance(b, dict) and not R.bg_watch(b)]
                 now = time.time()
                 lv.bg_seen = {b.get("id"): lv.bg_seen.get(b.get("id"), now) for b in lv.bg}
             t = self.finish_turn(lv, "✔️")

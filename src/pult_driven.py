@@ -367,7 +367,9 @@ class Driven:
                 elif isinstance(m, SystemMessage) and m.subtype == "init":
                     self.model = m.data.get("model") or self.model
                 elif isinstance(m, SystemMessage) and m.subtype == "background_tasks_changed":
-                    self.bg = {t.get("task_id") for t in m.data.get("tasks") or [] if isinstance(t, dict)}
+                    # a watch on a page Claude published is no work: it ends only with the process (R.bg_watch)
+                    self.bg = {t.get("task_id") for t in m.data.get("tasks") or []
+                               if isinstance(t, dict) and not R.bg_watch(t)}
                     # the session's list of what runs in the background (from its last Stop) loses an ended task at
                     # once: the hooks hear of its end only at the turn's next step (tests/probe_bgmid.py, 2.1.300)
                     lv = self.d.live.get(self.sid)

@@ -4,6 +4,14 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.51 — 2026-11-08
+
+- **A page Claude published no longer keeps a task "in the background".** When Claude publishes a page with its Artifact
+  tool, Claude Code watches the page for as long as its process lives (new versions, comments sent to Claude) and lists
+  the watch among the session's background tasks. Pult took it for work: a task from the app stayed in "Running now" for
+  hours after its turn, its idle process was never closed, and an install from the app waited for it. The watch no longer
+  counts; a monitor Claude starts itself still does.
+
 ## 0.18.50 — 2026-11-07
 
 - **Tasks from the app run on a fresh Claude Code.** They ran on the Claude Code the Agent SDK carries inside Pult, and
