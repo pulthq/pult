@@ -381,6 +381,15 @@ class RenderTest(unittest.TestCase):
         many = [{"id": str(i), "status": "running", "description": "з%d" % i} for i in range(5)]
         self.assertEqual(R.bg_text(many + [{"id": "x", "status": "completed", "description": "старая"}]),
                          "⚙️ В фоне ещё 5: «з0», «з1», «з2» и ещё 2")
+        # a watch on a published page — the SDK's entry (ambient) and the Stop hook's (a monitor with no mark) — is no
+        # task; a socket Claude itself watches with the Monitor tool is one
+        self.assertTrue(R.bg_watch({"task_id": "w1", "task_type": "monitor_ws", "ambient": True, "description": "x"}))
+        self.assertTrue(R.bg_watch({"id": "w2", "type": "monitor", "status": "running",
+                                    "description": "presence on artifact https://claude.ai/artifact/abc"}))
+        self.assertFalse(R.bg_watch({"task_id": "m1", "task_type": "monitor_ws", "description": "Цены с биржи"}))
+        self.assertFalse(R.bg_watch({"task_id": "d1", "task_type": "dream", "ambient": True, "description": "dreaming"}))
+        self.assertFalse(R.bg_watch({"id": "b1", "type": "shell", "description": "live updates for artifact abc"}))
+        self.assertFalse(R.bg_watch(None))
 
     def test_entities_html(self):
         # a message as a button's callback brings it (offsets in UTF-16: the emoji takes two) back into its HTML
@@ -4499,6 +4508,32 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.p.live[SID].bg, [])
         self.assertGreater(self.p.work_total(SID), before)                 # one clock for the whole task
 
+    async def test_page_watch_is_not_background(self):
+        # Claude published a page (the Artifact tool): Claude Code keeps a watch on it while its process lives, and the
+        # Stop hook lists it among background_tasks as a monitor. It is no work: no "in the background" line in the
+        # result, the session isn't in "Running now"; a monitor Claude started itself stays (2026-11-08: a session from
+        # the app sat "in the background" 13 h after its turn)
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        Path(TP).write_text(tline("user", "Сделай отчёт страницей") + "\n")
+        await run_hook(ev("UserPromptSubmit", prompt="Сделай отчёт страницей"))
+        await until(lambda: SID in self.p.live and self.p.live[SID].turn)
+        watch = [{"id": "w1", "type": "monitor", "status": "running",
+                  "description": "live updates for artifact Xq7Lm2Pw9Rt4Vb8Nc3Kd5h (comments)"},
+                 {"id": "w2", "type": "monitor", "status": "running",
+                  "description": "presence on artifact https://claude.ai/artifact/Xq7Lm2Pw9Rt4Vb8Nc3Kd5h"}]
+        await run_hook(ev("Stop", last_assistant_message="Отчёт готов.", background_tasks=watch))
+        await until(lambda: any(t.startswith("✅") for t in self.texts()))
+        self.assertNotIn("В фоне", next(t for t in self.texts() if t.startswith("✅")))
+        self.assertEqual(self.p.live[SID].bg, [])
+        ov = await self.p.api_overview()
+        self.assertNotIn(SID, [s["sid"] for s in ov["live"]])
+        self.assertNotIn("bg", [r["state"] for b in ov["board"] for r in b["rows"]])
+        await run_hook(ev("UserPromptSubmit", prompt="Следи за журналом сборки"))
+        await until(lambda: self.p.live[SID].turn)
+        await run_hook(ev("Stop", last_assistant_message="Слежу.", background_tasks=watch + [
+            {"id": "m1", "type": "monitor", "status": "running", "description": "Ошибки в журнале сборки"}]))
+        await until(lambda: [b["id"] for b in self.p.live[SID].bg] == ["m1"])
+
     async def test_background_task_ends_mid_turn(self):
         # a background task that ends while a turn runs: its note comes absorbed into that turn — its prompt_id — at the
         # turn's next step (tests/probe_bgmid.py, 2.1.300); it stayed in the session's list till the turn's end (2026-10-28)
@@ -6336,8 +6371,13 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             lv.bg = [{"id": "b1", "description": "Сборка"}, {"id": "b2", "description": "Тесты"}]
             c.out.put_nowait(bg(["b2"]))
             await until(lambda: [b["id"] for b in lv.bg] == ["b2"])
-            c.out.put_nowait(bg([]))
+            # a watch on a page Claude published (ambient, as background_tasks_changed of 2.1.300 and 2.1.318 marks it)
+            # is no work: it doesn't keep the idle process (2026-11-08: one kept a session 13 h after its turn)
+            c.out.put_nowait(SystemMessage("background_tasks_changed", {"tasks": [
+                {"task_id": "w1", "task_type": "monitor_ws", "ambient": True,
+                 "description": "live updates for artifact Xq7Lm2Pw9Rt4Vb8Nc3Kd5h (comments)"}]}))
             await until(lambda: closed, timeout=3)     # no background tasks — the idle process is closed
+            self.assertEqual(d.bg, set())
             self.assertEqual(lv.bg, [])
         finally:
             claude_agent_sdk.ClaudeSDKClient, pult_driven.DRIVEN_IDLE = old
