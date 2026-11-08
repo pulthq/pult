@@ -6,16 +6,17 @@
 
 - macOS, Linux or Windows; tested on macOS 26 (Apple Silicon), Ubuntu 24.04 (arm64) and Windows 11 (x64).
 - Claude Code, signed in: the VS Code extension, the CLI or both. Tested with the extension 2.1.301 and 2.1.310 (on
-  Windows, 2.1.306) and the Agent SDK 0.2.167. A newer extension VS Code downloads is checked by Pult itself on your
+  Windows, 2.1.306) and the Agent SDK 0.2.167; 2.1.311–2.1.319 passed Pult's own check on a Mac. A newer extension VS Code downloads is checked by Pult itself on your
   computer before the tabs move to it (`pult tab check`); when a session the way Pult runs one from the app works on
   it too, the tasks from the app move to it as well.
 - Python 3.10+: `brew install python@3.12`, `sudo apt install python3 python3-venv`, or on Windows
   [python.org](https://www.python.org/downloads/windows/) / `winget install Python.Python.3.12` (not the Microsoft
   Store one).
 - Telegram and a bot of your own, created in @BotFather; the setup walks you through it.
-- Optional, for a second opinion: Codex signed in with ChatGPT — ChatGPT for Mac carries it, or the `codex` command.
+- Optional, for Codex's tasks and a second opinion: Codex signed in with ChatGPT — ChatGPT for Mac carries it, or the `codex` command.
 - Optional, for other vendors' models: a key of DeepSeek, GLM (Z.ai) or Kimi (Moonshot AI); for a model of your own —
-  [Ollama](https://ollama.com) with a model that can use tools, its context set to 16K or more (`PARAMETER num_ctx`).
+  [Ollama](https://ollama.com) with a model that can use tools, its context set to 16K or more (`PARAMETER num_ctx`) — and,
+  for its disk and card in the app, the small reader in `deploy/ollama-info/` beside it.
 
 ## Install
 

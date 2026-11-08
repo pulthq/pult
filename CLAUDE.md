@@ -1,7 +1,8 @@
 # Pult — notes for coding agents
 
 Pult is a universal remote in Telegram for the AI agents on a computer (macOS, Linux or Windows): every Claude Code
-session — on Claude's models or, with the owner's key, another vendor's — and Codex for a second opinion. It drives
+session — on Claude's models or, with the owner's key, another vendor's, or a model of the owner's own through Ollama — and
+Codex, for a project's tasks and for a second opinion. It drives
 each agent's own program and never stands in for it. It is a per-user daemon
 (`src/pultd.py`, run by launchd, systemd --user or a logon task; the sessions it runs through the Agent SDK are in
 `src/pult_driven.py`, the handlers of the app's requests — a mixin of the daemon's class — in `src/pult_api.py`, the parts and updates — another such mixin — in `src/pult_parts.py`, its Telegram client, the outbox and the state database in `src/pult_tg.py`, what differs between systems in `src/pult_os.py`), a
@@ -9,7 +10,7 @@ Claude Code hook (`src/pult_hook.py`), an optional VS Code tab wrapper (`src/pul
 `pult` command (`src/pultctl.py`, `src/pult_setup.py`), a speech-to-text client used only when a key is set
 (`src/pult_stt.py`, Groq Whisper), the load view's counting (`src/pult_load.py`; the process snapshot is in
 `pult_os`), usage pace on Resources (`src/pult_spend.py`), a new project from the phone (`src/pult_new.py`), files to and from the phone (`src/pult_files.py`, `pult send`; a project file opened from a link in Claude's words — `api_file`), an update installed from the app
-(`src/pult_update.py`), a second opinion from Codex on what a task changed (`src/pult_codex.py`; `tests/fake_codex.py` stands in for it), other vendors' models inside Claude Code (`src/pult_vendors.py`), whose move it is on Home (`src/pult_attn.py`) with an optional small model reading each result
+(`src/pult_update.py`), a second opinion from Codex on what a task changed (`src/pult_codex.py`; `tests/fake_codex.py` stands in for it; the tasks Codex does are `CodexDriven` in `pult_driven.py`), other vendors' models and a model of your own (Ollama) inside Claude Code (`src/pult_vendors.py`; the server's disk and card come from `deploy/ollama-info/`), a Claude Code version VS Code downloaded, checked on this computer before the tabs and the app's tasks move to it (`src/pult_tabcheck.py`), what messages look like (`src/pult_render.py`), whose move it is on Home (`src/pult_attn.py`) with an optional small model reading each result
 (`src/pult_brief.py`) and keeping each task's tags (`src/pult_tags.py`) and an optional web app with a relay (`src/pult_web.py`, `relay/`). Start with
 [README.md](README.md), [ARCHITECTURE.md](ARCHITECTURE.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
 

@@ -31,6 +31,7 @@ Checks that use the real Claude Code, and spend a little of your plan:
 - `tests/probe_tab.py` checks the tab wrapper against a Claude Code binary.
 - `tests/probe_race.py` checks the hook racing the permission dialog.
 - `tests/probe_background.py` checks what Claude Code reports about background tasks.
+- `tests/probe_local.py` checks what an Ollama server answers and a copy of a model made from another.
 
 `tools/stand.py` serves the web app with made-up sessions (`STAND_LANG=en|ru`), and `tools/shot.py` takes phone-size
 screenshots of it. The README pictures come from there. `tools/check.py` runs every check of the app in headless
@@ -44,6 +45,10 @@ How the parts fit together, with diagrams of each path: [ARCHITECTURE.md](ARCHIT
 | | |
 |---|---|
 | `src/pultd.py` | the daemon: topics, the turn feed, buttons, the Telegram queue, sessions through the Agent SDK |
+| `src/pult_driven.py` | the sessions Pult runs itself through the Agent SDK, and the tasks Codex does over its `app-server` (`CodexDriven`) |
+| `src/pult_api.py`, `src/pult_parts.py` | the handlers of the app's requests; Pult's parts and its updates — the Settings table, an update from the app, the relay's server following, releases |
+| `src/pult_tabcheck.py`, `src/pult_update.py` | a Claude Code version VS Code downloaded, checked on your computer before the tabs and the app's tasks move to it; the update installed from the app, with a way back |
+| `src/pult_tags.py` | each task's tags — a section of the project and a topic — by the same small model, with your corrections as examples |
 | `src/pult_hook.py` | the Claude Code hook. Standard library only; it runs on every event of every session |
 | `src/pult_tab.py`, `src/pult-tab.sh` | the optional VS Code tab wrapper |
 | `src/pult_render.py`, `src/pult_i18n.py` | message rendering; every user-facing string in English and Russian |
@@ -53,10 +58,11 @@ How the parts fit together, with diagrams of each path: [ARCHITECTURE.md](ARCHIT
 | `src/pult_attn.py`, `src/pult_brief.py`, `src/pult_load.py`, `src/pult_stt.py` | whose move it is; the optional one-line summary; the computer's load; voice to text |
 | `src/pult_new.py` | a new project from the phone: the folder's name from any title, the name checks, the clone link; the daemon makes the folder |
 | `src/pult_files.py` | files to and from the phone: safe names, the project's inbox, what `pult send` may send, the files a turn made |
-| `src/pult_codex.py` | a second opinion from Codex (OpenAI's agent) on what a task changed: its `app-server` protocol, read-only; `tests/fake_codex.py` stands in for it in the tests and on the stand |
-| `src/pult_vendors.py` | DeepSeek, GLM, Kimi inside Claude Code: profiles and a session's environment (never without a key — `tests/probe_vendor.py` shows why) |
+| `src/pult_codex.py` | a second opinion from Codex (OpenAI's agent) on what a task changed: its `app-server` protocol, read-only; the tasks Codex does are `CodexDriven` in `pult_driven.py`; `tests/fake_codex.py` stands in for it in the tests and on the stand |
+| `src/pult_vendors.py` | DeepSeek, GLM, Kimi — and a model of your own through Ollama — inside Claude Code: profiles, a session's environment (never without a key — `tests/probe_vendor.py` shows why), what Ollama's server has and the Local model tab's calls |
 | `src/pult_os.py` | what differs between systems: paths, the service (launchd, systemd, a logon task), idle, the system language |
 | `deploy/relay/` | running the relay on a Linux server |
+| `deploy/ollama-info/` | the small reader beside Ollama that tells the Local model tab the server's disk and graphics card |
 
 ## Rules that keep Pult safe to run
 

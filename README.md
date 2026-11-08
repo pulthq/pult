@@ -16,7 +16,7 @@ Claude Code, Codex, DeepSeek in one app: one model does the task, another checks
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="media/hero.en.dark.gif">
-    <img src="media/hero.en.gif" width="380" alt="The app inside Telegram, step by step — one model does the task, another checks it, back to the doer: Home with two tasks running, one on Opus and one on DeepSeek; New task's Who does it with Claude, DeepSeek, GLM and Kimi; DeepSeek's outcome with Second opinion · Codex; Codex reading what the task changed; its two findings, each at its place in the code; a tap on Send to DeepSeek">
+    <img src="media/hero.en.gif" width="380" alt="The app inside Telegram, step by step — one model does the task, another checks it, back to the doer: Home with two tasks running, one on Opus and one on DeepSeek; a project's settings with its model to pick — Claude, Codex, DeepSeek, GLM, Kimi or your own; DeepSeek's outcome with Second opinion · Codex; Codex reading what the task changed; its two findings, each at its place in the code; a tap on Send to DeepSeek">
   </picture>
 </p>
 
@@ -32,7 +32,7 @@ the network. *Pult* is Russian for a remote control.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="media/glance.en.dark.png">
-    <img src="media/glance.en.png" width="560" alt="Three things in one. An app inside Telegram: whose move, the whole session live, allow or answer from the phone, voice and files. Any agent, any model: every session — VS Code tabs, a terminal, the phone; who does the task — Claude, DeepSeek, GLM or Kimi; the model and the effort; which model did what. Models work together: a second opinion — Codex reads what changed; its findings back to the doer in one tap; a default doer for each project; a project's code goes to another vendor only where you allow it">
+    <img src="media/glance.en.png" width="560" alt="Three things in one. An app inside Telegram: whose move, the whole session live, allow or answer from the phone, voice and files. Any agent, any model: every session — VS Code tabs, a terminal, the phone; who does the task — Claude, Codex, DeepSeek or your own; the model and the effort; which model did what. Models work together: a second opinion — Codex reads what changed; its findings back to the doer in one tap; a default doer for each project; a project's code goes to another vendor only where you allow it">
   </picture>
 </p>
 
@@ -84,15 +84,20 @@ Each project belongs to one model — Claude, Codex on your ChatGPT plan, or Dee
 it does every task of that project. You pick it in the project's settings and change it there while nothing runs; the
 tasks of the model before stay, read only. DeepSeek, GLM and Kimi work inside Claude Code; Codex works in its own
 program, in a sandbox of the project's folder, and asks only to leave it. The turns, the cards, the permissions and the
-outcome are the same for all of them, and every card names the model that did the work. A model of your own runs there
-too: Ollama on this computer, or on another one through a tunnel — free, and the code stays home; a tab in Resources
-shows that server's disk and graphics card and what each model takes, and unloads, removes and downloads models,
-with the download's progress on Home too. DeepSeek, GLM, Kimi
-and your own model each work in a Claude Code home of their own: your global instructions and memory don't go to them,
+outcome are the same for all of them, and every card names the model that did the work. DeepSeek, GLM, Kimi and your
+own model each work in a Claude Code home of their own: your global instructions and memory don't go to them,
 and their work doesn't go to Claude — even the small Claude helper that writes result lines and tags stays out of such
 a project unless you switch it on; its Telegram topic can get only "done", without the task's words.
 
-<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="media/f-who.en.dark.png"><img src="media/f-who.en.png" width="330" alt="New task in the app with the sheet Who does it open: Claude on your plan, DeepSeek with its main model, GLM and Kimi grey until their key is in Settings"></picture></p>
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="media/f-who.en.dark.png"><img src="media/f-who.en.png" width="330" alt="Project settings in the app with the sheet The project's model open: Claude on your plan, Codex — OpenAI's own agent on your ChatGPT plan, DeepSeek inside Claude Code, GLM and Kimi grey until their key is in Settings, Local model until it is turned on"></picture></p>
+
+### A model of your own
+
+Ollama on this computer, or on another one through a tunnel — free, and the code stays home. It takes a project like
+any other model; the Local model tab in Resources shows that server's disk and graphics card and what each model
+takes, unloads, removes and downloads models, with the download's progress on Home too.
+
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="media/f-local.en.dark.png"><img src="media/f-local.en.png" width="330" alt="Resources in the app, the Local model tab: the server's disk — 150 GB free, the models' 17.9 GB and the room for new ones with 60 GB kept free — its graphics card with no model loaded yet, and the models by their weights: gemma4:12b with its 32k copy that adds 0 GB, then qwen3.5:9b"></picture></p>
 
 ### Another model checks it
 
