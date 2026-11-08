@@ -4,6 +4,19 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.53 — 2026-11-08
+
+- **A tab for your own model.** Resources gets a third tab, Local model (Settings' card is now a line that opens it):
+  the server's disk — how much is free, what the models take, the room left for new ones — and its graphics card —
+  what other programs hold, which model is in memory and until when; the models by their weights, a base with its size
+  and the copies made from it with a context under it (+0 GB), with the ticks and the star as before. A model's sheet
+  unloads it from the card or removes it, saying how much that gives back. Download a model by its name on ollama.com:
+  its size, the room after it and whether it fits the card come first; one that would leave the disk under its reserve
+  (60 GB, or a tenth of a smaller disk) isn't taken; the server downloads it itself, its progress shows in the tab and
+  on Home, Stop keeps what came, and `pult busy` names it. Ollama doesn't tell its disk or its card: a small reader
+  beside it does — `deploy/ollama-info/`, a systemd socket on 127.0.0.1:11436, one JSON per request, nothing kept in
+  memory; forward its port the way Ollama's goes.
+
 ## 0.18.52 — 2026-11-08
 
 - **Models as a list, not names through commas.** Settings → Other vendors kept each vendor's models as a line of names

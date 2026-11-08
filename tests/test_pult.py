@@ -3463,6 +3463,136 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         for dr in list(self.p.driven.values()):
             dr.task.cancel()
 
+    async def test_local_panel(self):
+        # one's own model's panel (stage M, step 6.4; Q165–Q168): the server's disk and card from the reader beside
+        # Ollama, its models by their weights — a copy with a context and its base once on the disk — what is in memory;
+        # unload and remove never under a running task; a download — the look first (its size, the room after it, the
+        # card), then the server's own, its progress in the panel, on Home and in `pult busy`; stopped — it says so
+        G = 1000 ** 3
+        one = lambda name, ctx, w, size: {"name": name, "ctx": ctx, "tools": True, "size": size, "params": "9.0B",  # noqa: E731
+                                          "max": 262144, "w": w}
+        found = {"version": "0.40.14", "models": [one("qwen9b-32k", 32768, "q" * 12, int(6.55 * G)), one("qwen3.5:9b", None, "q" * 12, int(6.55 * G)),
+                                                   one("gemma4-32k", 32768, "g" * 12, int(8.02 * G)), one("gemma4:12b", None, "g" * 12, int(8.02 * G)),
+                                                   one("qwen3.5:4b", None, "s" * 12, int(3.32 * G))]}
+        info = {"name": "homelab", "disk": {"label": "C:", "total": 2047249215488, "free": 149577232384},
+                "gpu": {"name": "RTX", "total": 16376 * 2 ** 20, "used": 608 * 2 ** 20}}
+        mem = []
+
+        async def now(url, transport=None):
+            return {"version": "0.40.14", "tags": [{"name": m["name"], "size": m["size"], "digest": m["w"]} for m in found["models"]],
+                    "ps": list(mem), "info": info}
+        check = mock.AsyncMock(side_effect=lambda *a, **k: found)
+        self.assertEqual(await self.p.api_local_panel(peek=True), {"on": False, "set": False})   # nothing yet: no tab
+        with mock.patch.object(V, "check_local", check), mock.patch.object(V, "local_now", now):
+            await self.p.api_vendor_local("http://127.0.0.1:11434")
+            self.assertEqual(await self.p.api_local_panel(peek=True), {"on": True, "set": True})
+            d = await self.p.api_local_panel()
+            self.assertEqual((d["name"], d["disk"]["free"], d["gpu"]["used"], d["gpu"]["base"], d["mem"], d["info"]),
+                             ("homelab", 149577232384, 608 * 2 ** 20, 608 * 2 ** 20, [], True))   # no model in memory: the others' share
+            self.assertEqual(d["fams"], [{"size": int(8.02 * G), "head": "gemma4:12b", "rest": ["gemma4-32k"]},
+                                         {"size": int(6.55 * G), "head": "qwen3.5:9b", "rest": ["qwen9b-32k"]},
+                                         {"size": int(3.32 * G), "head": "qwen3.5:4b", "rest": []}])
+            self.assertEqual(d["total"], int(8.02 * G) + int(6.55 * G) + int(3.32 * G))         # 17.9 GB, not ollama list's 32.5
+            self.assertEqual(({n: r["frees"] for n, r in d["rows"].items()}, d["reserve"], d["models"]),
+                             ({"qwen9b-32k": 0, "qwen3.5:9b": 0, "gemma4-32k": 0, "gemma4:12b": 0, "qwen3.5:4b": int(3.32 * G)},
+                              60 * G, ["qwen9b-32k", "gemma4-32k"]))
+            # in memory: the model and until when; the card's share the others had stays known
+            mem.append({"name": "gemma4-32k", "until": "2026-11-08T17:04:00+03:00", "vram": int(1.4 * G)})
+            info["gpu"]["used"] = 10401 * 2 ** 20
+            d = await self.p.api_local_panel()
+            self.assertEqual((d["mem"][0]["name"], d["gpu"]["base"]), ("gemma4-32k", 608 * 2 ** 20))
+            # a task running on one's own model: no unload, no removal under it
+            sid = "11111111-0000-4000-8000-00000000aaaa"
+            self.store.set_vendor(sid, "local")
+            self.p.driven[sid] = types.SimpleNamespace(busy=True, q=asyncio.Queue(), bg=[], task=mock.Mock(), closing=False, path=str(TMP))
+            unload, delete = mock.AsyncMock(), mock.AsyncMock()
+            with mock.patch.object(V, "unload", unload), mock.patch.object(V, "delete", delete):
+                for call in (self.p.api_local_unload("gemma4-32k"), self.p.api_local_delete("qwen3.5:4b")):
+                    with self.assertRaises(ValueError) as e:
+                        await call
+                    self.assertIn("идёт задача", str(e.exception))
+                del self.p.driven[sid]
+                r = await self.p.api_local_unload("gemma4-32k")
+                self.assertEqual((unload.await_args.args, r["words"]), (("http://127.0.0.1:11434", "gemma4-32k"), "gemma4-32k выгружена из видеопамяти."))
+                with self.assertRaises(ValueError) as e:                 # only the server's own models
+                    await self.p.api_local_delete("nope")
+                self.assertIn("на сервере уже нет", str(e.exception))
+                gone = found["models"].pop()                             # the server without it, as the check will find
+                r = await self.p.api_local_delete("qwen3.5:4b")
+                self.assertEqual(delete.await_args.args, ("http://127.0.0.1:11434", "qwen3.5:4b"))
+                self.assertEqual((r["words"], [f["head"] for f in r["fams"]]), ("qwen3.5:4b удалена — на диске освободилось 3,3 ГБ.",
+                                                                                ["gemma4:12b", "qwen3.5:9b"]))
+                found["models"].append(gone)
+            # a download: the look — its size, the room after it, the card — then the server's own, with its progress
+            gate = asyncio.Event()
+            steps = []
+
+            async def pull(url, name, step, transport=None):
+                for i in range(1, 4):
+                    step(i * 3 * G, int(9.1 * G), "pulling")
+                    steps.append(i)
+                await gate.wait()
+                found["models"].append(one(name, None, "n" * 12, int(9.1 * G)))
+            with mock.patch.object(V, "pull_size", mock.AsyncMock(return_value=int(9.1 * G))), mock.patch.object(V, "pull", pull):
+                for bad, words in (("gpt-oss:120b-cloud", "Облачные модели"), ("hf.co/x/y", "другие сайты"), ("gemma4:12b", "уже есть")):
+                    with self.assertRaises(ValueError) as e:
+                        await self.p.api_local_pull(bad)
+                    self.assertIn(words, str(e.exception))
+                look = (await self.p.api_local_pull("qwen3.5:14b"))["look"]
+                self.assertEqual((look["size"], look["after"], look["reserve"], look["need"], look["ok"]),
+                                 (int(9.1 * G), 149577232384 - int(9.1 * G), 60 * G, int(9.1 * G * 1.2), True))
+                info["disk"]["free"] = 65 * G                            # 56 GB would be left — under the 60 kept: no
+                look = (await self.p.api_local_pull("qwen3.5:14b"))["look"]
+                self.assertFalse(look["ok"])
+                with self.assertRaises(ValueError) as e:
+                    await self.p.api_local_pull("qwen3.5:14b", go=True)
+                self.assertIn("Не хватит места: останется 55,9 ГБ, а свободными держим 60 ГБ", str(e.exception))
+                info["disk"]["free"] = 149577232384
+                r = await self.p.api_local_pull("qwen3.5:14b", go=True)
+                self.assertEqual((r["pull"]["model"], r["pull"]["run"]), ("qwen3.5:14b", True))
+                await asyncio.sleep(0.05)
+                pl = (await self.p.api_local_panel())["pull"]
+                self.assertEqual((pl["done"], pl["total"], pl["run"]), (9 * G, int(9.1 * G), True))
+                self.assertEqual((await self.p.api_overview())["pull"]["model"], "qwen3.5:14b")    # Home's line
+                busy = self.p.busy_report()
+                self.assertTrue(any(b["title"] == "Своя модель: скачивается qwen3.5:14b (98 %)" for b in busy), busy)
+                with self.assertRaises(ValueError) as e:                 # one at a time; no removal meanwhile
+                    await self.p.api_local_pull("qwen3.5:27b", go=True)
+                self.assertIn("по одной за раз", str(e.exception))
+                with self.assertRaises(ValueError):
+                    await self.p.api_local_delete("gemma4:12b")
+                gate.set()
+                for _ in range(50):
+                    await asyncio.sleep(0.02)
+                    if not self.p.local_pull_view()["run"]:
+                        break
+                pl = self.p.local_pull_view()
+                self.assertEqual((pl["run"], pl["done"], pl["err"], pl["stopped"], bool(pl["end"])), (False, int(9.1 * G), None, False, True))
+                self.assertIn("qwen3.5:14b", [m["name"] for m in self.p.local_found()["models"]])   # the check found it
+                self.assertFalse(any("скачивается" in b["title"] for b in self.p.busy_report()))
+            # stopped by the owner: the stream closes — Ollama stops and keeps what came — and the panel says so
+
+            async def endless(url, name, step, transport=None):
+                step(G, int(5.2 * G), "pulling")
+                await asyncio.Event().wait()
+            with mock.patch.object(V, "pull_size", mock.AsyncMock(return_value=int(5.2 * G))), mock.patch.object(V, "pull", endless):
+                await self.p.api_local_pull("qwen3.5:27b", go=True)
+                await asyncio.sleep(0.02)
+                d = await self.p.api_local_pull_stop()
+                self.assertEqual((d["pull"]["run"], d["pull"]["stopped"], d["pull"]["err"]), (False, True, None))
+            # a server whose reader doesn't answer: the models as Ollama says, no disk, no card; a download asks first
+            info.clear()
+            d = await self.p.api_local_panel()
+            self.assertEqual((d["info"], d["disk"], d["gpu"], len(d["fams"]) > 0), (False, None, None, True))
+            with mock.patch.object(V, "pull_size", mock.AsyncMock(return_value=int(5.2 * G))):
+                look = (await self.p.api_local_pull("qwen3.5:27b"))["look"]
+            self.assertEqual((look["after"], look["ok"], look["card"]), (None, True, None))
+        # a silent server: the list of the last check, and why
+        with mock.patch.object(V, "local_now", mock.AsyncMock(side_effect=V.VendorError("net", "ConnectError"))):
+            d = await self.p.api_local_panel()
+        self.assertIn("никто не отвечает", d["down"])
+        self.assertTrue(d["fams"])
+
     async def test_isolation(self):
         # stage M, step 7.1 (Q139): another vendor's session runs in a Claude Code home of its own — Pult's rules there,
         # not the owner's CLAUDE.md and memory; its transcript out of ~/.claude — with Claude Code's own requests off and a
@@ -7754,6 +7884,79 @@ class VendorsTest(unittest.TestCase):
         self.assertEqual(e.exception.kind, "net")
         self.assertTrue(asyncio.run(V.reach("http://127.0.0.1:11434", transport=httpx.MockTransport(ollama))))
         self.assertFalse(asyncio.run(V.reach("http://127.0.0.1:11434", transport=httpx.MockTransport(down))))
+
+    def test_local_panel(self):
+        # one's own model's panel (stage M, step 6.4): the reader's address beside Ollama's; its answer taken only as far
+        # as it is what it should be; the models by their weights; what a removal gives back; the room kept on a disk;
+        # names that can be pulled; what Ollama 0.40.14 answers for tags, ps, pull, generate and delete
+        self.assertEqual([V.info_url(u) for u in ("http://127.0.0.1:11434", "http://localhost:11500/", "http://10.0.0.2:11434")],
+                         ["http://127.0.0.1:11436", "http://localhost:11436", None])
+        good = {"name": "homelab", "disk": {"label": "C:", "total": 100, "free": 40}, "gpu": [{"name": "RTX", "total": 16, "used": 20}]}
+        self.assertEqual(V.clean_info(good), {"name": "homelab", "disk": {"label": "C:", "total": 100, "free": 40},
+                                              "gpu": {"name": "RTX", "total": 16, "used": 16}})        # more used than there is: all
+        self.assertEqual(V.clean_info({"name": " ", "disk": {"total": 10, "free": 11}, "gpu": [{"total": "16", "used": 1}]}), {"name": None})
+        self.assertIsNone(V.clean_info(["no"]))
+        G = 1000 ** 3
+        ms = [{"name": "q-32k", "ctx": 32768, "tools": True, "size": 6 * G, "w": "q"}, {"name": "q", "ctx": None, "tools": True, "size": 6 * G, "w": "q"},
+              {"name": "s", "ctx": None, "tools": True, "size": 3 * G, "w": "s"}, {"name": "big-64k", "ctx": 65536, "tools": True, "size": 9 * G, "w": None}]
+        self.assertEqual(V.families(ms), [{"size": 9 * G, "head": "big-64k", "rest": []}, {"size": 6 * G, "head": "q", "rest": ["q-32k"]},
+                                          {"size": 3 * G, "head": "s", "rest": []}])
+        self.assertEqual([V.frees(ms, n) for n in ("q-32k", "q", "s", "big-64k", "nope")], [0, 0, 3 * G, 9 * G, 0])
+        self.assertEqual((V.reserve(2047249215488), V.reserve(200 * G), V.reserve(None)), (60 * G, 20 * G, 60 * G))
+        self.assertEqual(V.vram_need(int(8.02 * G)), int(8.02 * G * 1.2))
+        self.assertEqual([V.pull_name(n) for n in ("qwen3.5:14b", "user/model", " gemma4 ")],
+                         [("library", "qwen3.5", "14b"), ("user", "model", "latest"), ("library", "gemma4", "latest")])
+        for bad in ("gpt-oss:120b-cloud", "qwen3.5:cloud", "hf.co/user/model", "registry.example.com/m", "a/b/c", "bad name", ""):
+            with self.assertRaises(ValueError):
+                V.pull_name(bad)
+        asked = []
+
+        def server(req):
+            asked.append((req.method, req.url.port, req.url.path, req.content and json.loads(req.content)))
+            if req.url.port == V.INFO_PORT:
+                return httpx.Response(200, json=good)
+            return httpx.Response(200, json={
+                "/api/version": {"version": "0.40.14"},
+                "/api/tags": {"models": [{"name": "gemma4-32k:latest", "size": 8021618957, "digest": "b1063f10e8c3abc"},
+                                         {"name": "gpt-oss:120b-cloud", "size": 384}]},
+                "/api/ps": {"models": [{"name": "gemma4-32k:latest", "size_vram": 1503238553, "expires_at": "2026-11-08T17:04:00.1+03:00"}]},
+                "/api/generate": {"model": "gemma4-32k", "done": True, "done_reason": "unload"}, "/api/delete": {}}[req.url.path])
+        got = asyncio.run(V.local_now("http://127.0.0.1:11434", transport=httpx.MockTransport(server)))
+        self.assertEqual(got, {"version": "0.40.14", "tags": [{"name": "gemma4-32k", "size": 8021618957, "digest": "b1063f10e8c3"}],
+                               "ps": [{"name": "gemma4-32k", "until": "2026-11-08T17:04:00.1+03:00", "vram": 1503238553}],
+                               "info": V.clean_info(good)})
+        self.assertNotIn("/api/generate", [a[2] for a in asked])         # a look loads nothing
+        no_reader = lambda req: httpx.Response(404, text="404 page not found") if req.url.port == V.INFO_PORT else server(req)  # noqa: E731
+        self.assertIsNone(asyncio.run(V.local_now("http://localhost:11434", transport=httpx.MockTransport(no_reader)))["info"])
+        with self.assertRaises(V.VendorError) as e:
+            asyncio.run(V.local_now("http://10.0.0.2:11434", transport=httpx.MockTransport(server)))
+        self.assertEqual(e.exception.kind, "url")
+        asyncio.run(V.unload("http://127.0.0.1:11434", "gemma4-32k", transport=httpx.MockTransport(server)))
+        asyncio.run(V.delete("http://127.0.0.1:11434", "qwen3.5:4b", transport=httpx.MockTransport(server)))
+        self.assertEqual(asked[-2:], [("POST", 11434, "/api/generate", {"model": "gemma4-32k", "keep_alive": 0}),
+                                      ("DELETE", 11434, "/api/delete", {"model": "qwen3.5:4b"})])
+        with self.assertRaises(V.VendorError) as e:
+            asyncio.run(V.delete("http://127.0.0.1:11434", "x", transport=httpx.MockTransport(
+                lambda req: httpx.Response(404, json={"error": "model 'x' not found"}))))
+        self.assertEqual((e.exception.kind, e.exception.text), ("other", "model 'x' not found"))
+        # the registry's manifest: the layers' sizes; no such model — None
+        man = lambda req: httpx.Response(200, json={"layers": [{"size": 9000000000}, {"size": 100000000}, {"size": 485}]}) \
+            if req.url.path == "/v2/library/qwen3.5/manifests/14b" and req.headers["accept"] == V.MANIFEST else httpx.Response(404)  # noqa: E731
+        self.assertEqual(asyncio.run(V.pull_size("qwen3.5:14b", transport=httpx.MockTransport(man))), 9100000485)
+        self.assertIsNone(asyncio.run(V.pull_size("qwen3.5:99b", transport=httpx.MockTransport(man))))
+        # a download as Ollama 0.40.14 streams it (server/download.go): each layer's total and completed, then success
+        lines = [{"status": "pulling manifest"}, {"status": "pulling 02d45dc1a0ac", "digest": "sha256:02d4", "total": 9000, "completed": 1000},
+                 {"status": "pulling 3e1f00000000", "digest": "sha256:3e1f", "total": 100, "completed": 100},
+                 {"status": "pulling 02d45dc1a0ac", "digest": "sha256:02d4", "total": 9000, "completed": 9000},
+                 {"status": "verifying sha256 digest"}, {"status": "writing manifest"}, {"status": "success"}]
+        stream = lambda body: httpx.MockTransport(lambda req: httpx.Response(200, text="\n".join(json.dumps(x) for x in body)))  # noqa: E731
+        seen = []
+        self.assertIsNone(asyncio.run(V.pull("http://127.0.0.1:11434", "qwen3.5:14b", lambda *a: seen.append(a), transport=stream(lines))))
+        self.assertEqual([s[:2] for s in seen if s[1]], [(1000, 9000), (1100, 9100), (9100, 9100), (9100, 9100), (9100, 9100), (9100, 9100)])
+        for body, words in ((lines[:2] + [{"error": "no space left on device"}], "no space left on device"), (lines[:3], "without success")):
+            with self.assertRaises(V.VendorError) as e:
+                asyncio.run(V.pull("http://127.0.0.1:11434", "qwen3.5:14b", lambda *a: None, transport=stream(body)))
+            self.assertIn(words, e.exception.text)
 
     def test_spend_leaves_other_vendors_out(self):
         # another vendor's replies spend none of the subscription: out of the curve and of "at once"

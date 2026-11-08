@@ -268,6 +268,14 @@ function LocalCard({ v, onRow }) {
   const others = found.filter((x) => !fit.includes(x.name));
   const edit = url != null || !v.key;
   const at = v.found && v.found.ts;
+  // on, with a computer that has the panel (stage M, step 6.4): the card is a line — the models, the room and the rest
+  // live in the panel (Resources → Local model), one place for them
+  if (v.panel && v.key && url == null) return html`<div class="item static vend vl" key=${v.id}>
+    <div class="vend-h"><b>${v.name}</b><span class="vend-st on">${t("vend.local.on")}</span></div>
+    <div class="dim vl-sum">${t(v.models.length > 1 ? "lp.sum.n" : "lp.sum", { m: v.models[0], n: v.models.length - 1 })}</div>
+    ${down && html`<div class="vl-down">${ic("alert", 15)}<span>${t("vend.list.down", { hm: at ? hhmm(toDate(at)) : "—" })}</span></div>`}
+    <a class="vl-open" href="#/local"><span>${t("lp.open")}</span>${ic("chev", 17)}</a>
+  </div>`;
   return html`<div class="item static vend vl" key=${v.id}>
     <div class="vend-h"><b>${v.name}</b><span class=${"vend-st" + (v.key ? " on" : "")}>${t(v.key ? "vend.local.on" : "vend.local.off")}</span></div>
     ${edit ? html`<div class="dim vend-m">${t("vend.local.url")}</div>

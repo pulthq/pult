@@ -105,7 +105,7 @@ class Api:
                 "live": [self.live_item(self.live[s]) for s in shown if s in self.live],
                 "pending": pending, "open": opened, "recent": list(self.recent),
                 "jobs": [self.job_item(j) for j in self.jobs.values()] + [self.job_item(j) for j in self.jobs_done],
-                "update": await self.update_row(), **await self.board(agents)}
+                "update": await self.update_row(), "pull": self.local_pull_view(), **await self.board(agents)}
 
     async def api_seen(self, sid):
         """"Got it" on a card of "Your move": the outcome is seen without opening the session."""
@@ -1537,7 +1537,8 @@ class Api:
             if p.get("local"):
                 found = ((self.store.get("vendors.conf") or {}).get(vid) or {}).get("found") or {}
                 row.update(local=True, short=p["short"], url=p["url"], ctx=p["ctxs"], found=found, fit=p["fit"],
-                           kin=V.kin(found.get("models") or []), min=V.LOCAL_CTX_MIN, copy=V.LOCAL_CTX_COPY)
+                           kin=V.kin(found.get("models") or []), min=V.LOCAL_CTX_MIN, copy=V.LOCAL_CTX_COPY,
+                           panel=True)
             else:
                 row.update(known=list(V.PRESETS[vid]["models"]), price=V.PRESETS[vid].get("price") or {})
             out.append(row)
@@ -1738,6 +1739,192 @@ class Api:
         got["words"] = self.t("vendor.local.copied", name=new, base=model, ctx="%dK" % (ctx // 1024))
         got["made"] = new
         return got
+
+    # ---------- the local model's panel (stage M, step 6.4; 2026-11-08) ----------
+    # Resources → Local model, and Settings' card opens it: the server's disk and card, its models by their weights
+    # with each family's bytes, what is in memory, a download. Ollama answers the models; the disk and the card — the
+    # reader beside it (V.info_url), when there is one. Nothing here loads a model.
+
+    def local_found(self):
+        return ((self.store.get("vendors.conf") or {}).get(V.LOCAL) or {}).get("found") or {}
+
+    def local_running(self):
+        """One's own model's sessions with a turn running now: unloading or removing the model under them would cut it."""
+        return [sid for sid, d in self.driven.items() if d.busy and self.store.vendor_of(sid) == V.LOCAL]
+
+    def local_pull_view(self):
+        pl = getattr(self, "local_pull", None)
+        if not pl:
+            return None
+        task = getattr(self, "local_task", None)
+        return dict(pl, run=bool(task and not task.done()))
+
+    async def api_local_panel(self, peek=False):
+        """The local model's panel: the server — Ollama's version, the reader's name for it and its facts (the disk,
+        the card; "info": false — no reader there); its models by their weights — each family once on the disk, a base
+        and its copies (fams), each model's facts (rows: its size, parameters, context, whether it can take a task,
+        what its removal gives back), the ticked ones with the starred first (models), which is in memory and until
+        when (mem); the download that runs (pull). A model come or gone since the last check — the check anew, quietly.
+        peek — only whether there is a panel at all (Resources' tabs). → {…}; a server that doesn't answer is "down" with
+        the list of the last check."""
+        p = self.vendor_profiles()[V.LOCAL]
+        found = self.local_found()
+        if peek:
+            return {"on": p["on"], "set": bool(found)}
+        now, down = None, ""
+        if found or p["on"]:
+            try:
+                now = await V.local_now(p["url"])
+            except V.VendorError as e:
+                down = self.t("vendor.local." + e.kind, url=p["url"], why=e.text[:200])
+        if now and p["on"] and {x["name"] for x in now["tags"]} != {m["name"] for m in found.get("models") or []}:
+            await self.api_vendor_local(p["url"], quiet=True)          # a model came or went: its facts anew
+            p, found = self.vendor_profiles()[V.LOCAL], self.local_found()
+        models = found.get("models") or []
+        sizes = {x["name"]: x["size"] for x in (now or {}).get("tags") or [] if x["size"]}
+        rows = {m["name"]: {"size": sizes.get(m["name"]) or m.get("size"), "params": m.get("params"), "ctx": m.get("ctx"),
+                            "max": m.get("max"), "tools": m.get("tools"), "fit": V.fits(m), "frees": V.frees(models, m["name"])}
+                for m in models}
+        info = (now or {}).get("info") or {}
+        gpu = info.get("gpu")
+        mem = (now or {}).get("ps") or []
+        if gpu and now and not mem:
+            self.local_base = gpu["used"]                  # the card with no model of ours: what the others take
+        if gpu:
+            gpu = dict(gpu, base=getattr(self, "local_base", None))
+        fams = V.families([dict(m, size=rows[m["name"]]["size"]) for m in models])
+        return {"on": p["on"], "url": p["url"], "version": (now or found).get("version"), "at": found.get("ts"),
+                "down": down, "info": bool(info), "name": info.get("name"), "disk": info.get("disk"), "gpu": gpu,
+                "mem": mem, "fams": fams, "rows": rows, "models": p["models"], "kin": V.kin(models),
+                "total": sum(f["size"] for f in fams), "reserve": V.reserve((info.get("disk") or {}).get("total")),
+                "copy": V.LOCAL_CTX_COPY, "min": V.LOCAL_CTX_MIN,
+                "pull": self.local_pull_view()}
+
+    def local_model(self, model):
+        model = str(model or "").strip()
+        if model not in {m["name"] for m in self.local_found().get("models") or []}:
+            raise ValueError(self.t("local.err.gone", name=model[:80]))
+        return model
+
+    async def api_local_unload(self, model):
+        """A model out of the card now (the panel's "Unload"): never under a running task of its own."""
+        model = self.local_model(model)
+        if self.local_running():
+            raise ValueError(self.t("local.err.running"))
+        try:
+            await V.unload(self.vendor_profiles()[V.LOCAL]["url"], model)
+        except V.VendorError as e:
+            raise ValueError(self.t("local.err.server", why=e.text[:200] or e.kind)) from None
+        log("local model: %s unloaded from the card" % model)
+        self.changed()
+        return dict(await self.api_local_panel(), words=self.t("local.unloaded", name=model))
+
+    async def api_local_delete(self, model):
+        """A model off the server's disk (the panel's "Remove", asked first): never the one a running task is on, never
+        while it downloads; its weights stay while another model has them. Then a check: the list without it — and the
+        local model off when nothing that fits is left."""
+        model = self.local_model(model)
+        models = self.local_found().get("models") or []
+        if self.local_running():
+            raise ValueError(self.t("local.err.running"))
+        pl = self.local_pull_view()
+        if pl and pl["run"]:
+            raise ValueError(self.t("local.err.pulling", name=pl["model"]))
+        gives = V.frees(models, model)
+        url = self.vendor_profiles()[V.LOCAL]["url"]
+        try:
+            await V.delete(url, model)
+        except V.VendorError as e:
+            raise ValueError(self.t("local.err.server", why=e.text[:200] or e.kind)) from None
+        log("local model: %s removed from the server (%s bytes back)" % (model, gives))
+        try:
+            await self.api_vendor_local(url)
+        except ValueError:
+            pass                                          # nothing fits now: the check turned it off and says so below
+        return dict(await self.api_local_panel(), words=self.t("local.deleted", name=model, gb=self.gb(gives)))
+
+    def gb(self, b):
+        """Bytes as the panel writes them: decimal gigabytes, one digit after the point."""
+        n = ("%.1f" % (b / 1e9)).rstrip("0").rstrip(".")
+        return self.t("gb", n=n.replace(".", ",") if self.lang() == "ru" else n)
+
+    async def api_local_pull(self, model, go=False):
+        """A model from ollama.com onto the server (the panel's "Download"). First the look — its size from the
+        registry, room on the disk after it (RESERVE stays free), how much of the card it would take with a 32K
+        context; go — the download itself, the server's own, its progress in the panel; one at a time."""
+        try:
+            V.pull_name(model)
+        except ValueError:
+            raise ValueError(self.t("local.err.name")) from None
+        model = str(model).strip()
+        pl = self.local_pull_view()
+        if pl and pl["run"]:
+            raise ValueError(self.t("local.err.pulling", name=pl["model"]))
+        if model in {m["name"] for m in self.local_found().get("models") or []}:
+            raise ValueError(self.t("local.err.have", name=model))
+        try:
+            size = await V.pull_size(model, proxy=self.env.get("PULT_PROXY") or None)
+        except V.VendorError as e:
+            raise ValueError(self.t("local.err.registry", why=e.text[:200] or e.kind)) from None
+        if not size:
+            raise ValueError(self.t("local.err.nosuch", name=model))
+        url = self.vendor_profiles()[V.LOCAL]["url"]
+        try:
+            now = await V.local_now(url)
+        except V.VendorError as e:
+            raise ValueError(self.t("vendor.local." + e.kind, url=url, why=e.text[:200])) from None
+        info = now.get("info") or {}
+        disk, gpu = info.get("disk"), info.get("gpu")
+        after = disk["free"] - size if disk else None
+        keep = V.reserve(disk["total"] if disk else None)
+        look = {"model": model, "size": size, "after": after, "reserve": keep, "need": V.vram_need(size),
+                "card": gpu["total"] if gpu else None, "ok": after is None or after >= keep}
+        if not go:
+            return {"look": look}
+        if not look["ok"]:                       # the app hides the button; a word from an older app says why
+            raise ValueError(self.t("local.err.room", gb=self.gb(max(0, after)), keep=self.gb(keep)))
+        self.local_pull = {"model": model, "total": size, "done": 0, "rate": 0, "since": time.time(), "status": "", "err": None,
+                           "stopped": False, "end": None}
+        self.local_task = asyncio.ensure_future(self.local_pulling(url, model))
+        log("local model: %s downloads to the server (%s bytes)" % (model, size))
+        self.changed()
+        return {"pull": self.local_pull_view()}
+
+    async def local_pulling(self, url, model):
+        pl, mark = self.local_pull, {"t": 0.0, "done": 0, "at": time.time()}
+
+        def step(done, total, status):
+            t = time.time()
+            pl.update(done=done, total=max(total, pl["total"] or 0), status=status)
+            if t - mark["t"] >= V.PULL_STEP:
+                pl["rate"] = int((done - mark["done"]) / max(0.1, t - mark["at"])) if mark["t"] else 0
+                mark.update(t=t, done=done, at=t)
+                if self.web:
+                    self.web.emit("local")
+        try:
+            await V.pull(url, model, step)
+            pl.update(done=pl["total"], end=time.time())
+            log("local model: %s is on the server" % model)
+            await self.api_vendor_local(url, quiet=True)
+        except asyncio.CancelledError:
+            pl.update(stopped=True, end=time.time())
+            log("local model: the download of %s stopped by the owner" % model)
+        except V.VendorError as e:
+            pl.update(err=e.text[:200] or e.kind, end=time.time())
+            log("local model: the download of %s failed — %s" % (model, e.text[:120] or e.kind))
+        except Exception as e:                       # never a task that dies without a word
+            pl.update(err=type(e).__name__, end=time.time())
+            log("local model: the download of %s broke — %r" % (model, e))
+        self.changed()
+        if self.web:
+            self.web.emit("local")
+
+    async def api_local_pull_stop(self):
+        task = getattr(self, "local_task", None)
+        if task and not task.done():
+            task.cancel()
+            await asyncio.sleep(0.2)
+        return await self.api_local_panel()
 
     def vendor_row(self, vid):
         return next((r for r in self.vendors_list() if r["id"] == vid), None)

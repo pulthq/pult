@@ -47,6 +47,10 @@ the session that waits for you (SESS4) ran on DeepSeek too, the weekly report on
 STAND_MODEL=deepseek|glm|kimi|local|codex (stage M, 7.2): the shop's model (with STAND_VENDORS=1 it is DeepSeek's, with
 STAND_LOCAL=on|down one's own; the other projects are Claude's), STAND_DESK=<model> — the support desk's: the project's
 settings page, a task of another model read only (tools/projset_check.py).
+STAND_LOCAL_SRV=1|busy|none with STAND_LOCAL=on|1 (stage M, step 6.4 — the panel, Resources → Local model): the reader
+beside Ollama answers as the owner's server did on 2026-11-08 (C: 2.05 TB, 150 GB free; the card 16 GiB, 608 MiB taken); busy —
+gemma4-32k in memory four more minutes; none — no reader there. A download comes in 45 s at that server's pace (STAND_PULL_S
+— seconds a step, 30 steps), removing and unloading change the stand-in at once (tools/panel_check.py).
 STAND_LOCAL=1 (stage M, step 6): one's own model through Ollama, off — its check answers at http://127.0.0.1:11434 as Ollama
 0.40.14 did (gemma4-32k with a 32K context; two models without one), any other address doesn't; =on — checked and on, the
 session that waits for you ran on it; =down — on, but the server doesn't answer: a new task on it is refused
@@ -1133,6 +1137,43 @@ async def main():
         async def stand_reach(url, transport=None):
             return up
         V.check_local, V.reach = stand_local, stand_reach
+        # the local model's panel (stage M, step 6.4): STAND_LOCAL_SRV=1 — the reader beside Ollama answers as the owner's server did on
+        # 2026-11-08 (C: 2.05 TB, 149.6 GB free; the card 16 GiB, 608 MiB taken); =busy — gemma4-32k in memory for four more
+        # minutes; =none — no reader there. A download comes in 45 s, removing and unloading change the stand-in at once
+        srv = os.environ.get("STAND_LOCAL_SRV")
+        MiB = 1024 ** 2
+        mem = [{"name": "gemma4-32k", "until": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time() + 240)) + "+03:00",
+                "vram": int(1.4 * G)}] if srv == "busy" else []
+        if srv == "busy":
+            p.local_base = 608 * MiB
+
+        async def stand_now(url, transport=None):
+            if url.rstrip("/") != "http://127.0.0.1:11434" or not up:
+                raise V.VendorError("net", "ConnectError")
+            used = (10401 if mem else 608) * MiB
+            info = None if srv in (None, "none") else {"name": "homelab", "disk": {"label": "C:", "total": 2047249215488, "free": 149577232384},
+                                                        "gpu": {"name": "NVIDIA GeForce RTX 4070 Ti SUPER", "total": 16376 * MiB, "used": used}}
+            return {"version": "0.40.14", "tags": [{"name": m["name"], "size": m["size"], "digest": m["w"]} for m in found["models"]],
+                    "ps": list(mem), "info": info}
+
+        async def stand_size(name, proxy=None, transport=None):
+            V.pull_name(name)
+            await asyncio.sleep(0.6)
+            return None if name.startswith("nope") else int(9.1 * G) if "14b" in name else int(95 * G) if "122b" in name else int(5.2 * G)
+
+        async def stand_pull(url, name, step, transport=None):   # at that server's own pace (18.8 MB/s, 2026-11-04), from
+            total = int(9.1 * G) if "14b" in name else int(5.2 * G)   # 40 % — what an earlier, stopped one left — then all
+            for i in range(30):
+                await asyncio.sleep(float(os.environ.get("STAND_PULL_S") or 1.5))     # tools/panel_check.py: faster
+                step(int(total * 0.4) + i * 28 * 1000 ** 2, total, "pulling")
+            found["models"].append({"name": name, "ctx": None, "tools": True, "size": total, "params": "14.8B", "max": 262144, "w": "9e1d2c3b4a5f"})
+
+        async def stand_unload(url, name, transport=None):
+            mem.clear()
+
+        async def stand_delete(url, name, transport=None):
+            found["models"][:] = [m for m in found["models"] if m["name"] != name]
+        V.local_now, V.pull_size, V.pull, V.unload, V.delete = stand_now, stand_size, stand_pull, stand_unload, stand_delete
         if os.environ["STAND_LOCAL"] in ("on", "down"):     # checked and on; the session that waits for you ran on it
             conf = store.get("vendors.conf") or {}
             many = os.environ.get("STAND_LOCAL_MANY") == "1"

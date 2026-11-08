@@ -31,7 +31,7 @@ for t in test_pult test_setup test_web test_relay; do
   fi
 done
 run ruff check --no-cache . || fail=1
-run shellcheck install.sh deploy/relay/install.sh src/pult-tab.sh tools/ci_local.sh && echo "shellcheck: clean" || fail=1
+run shellcheck install.sh deploy/relay/install.sh deploy/ollama-info/install.sh src/pult-tab.sh tools/ci_local.sh && echo "shellcheck: clean" || fail=1
 run python tools/consistency.py || fail=1
 [ "$fail" = 0 ] && echo "all as on CI" || echo "something fails — see above"
 exit "$fail"

@@ -22,7 +22,7 @@ jobs:
         run: ruff check .
       - name: Shell scripts (shellcheck)
         if: success() || failure()
-        run: shellcheck install.sh deploy/relay/install.sh src/pult-tab.sh tools/ci_local.sh
+        run: shellcheck install.sh deploy/relay/install.sh deploy/ollama-info/install.sh src/pult-tab.sh tools/ci_local.sh
       - name: Version, changelog, tag and requirements agree
         if: success() || failure()
         run: python tools/consistency.py
