@@ -6,6 +6,7 @@ import { plural, t } from "../i18n.js";
 import { html, useEffect, useRef, useState } from "../vendor/htm-preact-3.1.1.js";
 import { About, Loading, ago, dur, hhmm, hue, kilo, level, nb, num, pct, resetText, toDate, useNow } from "../ui/kit.js";
 import { Load } from "../ui/load.js";
+import { LocalPanel } from "./local.js";
 
 
 // ---------- Resources: how the plan's limits are spent (stage R) ----------
@@ -215,18 +216,22 @@ function Spend() {
 }
 
 // Resources: can I keep working — the plan's limits, or the computer's load; two sections, not five screens of one
-const RES = ["lim", "pc"];
+// the local model's panel is a third tab while there is one (stage M, step 6.4; a computer from before it has no answer)
+const RES = ["lim", "pc", "llm"];
 const resStore = {
   get() { try { const k = sessionStorage.getItem("pult.res"); return RES.includes(k) ? k : "lim"; } catch (e) { return "lim"; } },
   set(k) { try { sessionStorage.setItem("pult.res", k); } catch (e) {} },
 };
 function Resources() {
   const [sec, setSec] = useState(resStore.get);
+  const [pk] = useLive(() => api("local_panel", { peek: true }), [], () => false, 600000);
   const pick = (k) => { setSec(k); resStore.set(k); };
+  const tabs = RES.filter((k) => k !== "llm" || (pk && pk.set));
+  const cur = tabs.includes(sec) ? sec : "lim";
   return html`<div><h2>${t("res.title")}</h2>
-    <div class="subtabs" role="tablist">${RES.map((k) => html`<button key=${k} role="tab" aria-selected=${sec === k} class=${sec === k ? "on" : ""}
+    <div class="subtabs" role="tablist">${tabs.map((k) => html`<button key=${k} role="tab" aria-selected=${cur === k} class=${cur === k ? "on" : ""}
       onClick=${() => pick(k)}>${t("res." + k)}</button>`)}</div>
-    ${sec === "pc" ? html`<${Load} embedded=${true}/>` : html`<${Spend}/>`}
+    ${cur === "pc" ? html`<${Load} embedded=${true}/>` : cur === "llm" ? html`<${LocalPanel} embedded=${true}/>` : html`<${Spend}/>`}
   </div>`;
 }
 

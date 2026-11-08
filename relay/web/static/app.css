@@ -1068,3 +1068,61 @@ button.tagc { border: 0; font-family: inherit; cursor: pointer; }
 .ro-bar .ic { vertical-align: -2px; margin-right: 2px; }
 .ro-bar .link { flex: none; padding: 6px 0; }
 .ro-l { margin: 6px 0 2px; } .ro-l .ic { vertical-align: -2px; }
+
+/* the local model's panel (stage M, step 6.4): the server's disk and card as bars of parts, the models by their weights */
+.lp-srv { margin: 0 0 6px; }
+.lp-srv .vl-at { cursor: pointer; }
+.lp-srv .vl-at b { color: var(--ink); font-weight: 600; }
+.lp-cards .lp-card { padding: 12px 14px; }
+.lp-h { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.lp-big { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.lp-bar { display: flex; height: 12px; border-radius: 99px; overflow: hidden; background: var(--code); margin: 10px 0 7px; }
+.lp-bar i { display: block; height: 100%; }
+.lp-bar i + i { box-shadow: -1px 0 0 var(--card); }
+.lp-bar i.o, .lp-lg i.o { background: var(--pace); }
+.lp-bar i.m, .lp-lg i.m { background: var(--s1); }
+.lp-lg i.f { background: var(--code); box-shadow: inset 0 0 0 1px var(--line); }
+.lp-lg { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: var(--fs-cap); color: var(--muted); }
+.lp-lg span { white-space: nowrap; }
+.lp-lg i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 6px; vertical-align: 0; }
+.lp-note { font-size: var(--fs-sec); margin-top: 8px; }
+.lp-note.warn, .lp-look .warn { color: var(--attn-ink); }
+.lp-note.ok { color: var(--ok); }
+.lp-mem { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 9px; font-size: var(--fs-sec); }
+.lp-mem span { display: flex; gap: 6px; align-items: flex-start; min-width: 0; }
+.lp-mem .ic { flex: none; margin-top: 2px; color: var(--muted); }
+.btn.sm { padding: 6px 12px; font-size: var(--fs-sec); flex: none; }
+.lp-noinfo { display: flex; gap: 8px; align-items: flex-start; font-size: var(--fs-sec); color: var(--muted); margin: 6px 2px 4px; }
+.lp-noinfo .ic { flex: none; margin-top: 2px; }
+.lp-mh { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.lp-mh span { font-variant-numeric: tabular-nums; }
+.lp-legend { margin: -4px 2px 8px; }
+.lp-fams { display: flex; flex-direction: column; gap: 8px; }
+.lp-fam { background: var(--card); border-radius: 14px; overflow: hidden; position: relative; }
+.lp-row { display: flex; align-items: center; gap: 4px; min-width: 0; padding: 0 6px 0 12px; }
+.lp-row.kid { border-top: 1px solid var(--line); padding-left: 30px; }
+.lp-box, .lp-nobox { flex: none; width: 22px; height: 22px; border-radius: 6px; margin-right: 8px; }
+.lp-box { display: grid; place-items: center; border: 2px solid var(--line); background: none; color: #fff; padding: 0; cursor: pointer; }
+.lp-row.on .lp-box { background: var(--accent); border-color: var(--accent); }
+.lp-nobox { width: 0; margin-right: 0; }
+.lp-nm { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; text-align: left; background: none; border: 0; padding: 10px 0; color: var(--ink); font: inherit; cursor: pointer; }
+.lp-nm b { font-size: var(--fs-body); font-weight: 600; overflow-wrap: anywhere; }
+.lp-row.head:not(.fit) .lp-nm b { font-weight: 500; }
+.lp-nm .dim { font-size: var(--fs-cap); overflow-wrap: anywhere; }
+.lp-in { font-style: normal; color: var(--s1); font-weight: 600; }
+.lp-sz { flex: none; font-weight: 600; font-variant-numeric: tabular-nums; padding: 0 6px; }
+.lp-sz.dim { font-weight: 500; }
+.lp-row .mstar { flex: none; }
+.lp-mk { padding: 8px 12px 10px 30px; }
+.lp-mk .mmake { margin: 0; }
+.lp-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.lp-acts .btn { flex: 1 1 auto; }
+.btn.danger { color: var(--danger); }
+.lp-look { display: flex; flex-direction: column; gap: 5px; margin-top: 10px; font-size: var(--fs-sec); }
+.lp-look .btn { margin-top: 6px; }
+.lp-pull .lp-acts { justify-content: flex-end; }
+.vl-sum { margin-top: 6px; font-size: var(--fs-sec); }
+.vl-open { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; padding: 10px 2px 2px;
+  border-top: 1px solid var(--line); color: var(--link, var(--accent)); text-decoration: none; font-weight: 600; }
+.lp-bar.thin { height: 5px; margin: 6px 0 2px; }
+.lp-home { margin-top: 8px; }

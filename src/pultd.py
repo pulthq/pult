@@ -92,7 +92,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.52"
+VERSION = "0.18.53"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -3582,6 +3582,10 @@ class Pult(Api, Parts):
             lv = self.live.get(sid) or self.stub(sid)
             out.append({"sid": sid, "title": self.t("second.busy", title=lv.title or self.title(lv)), "project": self.name_of(lv.pkey),
                         "turn": True, "bg": [], "n": 0})
+        pl = self.local_pull_view()                   # a model downloading onto one's own server: its stream is the
+        if pl and pl["run"]:                          # daemon's, and Ollama stops when it closes (stage M, step 6.4)
+            out.append({"sid": "", "title": self.t("local.busy", name=pl["model"], pct=int(100 * pl["done"] / max(1, pl["total"]))),
+                        "project": "", "turn": True, "bg": [], "n": 0})
         return out
 
     async def handle_conn(self, reader, writer):

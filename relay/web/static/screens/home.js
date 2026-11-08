@@ -10,6 +10,7 @@ import { Req, TagPick, useRcpt } from "../ui/cards.js";
 import { GEAR, GLYPH, Loading, MODES, ModePick, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, ctxBar, dot, dur, durShort, hhmm, ic, keyTap, llmName, nb, pauseChip, pct, plainField, queueChip, quiet, tagChips, toDate, useNow, workChip } from "../ui/kit.js";
 import { BgSheet, bgCount, bgLine, memPct } from "../ui/load.js";
 import { UpdRow } from "../ui/upd.js";
+import { PullRow } from "./local.js";
 
 function Top({ mac, load, usagePct, usageTop, pager, onSet }) {
   const [open, setOpen] = useState(false);
@@ -274,6 +275,7 @@ function Home() {
   return html`<div>
     <${Top} mac=${d.mac} load=${d.load} usagePct=${d.usage_pct} usageTop=${d.usage_top} pager=${d.pager} onSet=${(m) => set(Object.assign({}, d, { mac: Object.assign({}, d.mac, { mode: m }) }))}/>
     <${UpdRow} u=${d.update}/>
+    <${PullRow} p=${d.pull}/>
     ${nRun > 0 && html`<section class="zone-run"><h3>${dot("work")}${t("home.running", { n: nRun - nQueue })}${nQueue ? " · " + t("home.queued", { n: nQueue }) : ""}</h3><div class="list">
       ${running.map((r) => html`<${RunRow} key=${r.sid} r=${r} now=${now} onBg=${onBg} onTags=${onTags}/>`)}
       ${jobsOn.map((j) => html`<${Job} key=${j.id} j=${j} now=${now} row=${true}/>`)}</div></section>`}

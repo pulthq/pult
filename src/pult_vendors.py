@@ -32,6 +32,7 @@ copy of the weights). tests/probe_local.py --copy on Ollama 0.40.14 (2026-11-08)
 their FROM; the copy came in 0.15 s with its base's weights, and the models' folder kept its size.
 Standard library and httpx (the key's check). Design: docs/project.html, stage M.
 """
+import json
 import os
 import re
 
@@ -354,3 +355,201 @@ def vendor_of_model(model):
     if not m or "claude" in m or m.startswith("<"):
         return None
     return next((vid for vid in ORDER if vid in m or (vid == "kimi" and "moonshot" in m)), "other")
+
+
+# The local model's panel (stage M, step 6.4; the owner, 2026-11-08: "how much room is left on the server, how much each
+# model takes"). Ollama says which models it has, their sizes and which one is in memory (/api/tags, /api/ps) — not its
+# disk, not its card: Ollama 0.40.14 has no such answer (server/routes.go: /api/status is the cloud's only). Those come
+# from a reader beside it, at INFO_PORT of the same address (through the same tunnel), which only answers what it sees —
+# never a command Pult sends there.
+INFO_PORT = 11436
+INFO_TIMEOUT = 4                  # s: a card that doesn't answer leaves the panel without its facts, not without models
+RESERVE = 60 * 1000 ** 3          # bytes that stay free after a download (Q168: the owner's own rule — below 60 GB, none)
+PULL_STEP = 5                     # s between two words of a download's progress to the app (Home re-reads with each)
+REGISTRY = "https://registry.ollama.ai/v2/"
+MANIFEST = "application/vnd.docker.distribution.manifest.v2+json"
+
+
+def info_url(url):
+    """The facts' address beside a local server's: its own host, INFO_PORT."""
+    m = LOOPBACK.fullmatch(str(url or "").rstrip("/"))
+    return "http://%s:%d" % (m.group(1), INFO_PORT) if m else None
+
+
+def _int(x):
+    return x if isinstance(x, int) and not isinstance(x, bool) and x >= 0 else None
+
+
+def clean_info(d):
+    """The reader's answer, taken only as far as it is what it should be: {"name", "disk": {"label", "total", "free"},
+    "gpu": {"name", "total", "used"}} — bytes; anything else is dropped."""
+    if not isinstance(d, dict):
+        return None
+    out = {"name": d["name"][:40] if isinstance(d.get("name"), str) and d["name"].strip() else None}
+    disk = d.get("disk") if isinstance(d.get("disk"), dict) else {}
+    if _int(disk.get("total")) and _int(disk.get("free")) is not None and disk["free"] <= disk["total"]:
+        out["disk"] = {"label": str(disk.get("label") or "")[:12], "total": disk["total"], "free": disk["free"]}
+    gpus = d.get("gpu") if isinstance(d.get("gpu"), list) else []
+    g = next((x for x in gpus if isinstance(x, dict) and _int(x.get("total")) and _int(x.get("used")) is not None), None)
+    if g:
+        out["gpu"] = {"name": str(g.get("name") or "")[:60], "total": g["total"], "used": min(g["used"], g["total"])}
+    return out
+
+
+async def local_now(url, transport=None):
+    """What the local server holds right now: its models (/api/tags — names, sizes on disk, digests), the ones in memory
+    and until when (/api/ps), and the reader's facts beside it (info_url: the disk, the card) — None when nothing
+    answers there. Never loads a model, never through a proxy. → {"version", "tags": [{"name", "size", "digest"}],
+    "ps": [{"name", "until", "vram"}], "info"}; VendorError "url", "net", "proto"."""
+    url = str(url or "").rstrip("/")
+    if not url_ok(LOCAL, url):
+        raise VendorError("url", url)
+    kw = dict(transport=transport) if transport is not None else {}
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10, connect=LOCAL_REACH), trust_env=False, **kw) as c:
+            version = (await c.get(url + "/api/version")).json().get("version") or "?"
+            tags, ps = [], []
+            for m in (await c.get(url + "/api/tags")).json().get("models") or []:
+                name = m.get("name") or m.get("model")
+                if isinstance(name, str) and MODEL_RE.fullmatch(name) and not CLOUD.search(name):
+                    tags.append({"name": name.removesuffix(":latest"), "size": _int(m.get("size")),
+                                 "digest": str(m.get("digest") or "")[:12]})
+            for m in (await c.get(url + "/api/ps")).json().get("models") or []:
+                name = m.get("name") or m.get("model")
+                if isinstance(name, str):
+                    ps.append({"name": name.removesuffix(":latest"), "until": str(m.get("expires_at") or "")[:40],
+                               "vram": _int(m.get("size_vram"))})
+            info = None
+            try:
+                r = await c.get(info_url(url) + "/", timeout=INFO_TIMEOUT)
+                info = clean_info(r.json()) if r.status_code == 200 else None
+            except (httpx.HTTPError, ValueError):
+                info = None
+    except httpx.TransportError as e:
+        raise VendorError("net", type(e).__name__) from None
+    except ValueError as e:
+        raise VendorError("proto", str(e)[:80]) from None
+    return {"version": version, "tags": tags, "ps": ps, "info": info}
+
+
+def families(models):
+    """One's own models by their weights: a copy with a context and its base share them (the same "w"), so the disk
+    holds them once. → [{"size": the weights' bytes, once; "head": the base (or the only one); "rest": its copies}],
+    the biggest first; a model whose weights aren't known is a family of its own."""
+    groups = {}
+    for m in models:
+        groups.setdefault(m.get("w") or "name:" + m["name"], []).append(m)
+    out = []
+    for ms in groups.values():
+        head = next((m for m in ms if not fits(m)), ms[0])
+        out.append({"size": max((m.get("size") or 0) for m in ms), "head": head["name"],
+                    "rest": [m["name"] for m in ms if m is not head]})
+    return sorted(out, key=lambda f: -f["size"])
+
+
+def frees(models, name):
+    """Bytes a model's removal gives back: its weights — unless another model of the server has the same ones."""
+    m = next((x for x in models if x["name"] == name), None)
+    if not m:
+        return 0
+    shared = m.get("w") and any(x is not m and x.get("w") == m["w"] for x in models)
+    return 0 if shared else (m.get("size") or 0)
+
+
+def reserve(total):
+    """Bytes a download leaves free on the server's disk: RESERVE (Q168), a tenth of a smaller disk."""
+    return min(RESERVE, int(total) // 10) if total else RESERVE
+
+
+def vram_need(size, ctx=LOCAL_CTX_COPY):
+    """How much of a card a model takes with a 32K context — its weights and the context's cache, a rough count:
+    gemma4:12b, 8.0 GB on disk, took 9.7 GB of the card with 32K (nvidia-smi, the probe of 2026-11-04) — a fifth more."""
+    return int(size * 1.2) if size else None
+
+
+def pull_name(name):
+    """A model's name on ollama.com as the owner types it ("qwen3.5:14b", "user/model") → (namespace, model, tag), or
+    ValueError: cloud models, other registries (hf.co/…) and odd names aren't pulled from here."""
+    name = str(name or "").strip()
+    other_site = "/" in name and "." in name.split("/")[0]            # hf.co/…, registry.example.com/…
+    if not MODEL_RE.fullmatch(name) or CLOUD.search(name) or name.count("/") > 1 or other_site:
+        raise ValueError(name)
+    ns, _, rest = name.rpartition("/")
+    model, _, tag = rest.partition(":")
+    return ns or "library", model, tag or "latest"
+
+
+async def pull_size(name, proxy=None, transport=None):
+    """How big a model on ollama.com is before the server takes it: the sum of its manifest's layers. → bytes; None —
+    no such model; VendorError "net" — no answer."""
+    ns, model, tag = pull_name(name)
+    kw = dict(transport=transport) if transport is not None else dict(proxy=proxy) if proxy else {}
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15, connect=8), **kw) as c:
+            r = await c.get(REGISTRY + "%s/%s/manifests/%s" % (ns, model, tag), headers={"Accept": MANIFEST})
+    except httpx.TransportError as e:
+        raise VendorError("net", type(e).__name__) from None
+    if r.status_code == 404:
+        return None
+    try:
+        layers = r.json().get("layers") or []
+        return sum(int(x.get("size") or 0) for x in layers) or None
+    except (ValueError, TypeError, AttributeError):
+        raise VendorError("other", "HTTP %d" % r.status_code) from None
+
+
+async def pull(url, name, step, transport=None):
+    """The server downloads a model from ollama.com itself (/api/pull, streamed): step(done, total, status) — bytes so
+    far over all its layers — as it goes. Closing this request stops the download; the server keeps what came and goes
+    on from there the next time. → None when the model is there; VendorError "net", "other"."""
+    url = str(url or "").rstrip("/")
+    if not url_ok(LOCAL, url):
+        raise VendorError("url", url)
+    kw = dict(transport=transport) if transport is not None else {}
+    got = {}
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(None, connect=LOCAL_REACH), trust_env=False, **kw) as c:
+            async with c.stream("POST", url + "/api/pull", json={"model": name, "stream": True}) as r:
+                async for line in r.aiter_lines():
+                    try:
+                        d = json.loads(line)
+                    except ValueError:
+                        continue
+                    if d.get("error"):
+                        raise VendorError("other", str(d["error"])[:200])
+                    if d.get("digest") and _int(d.get("total")):
+                        got[d["digest"]] = (_int(d.get("completed")) or 0, d["total"])
+                    step(sum(a for a, _ in got.values()), sum(b for _, b in got.values()), str(d.get("status") or "")[:60])
+                    if d.get("status") == "success":
+                        return None
+    except httpx.TransportError as e:
+        raise VendorError("net", type(e).__name__) from None
+    raise VendorError("other", "the download ended without success")
+
+
+async def unload(url, name, transport=None):
+    """A model out of the card now (keep_alive 0): the memory goes back to whoever sits at that computer."""
+    await _local_call(url, "POST", "/api/generate", {"model": name, "keep_alive": 0}, transport)
+
+
+async def delete(url, name, transport=None):
+    """A model off the server's disk; its weights stay while another model has them."""
+    await _local_call(url, "DELETE", "/api/delete", {"model": name}, transport)
+
+
+async def _local_call(url, method, path, body, transport=None):
+    url = str(url or "").rstrip("/")
+    if not url_ok(LOCAL, url):
+        raise VendorError("url", url)
+    kw = dict(transport=transport) if transport is not None else {}
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60, connect=LOCAL_REACH), trust_env=False, **kw) as c:
+            r = await c.request(method, url + path, json=body)
+    except httpx.TransportError as e:
+        raise VendorError("net", type(e).__name__) from None
+    if r.status_code != 200:
+        try:
+            why = r.json().get("error")
+        except ValueError:
+            why = None
+        raise VendorError("other", str(why or "HTTP %d" % r.status_code)[:200])

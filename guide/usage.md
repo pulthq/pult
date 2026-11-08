@@ -100,9 +100,19 @@ Codex for a second opinion. So one model can do a task and another check it — 
   through a tunnel you keep open (Pult reaches only this computer's own address). Settings → Other vendors → Local model →
   **Check and turn on** asks the server what it has: a model fits when it can use tools and its context is set to 16K
   or more (`PARAMETER num_ctx` in its Modelfile) — Ollama cuts a longer request silently, so a model without it isn't
-  taken. Its models are the same list, each with its context, its size and the model it was made from; the server's
-  others fold under it with why, and one without a context set gets **Make a copy with 32k** — Ollama makes it from the
-  same weights. Settings look at the server again as they open, so a model made there since shows at once. No key: the
+  taken. Once on, it has a tab of its own — **Resources → Local model** (Settings' card opens it): the server's models
+  by their weights — a base with its size and, under it, the copies made from it with a context, which hold the same
+  weights (+0 GB); a tick puts a model in a task's menu, the star makes it the main one; one without a context set gets
+  **Make a copy with 32k** — Ollama makes it from the same weights. A tap on a model: **Unload** it from the card's
+  memory, **Remove** it — with how much that gives back (nothing while another model holds its weights). **Download a
+  model** by its name on ollama.com: Pult first says its size, the room left after it and whether it fits the card with
+  a 32k context, and refuses one that would leave the disk under its reserve (60 GB, or a tenth of a smaller disk); the
+  server downloads it itself, its progress shows in the tab and on Home, and **Stop** keeps what came for the next
+  time. The tab looks at the server as it opens, so a model made there since shows at once. Ollama doesn't say how much
+  room its disk has or what its card holds: for that, put the small reader in `deploy/ollama-info/` beside it
+  (`sudo bash deploy/ollama-info/install.sh`, a systemd socket on 127.0.0.1:11436 — one JSON per request, nothing
+  kept in memory) and forward its port the way Ollama's goes. In WSL the disk shown is Windows's C:, which the Linux
+  disk grows on; space a removal frees comes back to C: only when that disk is sparse. No key: the
   code stays home. Claude Code gets five tools there — commands,
   reading, editing and writing files, a question to you — and one model does every role; a task doesn't start while
   the server doesn't answer. Free, but weaker and slower than Claude.

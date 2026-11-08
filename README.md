@@ -85,7 +85,9 @@ it does every task of that project. You pick it in the project's settings and ch
 tasks of the model before stay, read only. DeepSeek, GLM and Kimi work inside Claude Code; Codex works in its own
 program, in a sandbox of the project's folder, and asks only to leave it. The turns, the cards, the permissions and the
 outcome are the same for all of them, and every card names the model that did the work. A model of your own runs there
-too: Ollama on this computer, or on another one through a tunnel — free, and the code stays home. DeepSeek, GLM, Kimi
+too: Ollama on this computer, or on another one through a tunnel — free, and the code stays home; a tab in Resources
+shows that server's disk and graphics card and what each model takes, and unloads, removes and downloads models,
+with the download's progress on Home too. DeepSeek, GLM, Kimi
 and your own model each work in a Claude Code home of their own: your global instructions and memory don't go to them,
 and their work doesn't go to Claude — even the small Claude helper that writes result lines and tags stays out of such
 a project unless you switch it on; its Telegram topic can get only "done", without the task's words.
