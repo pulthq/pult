@@ -8,7 +8,7 @@ import { go, useOverlay } from "../core/nav.js";
 import { alertBox, confirmBox, haptic, tick } from "../core/tg.js";
 import { locale, t } from "../i18n.js";
 import { html, useState } from "../vendor/htm-preact-3.1.1.js";
-import { About, Loading, hhmm, ic, num, plainField, toDate, useNow } from "../ui/kit.js";
+import { About, GEAR, Loading, hhmm, ic, num, plainField, toDate, useNow } from "../ui/kit.js";
 
 // bytes on the disk as Ollama writes them (ollama list) and the disk is sold — decimal gigabytes, terabytes past a
 // thousand; the card's memory as the card is sold and nvidia-smi counts it — binary ("16 GB" is 16 376 MiB)
@@ -66,7 +66,7 @@ function Row({ name, r, d, head, mem, busy, onTick, onStar, onOpen }) {
 }
 
 // a model's sheet: its facts, what its removal gives back, and what can be done with it
-function ModelSheet({ name, d, busy, onClose, onUnload, onDelete, onCopy }) {
+function ModelSheet({ name, d, busy, onClose, onUnload, onDelete, onCopy, onSettings }) {
   const r = d.rows[name], kin = d.kin[name] || {}, mem = d.mem.some((m) => m.name === name);
   const fam = d.fams.find((f) => f.head === name || f.rest.includes(name)) || { head: name, rest: [] };
   const mates = [fam.head].concat(fam.rest).filter((n) => n !== name);
@@ -77,6 +77,8 @@ function ModelSheet({ name, d, busy, onClose, onUnload, onDelete, onCopy }) {
   return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick fixed lp-sheet">
     <div class="q-t pick-h">${name}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
     ${lines.filter(Boolean).map((l, i) => html`<p class="sheet-p" key=${i}>${l}</p>`)}
+    <button class="field lm-in" onClick=${() => onSettings(name)}><span class="lm-in-t">${GEAR}<b>${t("lm.in")}</b>
+      <i class="dim vf-sub">${t("lm.in.sub")}</i></span><span class="dim">${ic("chev", 18)}</span></button>
     <div class="lp-acts">
       ${mem && html`<button class="btn ghost" disabled=${busy} onClick=${() => onUnload(name)}>${t("lp.unload.long")}</button>`}
       ${can && html`<button class="btn ghost" disabled=${busy} onClick=${() => onCopy(name)}>${ic("plus", 14)} ${t("vend.list.make", { ctx: ctxK(Math.min(d.copy, r.max || d.copy)) })}</button>`}
@@ -143,6 +145,8 @@ function LocalPanel({ embedded }) {
     closeSheet();
     act("delete", () => api("local_delete", { model: name }));
   };
+  // the sheet's step in the history goes first, then the settings take a step of their own: Back from them — the panel
+  const settings = (name) => { addEventListener("popstate", () => setTimeout(() => go("#/lm/" + encodeURIComponent(name)), 0), { once: true }); closeSheet(); };
   const copy = (name) => { closeSheet(); act("copy", async () => { const r = await api("vendor_copy", { model: name }); return Object.assign(await api("local_panel"), { words: r.words }); }); };
   const saveTicks = async (models) => {
     const was = d.models;
@@ -185,7 +189,78 @@ function LocalPanel({ embedded }) {
         return Object.assign(await api("local_panel"), { words: r.words }); })}>${t("vend.local.turnoff")}</button>` : html`<span></span>`}
       <${About} text=${t("lp.about")} label=${t("more")}/></div>
     ${sheet && which && d.rows[which] && html`<${ModelSheet} name=${which} d=${d} busy=${!!busy} onClose=${closeSheet} onUnload=${(n) => { closeSheet(); unload(n); }}
-      onDelete=${del} onCopy=${copy}/>`}
+      onDelete=${del} onCopy=${copy} onSettings=${settings}/>`}
+  </div>`;
+}
+
+// a model's settings (stage M, step 6.5; the owner, 2026-11-08: "the system settings of each model separately" — lesson 6
+// of his own course: the system prompt, the temperature, the context length, through the Modelfile): what the server has
+// in the model, changed here and written into the model itself — the first change keeps it as it was, to come back to —
+// and what Pult does with it in a task. Each context it can take says how much of the card it would want.
+const FINE = ["top_k", "top_p", "min_p", "repeat_penalty", "presence_penalty"];
+const OWN = ["system", "ctx", "tools", "after"];
+
+function LocalModel({ name }) {
+  const [d, err, set] = useLive(() => api("local_model", { model: name }), [name]);
+  const [ed, setEd] = useState({});                 // the owner's changes, not saved yet
+  const [busy, setBusy] = useState("");
+  const [fine, setFine] = useState(false);
+  if (!d) return html`<${Loading} err=${err}/>`;
+  const was = (k) => (OWN.includes(k) ? d[k] : d.params[k].v);
+  const v = (k) => (k in ed ? ed[k] : was(k));
+  const put = (k, x) => setEd(Object.assign({}, ed, { [k]: x }, k === "ctx" && x < d.all_ctx && d.tools === "all" ? { tools: "five" } : {}));
+  const dirty = Object.keys(ed).filter((k) => ed[k] !== was(k) && !(typeof ed[k] === "number" && isNaN(ed[k])));
+  const call = async (k, fn) => {
+    setBusy(k);
+    try { const r = await fn(); set(r); setEd({}); haptic("success"); if (r.words) alertBox(r.words); } catch (e) { alertBox(e.message); }
+    setBusy("");
+  };
+  const save = () => call("save", () => {
+    const args = { model: name }, params = {};
+    for (const k of dirty) { if (OWN.includes(k)) args[k] = ed[k]; else params[k] = ed[k]; }
+    if (Object.keys(params).length) args.params = params;
+    return api("local_tune", args);
+  });
+  const undo = async () => { if (await confirmBox(t("lm.was.q", { name }))) call("was", () => api("local_untune", { model: name })); };
+  const sys = v("system"), ctx = v("ctx"), temp = v("temperature");
+  const pick = d.ctxs.find((c) => c.n === ctx), over = pick && d.room != null && pick.vram > d.room;
+  // all of Claude Code's tools only with a context that takes their descriptions (~22K tokens): a shorter one — the five
+  const allNo = (ctx || 0) < d.all_ctx;
+  const tools = allNo ? "five" : v("tools");
+  const seg = (k, opts, cur, off) => html`<div class="seg">${opts.map((o) => html`<button key=${o} class=${cur === o ? "on" : ""} disabled=${!!busy || (off && o === "all")}
+    onClick=${() => put(k, o)}>${t("lm." + k + "." + o)}</button>`)}</div>
+    <div class="dim small lm-note">${off ? t("lm.tools.allno", { ctx: ctxK(d.all_ctx) }) : t("lm." + k + "." + cur + ".about")}</div>`;
+  return html`<div class="lm">
+    <h2 class="lm-t">${name}</h2>
+    <div class="dim lm-sub">${[d.where ? t("lp.on", { name: d.where }) : t("lp.on0"), d.size && gb(d.size), prm(d.params_n)].filter(Boolean).join(" · ")}</div>
+    ${!d.tools_ok && html`<div class="vl-down">${ic("info", 15)}<span>${t("lm.notools")}</span></div>`}
+    <h3>${t("lm.system")}</h3>
+    <textarea class="lm-sys" rows="6" maxlength=${d.sysmax} placeholder=${t("lm.system.ph")} value=${sys} disabled=${!!busy}
+      onInput=${(e) => put("system", e.target.value)}></textarea>
+    <div class="dim small lm-cnt"><span>${t("lm.system.about")}</span><span class="lm-n">${sys.length}\u00a0/\u00a0${d.sysmax}</span></div>
+    <h3>${t("lm.ctx")}</h3>
+    <div class="lm-ctxs">${d.ctxs.map((c) => html`<button key=${c.n} class=${"lm-ctx" + (c.n === ctx ? " on" : "") + (d.room != null && c.vram > d.room ? " over" : "")}
+      disabled=${d.busy || !!busy} onClick=${() => put("ctx", c.n)}><b>${ctxK(c.n)}</b><span>${c.vram ? "≈\u00a0" + gib(c.vram) : ""}</span></button>`)}</div>
+    <div class=${"small lm-note" + (d.busy ? " ps-busy" : over ? " warn" : " dim")}>${d.busy ? t("lm.ctx.busy") : over ? t("lm.ctx.over", { room: gib(d.room) })
+      : ctx ? t(d.room != null ? "lm.ctx.about" : "lm.ctx.about0", { room: gib(d.room || 0) }) : t("lm.ctx.none")}</div>
+    <h3 class="lm-h">${t("lm.temp")}<span class="lm-val">${num(temp, 2)}</span></h3>
+    <input class="lm-range" type="range" min="0" max="2" step="0.05" value=${temp} disabled=${!!busy} aria-label=${t("lm.temp")}
+      style=${"--p:" + pc(temp, 2) + "%"} onInput=${(e) => put("temperature", +e.target.value)}/>
+    <div class="lm-scale dim small"><span>${t("lm.temp.lo")}</span><span>${t("lm.temp.mid")}</span><span>${t("lm.temp.hi")}</span></div>
+    <button class=${"lm-fine-h" + (fine ? " open" : "")} onClick=${() => setFine(!fine)}><span><b>${t("lm.fine")}</b>
+      ${!fine && html`<i class="dim">${FINE.map((k) => k + " " + num(v(k), 2)).join(" · ")}</i>`}</span><span class="lm-chev">${ic("chev", 16)}</span></button>
+    ${fine && html`<div class="list lm-fine">${FINE.map((k) => html`<label class=${"item static lm-p" + (d.params[k].set || k in ed ? "" : " def")} key=${k}>
+      <span><b>${k}</b><i class="dim">${t("lm.p." + k)}</i></span>
+      <input inputmode="decimal" value=${String(num(v(k), 3)).replace(/\u00a0/g, "")} disabled=${!!busy}
+        onChange=${(e) => put(k, parseFloat(e.target.value.replace(",", ".")))}/></label>`)}</div>`}
+    <h3>${t("lm.pult")}</h3>
+    <div class="lm-l">${t("lm.tools")}</div>
+    ${seg("tools", ["five", "all"], tools, allNo)}
+    <div class="lm-l">${t("lm.after")}</div>
+    ${seg("after", ["keep", "free"], v("after"), false)}
+    <button class="btn wide lm-save" disabled=${!dirty.length || !!busy} onClick=${save}>${busy === "save" ? t("lm.saving") : dirty.length ? t("lm.save.n", { n: dirty.length }) : t("lm.save")}</button>
+    <div class="dim small lm-where">${t("lm.where", { on: d.where ? t("lp.on", { name: d.where }) : t("lp.on0") })}</div>
+    ${d.was && html`<button class="link lm-was" disabled=${!!busy} onClick=${undo}>${ic("back", 14)} ${t("lm.was")}</button>`}
   </div>`;
 }
 
@@ -202,4 +277,4 @@ function PullRow({ p }) {
       ${p.run && html`<span class="lp-bar thin"><i class="m" style=${"width:" + pc(p.done, p.total) + "%"}></i></span>`}</span>${ic("chev", 16)}</button>`;
 }
 
-export { LocalPanel, PullRow };
+export { LocalModel, LocalPanel, PullRow };

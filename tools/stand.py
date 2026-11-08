@@ -50,7 +50,10 @@ settings page, a task of another model read only (tools/projset_check.py).
 STAND_LOCAL_SRV=1|busy|none with STAND_LOCAL=on|1 (stage M, step 6.4 — the panel, Resources → Local model): the reader
 beside Ollama answers as the owner's server did on 2026-11-08 (C: 2.05 TB, 150 GB free; the card 16 GiB, 608 MiB taken); busy —
 gemma4-32k in memory four more minutes; none — no reader there. A download comes in 45 s at that server's pace (STAND_PULL_S
-— seconds a step, 30 steps), removing and unloading change the stand-in at once (tools/panel_check.py).
+— seconds a step, 30 steps), removing and unloading change the stand-in at once (tools/panel_check.py). A model's settings
+(stage M, step 6.5): its /api/show as the owner's server answered for these models (their PARAMETERs, make and the
+weights' sampling; gemma4-32k's system prompt is made up); saving writes into the stand-in, the first change keeping the
+model as it was, "Back" brings it back (tools/tune_check.py).
 STAND_LOCAL=1 (stage M, step 6): one's own model through Ollama, off — its check answers at http://127.0.0.1:11434 as Ollama
 0.40.14 did (gemma4-32k with a 32K context; two models without one), any other address doesn't; =on — checked and on, the
 session that waits for you ran on it; =down — on, but the server doesn't answer: a new task on it is refused
@@ -1174,6 +1177,57 @@ async def main():
         async def stand_delete(url, name, transport=None):
             found["models"][:] = [m for m in found["models"] if m["name"] != name]
         V.local_now, V.pull_size, V.pull, V.unload, V.delete = stand_now, stand_size, stand_pull, stand_unload, stand_delete
+        # a model's settings (stage M, step 6.5): what /api/show said of these models on the owner's server (2026-11-08) —
+        # their PARAMETERs, their make (the cache's cost) and the weights' own sampling; one system prompt is made up.
+        # Saving writes into the stand-in at once; the first change keeps the model as it was, "Back" brings it back
+        g4 = {"general.architecture": "gemma4", "gemma4.block_count": 48, "gemma4.attention.head_count_kv": ([8] * 5 + [1]) * 8,
+              "gemma4.attention.key_length": 512, "gemma4.attention.value_length": 512, "gemma4.attention.key_length_swa": 256,
+              "gemma4.attention.value_length_swa": 256, "gemma4.attention.sliding_window": 1024,
+              "gemma4.attention.sliding_window_pattern": ([True] * 5 + [False]) * 8, "gemma4.context_length": 262144,
+              "general.sampling.temp": 1, "general.sampling.top_k": 64, "general.sampling.top_p": 0.95}
+        q35 = {"general.architecture": "qwen35", "qwen35.block_count": 32, "qwen35.attention.head_count": 16,
+               "qwen35.attention.head_count_kv": 4, "qwen35.attention.key_length": 256, "qwen35.attention.value_length": 256,
+               "qwen35.attention.recurrent_layers": ([True] * 3 + [False]) * 8, "qwen35.full_attention_interval": 4,
+               "qwen35.context_length": 262144}
+        qp = {"temperature": 1, "top_k": 20, "top_p": 0.95, "presence_penalty": 1.5}
+        gp = {"temperature": 1, "top_k": 64, "top_p": 0.95, "draft_num_predict": 3}
+        own = {"en": "Answer in English, briefly and to the point. Before you change code, one line: what you change and why. "
+                     "Never touch files outside the project's folder.",
+               "ru": "Отвечай по-русски, коротко и по делу. Перед правкой кода — одна строка: что меняешь и зачем. "
+                     "Файлы вне папки проекта не трогай."}[LANG]
+        shows = {"qwen9b-32k": {"system": "", "params": dict(qp, num_ctx=32768), "info": q35, "caps": ["completion", "vision", "tools", "thinking"]},
+                 "qwen3.5:9b": {"system": "", "params": dict(qp), "info": q35, "caps": ["completion", "vision", "tools", "thinking"]},
+                 "gemma4-32k": {"system": own, "params": dict(gp, num_ctx=32768), "info": g4, "caps": ["completion", "vision", "audio", "tools", "thinking"]},
+                 "qwen3.5:4b": {"system": "", "params": dict(qp), "info": q35, "caps": ["completion", "vision", "tools", "thinking"]},
+                 "gemma4:12b": {"system": "", "params": dict(gp), "info": g4, "caps": ["completion", "vision", "audio", "tools", "thinking"]}}
+        kept = {}
+
+        async def stand_show(url, model, transport=None):
+            sh = shows.get(model) or shows["qwen3.5:4b"]
+            info = sh["info"]
+            return {"system": sh["system"].strip(), "params": dict(sh["params"]),
+                    "max": next(v for k, v in info.items() if k.endswith(".context_length")), "caps": list(sh["caps"]),
+                    "cost": V.kv_cost(info), "sampling": {k: info[x] for k, x in V.SAMPLING.items() if x in info}}
+
+        async def stand_tune(url, model, system=None, params=None, keep=False, transport=None):
+            await asyncio.sleep(0.6)
+            sh = shows.setdefault(model, json.loads(json.dumps(shows["qwen3.5:4b"])))
+            if keep:
+                kept[model] = json.loads(json.dumps(sh))
+            if system is not None:
+                sh["system"] = system
+            sh["params"].update(params or {})
+            for m in found["models"]:
+                if m["name"] == model and "num_ctx" in (params or {}):
+                    m["ctx"] = params["num_ctx"]
+
+        async def stand_untune(url, model, transport=None):
+            await asyncio.sleep(0.6)
+            shows[model] = kept.pop(model)
+            for m in found["models"]:
+                if m["name"] == model:
+                    m["ctx"] = shows[model]["params"].get("num_ctx")
+        V.model_show, V.tune, V.untune = stand_show, stand_tune, stand_untune
         if os.environ["STAND_LOCAL"] in ("on", "down"):     # checked and on; the session that waits for you ran on it
             conf = store.get("vendors.conf") or {}
             many = os.environ.get("STAND_LOCAL_MANY") == "1"

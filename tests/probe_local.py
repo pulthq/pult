@@ -10,6 +10,11 @@ What it looks at, in order:
             all of them ("all"): the time to the first answer and to the end, the tools it called, whether the file is
             right, the tokens the server reported; /api/ps again;
   overflow — (with --overflow) a prompt longer than the context: does the server refuse it, or cut its start silently?
+  tune    — (with --tune BASE, alone: nothing is loaded on the card; a model's settings, 2026-11-08) on a copy of BASE made
+            for it — never the owner's model itself: Pult's own V.tune over the copy's own name (a system prompt, the
+            temperature, the context; the copy as it was kept first in pult-was/), /api/show after it — the SYSTEM, the
+            PARAMETERs merged, the weights the same, the template kept; a second save keeps the first "as it was"; an empty
+            prompt; V.untune — the copy as it was, pult-was/ gone; Pult's lists never show pult-was/; then all of it deleted.
   copy    — (with --copy BASE, alone: nothing is loaded on the card; the list of models, 2026-11-08) what Pult's own
             check_local reads of each model — size, parameters, the context it was trained for, its weights (the FROM of
             /api/show's Modelfile) — and which are one (kin); then a copy of BASE with num_ctx 32768 by Pult's own
@@ -20,6 +25,7 @@ few reading commands.
   ~/.local/share/pult/venv/bin/python tests/probe_local.py --model NAME [--url http://127.0.0.1:11434] [--runs five,all]
       [--overflow] [--claude-md FILE] [--env NAME=VALUE ...]
   ~/.local/share/pult/venv/bin/python tests/probe_local.py --copy BASE [--url ...]
+  ~/.local/share/pult/venv/bin/python tests/probe_local.py --tune BASE [--url ...]
 """
 import argparse, asyncio, json, os, re, shutil, tempfile, time
 from pathlib import Path
@@ -204,11 +210,67 @@ async def copy_probe(url, base):
     return out
 
 
+async def tune_probe(url, base):
+    """A model's settings written over its own name and taken back — on a copy of BASE, never BASE itself."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+    import pult_vendors as V
+    out, ok = {}, {}
+
+    async def show(name):
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30, connect=5), trust_env=False) as c:
+            r = await c.post(url + "/api/show", json={"model": name})
+            return r.json() if r.status_code == 200 else None
+
+    def look(sh):
+        w = re.search(r"(?m)^FROM\s+\S*sha256[-:]([0-9a-f]{12})", (sh or {}).get("modelfile") or "")
+        return {"system": ((sh or {}).get("system") or "")[:60], "params": V.parse_params((sh or {}).get("parameters")),
+                "w": w.group(1) if w else None, "template": len((sh or {}).get("template") or "")}
+    got = await V.check_local(url)
+    taken = {m["name"] for m in got["models"]}
+    name = await V.make_copy(url, base, V.LOCAL_CTX_COPY, taken)          # the probe's own model: the owner's stay untouched
+    out["copy"] = name
+    before = look(await show(name))
+    out["before"] = before
+    t = time.time()
+    await V.tune(url, name, system="You are Probe Tuned. Answer in one word.", params={"temperature": 0.6, "num_ctx": 65536}, keep=True)
+    out["tune_s"] = round(time.time() - t, 2)
+    after = look(await show(name))
+    kept = look(await show(V.was_name(name)))
+    out.update(after=after, kept=kept)
+    ok["system written"] = after["system"].startswith("You are Probe Tuned")
+    ok["parameters merged"] = after["params"].get("temperature") == 0.6 and after["params"].get("num_ctx") == 65536 and all(
+        after["params"].get(k) == v for k, v in before["params"].items() if k not in ("temperature", "num_ctx"))
+    ok["weights the same"] = bool(after["w"]) and after["w"] == before["w"]
+    ok["template kept"] = after["template"] == before["template"] and before["template"] > 0
+    ok["kept as it was"] = kept == before
+    await V.tune(url, name, params={"top_k": 33}, keep=True)               # a second save: the first "as it was" stays
+    ok["kept stays the first"] = look(await show(V.was_name(name))) == before
+    await V.tune(url, name, system="")                                     # an empty prompt: a space, Pult passes nothing on
+    ok["empty prompt passes nothing"] = await V.model_system(url, name) == ""
+    lists = await V.check_local(url)
+    ok["lists hide pult-was/"] = not any(m["name"].startswith(V.WAS_NS) for m in lists["models"]) and \
+        not any(x["name"].startswith(V.WAS_NS) for x in (await V.local_now(url))["tags"])
+    await V.untune(url, name)
+    back = look(await show(name))
+    out["back"] = back
+    ok["back as it was"] = back == before
+    ok["pult-was/ gone"] = await show(V.was_name(name)) is None
+    async with httpx.AsyncClient(timeout=httpx.Timeout(60, connect=5), trust_env=False) as c:
+        out["delete"] = (await c.request("DELETE", url + "/api/delete", json={"model": name})).status_code
+        out["left"] = [m.get("name") for m in (await c.get(url + "/api/tags")).json().get("models") or []]
+    ok["nothing left of the probe"] = not any(n.startswith((name, V.WAS_NS)) for n in out["left"])
+    out["ok"] = ok
+    say("tune:", json.dumps(out, ensure_ascii=False))
+    return out
+
+
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://127.0.0.1:11434")
     ap.add_argument("--model")
     ap.add_argument("--copy", metavar="BASE", help="the list of models: a copy of BASE with a context, then deleted")
+    ap.add_argument("--tune", metavar="BASE", help="a model's settings: written over a copy of BASE's own name, back, deleted")
     ap.add_argument("--runs", default="five,all")
     ap.add_argument("--overflow", action="store_true")
     ap.add_argument("--claude-md")
@@ -217,6 +279,9 @@ async def main():
     url = a.url.rstrip("/")
     if a.copy:
         say("summary:", json.dumps(await copy_probe(url, a.copy), ensure_ascii=False, default=str))
+        return
+    if a.tune:
+        say("summary:", json.dumps(await tune_probe(url, a.tune), ensure_ascii=False, default=str))
         return
     if not a.model:
         ap.error("--model is needed")

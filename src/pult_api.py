@@ -1792,6 +1792,7 @@ class Api:
             self.local_base = gpu["used"]                  # the card with no model of ours: what the others take
         if gpu:
             gpu = dict(gpu, base=getattr(self, "local_base", None))
+        self.local_card, self.local_info_name = gpu, info.get("name")   # a model's settings count its contexts by it
         fams = V.families([dict(m, size=rows[m["name"]]["size"]) for m in models])
         return {"on": p["on"], "url": p["url"], "version": (now or found).get("version"), "at": found.get("ts"),
                 "down": down, "info": bool(info), "name": info.get("name"), "disk": info.get("disk"), "gpu": gpu,
@@ -1837,11 +1838,199 @@ class Api:
         except V.VendorError as e:
             raise ValueError(self.t("local.err.server", why=e.text[:200] or e.kind)) from None
         log("local model: %s removed from the server (%s bytes back)" % (model, gives))
+        tunes = self.local_tunes()
+        if (tunes.pop(model, None) or {}).get("was"):
+            try:
+                await V.delete(url, V.was_name(model))      # the model as it was before Pult changed it goes with it
+            except V.VendorError:
+                pass
+        self.local_tunes(tunes)
         try:
             await self.api_vendor_local(url)
         except ValueError:
             pass                                          # nothing fits now: the check turned it off and says so below
         return dict(await self.api_local_panel(), words=self.t("local.deleted", name=model, gb=self.gb(gives)))
+
+    # ---------- a model's settings (stage M, step 6.5; 2026-11-08) ----------
+    # Resources → Local model → a model → Settings: what its Modelfile has — the system prompt, the context, the
+    # sampling — written into the model itself, as the owner's course does it by hand (ollama create); and what Pult
+    # does with it in a task — its tools, the card after a turn. What reaches a task and why — pult_vendors, "One's own
+    # model's settings".
+
+    def local_tunes(self, put=None):
+        """Pult's own part of each model's settings (vendors.conf → local → tune): {model: {"tools": "five" | "all",
+        "after": "keep" | "free", "was": the model as it was is kept on the server}}; put — store these."""
+        conf = self.store.get("vendors.conf") or {}
+        mine = conf.setdefault(V.LOCAL, {})
+        if put is not None:
+            mine["tune"] = {k: v for k, v in put.items() if v}
+            self.store.put("vendors.conf", conf)
+        return dict(mine.get("tune") or {})
+
+    def local_running_on(self, model):
+        """The running turns on this one of one's own models."""
+        p = self.vendor_profiles()[V.LOCAL]
+        return [sid for sid in self.local_running() if p["models"] and self.driven[sid].vendor_model(p) == model]
+
+    async def api_local_model(self, model):
+        """A model's settings: its system prompt, context and sampling as its server has them — a parameter it doesn't
+        set says what it falls back to (the weights' own sampling, then Ollama's) — each context it can take with how
+        much of the card it would want (V.vram_at; the card's other programs as the panel last saw them), and what Pult
+        does with it in a task. Nothing is loaded. → {…}."""
+        model = self.local_model(model)
+        p = self.vendor_profiles()[V.LOCAL]
+        try:
+            s = await V.model_show(p["url"], model)
+        except V.VendorError as e:
+            raise ValueError(self.t("local.err.server", why=e.text[:200] or e.kind)) from None
+        m = next(x for x in self.local_found().get("models") or [] if x.get("name") == model)
+        mine = self.local_tunes().get(model) or {}
+        params = {k: {"v": s["params"].get(k, s["sampling"].get(k, V.OLLAMA_DEFAULTS[k])), "set": k in s["params"],
+                      "lo": lo, "hi": hi, "int": k in V.TUNE_INT} for k, (lo, hi) in V.TUNE.items()}
+        card = getattr(self, "local_card", None)
+        room = card["total"] - (card.get("base") or 0) if card else None
+        ctxs = [{"n": n, "vram": V.vram_at(m.get("size"), s["cost"], n)} for n in V.CTXS
+                if n >= V.LOCAL_CTX_MIN and (not s["max"] or n <= s["max"])]
+        ctx = s["params"].get("num_ctx") if isinstance(s["params"].get("num_ctx"), int) else None
+        return {"name": model, "system": s["system"], "sysmax": V.OWN_SYSTEM_MAX, "params": params, "ctx": ctx,
+                "max": s["max"], "ctxs": ctxs, "room": room, "card": card["total"] if card else None,
+                "think": "thinking" in s["caps"], "tools_ok": "tools" in s["caps"], "size": m.get("size"),
+                "params_n": m.get("params"), "tools": mine.get("tools") or "five", "after": mine.get("after") or "keep",
+                "all_ctx": V.LOCAL_ALL_CTX,
+                "was": bool(mine.get("was")), "busy": bool(self.local_running_on(model)),
+                "where": (getattr(self, "local_info_name", None) or ""), "min": V.LOCAL_CTX_MIN}
+
+    async def api_local_tune(self, model, system=None, params=None, ctx=None, tools=None, after=None):
+        """A model's settings saved (the owner's "Save"): the system prompt, the context and the sampling into the model
+        itself — the first change keeps the model as it was on the server, to come back to — and Pult's own part. The
+        context doesn't change under a running turn on the model (Ollama would load it anew mid-task, and the task's
+        compaction window is its start's). Then a check: the list knows the new context. → as api_local_model, "words"."""
+        model = self.local_model(model)
+        p = self.vendor_profiles()[V.LOCAL]
+        try:
+            now = await V.model_show(p["url"], model)
+        except V.VendorError as e:
+            raise ValueError(self.t("local.err.server", why=e.text[:200] or e.kind)) from None
+        write = {}
+        try:
+            for k, v in (params or {}).items():
+                x = V.tune_value(k, v)
+                if now["params"].get(k) != x:
+                    write[k] = x
+        except (ValueError, TypeError):
+            raise ValueError(self.t("local.err.param")) from None
+        if ctx is not None:
+            if not isinstance(ctx, int) or ctx not in V.CTXS or ctx < V.LOCAL_CTX_MIN or (now["max"] and ctx > now["max"]):
+                raise ValueError(self.t("local.err.param"))
+            if ctx != now["params"].get("num_ctx"):
+                if self.local_running_on(model):
+                    raise ValueError(self.t("local.err.ctxrun", name=model))
+                write["num_ctx"] = ctx
+        sys_new = None
+        if system is not None:
+            if not isinstance(system, str) or len(system.strip()) > V.OWN_SYSTEM_MAX:
+                raise ValueError(self.t("local.err.system", n=V.OWN_SYSTEM_MAX))
+            if system.strip() != now["system"]:
+                sys_new = system.strip()
+        tunes = self.local_tunes()
+        mine = dict(tunes.get(model) or {})
+        was_tools = mine.get("tools") or "five"
+        if tools in ("five", "all"):
+            if tools == "all" and (write.get("num_ctx") or now["params"].get("num_ctx") or 0) < V.LOCAL_ALL_CTX:
+                raise ValueError(self.t("local.err.allctx", ctx="%dK" % (V.LOCAL_ALL_CTX // 1024)))
+            mine["tools"] = tools if tools == "all" else None
+        if after in ("keep", "free"):
+            mine["after"] = after if after == "free" else None
+        if mine.get("tools") == "all" and (write.get("num_ctx") or now["params"].get("num_ctx") or 0) < V.LOCAL_ALL_CTX:
+            mine["tools"] = None                     # a context made shorter takes the five back
+        if write or sys_new is not None:
+            try:
+                await V.tune(p["url"], model, system=sys_new, params=write, keep=not mine.get("was"))
+            except V.VendorError as e:
+                log("local model: %s's settings didn't go in — %s%s" % (model, e.kind, ": " + e.text[:120] if e.text else ""))
+                raise ValueError(self.t("local.err.server", why=e.text[:200] or e.kind)) from None
+            mine["was"] = True
+            log("local model: %s — settings saved in the model%s%s" % (model, (": " + ", ".join(
+                "%s %s" % kv for kv in write.items())) if write else "", " and its system prompt (%d chars)" % len(sys_new)
+                if sys_new is not None else ""))
+        tunes[model] = {k: v for k, v in mine.items() if v}
+        self.local_tunes(tunes)
+        if "num_ctx" in write:
+            try:
+                await self.api_vendor_local(p["url"])        # the list and a task's window know the new context
+            except ValueError:
+                pass
+        if "num_ctx" in write or (mine.get("tools") or "five") != was_tools:
+            self.local_close_idle(model)
+        self.changed()
+        return dict(await self.api_local_model(model), words=self.t("local.tuned", name=model))
+
+    def local_close_idle(self, model):
+        """After a model's context or tools changed: the open processes of its tasks that do nothing now close — the next
+        turn starts one anew, with the new compaction window, answer limit and tools (a running turn keeps its own: the
+        context doesn't change under one). → how many."""
+        p = self.vendor_profiles()[V.LOCAL]
+        n = 0
+        for sid, d in list(self.driven.items()):
+            if (self.store.vendor_of(sid) == V.LOCAL and p["models"] and d.vendor_model(p) == model and not d.busy
+                    and not getattr(d, "bg", None) and not getattr(d, "closing", False)):
+                d.closing = True                         # a message from now on starts a new process (resume)
+                d.q.put_nowait(None)
+                n += 1
+        if n:
+            log("local model: %s's settings changed — %d open task process(es) closed, the next turn starts anew" % (model, n))
+        return n
+
+    async def local_after_turn(self, sid):
+        """A turn of one's own model ended: when its settings say "free the card", it is unloaded at once (keep_alive 0) —
+        unless another turn on one's own model runs or waits, which would have it loaded anew."""
+        if self.store.vendor_of(sid) != V.LOCAL:
+            return
+        p = self.vendor_profiles()[V.LOCAL]
+        d = self.driven.get(sid)
+        if not d or not p["models"]:
+            return
+        model = d.vendor_model(p)
+        if (self.local_tunes().get(model) or {}).get("after") != "free" or [x for x in self.local_running() if x != sid]:
+            return
+        try:
+            await V.unload(p["url"], model)
+            log("local model: %s unloaded after a turn — its settings say so" % model)
+        except V.VendorError as e:
+            log("local model: %s didn't unload after a turn — %s%s" % (model, e.kind, ": " + e.text[:120] if e.text else ""))
+
+    async def api_local_untune(self, model):
+        """A model back as it was before Pult first changed it (the owner's "Back as it was", asked first): made anew
+        from the copy kept then, which goes. Not under a running turn on it. → as api_local_model, "words"."""
+        model = self.local_model(model)
+        tunes = self.local_tunes()
+        mine = dict(tunes.get(model) or {})
+        if not mine.get("was"):
+            raise ValueError(self.t("local.err.nowas", name=model))
+        if self.local_running_on(model):
+            raise ValueError(self.t("local.err.ctxrun", name=model))
+        url = self.vendor_profiles()[V.LOCAL]["url"]
+        try:
+            await V.untune(url, model)
+        except V.VendorError as e:
+            raise ValueError(self.t("local.err.server", why=e.text[:200] or e.kind)) from None
+        mine.pop("was", None)
+        try:
+            back = (await V.model_show(url, model))["params"].get("num_ctx") or 0
+        except V.VendorError:
+            back = 0
+        if mine.get("tools") == "all" and back < V.LOCAL_ALL_CTX:
+            mine.pop("tools", None)                      # the context it came back with doesn't take them all
+        tunes[model] = {k: v for k, v in mine.items() if v}
+        self.local_tunes(tunes)
+        log("local model: %s is back as it was before Pult changed it" % model)
+        try:
+            await self.api_vendor_local(url)
+        except ValueError:
+            pass
+        self.local_close_idle(model)
+        self.changed()
+        return dict(await self.api_local_model(model), words=self.t("local.untuned", name=model))
 
     def gb(self, b):
         """Bytes as the panel writes them: decimal gigabytes, one digit after the point."""

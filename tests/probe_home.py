@@ -1,17 +1,22 @@
 """Isolation probe (stage M, step 7.1): a vendor's session in a Claude Code home of its own (CLAUDE_CONFIG_DIR), with
 an identity line appended to the system prompt and, optionally, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1.
 A stand-in Anthropic API on 127.0.0.1 keeps every request; a stand-in proxy refuses and keeps every host tried.
-Looks at: the owner's global CLAUDE.md and auto memory in the request or not; the appended line there or not; where the
-transcript went (the own home or ~/.claude); which hosts Claude Code tried past the local address; a title request.
-The owner's global CLAUDE.md is looked for by a line of its own, read at run time.
-  ~/.local/share/pult/venv/bin/python tests/probe_home.py [quiet]"""
+Looks at: the owner's global CLAUDE.md, skills and auto memory in the request or not; the appended line there or not;
+where the transcript went (the own home or ~/.claude); which hosts Claude Code tried past the local address; a title
+request. The owner's global CLAUDE.md is looked for by a line of its own, the skills by their names, read at run time.
+The project's folder is inside the home folder, as the owner's projects are: Claude Code reads CLAUDE.md in every folder
+above the project, and from ~ it took ~/.claude/CLAUDE.md as a project's (2.1.300, 2026-11-08) — a folder in the
+system's temporary one, as this probe had before, never shows it.
+  ~/.local/share/pult/venv/bin/python tests/probe_home.py [quiet] [exclude] [alltools]
+  quiet — Claude Code's own requests off; exclude — claudeMdExcludes in the session's flag settings, as Pult gives a
+  vendor's session; alltools — every tool, as a cloud vendor's session has (one's own model gets five)."""
 import asyncio, json, os, re, shutil, sys, tempfile
 from pathlib import Path
 
 from aiohttp import web
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, PermissionResultAllow, ResultMessage
 
-QUIET = len(sys.argv) > 1 and sys.argv[1] == "quiet"
+QUIET, EXCLUDE, ALLTOOLS = ("quiet" in sys.argv[1:]), ("exclude" in sys.argv[1:]), ("alltools" in sys.argv[1:])
 SEEN, HOSTS = [], []
 IDENT = "You are not Claude. You are the model probe-local-32k, running through Ollama on the owner's own computer."
 
@@ -73,7 +78,7 @@ async def main():
     proxy = "http://127.0.0.1:%d" % psrv.sockets[0].getsockname()[1]
     home = Path(tempfile.mkdtemp(prefix="pult-home-"))
     (home / "CLAUDE.md").write_text("Answer in Russian. PROBE-OWN-RULES-LINE.\n")      # the rules Pult would write there
-    proj = Path(tempfile.mkdtemp(prefix="pult-home-proj-"))
+    proj = Path(tempfile.mkdtemp(prefix=".pult-home-proj-", dir=Path.home()))      # inside ~, as a real project is
     key = re.sub(r"[^a-zA-Z0-9]", "-", os.path.realpath(proj))
     m = "probe-local-32k"
     env = {"ANTHROPIC_BASE_URL": url, "ANTHROPIC_AUTH_TOKEN": "probe-local-no-key", "ANTHROPIC_API_KEY": "probe-local-no-key",
@@ -84,9 +89,13 @@ async def main():
            "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost", "PULT_OFF": "1"}
     if QUIET:
         env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+    owner = Path.home() / ".claude"
+    flags = {"claudeMdExcludes": [(owner / "CLAUDE.md").as_posix(), (owner / "rules").as_posix() + "/**"]} if EXCLUDE else {}
+    tools = {} if ALLTOOLS else {"tools": ["Bash", "Read", "Edit", "Write", "AskUserQuestion"]}
     opts = ClaudeAgentOptions(cwd=str(proj), system_prompt={"type": "preset", "preset": "claude_code", "append": IDENT},
                               setting_sources=["user", "project", "local"], permission_mode="default", can_use_tool=allow,
-                              env=env, model=m, stderr=lambda s: None, tools=["Bash", "Read", "Edit", "Write", "AskUserQuestion"])
+                              settings=json.dumps(flags) if flags else None,
+                              env=env, model=m, stderr=lambda s: None, **tools)
     try:
         async with ClaudeSDKClient(options=opts) as c:
             await c.query("Who are you? Reply in one sentence.")
@@ -101,10 +110,14 @@ async def main():
     shared = Path.home() / ".claude" / "projects" / key
     main = [s for s in SEEN if s["tools"]]
     allt = "\n".join(s["sys"] + s["msgs"] for s in SEEN)
-    print("quiet:", QUIET, "· requests:", len(SEEN), "(with tools: %d)" % len(main))
+    print("quiet:", QUIET, "· exclude:", EXCLUDE, "· all tools:", ALLTOOLS, "· requests:", len(SEEN),
+          "(with tools: %d, most: %d)" % (len(main), max((s["tools"] for s in SEEN), default=0)))
+    print("project's folder:", proj)
     md = Path("~/.claude/CLAUDE.md").expanduser()
     mine = next((x.strip() for x in (md.read_text(errors="replace").splitlines() if md.exists() else []) if len(x.strip()) > 40), "")
     print("owner's global CLAUDE.md in a request:", bool(mine) and mine in allt, "" if mine else "(none here to look for)")
+    skills = sorted(d.name for d in (Path.home() / ".claude" / "skills").glob("*/") if len(d.name) > 6)
+    print("owner's skills in a request:", [x for x in skills if x in allt], "of", skills)
     print("auto memory instructions in a request:", "MEMORY.md" in allt)
     print("the home's own CLAUDE.md in a request:", "PROBE-OWN-RULES-LINE" in allt)
     print("identity line in the system prompt:", any(IDENT in s["sys"] for s in main))

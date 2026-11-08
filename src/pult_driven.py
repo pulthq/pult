@@ -188,6 +188,7 @@ class Driven:
         self.jump = asyncio.Event()       # "Start now": this turn goes over the limit, once
         self.dropped = asyncio.Event()    # Stop while it waits: the message goes
         self.queue_msg = None     # the topic's "⏳ in the queue" message, removed once the turn starts
+        self.own_system = ""      # one's own model's instructions from its Modelfile (prepare), after the line on who it is
         self.task = asyncio.create_task(self.run())
 
     @property
@@ -293,6 +294,27 @@ class Driven:
         await asyncio.sleep(ASK_TIMEOUT)
         return PermissionResultDeny(message="No answer from Telegram within %d h" % (ASK_TIMEOUT // 3600))
 
+    def vendor_model(self, p):
+        """The model a session on vendor profile p runs on: the owner's pick for it, else the profile's main one."""
+        own = getattr(self, "want_model", None)
+        return own if own and own not in ("fable", "opus", "sonnet", "haiku") else p["models"][0]
+
+    async def prepare(self):
+        """Before the process starts, one's own model's instructions of its own — its Modelfile's SYSTEM: Ollama leaves
+        them out of a request that brings a system prompt, and Claude Code always brings one (an uncensored model refused
+        inside Pult, not outside it — 2026-11-08, pult_vendors); options() puts them after the line on who it is."""
+        if self.d.store.vendor_of(self.sid) != V.LOCAL:
+            return
+        p = self.d.vendor_profiles().get(V.LOCAL)
+        if not p or not p.get("models"):
+            return
+        model = self.vendor_model(p)
+        self.own_system = await V.model_system(p["url"], model)
+        if self.own_system:
+            n = len(self.own_system)
+            log("vendor local: %s has instructions of its own — %d chars, passed on%s"
+                % (model, n, " cut to %d" % V.OWN_SYSTEM_MAX if n > V.OWN_SYSTEM_MAX else ""))
+
     def options(self):
         from claude_agent_sdk import ClaudeAgentOptions
         hooks = injected_hooks()
@@ -322,18 +344,26 @@ class Driven:
             p, key = self.d.vendor_profiles().get(vid), self.d.vendor_key(vid)
             if not p or not key or self.d.vendor_stop(self.sid):
                 raise RuntimeError("%s: no key, or the project no longer goes to other vendors" % vid)
-            own = getattr(self, "want_model", None)
-            model = own if own and own not in ("fable", "opus", "sonnet", "haiku") else p["models"][0]
+            model = self.vendor_model(p)
             kw["env"] = dict(kw["env"], **V.session_env(p, key, model))
             effort = None                        # the vendor's own advice sets it (CLAUDE_CODE_EFFORT_LEVEL)
-            if p.get("tools"):                   # one's own model: the five core tools (probe_local: all 25 — slow, sloppy)
+            if p.get("local"):
+                # one's own model: the five core tools (probe_local: all 25 — slow, sloppy on a 12B one), or all of them
+                # when its settings say so and its context takes them (stage M, step 6.5)
+                tools = V.local_tools((p.get("ctxs") or {}).get(model), (self.d.local_tunes().get(model) or {}).get("tools"))
+                if tools is not None:
+                    kw["tools"] = tools
+            elif p.get("tools"):
                 kw["tools"] = list(p["tools"])
             # isolation (stage M, step 7.1): its own Claude Code home — not the owner's CLAUDE.md, memory and settings, and
             # its transcript out of ~/.claude — unless it began before (a continuation is found only where it began);
             # none of Claude Code's own requests elsewhere; a line on who it is after Claude Code's text about Claude
             home = self.d.vendor_home(vid, self.path, self.resume)
             kw["env"] = dict(kw["env"], **V.QUIET, **({"CLAUDE_CONFIG_DIR": str(home)} if home else {}))
-            kw["system_prompt"] = dict(kw["system_prompt"], append=V.identity(vid, model))
+            # never the owner's CLAUDE.md: Claude Code reads one in every folder above the project, and from ~ took
+            # ~/.claude/CLAUDE.md for a project's (tests/probe_home.py, 2026-11-08) — in its own home and the owner's alike
+            kw["settings"] = json.dumps({"hooks": hooks, "claudeMdExcludes": V.md_excludes(self.d.D.CLAUDE_PROJECTS.parent)})
+            kw["system_prompt"] = dict(kw["system_prompt"], append=V.identity(vid, model, self.own_system))
         if model:
             kw["model"] = model
         if effort:
@@ -383,6 +413,7 @@ class Driven:
     async def run(self):
         from claude_agent_sdk import ClaudeSDKClient
         try:
+            await self.prepare()
             async with ClaudeSDKClient(options=self.options()) as c:
                 self.client = c
                 reader = asyncio.create_task(self.read(c))
@@ -414,6 +445,8 @@ class Driven:
                         finally:
                             if took:
                                 self.sem.release()
+                        if self.q.empty():
+                            await self.d.local_after_turn(self.sid)   # one's own model: its card freed, if it says so
                 finally:
                     self.closing = True
                     reader.cancel()

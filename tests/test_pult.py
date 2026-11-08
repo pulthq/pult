@@ -1763,6 +1763,11 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             return None
         self.no_tag = mock.patch.object(pultd.G, "tag", no_model)
         self.no_tag.start()
+        # one's own model's instructions (Driven.prepare): never asked of a real server — this computer may have one
+        # at 127.0.0.1:11434 (the owner's tunnel); a test that wants them patches it itself
+        own = mock.patch.object(V, "model_system", mock.AsyncMock(return_value=""))
+        own.start()
+        self.addCleanup(own.stop)
 
     async def asyncTearDown(self):
         self.no_tag.stop()
@@ -3593,6 +3598,154 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("никто не отвечает", d["down"])
         self.assertTrue(d["fams"])
 
+    async def test_model_tune(self):
+        # a model's settings (stage M, step 6.5; Q170 (a), Q171 — all): its system prompt, context and sampling as its
+        # server has them, each context with the card it would take; saved into the model itself — the first change
+        # keeps it as it was (pult-was/), "back as it was" brings it back; the context never under a running turn of the
+        # model, all of Claude Code's tools only from 64K; a context or tools changed closes the model's idle processes;
+        # "free the card" unloads after a turn unless another turn of one's own model runs; a removed model takes its
+        # kept copy along; a task's tools follow the model's settings
+        import claude_agent_sdk
+        G = 1000 ** 3
+        g4 = {"general.architecture": "gemma4", "gemma4.block_count": 48, "gemma4.attention.head_count_kv": ([8] * 5 + [1]) * 8,
+              "gemma4.attention.key_length": 512, "gemma4.attention.value_length": 512, "gemma4.attention.key_length_swa": 256,
+              "gemma4.attention.value_length_swa": 256, "gemma4.attention.sliding_window": 1024,
+              "gemma4.attention.sliding_window_pattern": ([True] * 5 + [False]) * 8}
+        found = {"version": "0.40.14", "models": [
+            {"name": "gemma4-32k", "ctx": 32768, "tools": True, "size": int(8.02 * G), "params": "11.9B", "max": 262144, "w": "g" * 12},
+            {"name": "qwen3.5:4b", "ctx": None, "tools": True, "size": int(3.32 * G), "params": "4.2B", "max": 262144, "w": "s" * 12}]}
+        first = {"system": "Answer briefly.", "params": {"temperature": 1, "top_k": 64, "top_p": 0.95, "num_ctx": 32768}}
+        shows = {"gemma4-32k": json.loads(json.dumps(first)),
+                 "qwen3.5:4b": {"system": "", "params": {"temperature": 1, "top_k": 20, "top_p": 0.95, "presence_penalty": 1.5}}}
+        info = {"name": "homelab", "disk": {"label": "C:", "total": 2047249215488, "free": 149577232384},
+                "gpu": {"name": "RTX", "total": 16376 * 2 ** 20, "used": 608 * 2 ** 20}}
+        writes = []
+
+        async def show(url, model, transport=None):
+            if model not in shows:
+                raise V.VendorError("model", model)
+            return {"system": shows[model]["system"], "params": dict(shows[model]["params"]), "max": 262144,
+                    "caps": ["completion", "tools", "thinking"], "cost": V.kv_cost(g4), "sampling": {"temperature": 1, "top_k": 64, "top_p": 0.95}}
+
+        async def tune(url, model, system=None, params=None, keep=False, transport=None):
+            writes.append((model, system, dict(params or {}), keep))
+            if system is not None:
+                shows[model]["system"] = system
+            shows[model]["params"].update(params or {})
+            for m in found["models"]:
+                if m["name"] == model and "num_ctx" in (params or {}):
+                    m["ctx"] = params["num_ctx"]
+
+        async def untune(url, model, transport=None):
+            shows[model] = json.loads(json.dumps(first))
+            for m in found["models"]:
+                if m["name"] == model:
+                    m["ctx"] = 32768
+
+        async def now(url, transport=None):
+            return {"version": "0.40.14", "tags": [{"name": m["name"], "size": m["size"], "digest": m["w"]} for m in found["models"]],
+                    "ps": [], "info": info}
+        url = "http://127.0.0.1:11434"
+        with mock.patch.object(V, "check_local", mock.AsyncMock(side_effect=lambda *a, **k: found)), mock.patch.object(V, "local_now", now), \
+                mock.patch.object(V, "model_show", show), mock.patch.object(V, "tune", tune), mock.patch.object(V, "untune", untune):
+            await self.p.api_vendor_local(url)
+            await self.p.api_local_panel()                           # the card the contexts are counted against
+            d = await self.p.api_local_model("gemma4-32k")
+            self.assertEqual((d["system"], d["ctx"], d["max"], d["where"], d["room"]), ("Answer briefly.", 32768, 262144, "homelab", (16376 - 608) * 2 ** 20))
+            self.assertEqual((d["params"]["temperature"], d["params"]["min_p"]["v"], d["params"]["min_p"]["set"], d["params"]["top_k"]["int"]),
+                             ({"v": 1, "set": True, "lo": 0.0, "hi": 2.0, "int": False}, 0.0, False, True))   # min_p: Ollama's own
+            self.assertEqual([c["n"] for c in d["ctxs"]], [16384, 32768, 65536, 131072, 262144])
+            self.assertEqual(d["ctxs"][1]["vram"], V.vram_at(int(8.02 * G), V.kv_cost(g4), 32768))
+            self.assertEqual((d["tools"], d["after"], d["was"], d["busy"], d["all_ctx"]), ("five", "keep", False, False, 65536))
+            with self.assertRaises(ValueError) as e:
+                await self.p.api_local_model("nope")
+            self.assertIn("на сервере уже нет", str(e.exception))
+            # values not offered: nothing written
+            for kw in ({"params": {"temperature": 5}}, {"params": {"seed": 1}}, {"params": {"top_k": True}}, {"ctx": 12345},
+                       {"ctx": 524288}, {"ctx": 8192}):
+                with self.assertRaises(ValueError) as e:
+                    await self.p.api_local_tune("gemma4-32k", **kw)
+                self.assertIn("Такого значения", str(e.exception))
+            with self.assertRaises(ValueError) as e:
+                await self.p.api_local_tune("gemma4-32k", system="x" * 4001)
+            self.assertIn("4000", str(e.exception))
+            with self.assertRaises(ValueError) as e:                 # all the tools with 32K: their descriptions alone are ~22K
+                await self.p.api_local_tune("gemma4-32k", tools="all")
+            self.assertIn("от 64K", str(e.exception))
+            self.assertEqual(writes, [])
+            # the first save: kept as it was first, the changed ones into the model; the list knows the new context
+            r = await self.p.api_local_tune("gemma4-32k", system="Отвечай по-русски.", params={"temperature": 0.6, "top_k": 64},
+                                            ctx=65536, tools="all", after="free")
+            self.assertEqual(writes, [("gemma4-32k", "Отвечай по-русски.", {"temperature": 0.6, "num_ctx": 65536}, True)])
+            self.assertEqual((r["was"], r["tools"], r["after"], r["ctx"], r["system"]), (True, "all", "free", 65536, "Отвечай по-русски."))
+            self.assertIn("Сохранено в gemma4-32k", r["words"])
+            self.assertEqual(self.p.vendor_profiles()["local"]["ctxs"]["gemma4-32k"], 65536)
+            # a task's tools follow the model's settings: all of them — no list
+            self.store.set_vendor(SID, "local")
+            with mock.patch.object(claude_agent_sdk, "ClaudeSDKClient", mock.MagicMock()):
+                dr = pultd.Driven(self.p, SID, str(TMP), model="gemma4-32k")
+                self.assertIsNone(dr.options().tools)
+                dr.task.cancel()
+            # the next save keeps no second copy; the same values write nothing; an empty prompt is a change
+            await self.p.api_local_tune("gemma4-32k", params={"temperature": 0.7})
+            self.assertEqual(writes[-1], ("gemma4-32k", None, {"temperature": 0.7}, False))
+            n = len(writes)
+            await self.p.api_local_tune("gemma4-32k", system="Отвечай по-русски.", params={"temperature": 0.7}, ctx=65536)
+            self.assertEqual(len(writes), n)
+            await self.p.api_local_tune("gemma4-32k", system="  ")
+            self.assertEqual(writes[-1][:2], ("gemma4-32k", ""))
+            # a turn running on the model: its context waits for it; the sampling doesn't — the next request takes it
+            sid, sid2, sid3 = "11111111-0000-4000-8000-00000000aaaa", "22222222-0000-4000-8000-00000000bbbb", "33333333-0000-4000-8000-00000000cccc"
+            for x in (sid, sid2, sid3):
+                self.store.set_vendor(x, "local")
+            run = types.SimpleNamespace(busy=True, q=asyncio.Queue(), bg=set(), closing=False, vendor_model=lambda p: "gemma4-32k")
+            self.p.driven[sid] = run
+            self.assertTrue((await self.p.api_local_model("gemma4-32k"))["busy"])
+            with self.assertRaises(ValueError) as e:
+                await self.p.api_local_tune("gemma4-32k", ctx=32768)
+            self.assertIn("идёт задача", str(e.exception))
+            await self.p.api_local_tune("gemma4-32k", params={"temperature": 0.8})
+            self.assertEqual(writes[-1][2], {"temperature": 0.8})
+            # the context made shorter: "all" goes back to the five, the model's idle processes close, another's stay
+            idle = types.SimpleNamespace(busy=False, q=asyncio.Queue(), bg=set(), closing=False, vendor_model=lambda p: "gemma4-32k")
+            other = types.SimpleNamespace(busy=False, q=asyncio.Queue(), bg=set(), closing=False, vendor_model=lambda p: "qwen9b-32k")
+            del self.p.driven[sid]
+            self.p.driven[sid2], self.p.driven[sid3] = idle, other
+            r = await self.p.api_local_tune("gemma4-32k", ctx=32768)
+            self.assertEqual((idle.closing, idle.q.get_nowait(), other.closing, other.q.empty(), r["tools"]), (True, None, False, True, "five"))
+            # after a turn: "free the card" unloads it — not while another turn of one's own model runs; "keep" — never
+            unload = mock.AsyncMock()
+            with mock.patch.object(V, "unload", unload):
+                await self.p.local_after_turn(sid2)
+                self.assertEqual(unload.await_args.args, (url, "gemma4-32k"))
+                unload.reset_mock()
+                self.p.driven[sid] = run
+                await self.p.local_after_turn(sid2)
+                unload.assert_not_awaited()
+                del self.p.driven[sid]
+                await self.p.api_local_tune("gemma4-32k", after="keep")
+                await self.p.local_after_turn(sid2)
+                await self.p.local_after_turn("44444444-0000-4000-8000-00000000dddd")    # not one's own model's
+                unload.assert_not_awaited()
+            # back as it was: from the kept copy; "all" goes if the context it comes back with doesn't take them
+            await self.p.api_local_tune("gemma4-32k", ctx=65536, tools="all")
+            r = await self.p.api_local_untune("gemma4-32k")
+            self.assertEqual((r["was"], r["system"], r["ctx"], r["tools"]), (False, "Answer briefly.", 32768, "five"))
+            self.assertIn("снова как была", r["words"])
+            with self.assertRaises(ValueError) as e:
+                await self.p.api_local_untune("gemma4-32k")
+            self.assertIn("возвращать нечего", str(e.exception))
+            # a model without a context takes one here and fits; removed — its kept copy goes along
+            await self.p.api_local_tune("qwen3.5:4b", ctx=32768)
+            self.assertIn("qwen3.5:4b", self.p.vendor_profiles()["local"]["fit"])
+            delete = mock.AsyncMock()
+            with mock.patch.object(V, "delete", delete):
+                self.p.driven.clear()
+                found["models"][:] = [m for m in found["models"] if m["name"] != "qwen3.5:4b"]   # as the check will find it
+                await self.p.api_local_delete("qwen3.5:4b")
+            self.assertEqual([c.args[1] for c in delete.await_args_list], ["qwen3.5:4b", "pult-was/qwen3.5-4b"])
+            self.assertNotIn("qwen3.5:4b", self.p.local_tunes())
+
     async def test_isolation(self):
         # stage M, step 7.1 (Q139): another vendor's session runs in a Claude Code home of its own — Pult's rules there,
         # not the owner's CLAUDE.md and memory; its transcript out of ~/.claude — with Claude Code's own requests off and a
@@ -3629,8 +3782,10 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         conf = {"local": {"on": True, "url": "http://127.0.0.1:11434", "models": ["gemma4-32k"], "ctx": {"gemma4-32k": 32768}}}
         self.store.put("vendors.conf", conf)
         home = pultd.HOMES / "local"
+        owner_md = (pultd.CLAUDE_PROJECTS.parent / "CLAUDE.md").as_posix()
+        own = mock.AsyncMock(return_value="You are Probe Free. Answer in full.")
         with mock.patch.object(claude_agent_sdk, "ClaudeSDKClient", Fake), \
-                mock.patch.object(V, "reach", mock.AsyncMock(return_value=True)):
+                mock.patch.object(V, "reach", mock.AsyncMock(return_value=True)), mock.patch.object(V, "model_system", own):
             await self.p.api_project_model(PKEY, "local")
             sid = (await self.p.api_new(PKEY, "Почини тесты"))["sid"]
             await until(lambda: started)
@@ -3639,6 +3794,15 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("you are not Claude. You are gemma4-32k", o.system_prompt["append"])
             self.assertEqual(o.system_prompt["preset"], "claude_code")
             self.assertIn("Answer the owner in Russian", (home / "CLAUDE.md").read_text())
+            # 2026-11-08: the model's own instructions after the line, asked of its server for the model it runs on; no
+            # "rules" of Claude's; the owner's CLAUDE.md, which Claude Code reads from ~ as a project's, never; hooks as before
+            self.assertEqual(own.await_args.args, ("http://127.0.0.1:11434", "gemma4-32k"))
+            self.assertTrue(o.system_prompt["append"].endswith(
+                "Your own instructions, from your Modelfile:\nYou are Probe Free. Answer in full."))
+            self.assertNotIn("rules", o.system_prompt["append"].split("\n\n")[0])
+            flags = json.loads(o.settings)
+            self.assertIn(owner_md, flags["claudeMdExcludes"])
+            self.assertIn("Stop", flags["hooks"])
             # a session begun before 7.1: its transcript is in ~/.claude — it goes on there, still quiet, still told who it is
             old = "88888888-2222-3333-4444-555555555555"
             self.store.touch_session(old, PKEY, path=str(proj))
@@ -3646,12 +3810,15 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             legacy = TMP / "projects" / pultd.sanitize(str(proj))
             legacy.mkdir(parents=True, exist_ok=True)
             (legacy / (old + ".jsonl")).write_text(tline("user", "Старая задача", ago=600) + "\n")
+            own.return_value = ""                                  # a model without a SYSTEM of its own: the line alone
             await self.p.drive(old, str(proj), "дальше", None, pkey=PKEY, resume=old)
             await until(lambda: len(started) == 2)
             o = started[-1]
             self.assertNotIn("CLAUDE_CONFIG_DIR", o.env)
             self.assertEqual(o.env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"], "1")
             self.assertIn("gemma4-32k", o.system_prompt["append"])
+            self.assertNotIn("Your own instructions", o.system_prompt["append"])
+            self.assertIn(owner_md, json.loads(o.settings)["claudeMdExcludes"])   # in the owner's home it'd be theirs: out too
             # Claude's session, once the project is Claude's (nothing runs there by then): the owner's home, no line
             for dr in list(self.p.driven.values()):
                 dr.task.cancel()
@@ -3662,6 +3829,8 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             await until(lambda: len(started) == 3)
             self.assertNotIn("CLAUDE_CONFIG_DIR", started[-1].env)
             self.assertNotIn("append", started[-1].system_prompt)
+            self.assertNotIn("claudeMdExcludes", json.loads(started[-1].settings))       # Claude's: the owner's own rules
+            self.assertEqual(own.await_count, 2)                                         # Claude's session asks nobody
             self.assertIsNone(self.store.vendor_of(sid_c))
         for dr in list(self.p.driven.values()):
             dr.task.cancel()
@@ -7957,6 +8126,145 @@ class VendorsTest(unittest.TestCase):
             with self.assertRaises(V.VendorError) as e:
                 asyncio.run(V.pull("http://127.0.0.1:11434", "qwen3.5:14b", lambda *a: None, transport=stream(body)))
             self.assertIn(words, e.exception.text)
+
+    def test_model_tune(self):
+        # a model's settings (stage M, step 6.5): /api/show's parameters as Ollama 0.40.14 writes them; the cache's cost by
+        # a model's make — gemma4's window layers, qwen3.5's state layers — and the card a context would take, against the
+        # measure of 2026-11-04 (gemma4-32k with 32K: 9741 MiB); the values a setting takes; the tools by the context;
+        # the requests: a look loads nothing, a save keeps the model as it was once and writes over its own name (an
+        # empty prompt as a space: Ollama writes none), back — from the kept copy, which goes; lists hide the kept copies
+        text = ('num_ctx                        65536\nrepeat_penalty                 1.12\nstop                           "<|turn>"\n'
+                'stop                           "<turn|>"\ntemperature                    0.6\ntop_k                          40\ntop_p                          0.92')
+        self.assertEqual(V.parse_params(text), {"num_ctx": 65536, "repeat_penalty": 1.12, "stop": ["<|turn>", "<turn|>"],
+                                                "temperature": 0.6, "top_k": 40, "top_p": 0.92})
+        self.assertEqual(V.parse_params('stop "<end>"\nmin_p 1e-05\n\njunk'), {"stop": "<end>", "min_p": 1e-05})
+        g4 = {"general.architecture": "gemma4", "gemma4.block_count": 48, "gemma4.attention.head_count_kv": ([8] * 5 + [1]) * 8,
+              "gemma4.attention.key_length": 512, "gemma4.attention.value_length": 512, "gemma4.attention.key_length_swa": 256,
+              "gemma4.attention.value_length_swa": 256, "gemma4.attention.sliding_window": 1024,
+              "gemma4.attention.sliding_window_pattern": ([True] * 5 + [False]) * 8}
+        q35 = {"general.architecture": "qwen35", "qwen35.block_count": 32, "qwen35.attention.head_count": 16,
+               "qwen35.attention.head_count_kv": 4, "qwen35.attention.key_length": 256, "qwen35.attention.value_length": 256,
+               "qwen35.attention.recurrent_layers": ([True] * 3 + [False]) * 8, "qwen35.full_attention_interval": 4}
+        self.assertEqual(V.kv_cost(g4), (8 * 1 * 1024 * 2, 40 * 8 * 512 * 2 * 1024))      # 16 KB a token; 0.34 GB a window
+        self.assertEqual(V.kv_cost(q35), (8 * 4 * 512 * 2, 0))
+        self.assertEqual(V.kv_cost({k: v for k, v in q35.items() if "recurrent" not in k}), (8 * 4 * 512 * 2, 0))   # by the interval
+        plain = {"general.architecture": "llama", "llama.block_count": 32, "llama.attention.head_count_kv": 8,
+                 "llama.attention.head_count": 32, "llama.embedding_length": 4096}
+        self.assertEqual(V.kv_cost(plain), (32 * 8 * 256 * 2, 0))                      # no lengths: the width over the heads
+        for bad in ({}, {"general.architecture": "x"}, {"general.architecture": "x", "x.block_count": 2, "x.attention.head_count_kv": [1, True]}):
+            self.assertIsNone(V.kv_cost(bad))
+        G, MiB = 1000 ** 3, 2 ** 20
+        got = V.vram_at(8021618957, V.kv_cost(g4), 32768)
+        self.assertLess(abs(got - 9741 * MiB) / (9741 * MiB), 0.01)                    # the measure it is set by
+        self.assertEqual(V.vram_at(int(8 * G), None, 65536), int(8 * G * 1.4))          # no make: as vram_need, the cache grows
+        self.assertIsNone(V.vram_at(None, V.kv_cost(g4), 32768))
+        self.assertEqual([V.tune_value(*x) for x in (("temperature", "0.6"), ("top_k", 40.4), ("repeat_penalty", 1.12))], [0.6, 40, 1.12])
+        for bad in (("temperature", 2.5), ("top_p", 0), ("top_k", True), ("seed", 1), ("num_ctx", 4096), ("min_p", "x")):
+            with self.assertRaises(ValueError):
+                V.tune_value(*bad)
+        self.assertEqual((V.local_tools(32768, "all"), V.local_tools(65536, "all"), V.local_tools(65536, None)),
+                         (list(V.LOCAL_TOOLS), None, list(V.LOCAL_TOOLS)))
+        self.assertEqual((V.was_name("eriktonon/gemma4-uncensored:12b"), V.was_name("gemma4-32k:latest")),
+                         ("pult-was/eriktonon-gemma4-uncensored-12b", "pult-was/gemma4-32k"))
+        asked, have = [], {"gemma4-32k": {"system": "Answer briefly.\n", "parameters": "num_ctx 32768\ntemperature 1",
+                                          "capabilities": ["completion", "tools", "thinking"],
+                                          "model_info": dict(g4, **{"gemma4.context_length": 262144, "general.sampling.temp": 1,
+                                                                    "general.sampling.top_k": 64, "general.sampling.top_p": 0.95})}}
+
+        def server(req):
+            body = json.loads(req.content) if req.content else {}
+            asked.append((req.method, req.url.path, body))
+            if req.url.path == "/api/show":
+                return httpx.Response(200, json=have[body["model"]]) if body["model"] in have else httpx.Response(404, json={"error": "not found"})
+            if req.url.path == "/api/create":
+                have[body["model"]] = {"system": body.get("system", ""), "parameters": "", "capabilities": [], "model_info": {}}
+                return httpx.Response(200, json={"status": "success"})
+            if req.url.path == "/api/delete":
+                have.pop(body["model"], None)
+                return httpx.Response(200)
+            return httpx.Response(404)
+        t = httpx.MockTransport(server)
+        u = "http://127.0.0.1:11434"
+        sh = asyncio.run(V.model_show(u, "gemma4-32k", transport=t))
+        self.assertEqual((sh["system"], sh["params"], sh["max"], sh["caps"], sh["cost"], sh["sampling"]),
+                         ("Answer briefly.", {"num_ctx": 32768, "temperature": 1}, 262144, ["completion", "tools", "thinking"],
+                          V.kv_cost(g4), {"temperature": 1, "top_k": 64, "top_p": 0.95}))
+        self.assertEqual([a[1] for a in asked], ["/api/show"])                          # a look loads nothing
+        for bad_url, model, kind in (("http://10.0.0.2:11434", "gemma4-32k", "url"), (u, "nope", "model")):
+            with self.assertRaises(V.VendorError) as e:
+                asyncio.run(V.model_show(bad_url, model, transport=t))
+            self.assertEqual(e.exception.kind, kind)
+        asked.clear()
+        asyncio.run(V.tune(u, "gemma4-32k", system="", params={"temperature": 0.6}, keep=True, transport=t))
+        self.assertEqual(asked, [("POST", "/api/show", {"model": "pult-was/gemma4-32k"}),
+                                 ("POST", "/api/create", {"model": "pult-was/gemma4-32k", "from": "gemma4-32k", "stream": False}),
+                                 ("POST", "/api/create", {"model": "gemma4-32k", "from": "gemma4-32k", "system": " ",
+                                                          "parameters": {"temperature": 0.6}, "stream": False})])
+        asked.clear()                                           # kept already: the true "as it was" stays
+        asyncio.run(V.tune(u, "gemma4-32k", params={"num_ctx": 65536}, keep=True, transport=t))
+        self.assertEqual([(a[1], a[2]["model"]) for a in asked], [("/api/show", "pult-was/gemma4-32k"), ("/api/create", "gemma4-32k")])
+        asked.clear()
+        asyncio.run(V.tune(u, "gemma4-32k", transport=t))       # nothing to write: no request
+        self.assertEqual(asked, [])
+        asyncio.run(V.untune(u, "gemma4-32k", transport=t))
+        self.assertEqual(asked, [("POST", "/api/create", {"model": "gemma4-32k", "from": "pult-was/gemma4-32k", "stream": False}),
+                                 ("DELETE", "/api/delete", {"model": "pult-was/gemma4-32k"})])
+        with self.assertRaises(V.VendorError) as e:
+            asyncio.run(V.tune(u, "gemma4-32k", params={"top_k": 9}, transport=httpx.MockTransport(
+                lambda req: httpx.Response(400, json={"error": "invalid parameter"}))))
+        self.assertEqual((e.exception.kind, e.exception.text), ("other", "invalid parameter"))
+        # the lists of the server never show a kept copy
+        tags = {"models": [{"name": "gemma4-32k:latest", "size": 8021618957}, {"name": "pult-was/gemma4-32k:latest", "size": 8021618957}]}
+        srv = lambda req: httpx.Response(200, json={"/api/version": {"version": "0.40.14"}, "/api/tags": tags, "/api/ps": {"models": []},  # noqa: E731
+                                                    "/api/show": {"capabilities": ["tools"], "parameters": "num_ctx 32768"}}.get(req.url.path, {}))
+        self.assertEqual([m["name"] for m in asyncio.run(V.check_local(u, transport=httpx.MockTransport(srv)))["models"]], ["gemma4-32k"])
+        self.assertEqual([m["name"] for m in asyncio.run(V.local_now(u, transport=httpx.MockTransport(srv)))["tags"]], ["gemma4-32k"])
+
+    def test_who_and_what_it_reads(self):
+        # 2026-11-08: an uncensored model of one's own refused inside Pult — Ollama leaves a Modelfile's SYSTEM out of a
+        # request that brings a system prompt, and the line on who it is gave it Claude's rules; Claude Code read the
+        # owner's ~/.claude/CLAUDE.md from ~ as a project's. The line: Claude Code's tools, no rules, the model's own
+        # instructions after it, cut to their limit; claudeMdExcludes: the owner's CLAUDE.md and rules, CLAUDE_CONFIG_DIR's too
+        line = V.identity("local", "someone/gemma4-free:12b")
+        self.assertIn("You are someone/gemma4-free:12b, a model running through Ollama", line)
+        self.assertIn("its tools are yours", line)
+        self.assertNotIn("rules", line)
+        self.assertNotIn("deepseek-flash[1m]", V.identity("deepseek", "deepseek-flash[1m]"))     # the name as it is
+        own = V.identity("local", "m", "  You are Gemma Free.\n")
+        self.assertTrue(own.startswith(V.identity("local", "m") + "\n\nYour own instructions, from your Modelfile:\n"))
+        self.assertTrue(own.endswith("You are Gemma Free."))
+        self.assertEqual(V.identity("local", "m", "   "), V.identity("local", "m"))
+        self.assertEqual(len(V.identity("local", "m", "x" * 9000)) - len(V.identity("local", "m")),
+                         len("\n\nYour own instructions, from your Modelfile:\n") + V.OWN_SYSTEM_MAX)
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": ""}):
+            self.assertEqual(V.md_excludes("/Users/x/.claude"), ["/Users/x/.claude/CLAUDE.md", "/Users/x/.claude/rules/**"])
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": "/Users/x/claude-home"}):
+            self.assertEqual(V.md_excludes("/Users/x/.claude")[2:], ["/Users/x/claude-home/CLAUDE.md",
+                                                                     "/Users/x/claude-home/rules/**"])
+        # the model's SYSTEM as Ollama 0.40.14 says it (/api/show, cut down); "" — none, another answer, no server
+        asked = []
+
+        def ollama(req):
+            asked.append((req.url.path, json.loads(req.content)["model"]))
+            m = json.loads(req.content)["model"]
+            if m == "someone/gemma4-free:12b":
+                return httpx.Response(200, json={"system": "You are Gemma Free, a writer without limits.\n", "parameters": "num_ctx 65536"})
+            if m == "gemma4-32k":
+                return httpx.Response(200, json={"parameters": "num_ctx 32768"})
+            if m == "odd":
+                return httpx.Response(200, json=["not", "an", "object"])
+            if m == "html":
+                return httpx.Response(200, text="<html>proxy</html>")
+            return httpx.Response(404, json={"error": "model 'x' not found"})
+        got = lambda m, t=httpx.MockTransport(ollama): asyncio.run(V.model_system("http://127.0.0.1:11434/", m, transport=t))  # noqa: E731
+        self.assertEqual(got("someone/gemma4-free:12b"), "You are Gemma Free, a writer without limits.")
+        self.assertEqual(asked, [("/api/show", "someone/gemma4-free:12b")])
+        for m in ("gemma4-32k", "odd", "html", "gone"):
+            self.assertEqual(got(m), "")
+
+        def down(req):
+            raise httpx.ConnectError("refused")
+        self.assertEqual(got("x", httpx.MockTransport(down)), "")
 
     def test_spend_leaves_other_vendors_out(self):
         # another vendor's replies spend none of the subscription: out of the curve and of "at once"

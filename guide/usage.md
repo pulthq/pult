@@ -116,7 +116,20 @@ and another check it — from the phone.
   disk grows on; space a removal frees comes back to C: only when that disk is sparse. No key: the
   code stays home. Claude Code gets five tools there — commands,
   reading, editing and writing files, a question to you — and one model does every role; a task doesn't start while
-  the server doesn't answer. Free, but weaker and slower than Claude.
+  the server doesn't answer. A model's own instructions — the SYSTEM in its Modelfile: a persona, a language, fewer
+  refusals — go with every task: Ollama drops them when a request brings a system prompt, and Claude Code always does,
+  so Pult passes them on. **Settings of the model** (a tap on a model in the tab): its system prompt; its context length —
+  16K to 256K, each with how much of the graphics card it would take, counted from the model's own make (gemma4's
+  window layers keep a long context cheap); its temperature, and under **Fine tuning** top_k, top_p, min_p,
+  repeat_penalty and presence_penalty — the ones its Modelfile doesn't set are grey. They are written into the model
+  itself, as `ollama create` would do it, so it behaves the same outside Pult; Claude Code's requests carry none of
+  them, so a task gets the Modelfile's. Pult keeps the model as it was before its first change (a `pult-was/…` copy:
+  a few lines, the weights stay one), and **Back as it was before Pult** restores it. Two settings are Pult's own:
+  **Tools** — the five core ones, or all of Claude Code's (from a 64K context: their descriptions alone are ~22K
+  tokens); **After a turn** — keep the model on the card, or free the card at once (the next answer then waits for
+  the model to load). A new task gets the system prompt; one begun keeps the one it began with. The context doesn't
+  change while a task runs on the model. Thinking can't be turned off from here: Claude Code never asks for no
+  thinking, and Ollama has a model that can think do so. Free, but weaker and slower than Claude.
 - **Which model did what**: every card names its model — in Running now at the right of its top line ("Opus 5.5",
   "DeepSeek · v4-pro"), on a finished task's card at its foot across from Reviewed, on a question or a permission
   before how long it waits, on a finished task's row at the right end of its second line; in a session, by the field.
