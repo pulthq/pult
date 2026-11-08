@@ -10,11 +10,16 @@ What it looks at, in order:
             all of them ("all"): the time to the first answer and to the end, the tools it called, whether the file is
             right, the tokens the server reported; /api/ps again;
   overflow — (with --overflow) a prompt longer than the context: does the server refuse it, or cut its start silently?
+  copy    — (with --copy BASE, alone: nothing is loaded on the card; the list of models, 2026-11-08) what Pult's own
+            check_local reads of each model — size, parameters, the context it was trained for, its weights (the FROM of
+            /api/show's Modelfile) — and which are one (kin); then a copy of BASE with num_ctx 32768 by Pult's own
+            make_copy: the time, the same weights as BASE, its context, its place in /api/tags; then it is deleted.
 A stand-in proxy refuses everything Claude Code tries past the local address, so nothing leaves the computer and no
 subscription is spent. The model's tools are kept to the task's folder: Write, Edit, Read inside it, Bash only for a
 few reading commands.
   ~/.local/share/pult/venv/bin/python tests/probe_local.py --model NAME [--url http://127.0.0.1:11434] [--runs five,all]
       [--overflow] [--claude-md FILE] [--env NAME=VALUE ...]
+  ~/.local/share/pult/venv/bin/python tests/probe_local.py --copy BASE [--url ...]
 """
 import argparse, asyncio, json, os, re, shutil, tempfile, time
 from pathlib import Path
@@ -170,16 +175,51 @@ async def overflow(c, url, model, ctx):
     return out
 
 
+async def copy_probe(url, base):
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+    import pult_vendors as V
+    out = {}
+    async with httpx.AsyncClient(timeout=httpx.Timeout(60, connect=5), trust_env=False) as c:
+        for m in (await c.get(url + "/api/tags")).json().get("models") or []:     # the Modelfile's FROM as the server writes it
+            show = (await c.post(url + "/api/show", json={"model": m["name"]})).json()
+            line = re.search(r"(?m)^FROM\s+(.+)$", show.get("modelfile") or "")
+            out.setdefault("from", {})[m["name"]] = line.group(1)[-80:] if line else None
+    got = await V.check_local(url)
+    out.update(version=got["version"], models=got["models"], kin=V.kin(got["models"]))
+    say("models:", json.dumps(out, ensure_ascii=False))
+    t = time.time()
+    new = await V.make_copy(url, base, V.LOCAL_CTX_COPY, {m["name"] for m in got["models"]})
+    out["create_s"] = round(time.time() - t, 2)
+    again = await V.check_local(url)
+    mine = next((m for m in again["models"] if m["name"] == new), None)
+    was = next((m for m in again["models"] if m["name"] == base), None)
+    out.update(copy=mine, same_weights=bool(mine and was and mine["w"] and mine["w"] == was["w"]), kin_after=V.kin(again["models"]))
+    say("copy:", json.dumps({k: out[k] for k in ("create_s", "copy", "same_weights", "kin_after")}, ensure_ascii=False))
+    async with httpx.AsyncClient(timeout=httpx.Timeout(60, connect=5), trust_env=False) as c:
+        r = await c.request("DELETE", url + "/api/delete", json={"model": new})
+        out["delete"] = r.status_code
+        out["after_delete"] = [m.get("name") for m in (await c.get(url + "/api/tags")).json().get("models") or []]
+    say("deleted:", out["delete"], out["after_delete"])
+    return out
+
+
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://127.0.0.1:11434")
-    ap.add_argument("--model", required=True)
+    ap.add_argument("--model")
+    ap.add_argument("--copy", metavar="BASE", help="the list of models: a copy of BASE with a context, then deleted")
     ap.add_argument("--runs", default="five,all")
     ap.add_argument("--overflow", action="store_true")
     ap.add_argument("--claude-md")
     ap.add_argument("--env", action="append", default=[], help="NAME=VALUE for the Claude Code session")
     a = ap.parse_args()
     url = a.url.rstrip("/")
+    if a.copy:
+        say("summary:", json.dumps(await copy_probe(url, a.copy), ensure_ascii=False, default=str))
+        return
+    if not a.model:
+        ap.error("--model is needed")
     extra = dict(x.split("=", 1) for x in a.env)
     report = {}
     async with httpx.AsyncClient(timeout=httpx.Timeout(900, connect=5), trust_env=False) as c:

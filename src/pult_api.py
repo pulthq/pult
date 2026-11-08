@@ -1526,15 +1526,20 @@ class Api:
         return {"ok": True, "live": False, "choice": self.choice.get(sid) or {}}
 
     def vendors_list(self):
-        """For the app: each vendor — its name, whether its key is here, its models (the main one first); the local
-        model — "key": on, its address, what its last check found and the context of each model it can use."""
+        """For the app: each vendor — its name, whether its key is here, its models (the ticked ones, the main one
+        first), the helpers' one (fast), the models Pult knows for it (known) and their prices; the local model —
+        "key": on, its address, what its last check found, the models that can take a task (fit), which are one
+        (kin: a copy with a context and its base) and the context of each."""
         out = []
         for vid, p in self.vendor_profiles().items():
-            row = {"id": vid, "name": p["name"], "key": bool(self.vendor_key(vid)), "models": p["models"]}
+            row = {"id": vid, "name": p["name"], "key": bool(self.vendor_key(vid)), "models": p["models"],
+                   "fast": p.get("fast")}
             if p.get("local"):
                 found = ((self.store.get("vendors.conf") or {}).get(vid) or {}).get("found") or {}
-                row.update(local=True, short=p["short"], url=p["url"], ctx=p["ctxs"], found=found,
-                           min=V.LOCAL_CTX_MIN)
+                row.update(local=True, short=p["short"], url=p["url"], ctx=p["ctxs"], found=found, fit=p["fit"],
+                           kin=V.kin(found.get("models") or []), min=V.LOCAL_CTX_MIN, copy=V.LOCAL_CTX_COPY)
+            else:
+                row.update(known=list(V.PRESETS[vid]["models"]), price=V.PRESETS[vid].get("price") or {})
             out.append(row)
         return out
 
@@ -1615,28 +1620,50 @@ class Api:
         self.changed()
         return {"key": bool(key), "model": model, "warn": warn}
 
-    async def api_vendor_models(self, vendor, models=""):
-        """The owner's list of a vendor's models (Settings): the first one is the main model, the second the fast one
-        (titles, subagents); "" — back to Pult's own list."""
+    async def api_vendor_models(self, vendor, models="", fast=None):
+        """The owner's models of a vendor (Settings → its list: the ticked ones, the starred — the main one — first,
+        as a line with commas — a computer from before the list takes only that — or a list): they are a task's menu;
+        fast — the helpers' model (subagents), one of them, kept while it stays ticked; "" — back to Pult's own list.
+        The local model's are its server's own: only those that fit, at least one; the ones left unticked stay so
+        after the next check."""
         if vendor not in V.PRESETS:
             raise ValueError("bad vendor")
         conf = self.store.get("vendors.conf") or {}
-        if str(models or "").strip():
+        mine = conf.setdefault(vendor, {})
+        if models if isinstance(models, (list, tuple)) else str(models or "").strip():
             try:
-                conf.setdefault(vendor, {})["models"] = V.clean_models(models)
+                names = V.clean_models(models)
             except ValueError:
                 raise ValueError(self.t("vendor.err.models")) from None
+            if V.PRESETS[vendor].get("local"):
+                fit = self.vendor_profiles()[vendor]["fit"]
+                if any(m not in fit for m in names):
+                    raise ValueError(self.t("vendor.err.local.models"))
+                mine["off"] = [m for m in fit if m not in names]
+            mine["models"] = names
+            if fast in names and not V.PRESETS[vendor].get("local"):
+                mine["fast"] = fast
+            elif fast is not None or mine.get("fast") not in names:
+                mine.pop("fast", None)
+        elif V.PRESETS[vendor].get("local"):
+            raise ValueError(self.t("vendor.err.local.models"))
         else:
-            conf.get(vendor, {}).pop("models", None)
+            mine.pop("models", None)
+            mine.pop("fast", None)
         self.store.put("vendors.conf", conf)
-        log("vendor %s: models %s" % (vendor, ", ".join(self.vendor_profiles()[vendor]["models"])))
-        return {"models": self.vendor_profiles()[vendor]["models"]}
+        p = self.vendor_profiles()[vendor]
+        log("vendor %s: models %s, the helpers' %s" % (vendor, ", ".join(p["models"]), p.get("fast")))
+        self.changed()
+        return {"models": p["models"], "fast": p.get("fast"), "vendor": self.vendor_row(vendor)}
 
-    async def api_vendor_local(self, url=None, on=True):
+    async def api_vendor_local(self, url=None, on=True, quiet=False):
         """The local model (Settings → Other vendors → Local model). "Check and turn on": the server at url says what it
         has (V.check_local) — the models Claude Code can work with (tools) and each one's context — and it is on while
-        one of them fits (its context known and at least LOCAL_CTX_MIN); the owner's order of them is kept, the first is
-        the one a task gets. on=False — off: its tasks can't start, the common default to it goes back to Claude.
+        one of them fits (its context known and at least LOCAL_CTX_MIN); the owner's ticks and star are kept, the
+        starred one is the one a task gets; a model new on the server comes ticked. on=False — off: its tasks can't
+        start, the common default to it goes back to Claude. quiet — the look the app takes on its own as Settings
+        open, while the model is on (a model made on the server since shows at once — the owner's case, 2026-11-05):
+        a server that doesn't answer changes nothing and is no error, only "down" with the words.
         → {"vendor": its row as vendors_list has it, "words"}."""
         conf = self.store.get("vendors.conf") or {}
         mine = conf.setdefault(V.LOCAL, {})
@@ -1649,16 +1676,31 @@ class Api:
             self.changed()
             return {"vendor": self.vendor_row(V.LOCAL), "words": self.t("vendor.local.offed")}
         url = str(url or self.vendor_profiles()[V.LOCAL]["url"]).strip().rstrip("/")
+        if quiet and not self.vendor_profiles()[V.LOCAL]["on"]:
+            return {"vendor": self.vendor_row(V.LOCAL), "words": ""}
         try:
             got = await V.check_local(url)
         except V.VendorError as e:
-            log("vendor local: %s didn't pass — %s%s" % (url, e.kind, ": " + e.text[:120] if e.text else ""))
-            raise ValueError(self.t("vendor.local." + e.kind, url=url, why=e.text[:200])) from None
-        fit = [m["name"] for m in got["models"] if m["tools"] and (m["ctx"] or 0) >= V.LOCAL_CTX_MIN]
-        keep = [m for m in mine.get("models") or [] if m in fit]                # the owner's order first
-        mine.update(url=url, on=bool(fit), models=keep + [m for m in fit if m not in keep],
+            log("vendor local: %s didn't pass%s — %s%s" % (url, " (a look)" if quiet else "", e.kind,
+                                                            ": " + e.text[:120] if e.text else ""))
+            words = self.t("vendor.local." + e.kind, url=url, why=e.text[:200])
+            if quiet:
+                return {"vendor": self.vendor_row(V.LOCAL), "words": "", "down": words}
+            raise ValueError(words) from None
+        fit = [m["name"] for m in got["models"] if V.fits(m)]
+        if quiet and not fit:                 # a look never turns it off: the owner checks, and sees why
+            return {"vendor": self.vendor_row(V.LOCAL), "words": "",
+                    "down": self.t("vendor.local.none", min="%dK" % (V.LOCAL_CTX_MIN // 1024))}
+        off = [m for m in mine.get("off") or [] if m in fit]
+        keep = [m for m in mine.get("models") or [] if m in fit]                # the owner's ticks, the star first
+        models = keep + [m for m in fit if m not in keep and m not in off] or fit[:1]   # a new one comes ticked
+        same = got["models"] == (mine.get("found") or {}).get("models") and models == mine.get("models")
+        mine.update(url=url, on=bool(fit), models=models, off=[m for m in fit if m not in models],
                     ctx={m["name"]: m["ctx"] for m in got["models"] if m["ctx"]},
                     found={"version": got["version"], "models": got["models"], "ts": time.time()})
+        if quiet and same:                    # the look found what was there: only when it was seen
+            self.store.put("vendors.conf", conf)
+            return {"vendor": self.vendor_row(V.LOCAL), "words": ""}
         self.store.put("vendors.conf", conf)
         log("vendor local: %s — Ollama %s, models %s; %s" % (url, got["version"], ", ".join(
             "%s (%s%s)" % (m["name"], m["ctx"] or "ctx ?", "" if m["tools"] else ", no tools") for m in got["models"]),
@@ -1671,7 +1713,31 @@ class Api:
                            ctx="%dK" % (mine["ctx"][mine["models"][0]] // 1024), n=len(fit))
         else:
             words = self.t("vendor.local.none", min="%dK" % (V.LOCAL_CTX_MIN // 1024))
-        return {"vendor": self.vendor_row(V.LOCAL), "words": words}
+        return {"vendor": self.vendor_row(V.LOCAL), "words": "" if quiet else words}
+
+    async def api_vendor_copy(self, model):
+        """A copy of one's own model with its context set (Settings → Local model → a model that doesn't fit, "Make a
+        copy with 32K"): the server makes it from the model's own weights (V.make_copy), then a check finds it — it
+        comes ticked. Never one more than the model was trained for, never below LOCAL_CTX_MIN. → as api_vendor_local."""
+        p = self.vendor_profiles()[V.LOCAL]
+        found = ((self.store.get("vendors.conf") or {}).get(V.LOCAL) or {}).get("found") or {}
+        m = next((x for x in found.get("models") or [] if x.get("name") == model), None)
+        if not m or not m.get("tools") or V.fits(m):
+            raise ValueError(self.t("vendor.err.local.copy", name=model))
+        ctx = min(V.LOCAL_CTX_COPY, m.get("max") or V.LOCAL_CTX_COPY)
+        if ctx < V.LOCAL_CTX_MIN:
+            raise ValueError(self.t("vendor.local.toosmall", name=model, ctx="%dK" % (ctx // 1024)))
+        taken = {x.get("name") for x in found.get("models") or []}
+        try:
+            new = await V.make_copy(p["url"], model, ctx, taken)
+        except V.VendorError as e:
+            log("vendor local: a copy of %s with %d didn't come — %s%s" % (model, ctx, e.kind, ": " + e.text[:120] if e.text else ""))
+            raise ValueError(self.t("vendor.local.copy.fail", name=model, why=e.text[:200] or e.kind)) from None
+        log("vendor local: %s made from %s with the context %d" % (new, model, ctx))
+        got = await self.api_vendor_local(p["url"])
+        got["words"] = self.t("vendor.local.copied", name=new, base=model, ctx="%dK" % (ctx // 1024))
+        got["made"] = new
+        return got
 
     def vendor_row(self, vid):
         return next((r for r in self.vendors_list() if r["id"] == vid), None)

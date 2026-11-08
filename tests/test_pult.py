@@ -3243,10 +3243,23 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
                 await self.p.api_project_model(PKEY, "glm")
             self.assertIn("ключа ещё нет", str(e.exception))
             # the owner's own list of models; a bad one is refused
-            self.assertEqual(await self.p.api_vendor_models("deepseek", "deepseek-v4-pro[1m], deepseek-flash"),
-                             {"models": ["deepseek-v4-pro[1m]", "deepseek-flash"]})
+            r = await self.p.api_vendor_models("deepseek", "deepseek-v4-pro[1m], deepseek-flash")
+            self.assertEqual((r["models"], r["fast"]), (["deepseek-v4-pro[1m]", "deepseek-flash"], "deepseek-flash"))
             with self.assertRaises(ValueError):
                 await self.p.api_vendor_models("deepseek", "no good!")
+            self.assertEqual((await self.p.api_vendor_models("deepseek", ""))["models"][0], "deepseek-flash[1m]")
+            # the list (2026-11-08): the ticks, the starred first, and the helpers' model by name; the row says what
+            # Pult knows of the vendor's models and their prices
+            r = await self.p.api_vendor_models("deepseek", ["deepseek-v4-pro[1m]", "deepseek-flash[1m]", "deepseek-flash"],
+                                               fast="deepseek-flash[1m]")
+            self.assertEqual((r["models"], r["fast"], r["vendor"]["fast"]), (["deepseek-v4-pro[1m]", "deepseek-flash[1m]",
+                                                                              "deepseek-flash"], "deepseek-flash[1m]", "deepseek-flash[1m]"))
+            self.assertEqual((r["vendor"]["known"], r["vendor"]["price"]["deepseek-flash"]),
+                             (V.PRESETS["deepseek"]["models"], [0.15, 0.6]))
+            r = await self.p.api_vendor_models("deepseek", "deepseek-v4-pro[1m], deepseek-flash[1m]")   # an app before the list
+            self.assertEqual(r["fast"], "deepseek-flash[1m]")            # keeps the helpers' model while it is ticked
+            r = await self.p.api_vendor_models("deepseek", ["deepseek-v4-pro[1m]"], fast="deepseek-flash[1m]")
+            self.assertEqual((r["models"], r["fast"]), (["deepseek-v4-pro[1m]"], "deepseek-v4-pro[1m]"))
             self.assertEqual((await self.p.api_vendor_models("deepseek", ""))["models"][0], "deepseek-flash[1m]")
             # a key that is good with a model's name the vendor doesn't know is kept, with words about the name
             err = V.VendorError("model", "Model Not Exist")
@@ -3373,6 +3386,80 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
                 await self.p.api_new(PKEY, "Ещё")
             self.assertIn("выключена", str(e.exception))
             self.assertEqual(self.p.project_model(PKEY), "local")
+
+    async def test_local_model_list(self):
+        # one's own model's list (2026-11-08): the ticks and the star; a model the owner unticked stays so after the next
+        # check, one new on the server comes ticked; a copy with a context and its base are one; "Make a copy with 32K";
+        # the quiet look as Settings open — what is new shows, a silent server or none that fits changes nothing
+        w1, w2 = "aaaaaaaaaaaa", "bbbbbbbbbbbb"
+        one = lambda name, ctx, w, tools=True, top=262144: {"name": name, "ctx": ctx, "tools": tools, "size": 3 * 10 ** 9,  # noqa: E731
+                                                            "params": "4.2B", "max": top, "w": w}
+        found = {"version": "0.40.14", "models": [one("a-32k", 32768, w1), one("a", None, w1), one("b-16k", 16384, w2),
+                                                   one("c", None, "cccccccccccc"), one("emb", 65536, "e" * 12, tools=False),
+                                                   one("old", None, "f" * 12, top=8192)]}
+        check = mock.AsyncMock(return_value=found)
+        with mock.patch.object(V, "check_local", check):
+            r = await self.p.api_vendor_local("http://127.0.0.1:11434")
+            v = r["vendor"]
+            self.assertEqual((v["key"], v["models"], v["fit"], v["copy"], v["min"]),
+                             (True, ["a-32k", "b-16k"], ["a-32k", "b-16k"], V.LOCAL_CTX_COPY, V.LOCAL_CTX_MIN))
+            self.assertEqual(v["kin"], {"a-32k": {"from": "a"}, "a": {"copy": "a-32k"}})
+            # the star on b-16k, a-32k unticked: the next check leaves it so
+            r = await self.p.api_vendor_models("local", ["b-16k", "a-32k"])
+            self.assertEqual(r["models"], ["b-16k", "a-32k"])
+            r = await self.p.api_vendor_models("local", "b-16k")         # the app sends the ticks as a line too
+            self.assertEqual((r["models"], r["vendor"]["fit"]), (["b-16k"], ["a-32k", "b-16k"]))
+            self.assertEqual(self.p.vendor_profiles()["local"]["models"], ["b-16k"])
+            r = await self.p.api_vendor_local("http://127.0.0.1:11434")
+            self.assertEqual(r["vendor"]["models"], ["b-16k"])
+            for bad in ("c", "nope", ""):                                # only the server's own that fit, at least one
+                with self.assertRaises(ValueError) as e:
+                    await self.p.api_vendor_models("local", bad)
+                self.assertIn("Только подходящие модели сервера", str(e.exception))
+            # the quiet look: nothing new — nothing changes, no words
+            n = check.await_count
+            r = await self.p.api_vendor_local(quiet=True)
+            self.assertEqual((check.await_count, r["words"], r["vendor"]["models"], "down" in r), (n + 1, "", ["b-16k"], False))
+            # a model made on the server since comes ticked at once
+            found["models"].append(one("d-32k", 32768, "dddddddddddd"))
+            r = await self.p.api_vendor_local(quiet=True)
+            self.assertEqual((r["words"], r["vendor"]["models"], r["vendor"]["fit"]), ("", ["b-16k", "d-32k"], ["a-32k", "b-16k", "d-32k"]))
+        # a silent server, or none that fits: only a line — the model stays on with its list
+        with mock.patch.object(V, "check_local", mock.AsyncMock(side_effect=V.VendorError("net", "ConnectError"))):
+            r = await self.p.api_vendor_local(quiet=True)
+        self.assertIn("никто не отвечает", r["down"])
+        self.assertEqual((r["vendor"]["key"], r["vendor"]["models"]), (True, ["b-16k", "d-32k"]))
+        with mock.patch.object(V, "check_local", mock.AsyncMock(return_value={"version": "0.40.14", "models": [one("c", None, "c" * 12)]})):
+            r = await self.p.api_vendor_local(quiet=True)
+        self.assertIn("num_ctx 32768", r["down"])
+        self.assertEqual((r["vendor"]["key"], r["vendor"]["models"]), (True, ["b-16k", "d-32k"]))
+        # a copy with a context, on the owner's tap: made, then checked — it comes ticked
+        made = []
+
+        async def make(url, name, ctx, taken, transport=None):
+            made.append((url, name, ctx, sorted(taken)))
+            found["models"].append(one(V.copy_name(name, ctx, taken), ctx, "cccccccccccc"))
+            return V.copy_name(name, ctx, taken)
+        with mock.patch.object(V, "check_local", mock.AsyncMock(return_value=found)), mock.patch.object(V, "make_copy", make):
+            r = await self.p.api_vendor_copy("c")
+            self.assertEqual(made[-1][:3], ("http://127.0.0.1:11434", "c", 32768))
+            self.assertEqual((r["made"], r["vendor"]["models"], r["vendor"]["kin"]["c"]), ("c-32k", ["b-16k", "d-32k", "c-32k"], {"copy": "c-32k"}))
+            self.assertIn("Готово: c-32k", r["words"])
+            for bad, words in (("a-32k", "не исправит"), ("emb", "не исправит"), ("old", "обучена только на 8K"), ("nope", "не исправит")):
+                with self.assertRaises(ValueError) as e:               # one that fits, can't use tools, too small, unknown
+                    await self.p.api_vendor_copy(bad)
+                self.assertIn(words, str(e.exception))
+        with mock.patch.object(V, "check_local", mock.AsyncMock(return_value=found)), \
+                mock.patch.object(V, "make_copy", mock.AsyncMock(side_effect=V.VendorError("other", "disk full"))):
+            with self.assertRaises(ValueError) as e:
+                await self.p.api_vendor_copy("a")
+            self.assertIn("disk full", str(e.exception))
+        # off: the quiet look doesn't ask the server
+        await self.p.api_vendor_local(on=False)
+        quiet = mock.AsyncMock(return_value=found)
+        with mock.patch.object(V, "check_local", quiet):
+            r = await self.p.api_vendor_local(quiet=True)
+        self.assertEqual((quiet.await_count, r["vendor"]["key"]), (0, False))
         for dr in list(self.p.driven.values()):
             dr.task.cancel()
 
@@ -7506,6 +7593,19 @@ class VendorsTest(unittest.TestCase):
         for key in ("", "   ", None):                 # with the address alone the subscription's token would go there
             with self.assertRaises(ValueError):
                 V.session_env(p, key)
+        # the list of models (2026-11-08): the ticks come as a list too; the helpers' model is named, not the second of
+        # the line — one of the ticked ones, else the second as before
+        self.assertEqual(V.clean_models(["a-1", " b-2 ", "a-1", ""]), ["a-1", "b-2"])
+        for bad in ([], ["no!"], ["m%d" % i for i in range(9)]):
+            with self.assertRaises(ValueError):
+                V.clean_models(bad)
+        two = ["deepseek-v4-pro[1m]", "deepseek-flash[1m]", "deepseek-flash"]
+        self.assertEqual(V.profiles({"deepseek": {"models": two, "fast": "deepseek-flash"}})["deepseek"]["fast"], "deepseek-flash")
+        self.assertEqual(V.profiles({"deepseek": {"models": two, "fast": "gone"}})["deepseek"]["fast"], "deepseek-flash[1m]")
+        self.assertEqual(V.profiles({"glm": {"models": ["glm-4.7"]}})["glm"]["fast"], "glm-4.7")
+        e = V.session_env(V.profiles({"deepseek": {"models": two, "fast": "deepseek-flash"}})["deepseek"], "k" * 20)
+        self.assertEqual((e["ANTHROPIC_DEFAULT_OPUS_MODEL"], e["ANTHROPIC_DEFAULT_HAIKU_MODEL"], e["CLAUDE_CODE_SUBAGENT_MODEL"]),
+                         ("deepseek-v4-pro[1m]", "deepseek-flash", "deepseek-flash"))
         self.assertEqual([V.vendor_of_model(m) for m in ("deepseek-flash", "glm-4.7", "kimi-k3", "qwen3", "claude-opus-5-5",
                                                          "<synthetic>", "")],
                          ["deepseek", "glm", "kimi", "other", None, None, None])
@@ -7555,6 +7655,12 @@ class VendorsTest(unittest.TestCase):
                                                                         list(V.LOCAL_TOOLS)))
         self.assertFalse(V.profiles({"local": dict(conf["local"], ctx={"small": 8192})})["local"]["on"])
         self.assertFalse(V.profiles({"local": dict(conf["local"], on=False)})["local"]["on"])
+        # every model of the server that can take a task (the list's rows) — from its last answer, ticked or not
+        found = {"models": [{"name": "a-32k", "ctx": 32768, "tools": True}, {"name": "a", "ctx": None, "tools": True},
+                            {"name": "b-16k", "ctx": 16384, "tools": True}, {"name": "emb", "ctx": 32768, "tools": False}]}
+        pf = V.profiles({"local": dict(conf["local"], models=["b-16k"], ctx={"a-32k": 32768, "b-16k": 16384}, found=found)})["local"]
+        self.assertEqual((pf["fit"], pf["models"], pf["fast"]), (["a-32k", "b-16k"], ["b-16k"], "b-16k"))
+        self.assertEqual(p["fit"], ["gemma4-32k"])                       # a store from before the list: its models
         e = V.session_env(p, V.LOCAL_KEY)
         self.assertEqual({k: e[k] for k in ("ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
                                             "CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
@@ -7564,8 +7670,12 @@ class VendorsTest(unittest.TestCase):
                           "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "8192", "ANTHROPIC_API_KEY": V.LOCAL_KEY})
         with self.assertRaises(ValueError):                  # a model whose context Pult doesn't know never runs
             V.session_env(p, V.LOCAL_KEY, "noctx")
-        # what Ollama 0.40.14 answered on 2026-11-04 (cut down): tags, show, an empty /v1/messages — 400
+        # what Ollama 0.40.14 answered on 2026-11-04 and 2026-11-08 (cut down): tags with sizes and parameters, show
+        # with the Modelfile's FROM — a copy made with a context has its base's weights — an empty /v1/messages: 400
         asked, shown = [], []
+        blob = "FROM /usr/share/ollama/.ollama/models/blobs/sha256-%s\nTEMPLATE {{ .Prompt }}\n"
+        w_gemma, w_qwen = "bb722270d54346adc198f213851dbe0207e87c3e" + "c" * 24, "a9d0a3e1d8c91732a3812becd31f8d4a" + "d" * 32
+        made = {}                                                       # the server's own copies (/api/create)
 
         def ollama(req):
             asked.append((req.method, req.url.path))
@@ -7573,25 +7683,61 @@ class VendorsTest(unittest.TestCase):
             if path == "/api/version":
                 return httpx.Response(200, json={"version": "0.40.14"})
             if path == "/api/tags":
-                return httpx.Response(200, json={"models": [{"name": "gemma4-32k:latest"}, {"name": "qwen3.5:4b"},
-                                                            {"name": "gpt-oss:120b-cloud"}, {"name": "nomic-embed:latest"}]})
+                return httpx.Response(200, json={"models": [
+                    {"name": "gemma4-32k:latest", "size": 8021618957, "details": {"parameter_size": "11.9B"}},
+                    {"name": "qwen3.5:4b", "size": 3324173934, "details": {"parameter_size": "4.2B"}},
+                    {"name": "gpt-oss:120b-cloud"}, {"name": "nomic-embed:latest", "size": 274302450},
+                    {"name": "gemma4:12b", "size": 8021618941, "details": {"parameter_size": "11.9B"}}] +
+                    [{"name": n + ":latest", "size": 3324173950, "details": {"parameter_size": "4.2B"}} for n in made]})
             if path == "/api/show":
                 m = json.loads(req.content)["model"]
                 shown.append(m)
-                return httpx.Response(200, json={
+                return httpx.Response(200, json=dict({
                     "gemma4-32k:latest": {"parameters": "top_p                          0.95\nnum_ctx                        32768",
-                                          "capabilities": ["completion", "vision", "tools", "thinking"]},
-                    "qwen3.5:4b": {"parameters": "temperature                    1", "capabilities": ["completion", "tools"]},
-                    "nomic-embed:latest": {"parameters": "num_ctx 8192", "capabilities": ["embedding"]}}[m])
+                                          "capabilities": ["completion", "vision", "tools", "thinking"],
+                                          "modelfile": blob % w_gemma, "model_info": {"gemma4.context_length": 262144}},
+                    "gemma4:12b": {"parameters": "top_p 0.95", "capabilities": ["completion", "tools"],
+                                   "modelfile": blob % w_gemma, "model_info": {"gemma4.context_length": 262144}},
+                    "qwen3.5:4b": {"parameters": "temperature                    1", "capabilities": ["completion", "tools"],
+                                   "modelfile": blob % w_qwen, "model_info": {"qwen35.context_length": 262144}},
+                    "nomic-embed:latest": {"parameters": "num_ctx 8192", "capabilities": ["embedding"]}},
+                    **{n + ":latest": {"parameters": "num_ctx %d" % c, "capabilities": ["completion", "tools"],
+                                       "modelfile": blob % w_qwen} for n, c in made.items()})[m])
+            if path == "/api/create":
+                body = json.loads(req.content)
+                if body.get("stream") is not False or set(body) != {"model", "from", "parameters", "stream"}:
+                    return httpx.Response(400, json={"error": "unexpected body"})
+                made[body["model"]] = body["parameters"]["num_ctx"]
+                return httpx.Response(200, json={"status": "success"})
             if path == "/v1/messages":
                 return httpx.Response(400, json={"type": "error", "error": {"type": "invalid_request_error",
                                                                             "message": "model is required"}})
             return httpx.Response(404, text="404 page not found")
         got = asyncio.run(V.check_local("http://127.0.0.1:11434/", transport=httpx.MockTransport(ollama)))
-        self.assertEqual(got, {"version": "0.40.14", "models": [{"name": "gemma4-32k", "ctx": 32768, "tools": True},
-                                                                {"name": "qwen3.5:4b", "ctx": None, "tools": True},
-                                                                {"name": "nomic-embed", "ctx": 8192, "tools": False}]})
+        self.assertEqual(got, {"version": "0.40.14", "models": [
+            {"name": "gemma4-32k", "ctx": 32768, "tools": True, "size": 8021618957, "params": "11.9B", "max": 262144, "w": "bb722270d543"},
+            {"name": "qwen3.5:4b", "ctx": None, "tools": True, "size": 3324173934, "params": "4.2B", "max": 262144, "w": "a9d0a3e1d8c9"},
+            {"name": "nomic-embed", "ctx": 8192, "tools": False, "size": 274302450, "params": None, "max": None, "w": None},
+            {"name": "gemma4:12b", "ctx": None, "tools": True, "size": 8021618941, "params": "11.9B", "max": 262144, "w": "bb722270d543"}]})
         self.assertNotIn(("POST", "/api/generate"), asked)              # nothing loaded: no request that runs a model
+        # which are one: the copy with a context and its base share the weights, and only the copy fits
+        self.assertEqual(V.kin(got["models"]), {"gemma4-32k": {"from": "gemma4:12b"}, "gemma4:12b": {"copy": "gemma4-32k"}})
+        self.assertEqual([m["name"] for m in got["models"] if V.fits(m)], ["gemma4-32k"])
+        # a copy with a context, on the owner's tap: the server makes it from the model — never over another's name
+        self.assertEqual(V.copy_name("qwen3.5:4b", 32768, set()), "qwen3.5-4b-32k")
+        self.assertEqual(V.copy_name("library/qwen:latest", 16384, {"library-qwen-16k:latest"}), "library-qwen-16k-2")
+        new = asyncio.run(V.make_copy("http://127.0.0.1:11434", "qwen3.5:4b", 32768, {m["name"] for m in got["models"]},
+                                      transport=httpx.MockTransport(ollama)))
+        self.assertEqual((new, made), ("qwen3.5-4b-32k", {"qwen3.5-4b-32k": 32768}))
+        again = asyncio.run(V.check_local("http://127.0.0.1:11434", transport=httpx.MockTransport(ollama)))
+        self.assertEqual(V.kin(again["models"])["qwen3.5:4b"], {"copy": "qwen3.5-4b-32k"})
+        refused = httpx.MockTransport(lambda req: httpx.Response(500, json={"error": "model 'x' not found"}))
+        with self.assertRaises(V.VendorError) as e:
+            asyncio.run(V.make_copy("http://127.0.0.1:11434", "x", 32768, set(), transport=refused))
+        self.assertEqual((e.exception.kind, e.exception.text), ("other", "model 'x' not found"))
+        with self.assertRaises(V.VendorError) as e:
+            asyncio.run(V.make_copy("http://10.0.0.2:11434", "x", 32768, set(), transport=refused))
+        self.assertEqual(e.exception.kind, "url")                        # only this computer's address, as the check
         self.assertNotIn("gpt-oss:120b-cloud", shown)                    # a cloud model isn't one's own: not even asked
         old = lambda req: httpx.Response(404, text="404 page not found") if req.url.path == "/v1/messages" else ollama(req)  # noqa: E731
         for transport, url, kind in ((httpx.MockTransport(old), "http://127.0.0.1:11434", "proto"),

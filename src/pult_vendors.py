@@ -23,6 +23,13 @@ same protocol — Ollama's /v1/messages. What tests/probe_local.py found on Olla
     taken only with its context known (num_ctx in its Modelfile) and big enough, and the compaction window is that;
   • /api/show says what a model can do ("tools") and its num_ctx; an empty /v1/messages answers 400 without loading
     anything — the address speaks the protocol. One model does every role: Ollama keeps one loaded at a time.
+Models as a list (2026-11-08, the owner: "a list with ticks, not names through commas"): a tick puts a model into a task's
+menu, a star makes it the main one; a cloud vendor's helpers' model ("fast") is named, not the second of the list. The
+server's own facts of each model come with its check — its size, its parameters, and its weights (the FROM of /api/show's
+Modelfile), so a model made from another with a context set ("gemma4-32k" from gemma4:12b) and its base are known as one,
+and a model without a context gets a copy with one on the owner's tap (/api/create: "from" and "parameters" — no second
+copy of the weights). tests/probe_local.py --copy on Ollama 0.40.14 (2026-11-08): a copy and its base name one blob in
+their FROM; the copy came in 0.15 s with its base's weights, and the models' folder kept its size.
 Standard library and httpx (the key's check). Design: docs/project.html, stage M.
 """
 import os
@@ -66,6 +73,7 @@ LOCAL = "local"
 LOCAL_KEY = "pult-local-no-key-needed"
 LOCAL_TOOLS = ("Bash", "Read", "Edit", "Write", "AskUserQuestion")
 LOCAL_CTX_MIN = 16384      # tokens: the five tools' first request is ~5K (the probe), a big CLAUDE.md and the work need more
+LOCAL_CTX_COPY = 32768     # the context of a copy Pult makes: the one gemma4:12b ran with on a 16 GB card (the probe, 2026-11-04)
 LOCAL_OUT_MAX = 8192       # tokens an answer may take: it has to fit in the context with the prompt
 LOCAL_REACH = 3            # s to answer "is it there" before a task starts
 LOOPBACK = re.compile(r"http://(127\.0\.0\.1|localhost|\[::1\])(:\d{1,5})?")
@@ -116,9 +124,10 @@ def url_ok(vid, url):
 
 
 def profiles(own=None, names=None):
-    """The presets with the owner's own changes over them (state.db, "vendors.conf": {vid: {"models", "url"}}; the
-    local model's also "on" and "ctx" — {model: its context}, as the server said); names — {vid: (name, short)} in the
-    owner's language."""
+    """The presets with the owner's own changes over them (state.db, "vendors.conf": {vid: {"models", "fast", "url"}};
+    the local model's also "on", "ctx" — {model: its context}, as the server said — and "found", the server's last
+    answer); names — {vid: (name, short)} in the owner's language. "models" are the ticked ones, the main one first;
+    "fast" — the helpers' model, one of them; the local model's "fit" — every model of its server that can take a task."""
     out = {}
     for vid in ORDER:
         p = dict(PRESETS[vid], id=vid)
@@ -132,20 +141,58 @@ def profiles(own=None, names=None):
             ctx = mine.get("ctx") if isinstance(mine.get("ctx"), dict) else {}
             p["ctxs"] = {m: int(n) for m, n in ctx.items() if isinstance(n, int) and n > 0}
             p["models"] = [m for m in p["models"] if p["ctxs"].get(m, 0) >= LOCAL_CTX_MIN]
+            found = ((mine.get("found") or {}).get("models") or []) if isinstance(mine.get("found"), dict) else []
+            p["fit"] = [m["name"] for m in found if isinstance(m, dict) and fits(m)] or list(p["models"])
             p["on"] = bool(mine.get("on")) and bool(p["models"])
             p["tools"] = list(LOCAL_TOOLS)
+            p["fast"] = p["models"][0] if p["models"] else None        # one model for every role
+        else:
+            fast = mine.get("fast")
+            p["fast"] = fast if fast in p["models"] else p["models"][1] if len(p["models"]) > 1 else p["models"][0]
         if vid in (names or {}):
             p["name"], p["short"] = names[vid]
         out[vid] = p
     return out
 
 
-def clean_models(text):
-    """The owner's list of models from Settings — commas, spaces or lines between them — → a list, or ValueError."""
-    names = [x for x in re.split(r"[\s,;]+", str(text or "")) if x]
+def fits(m):
+    """A model of one's own server can take a task: it uses tools, and its context is set and big enough."""
+    return bool(m.get("tools")) and (m.get("ctx") or 0) >= LOCAL_CTX_MIN
+
+
+def clean_models(names):
+    """The owner's list of models from Settings — a list (the ticks), or a line with commas, spaces or lines between
+    them (an app before the ticks) — → a list, or ValueError."""
+    if isinstance(names, (list, tuple)):
+        names = [str(x).strip() for x in names if str(x).strip()]
+    else:
+        names = [x for x in re.split(r"[\s,;]+", str(names or "")) if x]
     if not names or len(names) > MODELS_MAX or not all(MODEL_RE.fullmatch(x) for x in names):
-        raise ValueError(text)
+        raise ValueError(names)
     return list(dict.fromkeys(names))
+
+
+def kin(models):
+    """Which of one's own models are one: a model made from another with a context set ("gemma4-32k" FROM gemma4:12b)
+    has its weights — the same "w" — and only one of them fits. → {name: {"from": its base} or {"copy": its copy}}."""
+    out = {}
+    for m in models:
+        if not fits(m) or not m.get("w"):
+            continue
+        base = next((x for x in models if x is not m and x.get("w") == m["w"] and not fits(x)), None)
+        if base:
+            out[m["name"]] = {"from": base["name"]}
+            out.setdefault(base["name"], {"copy": m["name"]})
+    return out
+
+
+def copy_name(name, ctx, taken):
+    """The name of a copy with a context: "qwen3.5:4b" → "qwen3.5-4b-32k"; another one's name is never taken."""
+    base = re.sub(r"[:/]", "-", name.removesuffix(":latest"))[:70] + "-%dk" % (int(ctx) // 1024)
+    out, i = base, 2
+    while out in taken or out + ":latest" in taken:
+        out, i = "%s-%d" % (base, i), i + 1
+    return out
 
 
 def session_env(p, key, model=None):
@@ -154,7 +201,7 @@ def session_env(p, key, model=None):
     if not (isinstance(key, str) and key.strip()):
         raise ValueError("no key for " + p["name"])
     main = model or p["models"][0]
-    fast = p["models"][1] if len(p["models"]) > 1 else p["models"][0]
+    fast = p.get("fast") or (p["models"][1] if len(p["models"]) > 1 else p["models"][0])
     ctx = p.get("ctx")
     if p.get("local"):                 # one model for every role, its own context — never one Pult doesn't know
         fast, ctx = main, (p.get("ctxs") or {}).get(main)
@@ -182,9 +229,12 @@ def local_out(ctx):
 
 async def check_local(url, transport=None):
     """What a local server has (Settings → Local model → Check): Ollama's version, and each of its models — whether it
-    can use tools, its context (num_ctx in its Modelfile; None — the server's default, which no answer says). Never
-    through a proxy, never loads a model: /api/show and an empty /v1/messages (400 — it speaks Claude Code's protocol).
-    → {"version", "models": [{"name", "ctx", "tools"}]}; VendorError: "url", "net", "proto", "model"."""
+    can use tools, its context (num_ctx in its Modelfile; None — the server's default, which no answer says), and for
+    the owner's list: its size on disk, its parameters ("9.7B"), the context it was trained for, and its weights (w —
+    the first 12 of the FROM blob's sha256: a copy made from it has the same). Never through a proxy, never loads a
+    model: /api/show and an empty /v1/messages (400 — it speaks Claude Code's protocol).
+    → {"version", "models": [{"name", "ctx", "tools", "size", "params", "max", "w"}]}; VendorError: "url", "net",
+    "proto", "model"."""
     url = str(url or "").rstrip("/")
     if not url_ok(LOCAL, url):
         raise VendorError("url", url)
@@ -203,8 +253,16 @@ async def check_local(url, transport=None):
                     continue
                 show = (await c.post(url + "/api/show", json={"model": name})).json()
                 n = re.search(r"(?m)^num_ctx\s+(\d+)", show.get("parameters") or "")
+                w = re.search(r"(?m)^FROM\s+\S*sha256[-:]([0-9a-f]{12})", show.get("modelfile") or "")
+                info = show.get("model_info") if isinstance(show.get("model_info"), dict) else {}
+                top = next((v for k, v in info.items() if k.endswith(".context_length") and isinstance(v, int)), None)
+                det = m.get("details") if isinstance(m.get("details"), dict) else {}
+                params = det.get("parameter_size")
                 models.append({"name": name.removesuffix(":latest"), "ctx": int(n.group(1)) if n else None,
-                               "tools": "tools" in (show.get("capabilities") or [])})
+                               "tools": "tools" in (show.get("capabilities") or []),
+                               "size": m["size"] if isinstance(m.get("size"), int) else None,
+                               "params": params if isinstance(params, str) and len(params) < 12 else None,
+                               "max": top, "w": w.group(1) if w else None})
     except httpx.TransportError as e:
         raise VendorError("net", type(e).__name__) from None
     except ValueError as e:                  # not JSON: something else answers there
@@ -212,6 +270,31 @@ async def check_local(url, transport=None):
     if not any(m["tools"] for m in models):
         raise VendorError("model", ", ".join(m["name"] for m in models))
     return {"version": version, "models": models[:MODELS_MAX * 2]}
+
+
+async def make_copy(url, name, ctx, taken, transport=None):
+    """A copy of a model of one's own server with its context set (Settings → Local model → "Make a copy with 32K", the
+    owner's tap): /api/create from the model with the one parameter — the server keeps one copy of the weights, the
+    new model is a few lines on top. Never one more than the model was trained for, never over another's name.
+    → the copy's name; VendorError: "url", "net", "other"."""
+    url = str(url or "").rstrip("/")
+    if not url_ok(LOCAL, url):
+        raise VendorError("url", url)
+    new = copy_name(name, ctx, taken)
+    kw = dict(transport=transport) if transport is not None else {}
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=LOCAL_REACH), trust_env=False, **kw) as c:
+            r = await c.post(url + "/api/create", json={"model": new, "from": name, "parameters": {"num_ctx": int(ctx)},
+                                                        "stream": False})
+    except httpx.TransportError as e:
+        raise VendorError("net", type(e).__name__) from None
+    try:
+        got = r.json()
+    except ValueError:
+        got = {}
+    if r.status_code != 200 or got.get("status") != "success":
+        raise VendorError("other", str(got.get("error") or got.get("status") or "HTTP %d" % r.status_code)[:200])
+    return new
 
 
 async def reach(url, transport=None):
@@ -229,7 +312,8 @@ async def check_key(p, key, proxy=None, transport=None):
     Through the proxy first when one is set, then directly, like Telegram. → the model that answered; VendorError."""
     if not re.fullmatch(KEY_CHARS, key or ""):
         raise VendorError("key")
-    model = re.sub(r"\[1m\]$", "", p["models"][1] if len(p["models"]) > 1 else p["models"][0])   # as Claude Code sends it
+    fast = p.get("fast") or (p["models"][1] if len(p["models"]) > 1 else p["models"][0])
+    model = re.sub(r"\[1m\]$", "", fast)                                                  # as Claude Code sends it
     body = {"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "ping"}]}
     headers = {"x-api-key": key, "Authorization": "Bearer " + key, "anthropic-version": "2023-06-01",
                "content-type": "application/json"}

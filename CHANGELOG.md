@@ -4,6 +4,18 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.52 — 2026-11-08
+
+- **Models as a list, not names through commas.** Settings → Other vendors kept each vendor's models as a line of names
+  through commas — the first the main one, the second the fast one — cut off on a phone and easy to get wrong. Now they
+  are a list: a tick puts a model in a task's menu, the star makes it the main one, each tap is saved at once; the
+  helpers' model (subagents) is its own choice; a model Pult doesn't list yet is added by its name; a vendor without a
+  key shows only its key. A local model's list shows what Ollama says of each model — its context, its size, the model
+  it was made from (a copy with a context set shares its base's weights); the server's other models fold under it with
+  why, and one without a context gets "Make a copy with 32k": Ollama makes it from the same weights, with no second
+  copy on disk. A model you untick stays unticked after the next check, and Settings look at the server again as they
+  open, so a model made there since shows at once — a silent server is a line, not an error.
+
 ## 0.18.51 — 2026-11-08
 
 - **A page Claude published no longer keeps a task "in the background".** When Claude publishes a page with its Artifact

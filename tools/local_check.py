@@ -2,11 +2,14 @@
 server. STAND_LOCAL=1 — off: a project's settings list "Local model" grey, a tap says where to turn it on; Settings → Other
 vendors has its card — off, the address filled in — another computer's address is refused, a silent one says nothing
 answers, the usual one finds Ollama 0.40.14: gemma4-32k fits (its 32K context), the two without a context set don't; it is
-on, its models field and "Turn off" are there, the model of new projects can be it. The project's settings: its row says
+on: its models as a list (2026-11-08) — gemma4-32k ticked and the main one, "from gemma4:12b"; the others folded with why —
+qwen3.5:4b gets "Make a copy with 32K", made by the stand-in server and ticked; the star moves, a tick off stays off after
+"Check again"; the address a line that opens its field; "Turn off"; the model of new projects can be it. The project's settings: its row says
 "on your computer · gemma4-32k, free", a change to it asks where the code goes — it stays home — and takes; New task there
 says so, the words under the form too, the task starts on it. "Turn off" turns it off, the project keeps it. Light and dark.
 STAND_LOCAL=down — the shop is its project, on, but the server is silent: "Your move" names the model at the card's foot —
-"Local · gemma4-32k" — and a new task on it isn't started: it says why, and nothing starts with Claude in its place (Q143).
+"Local · gemma4-32k" — and a new task on it isn't started: it says why, and nothing starts with Claude in its place (Q143);
+Settings' own look at the server finds it silent: a line over the list, the model stays on.
   STAND_LOCAL=1 STAND_HOMES=1 STAND_LANG=ru STAND_PORT=18172 HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out &
   ~/.local/share/pult/venv/bin/python tools/local_check.py /tmp/stand.out [out_dir]
   (STAND_LOCAL=down: tools/local_check.py /tmp/stand.out down [out_dir])
@@ -32,6 +35,8 @@ CARD = "[...document.querySelectorAll('.item.vend')].find((x) => x.querySelector
 TYPE = ("(() => { const i = (%s).querySelector('.keyrow input'); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;"
         " set.call(i, %%r); i.dispatchEvent(new Event('input', {bubbles: true})); return true; })()" % CARD)
 CHECK = "(%s).querySelector('.keyrow .btn')" % CARD
+ROWS = ("[...(%s).querySelectorAll('.mlist:not(.rest) .mrow')].map((r) => [r.querySelector('b').textContent, (r.querySelector('.mrow-n .dim') || {}).textContent || '',"
+        " r.classList.contains('on'), !!r.querySelector('.mstar.on')])" % CARD)
 DARK = [{"name": "prefers-color-scheme", "value": "dark"}]
 
 
@@ -98,12 +103,53 @@ async def off_flow(pg):
     verdict("the usual one: on — Ollama 0.40.14, one model fits, a task gets gemma4-32k with 32K",
             s[0] == "alert" and "Включена: Ollama 0.40.14" in s[1] and "подходящих моделей — 1" in s[1] and "gemma4-32k" in s[1] and "32K" in s[1], s)
     verdict("… the card says on", await pg.until("(%s).querySelector('.vend-st').textContent === 'включена'" % CARD, 30))
-    found = await pg.js("[...(%s).querySelectorAll('.vf-row')].map((r) => [r.textContent.trim(), r.classList.contains('ok')])" % CARD)
-    verdict("… what it found: gemma4-32k with its 32K, bold; the two without a context set, plain",
-            found == [["gemma4-32k32 тыс.", True], ["qwen3.5:4bконтекст не задан", False], ["gemma4:12bконтекст не задан", False]], found)
-    more = await pg.js("[(%s).querySelectorAll('.keyrow input')[1].value, [...(%s).querySelectorAll('.link')].map((b) => b.textContent)]" % (CARD, CARD))
-    verdict("… its models field and «Выключить»", more == ["gemma4-32k", ["Выключить"]], more)
+    # its models as a list (2026-11-08): the one that fits — ticked, the main one, what is known of it under; the server's
+    # others folded with why; the address a line over it
+    verdict("… the list: gemma4-32k — ticked, the main one; its context, its base, its size", await pg.until(
+        "JSON.stringify(%s) === %r" % (ROWS, '[["gemma4-32k","32 тыс. · из gemma4:12b · 8\u00a0ГБ",true,true]]'), 30), await pg.js(ROWS))
+    line = await pg.js("(%s).querySelector('.vl-at').textContent" % CARD)
+    verdict("… over it: «Ollama 0.40.14 · 127.0.0.1:11434 · проверено …», no address field", line.startswith("Ollama 0.40.14 · 127.0.0.1:11434 · проверено ")
+            and not await pg.js("!!(%s).querySelector('.keyrow')" % CARD), line)
+    more = await pg.js("[...(%s).querySelectorAll('.link')].map((b) => b.textContent)" % CARD)
+    verdict("… «Выключить» under it, no field of names through commas", more == ["Выключить"], more)
     verdict("… the computer's journal says what it found", "vendor local: http://127.0.0.1:11434 — Ollama 0.40.14, models gemma4-32k (32768)" in journal(), journal()[-400:])
+    await pg.tap("(%s).querySelector('.mrow .mrow-t')" % CARD, wait=0.6)
+    s = await said(pg)
+    verdict("the only tick stays: «Хотя бы одна модель…» — or turn it off", s[0] == "alert" and "Хотя бы одна модель" in s[1] and "выключи" in s[1], s)
+    fold = await pg.js("(%s).querySelector('.vl-fold').textContent" % CARD)
+    verdict("the others folded: «Ещё 2 модели на сервере — не подходят»", fold == "Ещё 2 модели на сервере — не подходят", fold)
+    if await pg.js("(%s).querySelector('.vl-fold').getAttribute('aria-expanded') !== 'true'" % CARD):   # open while it was off
+        await pg.tap("(%s).querySelector('.vl-fold')" % CARD, wait=0.5)
+    rest = await pg.js("[...(%s).querySelectorAll('.mlist.rest .mrow')].map((r) => [r.querySelector('b').textContent, r.querySelector('.mrow-n .dim').textContent,"
+                       " (r.querySelector('.mmake') || {}).textContent || ''])" % CARD)
+    verdict("… each with why: qwen3.5:4b — a copy can be made; gemma4:12b — its copy is gemma4-32k",
+            rest == [["qwen3.5:4b", "контекст не задан · 4,2 млрд", " Сделать копию с 32 тыс."],
+                     ["gemma4:12b", "контекст не задан · её копия с контекстом — gemma4-32k", ""]], rest)
+    await pg.shot(os.path.join(OUT, "settings-rest.png"))
+    await pg.tap("(%s).querySelector('.mmake')" % CARD, wait=0.3)
+    verdict("«Сделать копию с 32 тыс.»: «Делаю…» while the server makes it", "Делаю" in (await pg.js("(%s).querySelector('.mmake').textContent" % CARD) or ""))
+    verdict("… done: the copy in the list, ticked", await pg.until(
+        "JSON.stringify(%s) === %r" % (ROWS, '[["gemma4-32k","32 тыс. · из gemma4:12b · 8\u00a0ГБ",true,true],["qwen3.5-4b-32k","32 тыс. · из qwen3.5:4b · 3,3\u00a0ГБ",true,false]]'), 50),
+        await pg.js(ROWS))
+    s = await said(pg)
+    verdict("… and says so", s[0] == "alert" and "Готово: qwen3.5-4b-32k — qwen3.5:4b с контекстом 32K" in s[1], s)
+    verdict("… the computer's journal: made from qwen3.5:4b with 32768", "vendor local: qwen3.5-4b-32k made from qwen3.5:4b with the context 32768" in journal(), journal()[-400:])
+    rest = await pg.js("[...(%s).querySelectorAll('.mlist.rest .mrow')].map((r) => r.querySelector('.mrow-n .dim').textContent)" % CARD)
+    verdict("… its base names it now, no button", rest[0] == "контекст не задан · её копия с контекстом — qwen3.5-4b-32k"
+            and not await pg.js("!!(%s).querySelector('.mmake')" % CARD), rest)
+    await pg.shot(os.path.join(OUT, "settings-copied.png"))
+    # the star moves to the copy and back; a tick off stays off after the next check
+    await pg.tap("[...(%s).querySelectorAll('.mrow')][1].querySelector('.mstar')" % CARD, wait=1.0)
+    verdict("the star: the copy is the main one", "vendor local: models qwen3.5-4b-32k, gemma4-32k" in journal(), journal()[-300:])
+    await pg.tap("[...(%s).querySelectorAll('.mrow')][0].querySelector('.mstar')" % CARD, wait=1.0)
+    await pg.tap("[...(%s).querySelectorAll('.mrow')][1].querySelector('.mrow-t')" % CARD, wait=1.0)
+    verdict("… back to gemma4-32k; the copy's tick off", "vendor local: models gemma4-32k, the helpers' gemma4-32k" in journal(), journal()[-300:])
+    await pg.tap("(%s).querySelector('.vl-re')" % CARD, wait=1.2)
+    verdict("«Проверить снова»: the copy stays unticked", await pg.until(
+        "JSON.stringify(%s) === %r" % (ROWS, '[["gemma4-32k","32 тыс. · из gemma4:12b · 8\u00a0ГБ",true,true],["qwen3.5-4b-32k","32 тыс. · из qwen3.5:4b · 3,3\u00a0ГБ",false,false]]'), 30),
+        await pg.js(ROWS))
+    await pg.tap("(%s).querySelector('.vl-at')" % CARD, wait=0.4)
+    verdict("a tap on the line opens the address field", await pg.js("(%s).querySelector('.keyrow input').value" % CARD) == "http://127.0.0.1:11434")
     seg = await pg.js("[...document.querySelectorAll('.vend-all button')].map((b) => b.textContent)")
     verdict("the model of new projects can be it now", "Своя" in seg, seg)
     await pg.js("(%s).scrollIntoView({block: 'center'})" % CARD)
@@ -188,6 +234,17 @@ async def down_flow(pg):
             and "не отвечает по адресу http://127.0.0.1:11434" in s[1], s)
     verdict("… and offers no Claude in its place (Q143)", "с Claude" not in s[1] and not await pg.js("window.__said.some((x) => x[0] === 'confirm')"), s)
     verdict("… nothing started", "NEWTASK" not in journal())
+    # Settings: the look as they open finds the server silent — a line over the list; it stays on, its list as it was
+    await pg.js("location.hash = '#/settings'")
+    verdict("Settings: «Ollama сейчас не отвечает — список с проверки в …»", await pg.until(
+        "!!(%s) && !!(%s).querySelector('.vl-down') && (%s).querySelector('.vl-down').textContent.startsWith('Ollama сейчас не отвечает — список с проверки в ')"
+        % (CARD, CARD, CARD), 100))
+    st = await pg.js("[(%s).querySelector('.vend-st').textContent, %s]" % (CARD, ROWS))
+    verdict("… it stays on, its list as it was", st == ["включена", [["gemma4-32k", "32 тыс. · из gemma4:12b · 8\u00a0ГБ", True, True]]], st)
+    verdict("… the computer's journal: a look, not a check", "didn't pass (a look) — net" in journal(), journal()[-300:])
+    await pg.js("(%s).scrollIntoView({block: 'center'})" % CARD)
+    await asyncio.sleep(0.3)
+    await pg.shot(os.path.join(OUT, "settings-down.png"))
 
 
 async def main():

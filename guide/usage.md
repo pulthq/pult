@@ -80,8 +80,8 @@ Codex for a second opinion. So one model can do a task and another check it — 
   field lists that model's own models (and Codex's levels of effort). DeepSeek, GLM and Kimi run inside Claude Code —
   they answer its own protocol at an address of theirs — with your key: the turns, the cards, the outcome and the topic
   work as with Claude. Put a key in Settings → Other vendors — it is checked with one tiny request and stays on the
-  computer — and edit the list of models there: the first is the main one, the second the fast one (titles,
-  subagents). Settings → Other vendors → **The model of new projects** is what a project made in the app gets (its form
+  computer — and its models are a list there: a tick puts a model in a task's menu, the star makes it the main one,
+  **Helpers** names the one subagents run on; a model Pult doesn't list yet is added by its name. Settings → Other vendors → **The model of new projects** is what a project made in the app gets (its form
   can pick another). A model without its key, or your own one turned off, can't take the project's task — Claude
   never takes it in its place. A vendor's session doesn't show in VS Code's list. Anthropic doesn't support this, and
   Claude Code's prompts are written for Claude: for the cheaper tasks, not the hard ones.
@@ -100,7 +100,10 @@ Codex for a second opinion. So one model can do a task and another check it — 
   through a tunnel you keep open (Pult reaches only this computer's own address). Settings → Other vendors → Local model →
   **Check and turn on** asks the server what it has: a model fits when it can use tools and its context is set to 16K
   or more (`PARAMETER num_ctx` in its Modelfile) — Ollama cuts a longer request silently, so a model without it isn't
-  taken. No key: the code stays home. Claude Code gets five tools there — commands,
+  taken. Its models are the same list, each with its context, its size and the model it was made from; the server's
+  others fold under it with why, and one without a context set gets **Make a copy with 32k** — Ollama makes it from the
+  same weights. Settings look at the server again as they open, so a model made there since shows at once. No key: the
+  code stays home. Claude Code gets five tools there — commands,
   reading, editing and writing files, a question to you — and one model does every role; a task doesn't start while
   the server doesn't answer. Free, but weaker and slower than Claude.
 - **Which model did what**: every card names its model — in Running now at the right of its top line ("Opus 5.5",
