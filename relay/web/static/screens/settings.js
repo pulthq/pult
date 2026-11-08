@@ -2,11 +2,11 @@
 // Moved from app.js as it was (review 2026-10-27, 6.4).
 import { api, useLang, useLive } from "../core/conn.js";
 import { useOverlay } from "../core/nav.js";
-import { alertBox, confirmBox, haptic } from "../core/tg.js";
+import { alertBox, confirmBox, haptic, tick } from "../core/tg.js";
 import { OWN_V, checkServed, noteUpd, phoneOld, served, useServed } from "../core/update.js";
 import { locale, plural, t } from "../i18n.js";
 import { html, useEffect, useState } from "../vendor/htm-preact-3.1.1.js";
-import { About, ChoicePick, Loading, ModePick, ago, choiceText, dur, hhmm, ic, plainField, toDate } from "../ui/kit.js";
+import { About, ChoicePick, Loading, ModePick, ago, choiceText, dur, hhmm, ic, num, plainField, toDate } from "../ui/kit.js";
 import { UpdBody, UpdCard, tOr } from "../ui/upd.js";
 
 
@@ -197,61 +197,169 @@ function Parts() {
   </div>`;
 }
 
-// other vendors' models inside Claude Code (stage M, step 2): each vendor's key — checked by the computer with one tiny
-// request and kept there, never shown again — and its list of models, the main one first and the fast one second
-function Vendors({ list, all, codex, onChange, onAll }) {
-  const [keys, setKeys] = useState({});
-  const [models, setModels] = useState({});
+// a vendor's models as a list (2026-11-08, the owner: "the models through commas are awkward and unclear — a list with
+// ticks"): a tick puts a model into a task's menu, the star makes it the main one — the one a task gets when none is
+// picked. Each tap is saved at once; rows keep their places, only the star moves. The ticked ones go to the computer
+// the starred first, as a line with commas: a computer from before the list takes only that; at least one stays ticked
+const ctxK = (n) => t("kilo.k", { n: Math.round(n / 1024) });
+// a model's size as Ollama itself writes it (ollama list: decimal gigabytes)
+const gb = (b) => t("gb", { n: num(b / 1e9, 1) }).replace(/ /g, "\u00a0");
+const prm = (s) => { const m = /^([\d.]+)\s*B$/i.exec(s || ""); return m ? t("vend.list.bn", { n: num(+m[1], 1) }) : s || ""; };
+function ModelRows({ rows, models, busy, onSet, one }) {
+  const main = models[0];
+  const tick = (n) => {
+    const on = models.includes(n);
+    if (on && models.length === 1) { alertBox(one); return; }
+    onSet(on ? models.filter((m) => m !== n) : models.concat([n]));
+  };
+  return html`<div class="mlist">${rows.map((r) => {
+    const on = models.includes(r.name), star = on && r.name === main;
+    return html`<div key=${r.name} class=${"mrow" + (on ? " on" : "")}>
+      <button class="mrow-t" role="checkbox" aria-checked=${on} disabled=${busy} onClick=${() => tick(r.name)}>
+        <span class="mbox">${on ? ic("check", 15) : ""}</span>
+        <span class="mrow-n"><b>${r.name}</b>${r.sub ? html`<span class="dim">${r.sub}</span>` : ""}</span></button>
+      ${on ? html`<button class=${"mstar" + (star ? " on" : "")} aria-pressed=${star} aria-label=${t("vend.list.main")} disabled=${busy || star}
+        onClick=${() => onSet([r.name].concat(models.filter((m) => m !== r.name)))}>${ic("star", 19)}${star ? html`<i>${t("vend.list.main")}</i>` : ""}</button>` : ""}
+    </div>`;
+  })}</div>`;
+}
+
+// one's own model through Ollama (stage M, step 6): no key — its address, checked by the computer. On, the card is its
+// models: those that can take a task as the list, each with its context and, for a copy made with a context, the model it
+// was made from; the server's others fold under it, each with why it doesn't fit — a base whose copy is there names it,
+// one without gets "Make a copy with 32K" (the server makes it from the same weights). Settings open — the computer looks
+// again on its own (a model made on the server since shows at once, 2026-11-05); a server that doesn't answer is a line
+function LocalCard({ v, onRow }) {
+  const [url, setUrl] = useState(null);             // null — as saved; a string — the address being changed
   const [busy, setBusy] = useState("");
-  const [urls, setUrls] = useState({});
-  const saveKey = async (v, key) => {
-    setBusy(v.id);
+  const [rest, setRest] = useState(!v.key);         // the server's other models shown
+  const [down, setDown] = useState("");
+  useEffect(() => {
+    if (!v.key || !v.fit) return;                   // a computer from before the list has no quiet look
+    api("vendor_local", { quiet: true }).then((r) => { if (r && r.vendor) onRow(r.vendor); setDown((r && r.down) || ""); }).catch(() => {});
+  }, []);
+  const found = (v.found && v.found.models) || [], kin = v.kin || {}, fit = v.fit || v.models;
+  const check = async (on) => {
+    setBusy("check");
     try {
-      const r = await api("vendor_key", { vendor: v.id, key: key.trim() });
-      onChange(list.map((x) => (x.id === v.id ? Object.assign({}, x, { key: r.key }) : x)));
-      setKeys(Object.assign({}, keys, { [v.id]: "" })); haptic("success");
+      const r = await api("vendor_local", on ? { url: (url == null ? v.url : url).trim() } : { on: false });
+      onRow(r.vendor); setUrl(null); setDown(""); haptic("success"); alertBox(r.words);
+    } catch (e) { alertBox(e.message); }
+    setBusy("");
+  };
+  const save = async (models) => {
+    const was = v.models;
+    onRow(Object.assign({}, v, { models }));        // at once; back if the computer says no
+    setBusy("models");
+    try { const r = await api("vendor_models", { vendor: v.id, models: models.join(", ") }); onRow(r.vendor || Object.assign({}, v, { models: r.models })); tick(); }
+    catch (e) { onRow(Object.assign({}, v, { models: was })); alertBox(e.message); }
+    setBusy("");
+  };
+  const copy = async (name) => {
+    setBusy(name);
+    try { const r = await api("vendor_copy", { model: name }); onRow(r.vendor); haptic("success"); alertBox(r.words); }
+    catch (e) { alertBox(e.message); }
+    setBusy("");
+  };
+  const sub = (x) => [x.ctx && ctxK(x.ctx), kin[x.name] && kin[x.name].from ? t("vend.list.from", { m: kin[x.name].from }) : prm(x.params),
+    x.size && gb(x.size)].filter(Boolean).join(" · ");
+  const why = (x) => (!x.tools ? t("vend.local.notools") : !x.ctx ? t("vend.local.noctx") : ctxK(x.ctx) + " · " + t("vend.local.small"));
+  const rows = fit.map((n) => ({ name: n, sub: sub(found.find((x) => x.name === n) || { ctx: (v.ctx || {})[n] }) }));
+  const others = found.filter((x) => !fit.includes(x.name));
+  const edit = url != null || !v.key;
+  const at = v.found && v.found.ts;
+  return html`<div class="item static vend vl" key=${v.id}>
+    <div class="vend-h"><b>${v.name}</b><span class=${"vend-st" + (v.key ? " on" : "")}>${t(v.key ? "vend.local.on" : "vend.local.off")}</span></div>
+    ${edit ? html`<div class="dim vend-m">${t("vend.local.url")}</div>
+      <div class="keyrow wrap"><input ref=${plainField} inputmode="url" value=${url == null ? v.url : url} data-saved=${v.url} onInput=${(e) => setUrl(e.target.value)}/>
+        <button class="btn" disabled=${!(url == null ? v.url : url).trim() || busy} onClick=${() => check(true)}>${t(v.key ? "vend.local.again" : "vend.local.check")}</button></div>`
+    : html`<div class="vl-srv"><button class="vl-at" onClick=${() => setUrl(v.url)}>${[v.found && v.found.version && "Ollama " + v.found.version, v.url.replace(/^https?:\/\//, ""),
+        at && t("vend.list.at", { hm: hhmm(toDate(at)) })].filter(Boolean).join(" · ")}</button>
+      <button class=${"vl-re" + (busy === "check" ? " spin" : "")} aria-label=${t("vend.local.again")} disabled=${!!busy} onClick=${() => check(true)}>${ic("auto", 17)}</button></div>`}
+    ${down && html`<div class="vl-down">${ic("alert", 15)}<span>${t("vend.list.down", { hm: at ? hhmm(toDate(at)) : "—" })}</span></div>`}
+    ${v.key && rows.length > 0 && html`<div class="vl-lg dim">${t("vend.list.legend")}</div>
+      <${ModelRows} rows=${rows} models=${v.models} busy=${!!busy} onSet=${save} one=${t("vend.list.one.local")}/>`}
+    ${others.length > 0 && html`<button class="vl-fold" aria-expanded=${rest} onClick=${() => setRest(!rest)}>
+        <span>${t("vend.list.rest", { n: others.length, models: plural(others.length, "model") })}</span>${ic("down", 17)}</button>
+      ${rest && html`<div class="mlist rest">${others.map((x) => {
+        const k = kin[x.name] && kin[x.name].copy, can = v.copy && x.tools && !k && (!x.max || x.max >= v.min);
+        return html`<div key=${x.name} class="mrow off"><div class="mrow-t"><span class="mrow-n"><b>${x.name}</b>
+          <span class="dim">${why(x)}${k ? " · " + t("vend.list.copy", { m: k }) : x.params ? " · " + prm(x.params) : ""}</span>
+          ${can ? html`<button class="mmake" disabled=${!!busy} onClick=${() => copy(x.name)}>${ic("plus", 14)} ${busy === x.name ? t("vend.list.making") : t("vend.list.make", { ctx: ctxK(Math.min(v.copy, x.max || v.copy)) })}</button>` : ""}</span></div>
+        </div>`;
+      })}</div>`}`}
+    ${v.key ? html`<div class="vl-foot"><button class="link" disabled=${!!busy} onClick=${() => check(false)}>${t("vend.local.turnoff")}</button>
+      <${About} text=${t("vend.local.about")} label=${t("more")}/></div>`
+    : html`<div class="dim small vend-la">${t("vend.local.about")}</div>`}
+  </div>`;
+}
+
+// a cloud vendor (DeepSeek, GLM, Kimi): its key — checked by the computer with one tiny request and kept there, never
+// shown again — and its models as the same list: Pult's own names for it (from the vendor's pages) and the ones the
+// owner added; under it, with two or more ticked, the helpers' model — subagents run on it (before: the second of the line)
+function CloudCard({ v, onRow }) {
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState("");
+  const [add, setAdd] = useState(null);             // null — no field; a string — the name being typed
+  const [pf, setPf] = useState(false);              // the sheet of the helpers' model
+  const [openPf, closePf] = useOverlay(pf, setPf);
+  const saveKey = async (k) => {
+    setBusy("key");
+    try {
+      const r = await api("vendor_key", { vendor: v.id, key: k.trim() });
+      onRow(Object.assign({}, v, { key: r.key })); setKey(""); haptic("success");
       alertBox(r.warn || (r.key ? t("vend.key.saved", { name: v.name, m: r.model || v.models[0] }) : t("vend.key.removed", { name: v.name })));
     } catch (e) { alertBox(e.message); }
     setBusy("");
   };
-  const saveModels = async (v) => {
-    setBusy(v.id);
+  const save = async (models, fast) => {
+    const was = { models: v.models, fast: v.fast };
+    const f = fast !== undefined ? fast : models.includes(v.fast) ? v.fast : models[1] || models[0];
+    onRow(Object.assign({}, v, { models, fast: f }));
+    setBusy("models");
     try {
-      const r = await api("vendor_models", { vendor: v.id, models: models[v.id] });
-      onChange(list.map((x) => (x.id === v.id ? Object.assign({}, x, { models: r.models }) : x)));
-      setModels(Object.assign({}, models, { [v.id]: null })); haptic("success"); alertBox(t("vend.models.saved"));
-    } catch (e) { alertBox(e.message); }
-    setBusy("");
+      const r = await api("vendor_models", Object.assign({ vendor: v.id, models: models.join(", ") }, v.known ? { fast: f } : {}));
+      onRow(r.vendor || Object.assign({}, v, { models: r.models, fast: r.fast })); tick(); return true;
+    }
+    catch (e) { onRow(Object.assign({}, v, was)); alertBox(e.message); return false; }
+    finally { setBusy(""); }
   };
-  // one's own model through Ollama (stage M, step 6): no key — its address, checked by the computer: the models Claude
-  // Code can work with and each one's context; it is on while one of them fits
-  const checkLocal = async (v, on) => {
-    setBusy(v.id);
-    try {
-      const r = await api("vendor_local", on ? { url: (urls[v.id] == null ? v.url : urls[v.id]).trim() } : { on: false });
-      onChange(list.map((x) => (x.id === v.id ? r.vendor : x)));
-      setUrls(Object.assign({}, urls, { [v.id]: null })); haptic("success"); alertBox(r.words);
-    } catch (e) { alertBox(e.message); }
-    setBusy("");
+  const known = v.known || [];
+  const names = known.concat(v.models.filter((m) => !known.includes(m)));
+  const usd = (x) => x.toLocaleString(locale(), { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const price = (m) => { const p = (v.price || {})[m.replace(/\[1m\]$/, "")]; return p ? t("vend.list.price", { i: usd(p[0]), o: usd(p[1]) }) : ""; };
+  const rows = names.map((m) => ({ name: m, sub: [/\[1m\]$/.test(m) && t("vend.list.window", { n: t("kilo.m", { n: 1 }) }), price(m),
+    !known.includes(m) && t("vend.list.yours")].filter(Boolean).join(" · ") }));
+  const added = async () => {
+    const n = (add || "").trim();
+    if (!n) return;
+    if (names.includes(n)) { setAdd(null); if (!v.models.includes(n)) save(v.models.concat([n])); return; }
+    if (await save(v.models.concat([n]))) setAdd(null);
   };
-  const ctxK = (n) => t("kilo.k", { n: Math.round(n / 1024) });
-  const local = (v) => {
-    const u = urls[v.id] == null ? v.url : urls[v.id], m = models[v.id] == null ? v.models.join(", ") : models[v.id];
-    const found = (v.found && v.found.models) || [];
-    return html`<div class="item static vend" key=${v.id}>
-      <div class="vend-h"><b>${v.name}</b><span class=${"vend-st" + (v.key ? " on" : "")}>${t(v.key ? "vend.local.on" : "vend.local.off")}</span></div>
-      <div class="dim vend-m">${t("vend.local.url")}</div>
-      <div class="keyrow wrap"><input ref=${plainField} inputmode="url" value=${u} data-saved=${v.url} onInput=${(e) => setUrls(Object.assign({}, urls, { [v.id]: e.target.value }))}/>
-        <button class="btn" disabled=${!u.trim() || busy === v.id} onClick=${() => checkLocal(v, true)}>${t(v.key ? "vend.local.again" : "vend.local.check")}</button></div>
-      ${found.length > 0 && html`<div class="vend-found">${found.map((x) => html`<div key=${x.name} class=${"vf-row" + (v.models.includes(x.name) ? " ok" : "")}>
-        <span>${x.name}</span><span class="dim">${!x.tools ? t("vend.local.notools") : !x.ctx ? t("vend.local.noctx") : ctxK(x.ctx) + (x.ctx < v.min ? " · " + t("vend.local.small") : "")}</span></div>`)}</div>`}
-      ${v.key ? html`<div class="dim vend-m">${t("vend.local.models")}</div>
-      <div class="keyrow"><input ref=${plainField} value=${m} data-saved=${v.models.join(", ")} onInput=${(e) => setModels(Object.assign({}, models, { [v.id]: e.target.value }))}/>
-        <button class="btn" disabled=${models[v.id] == null || m.trim() === v.models.join(", ") || busy === v.id} onClick=${() => saveModels(v)}>${t("voice.save")}</button></div>
-      <button class="link" disabled=${busy === v.id} onClick=${() => checkLocal(v, false)}>${t("vend.local.turnoff")}</button>` : ""}
-      <div class="dim small vend-la">${t("vend.local.about")}</div>
-    </div>`;
-  };
+  return html`<div class="item static vend" key=${v.id}>
+    <div class="vend-h"><b>${v.name}</b><span class=${"vend-st" + (v.key ? " on" : "")}>${v.key ? t("vend.key.on") : t("vend.key.off")}</span></div>
+    <div class="keyrow"><input type="password" ref=${plainField} placeholder=${v.key ? t("vend.key.new") : t("vend.key.ph", { name: v.name })} value=${key} onInput=${(e) => setKey(e.target.value)}/>
+      <button class="btn" disabled=${!key.trim() || !!busy} onClick=${() => saveKey(key)}>${t("voice.save")}</button></div>
+    ${v.key ? html`<button class="link" disabled=${!!busy} onClick=${() => saveKey("")}>${t("vend.key.remove")}</button>` : ""}
+    ${v.key ? html`<div class="vl-lg dim">${t("vend.list.legend")}</div>
+    <${ModelRows} rows=${rows} models=${v.models} busy=${!!busy} onSet=${(ms) => save(ms)} one=${t("vend.list.one")}/>
+    ${add == null ? html`<button class="vl-add" disabled=${!!busy || v.models.length >= 8} onClick=${() => setAdd("")}>${ic("plus", 16)} ${t("vend.list.add")}</button>`
+    : html`<div class="keyrow"><input ref=${plainField} placeholder=${t("vend.list.add.ph", { name: v.name })} value=${add} onInput=${(e) => setAdd(e.target.value)}
+        onKeyDown=${(e) => { if (e.key === "Enter") added(); }}/>
+      <button class="btn" disabled=${!add.trim() || !!busy} onClick=${added}>${t("vend.list.add.btn")}</button></div>`}
+    ${v.models.length > 1 && v.fast ? html`<button class="vl-fast" disabled=${!!busy} onClick=${openPf}><span class="dim">${t("vend.list.fast")}</span>
+      <b>${v.fast}</b>${ic("down", 16)}</button>` : ""}` : ""}
+    ${pf && html`<div class="backdrop" onClick=${closePf}></div><div class="card pick fixed">
+      <div class="q-t pick-h">${t("vend.list.fast.h", { name: v.name })}<button class="x" aria-label=${t("close")} onClick=${closePf}>${ic("x", 18)}</button></div>
+      ${v.models.map((m) => html`<button key=${m} class=${"opt" + (m === v.fast ? " on" : "")} onClick=${() => { closePf(); if (m !== v.fast) save(v.models, m); }}>${m}</button>`)}
+      <div class="dim small">${t("vend.list.fast.about")}</div></div>`}
+  </div>`;
+}
+
+// other vendors' models inside Claude Code (stage M, step 2): a card each — the cloud ones with their keys, one's own
+// model with its address — and the model new projects get
+function Vendors({ list, all, codex, onChange, onAll }) {
+  const onRow = (row) => onChange((vs) => vs.map((x) => (x.id === row.id ? row : x)));     // a card's answer may come late
   // the model new projects get (stage M, 7.2; Q147 — before, "who does new tasks by default"): a project already there
   // keeps its own, changed in its settings
   const setAll = async (id) => {
@@ -264,19 +372,8 @@ function Vendors({ list, all, codex, onChange, onAll }) {
     ${can.length > 0 && html`<div class="lbl vend-all-h">${t("who.all")}</div>
     <div class="seg vend-all">${[{ id: "claude", name: "Claude" }, ...can].map((v) => html`<button key=${v.id} class=${(all || "claude") === v.id ? "on" : ""} onClick=${() => setAll(v.id)}>${v.short || v.name}</button>`)}</div>
     <div class="dim small vend-all-t">${t(all ? "who.all.vendor" : "who.all.claude")}</div>`}
-    <div class="list">${list.map((v) => {
-    if (v.local) return local(v);
-    const k = keys[v.id] || "", m = models[v.id] == null ? v.models.join(", ") : models[v.id];
-    return html`<div class="item static vend" key=${v.id}>
-      <div class="vend-h"><b>${v.name}</b><span class=${"vend-st" + (v.key ? " on" : "")}>${v.key ? t("vend.key.on") : t("vend.key.off")}</span></div>
-      <div class="keyrow"><input type="password" ref=${plainField} placeholder=${v.key ? t("vend.key.new") : t("vend.key.ph", { name: v.name })} value=${k} onInput=${(e) => setKeys(Object.assign({}, keys, { [v.id]: e.target.value }))}/>
-        <button class="btn" disabled=${!k.trim() || busy === v.id} onClick=${() => saveKey(v, k)}>${t("voice.save")}</button></div>
-      ${v.key ? html`<button class="link" disabled=${busy === v.id} onClick=${() => saveKey(v, "")}>${t("vend.key.remove")}</button>` : ""}
-      <div class="dim vend-m">${t("vend.models")}</div>
-      <div class="keyrow"><input ref=${plainField} value=${m} data-saved=${v.models.join(", ")} onInput=${(e) => setModels(Object.assign({}, models, { [v.id]: e.target.value }))}/>
-        <button class="btn" disabled=${models[v.id] == null || m.trim() === v.models.join(", ") || busy === v.id} onClick=${() => saveModels(v)}>${t("voice.save")}</button></div>
-    </div>`;
-  })}</div><div class="dim small">${t("vend.about")}</div>`;
+    <div class="list">${list.map((v) => (v.local ? html`<${LocalCard} key=${v.id} v=${v} onRow=${onRow}/>` : html`<${CloudCard} key=${v.id} v=${v} onRow=${onRow}/>`))}</div>
+    <div class="dim small">${t("vend.about")}</div>`;
 }
 
 function Settings() {
@@ -350,7 +447,8 @@ function Settings() {
       <div class="keyrow"><input ref=${plainField} maxlength="280" placeholder=${t("voice.words.ph")} value=${words === null ? d.stt.words : words} data-saved=${d.stt.words} onInput=${(e) => setWords(e.target.value)}/>
         <button class="btn" disabled=${words === null || words.trim() === d.stt.words || kbusy} onClick=${saveWords}>${t("voice.save")}</button></div>
     </div>` : ""}</div>
-    ${d.vendors && html`<${Vendors} list=${d.vendors} all=${d.vendor_all} codex=${d.codex} onChange=${(vs) => set(Object.assign({}, d, { vendors: vs, vendor_all: d.vendor_all === "codex" || vs.some((x) => x.id === d.vendor_all && x.key) ? d.vendor_all : null }))}
+    ${d.vendors && html`<${Vendors} list=${d.vendors} all=${d.vendor_all} codex=${d.codex} onChange=${(f) => set((cur) => { const vs = f(cur.vendors);
+      return Object.assign({}, cur, { vendors: vs, vendor_all: cur.vendor_all === "codex" || vs.some((x) => x.id === cur.vendor_all && x.key) ? cur.vendor_all : null }); })}
       onAll=${(v) => set(Object.assign({}, d, { vendor_all: v }))}/>`}
     <${Logins}/>
     <h3>${t("status")}</h3><div class="list"><div class="item static">

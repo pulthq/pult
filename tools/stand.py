@@ -50,7 +50,8 @@ settings page, a task of another model read only (tools/projset_check.py).
 STAND_LOCAL=1 (stage M, step 6): one's own model through Ollama, off — its check answers at http://127.0.0.1:11434 as Ollama
 0.40.14 did (gemma4-32k with a 32K context; two models without one), any other address doesn't; =on — checked and on, the
 session that waits for you ran on it; =down — on, but the server doesn't answer: a new task on it is refused
-(tools/local_check.py). STAND_HELPERS=1 (Q128): the dark theme's turn has started two helpers and a command in the
+(tools/local_check.py). STAND_LOCAL_MANY=1 with it (the list of models, 2026-11-08): five models — two copies with a
+context made from their bases and one without a copy, whose "Make a copy with 32K" the stand-in server makes. STAND_HELPERS=1 (Q128): the dark theme's turn has started two helpers and a command in the
 background — their PostToolUse and the helpers' own records; SESS7 — its screen (tools/helpers_check.py). STAND_REPORT=1: the weekly report hasn't
 been put away — a plain report waits in "Your move" for "Got it" like any other (tools/gotit_check.py); without it (and
 without STAND_ASK2) the owner has put it away. VS Code's settings and the tab switch are made up on every stand: the app
@@ -1099,16 +1100,34 @@ async def main():
         p.set_choice(SID4, "deepseek-v4-pro[1m]")
     if os.environ.get("STAND_LOCAL"):                  # stage M, step 6: one's own model through Ollama — no server here
         import pult_vendors as V
-        found = {"version": "0.40.14", "models": [{"name": "gemma4-32k", "ctx": 32768, "tools": True},
-                                                  {"name": "qwen3.5:4b", "ctx": None, "tools": True},
-                                                  {"name": "gemma4:12b", "ctx": None, "tools": True}]}
+        G = 1000 ** 3                                  # sizes, parameters, weights — as Ollama 0.40.14 gave them (2026-11-08)
+        found = {"version": "0.40.14", "models": [
+            {"name": "gemma4-32k", "ctx": 32768, "tools": True, "size": int(8.02 * G), "params": "11.9B", "max": 262144, "w": "6114515d63c1"},
+            {"name": "qwen3.5:4b", "ctx": None, "tools": True, "size": int(3.32 * G), "params": "4.2B", "max": 262144, "w": "d8b0f5e9760c"},
+            {"name": "gemma4:12b", "ctx": None, "tools": True, "size": int(8.02 * G), "params": "11.9B", "max": 262144, "w": "6114515d63c1"}]}
 
         async def stand_local(url, transport=None):   # this computer's usual address answers as Ollama did on 2026-11-04
             if not V.url_ok("local", url):
                 raise V.VendorError("url", url)
-            if url.rstrip("/") != "http://127.0.0.1:11434":
+            if url.rstrip("/") != "http://127.0.0.1:11434" or not up:
                 raise V.VendorError("net", "ConnectError")
             return found
+        if os.environ.get("STAND_LOCAL_MANY") == "1":   # the list of models (2026-11-08): two copies with a context made from
+            # their bases — the same weights — and one model without a copy (tests/probe_local.py --copy, 2026-11-08)
+            found = {"version": "0.40.14", "models": [
+                {"name": "qwen9b-32k", "ctx": 32768, "tools": True, "size": int(6.55 * G), "params": "9.0B", "max": 262144, "w": "3f1c0a9e2b71"},
+                {"name": "qwen3.5:9b", "ctx": None, "tools": True, "size": int(6.55 * G), "params": "9.0B", "max": 262144, "w": "3f1c0a9e2b71"},
+                {"name": "gemma4-32k", "ctx": 32768, "tools": True, "size": int(8.02 * G), "params": "11.9B", "max": 262144, "w": "6114515d63c1"},
+                {"name": "qwen3.5:4b", "ctx": None, "tools": True, "size": int(3.32 * G), "params": "4.2B", "max": 262144, "w": "d8b0f5e9760c"},
+                {"name": "gemma4:12b", "ctx": None, "tools": True, "size": int(8.02 * G), "params": "11.9B", "max": 262144, "w": "6114515d63c1"}]}
+
+        async def stand_copy(url, name, ctx, taken, transport=None):   # never the real server: it makes the copy from the
+            await asyncio.sleep(1.5)                                    # same weights, and the next check finds it
+            new = V.copy_name(name, ctx, taken)
+            base = next(m for m in found["models"] if m["name"] == name)
+            found["models"].append(dict(base, name=new, ctx=ctx))
+            return new
+        V.make_copy = stand_copy
         up = os.environ["STAND_LOCAL"] != "down"
 
         async def stand_reach(url, transport=None):
@@ -1116,8 +1135,10 @@ async def main():
         V.check_local, V.reach = stand_local, stand_reach
         if os.environ["STAND_LOCAL"] in ("on", "down"):     # checked and on; the session that waits for you ran on it
             conf = store.get("vendors.conf") or {}
-            conf["local"] = {"on": True, "url": "http://127.0.0.1:11434", "models": ["gemma4-32k"],
-                             "ctx": {"gemma4-32k": 32768}, "found": dict(found, ts=time.time() - 3600)}
+            many = os.environ.get("STAND_LOCAL_MANY") == "1"
+            conf["local"] = {"on": True, "url": "http://127.0.0.1:11434", "models": ["qwen9b-32k", "gemma4-32k"] if many else ["gemma4-32k"],
+                             "ctx": {"gemma4-32k": 32768, "qwen9b-32k": 32768} if many else {"gemma4-32k": 32768},
+                             "found": dict(found, ts=time.time() - 3600)}
             store.put("vendors.conf", conf)
             store.set_vendor(SID4, "local")
             p.set_choice(SID4, "gemma4-32k")

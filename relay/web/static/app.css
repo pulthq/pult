@@ -988,6 +988,57 @@ button.tagc { border: 0; font-family: inherit; cursor: pointer; }
 .vf-row > span:last-child { flex: none; text-align: right; }
 .vf-row.ok > span:first-child { font-weight: 600; }
 .vend-la { margin-top: 10px; }
+/* a vendor's models as a list (2026-11-08): a row — the tick and the name with what is known of it under; the star on the
+   right of a ticked one, the main one's in the accent with its word; the server's others folded, greyed, with why */
+.vl-lg { font-size: var(--fs-cap); margin: 12px 2px 6px; }
+.mlist { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.mrow { display: flex; align-items: center; min-width: 0; border-bottom: 1px solid var(--line); }
+.mrow:last-child { border-bottom: 0; }
+.mrow-t { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 10px 6px 10px 12px; background: none; border: 0;
+  color: var(--ink); text-align: left; font: inherit; cursor: pointer; }
+.mrow.off .mrow-t { cursor: default; }
+.mbox { flex: none; width: 22px; height: 22px; border-radius: 7px; border: 1.8px solid color-mix(in srgb, var(--muted) 70%, transparent);
+  display: grid; place-items: center; color: var(--accent-ink); }
+.mrow.on .mbox { background: var(--accent); border-color: var(--accent); }
+.mrow.off .mbox { border-style: dashed; opacity: .55; }
+.mrow-n { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.mrow-n b { font-size: var(--fs-body); font-weight: 600; overflow-wrap: anywhere; }
+.mrow-n .dim { font-size: var(--fs-cap); overflow-wrap: anywhere; }
+.mrow.off .mrow-n b { font-weight: 500; color: var(--muted); }
+.mstar { flex: none; display: flex; align-items: center; gap: 4px; min-height: 44px; padding: 0 12px 0 8px; background: none; border: 0;
+  color: color-mix(in srgb, var(--muted) 75%, transparent); cursor: pointer; font: inherit; }
+.mstar.on { color: var(--accent); cursor: default; }
+.mstar.on .ic path { fill: currentColor; }
+.mstar i { font-style: normal; font-size: var(--fs-cap); font-weight: 600; }
+.mstar:disabled:not(.on) { opacity: .5; }
+.mrow.off .mrow-t { padding-left: 46px; }          /* under the names above, no box: it can't be ticked */
+.mmake { align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; margin-top: 7px; padding: 6px 12px; border-radius: 99px;
+  border: 1px solid var(--accent); background: none; color: var(--accent); font: inherit; font-size: var(--fs-cap); font-weight: 600;
+  cursor: pointer; white-space: nowrap; }
+.mmake:disabled { opacity: .5; }
+.vl-srv { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.vl-at { flex: 1; min-width: 0; text-align: left; background: none; border: 0; padding: 4px 0; color: var(--muted); font: inherit;
+  font-size: var(--fs-cap); overflow-wrap: anywhere; cursor: pointer; }
+.vl-re { flex: none; width: 40px; height: 40px; display: grid; place-items: center; border-radius: 50%; border: 1px solid var(--line);
+  background: none; color: var(--accent); cursor: pointer; }
+.vl-re.spin .ic { animation: vl-spin 1s linear infinite; }
+@keyframes vl-spin { to { transform: rotate(360deg); } }
+.vl-down { display: flex; gap: 6px; align-items: flex-start; margin-top: 6px; font-size: var(--fs-cap); color: var(--attn-ink); }
+.vl-down .ic { flex: none; margin-top: 1px; }
+.vl-fold { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; padding: 8px 2px;
+  background: none; border: 0; color: var(--link); font: inherit; font-size: var(--fs-sec); text-align: left; cursor: pointer; }
+.vl-fold .ic { flex: none; transition: transform .15s; }
+.vl-fold[aria-expanded="true"] .ic { transform: rotate(180deg); }
+.mlist.rest { border-style: dashed; }
+.vl-foot { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+.vl-foot .about-t { flex-basis: 100%; }
+.vl-add { display: flex; align-items: center; gap: 6px; margin-top: 8px; padding: 8px 2px; background: none; border: 0; color: var(--link);
+  font: inherit; font-size: var(--fs-sec); cursor: pointer; }
+.vl-add:disabled { opacity: .5; }
+.vl-fast { display: flex; align-items: center; gap: 6px; width: 100%; margin-top: 2px; padding: 8px 2px; background: none; border: 0;
+  color: var(--ink); font: inherit; font-size: var(--fs-sec); text-align: left; cursor: pointer; }
+.vl-fast b { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.vl-fast .ic { flex: none; color: var(--muted); }
 .vend-all-h { margin: 0 4px 6px; }
 .vend-all { margin-bottom: 4px; }
 .vend-all-t { margin: 6px 4px 12px; }

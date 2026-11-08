@@ -3,7 +3,9 @@ a made-up DeepSeek key (STAND_VENDORS=1), where the shop is DeepSeek's project: 
 model — DeepSeek in the shop, Claude in the support desk — and a tap on it opens the project's settings; the model field is
 the project model's own — DeepSeek's models, Codex's model and levels once the blog is Codex's; the task starts with it.
 Settings → Other vendors: the model of new projects — Claude, Codex or DeepSeek; DeepSeek's key is there, GLM's isn't; a
-bad key is refused with the vendor's words, a good one taken; the list of models is saved. A session on DeepSeek's model
+bad key is refused with the vendor's words, a good one taken; the list of models (2026-11-08): Pult's names with their
+windows and prices, the helpers' model by name; GLM's list comes with its key, a model added by its name, a bad one
+refused, the helpers' model from its sheet, the star, a tick off, the last one stays. A session on DeepSeek's model
 says so by the field — "DeepSeek · v4-pro", its name ending where Stop begins, on a narrow phone too — and its picker lists
 only DeepSeek's models; Home's "Running now" says which model does each task (the owner, 2026-10-30); "Your move" too — an
 outcome at its foot across from "Got it", a request on its top line before how long it waits (Q108) — and a finished
@@ -124,6 +126,15 @@ async def main():
         VEND = "[...document.querySelectorAll('.item.vend')].find((x) => x.querySelector('b').textContent === %r)"
         st = await pg.js("[...document.querySelectorAll('.item.vend')].map((x) => x.querySelector('.vend-st').textContent)")
         verdict("DeepSeek's key is there, GLM's and Kimi's aren't; the local model is off", st == ["ключ есть", "нет ключа", "нет ключа", "выключена"], st)
+        verdict("GLM without a key: only its key — no list of models yet", not await pg.js("!!(%s).querySelector('.mlist')" % (VEND % "GLM")))
+        ROWS = ("[...(%s).querySelectorAll('.mlist .mrow')].map((r) => [r.querySelector('b').textContent, (r.querySelector('.mrow-n .dim') || {}).textContent || '',"
+                " r.classList.contains('on'), !!r.querySelector('.mstar.on')])")
+        ds = await pg.js(ROWS % (VEND % "DeepSeek"))
+        verdict("DeepSeek's list: Pult's names, all ticked, the first the main one; the window and the price under each",
+                ds == [["deepseek-flash[1m]", "окно 1 млн · $0,15 / $0,60 за млн", True, True], ["deepseek-flash", "$0,15 / $0,60 за млн", True, False],
+                       ["deepseek-v4-pro[1m]", "окно 1 млн · $0,66 / $1,98 за млн", True, False]], ds)
+        fast = await pg.js("(%s).querySelector('.vl-fast').textContent" % (VEND % "DeepSeek"))
+        verdict("… the helpers' model by its name: deepseek-flash", fast == "Помощники:deepseek-flash", fast)
         typed = ("(() => { const i = (%s).querySelector('input[type=password]'); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;"
                  " set.call(i, %%r); i.dispatchEvent(new Event('input', {bubbles: true})); return true; })()" % (VEND % "GLM"))
         await pg.js(typed % "not-a-good-key-000000")
@@ -136,11 +147,41 @@ async def main():
         verdict("a good one is taken", s[0] == "alert" and "GLM принял ключ" in s[1], s)
         verdict("… and shows as there", await pg.until("(%s).querySelector('.vend-st').textContent === 'ключ есть'" % (VEND % "GLM"), 30))
         verdict("… and the computer never says the key", "sk-made-up-good-key" not in journal() and "vendor glm: key set" in journal())
-        models = ("(() => { const i = [...(%s).querySelectorAll('input')].at(-1); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;"
-                  " set.call(i, 'glm-4.7, glm-4.5-air'); i.dispatchEvent(new Event('input', {bubbles: true})); return true; })()" % (VEND % "GLM"))
-        await pg.js(models)
+        verdict("… its list comes with it: glm-4.7, ticked and the main one", await pg.until(
+            "JSON.stringify(%s) === %r" % (ROWS % (VEND % "GLM"), '[["glm-4.7","",true,true]]'), 30), await pg.js(ROWS % (VEND % "GLM")))
+        # a model added by its name: ticked, "added by you"; a bad name is refused
+        name = ("(() => { const i = [...(%s).querySelectorAll('.keyrow input')].at(-1); const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;"
+                " set.call(i, %%r); i.dispatchEvent(new Event('input', {bubbles: true})); return true; })()" % (VEND % "GLM"))
+        await pg.tap("(%s).querySelector('.vl-add')" % (VEND % "GLM"), wait=0.4)
+        await pg.js(name % "no good!")
         await pg.tap("[...(%s).querySelectorAll('.keyrow .btn')].at(-1)" % (VEND % "GLM"), wait=1.0)
-        verdict("the list of models is saved", "vendor glm: models glm-4.7, glm-4.5-air" in journal())
+        s = await said(pg)
+        verdict("a bad name is refused with what a name is", s[0] == "alert" and "Имя модели — латиница" in s[1], s)
+        verdict("… and the list stays as it was", await pg.js(ROWS % (VEND % "GLM")) == [["glm-4.7", "", True, True]])
+        await pg.js(name % "glm-4.5-air")
+        await pg.tap("[...(%s).querySelectorAll('.keyrow .btn')].at(-1)" % (VEND % "GLM"), wait=1.0)
+        verdict("a model added by its name: ticked, «добавлена тобой», saved", await pg.until(
+            "JSON.stringify(%s) === %r" % (ROWS % (VEND % "GLM"), '[["glm-4.7","",true,true],["glm-4.5-air","добавлена тобой",true,false]]'), 30)
+            and "vendor glm: models glm-4.7, glm-4.5-air, the helpers' glm-4.7" in journal(), journal()[-300:])
+        # the helpers' model: a sheet of the ticked ones
+        await pg.tap("(%s).querySelector('.vl-fast')" % (VEND % "GLM"), wait=0.6)
+        opts = await pg.js("[...document.querySelectorAll('.card.pick .opt')].map((b) => [b.textContent, b.classList.contains('on')])")
+        verdict("«Помощники»: a sheet of the ticked models, glm-4.7 on", opts == [["glm-4.7", True], ["glm-4.5-air", False]], opts)
+        await pg.shot(os.path.join(OUT, "settings-fast.png"))
+        await pg.tap(OPT % "glm-4.5-air", wait=1.0)
+        verdict("… glm-4.5-air for the helpers", "vendor glm: models glm-4.7, glm-4.5-air, the helpers' glm-4.5-air" in journal()
+                and await pg.js("(%s).querySelector('.vl-fast b').textContent" % (VEND % "GLM")) == "glm-4.5-air", journal()[-300:])
+        # the star: the main one — the row stays where it is
+        await pg.tap("[...(%s).querySelectorAll('.mrow')][1].querySelector('.mstar')" % (VEND % "GLM"), wait=1.0)
+        verdict("the star makes glm-4.5-air the main one; rows keep their places", await pg.until(
+            "JSON.stringify(%s) === %r" % (ROWS % (VEND % "GLM"), '[["glm-4.7","",true,false],["glm-4.5-air","добавлена тобой",true,true]]'), 30)
+            and "vendor glm: models glm-4.5-air, glm-4.7, the helpers' glm-4.5-air" in journal(), journal()[-300:])
+        # a tick off; the last one can't go
+        await pg.tap("[...(%s).querySelectorAll('.mrow')][0].querySelector('.mrow-t')" % (VEND % "GLM"), wait=1.0)
+        verdict("a tick off: glm-4.7 leaves the menu", "vendor glm: models glm-4.5-air, the helpers' glm-4.5-air" in journal(), journal()[-300:])
+        await pg.tap("[...(%s).querySelectorAll('.mrow')][1].querySelector('.mrow-t')" % (VEND % "GLM"), wait=0.6)
+        s = await said(pg)
+        verdict("… the last one stays: «Хотя бы одна модель остаётся с галочкой»", s[0] == "alert" and "Хотя бы одна модель" in s[1], s)
         await pg.js("(%s).scrollIntoView({block: 'start'})" % (VEND % "DeepSeek"))
         await asyncio.sleep(0.3)
         await pg.shot(os.path.join(OUT, "settings.png"))
