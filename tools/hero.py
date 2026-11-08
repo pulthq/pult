@@ -1,6 +1,6 @@
 """The README's opening picture: one model does a task, another checks it — in the app inside Telegram (the universal
 remote, Q113). The phone is the app itself on the test stand (tools/stand.py, made-up data): Home with a task on Opus
-beside one on DeepSeek, New task's "Who does it", DeepSeek's outcome with "Second opinion · Codex", Codex reading
+beside one on DeepSeek, a project's settings with its model to pick, DeepSeek's outcome with "Second opinion · Codex", Codex reading
 (tests/fake_codex.py stands in for it), its two findings and "Send to DeepSeek" — the button names the doer (Q116).
 Above the phone: the three steps — does it, checks it, fixes it — and a line saying what happens.
 
@@ -24,12 +24,12 @@ W, H = 440, 874              # the frame: the steps and a line above the phone, 
 GIF_W = 660                  # shown at about 420 in the README: sharp on a phone's screen, a few hundred KB
 
 D = {
-    "en": dict(steps=("does it", "checks it", "fixes it"), who="Who does it", send="Send to DeepSeek", lines=(
-        "Tasks run on different models — Opus and DeepSeek", "You pick who does a task: Claude, DeepSeek, GLM or Kimi",
+    "en": dict(steps=("does it", "checks it", "fixes it"), send="Send to DeepSeek", lines=(
+        "Tasks run on different models — Opus and DeepSeek", "A project's model is yours to pick: Claude, Codex, DeepSeek, GLM, Kimi or your own",
         "DeepSeek is done — under its outcome, a second opinion", "Codex reads what the task changed — and only reads",
         "Two findings, each at its place in the code", "Back to the doer in one tap")),
-    "ru": dict(steps=("делает", "проверяет", "исправляет"), who="Кто делает", send="Отправить DeepSeek", lines=(
-        "Задачи идут на разных моделях — Opus и DeepSeek", "Кто делает задачу — выбираешь сам: Claude, DeepSeek, GLM, Kimi",
+    "ru": dict(steps=("делает", "проверяет", "исправляет"), send="Отправить DeepSeek", lines=(
+        "Задачи идут на разных моделях — Opus и DeepSeek", "Модель проекта выбираешь сам: Claude, Codex, DeepSeek, GLM, Kimi или своя",
         "DeepSeek закончил — под итогом второе мнение", "Codex читает, что изменила задача, — и только читает",
         "Два замечания — у каждого место в коде", "Замечания — исполнителю одним касанием")),
 }[LANG if LANG in ("en", "ru") else "en"]
@@ -63,8 +63,9 @@ body { font: 15px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sa
 ASK = "document.querySelector('.card.outcome .sec-ask')"
 CARD = "document.querySelector('.card.second')"
 SEND = CARD + ".querySelector('.foot .btn')"
-WHO = ("[...document.querySelectorAll('.form .field')].find((b) => b.previousElementSibling"
-       " && b.previousElementSibling.textContent.trim() === %r)")
+# a project's model is picked in its settings, only while nothing runs there (7.2): the blog — Claude's, quiet on the stand
+QUIET = "-Users-x-blog"
+MODEL = "document.querySelector('.psets .ps-model')"
 VENDOR = "[...document.querySelectorAll('.card.pick.who .opt')].find((b) => b.textContent.trim().startsWith('DeepSeek'))"
 BOTTOM = "window.scrollTo(0, document.documentElement.scrollHeight)"
 RECT = "(() => { const b = (%s).getBoundingClientRect(); return [b.left, b.top, b.width, b.height]; })()"
@@ -114,10 +115,12 @@ async def screens(urls, tmp):
         await go(urls["HOME"])
         await need("task on DeepSeek running on Home", "document.body.innerText.includes('DeepSeek')")
         await snap("home")
-        await go(urls["NEW"])
-        await need("New task", "!!" + WHO % D["who"])
-        await pg.tap(WHO % D["who"], wait=0.6)
-        await need("Who does it sheet", "!!" + VENDOR)
+        await go(urls["PROJ"])
+        await need("the project's screen", "!!document.querySelector('.ph')")
+        await pg.js("location.hash = '#/ps/' + encodeURIComponent(%r)" % QUIET)
+        await need("the project's settings", "!!" + MODEL)
+        await pg.tap(MODEL, wait=0.6)
+        await need("the model sheet", "!!" + VENDOR)
         await snap("who", VENDOR)
         await go(urls["SESS4"])
         await need("second opinion under DeepSeek's outcome", "!!" + ASK)

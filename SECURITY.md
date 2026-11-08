@@ -1,8 +1,8 @@
 # Security
 
-Pult lets a Telegram account run AI agents on a computer — Claude Code, on Claude's models or another vendor's, and
-Codex for a second opinion — so security problems matter more here than in a typical chat bot. Thank you for reporting
-them carefully.
+Pult lets a Telegram account run AI agents on a computer — Claude Code, on Claude's models, another vendor's or
+your own, and Codex for a project's tasks or a second opinion — so security problems matter more here than in a
+typical chat bot. Thank you for reporting them carefully.
 
 ## Reporting a vulnerability
 
@@ -29,18 +29,18 @@ For example:
 - `pult send` or the app's "To Telegram" sending a file from outside the session's project folder or one that looks
   like keys or settings, or a file from Telegram landing outside the project's `inbox/`;
 - a project's code reaching another vendor (OpenAI through Codex; DeepSeek, GLM or Kimi) in a project the owner
-  didn't allow, or after **Disallow**;
+  didn't allow or didn't give that model, or after **Disallow**;
 - a vendor's session starting without the owner's key for it (Claude Code would send the Claude sign-in to the vendor's
-  address), a vendor's key leaking or read back through the app, or Codex getting any of Pult's keys or a sandbox that
-  can write.
+  address), a vendor's key leaking or read back through the app, or Codex getting any of Pult's keys, a review's
+  sandbox that can write, or a task's sandbox reaching outside the project's folder without the owner's answer.
 
 Things that are by design and not vulnerabilities:
 
 - whoever controls the owner's Telegram account controls Pult;
 - messages in Telegram are stored in Telegram's cloud;
 - sessions started from Telegram use the permission mode set in `PULT_PERMISSION_MODE` (`auto` by default);
-- in a project the owner allowed, a second opinion sends Codex what the task changed, and a vendor's session sends that
-  vendor the conversation and the files it reads — that is what they are for.
+- in a project the owner allowed, a second opinion sends Codex what the task changed; a task on the project's model sends
+  that vendor the conversation and the files it reads — that is what they are for.
 
 ## Supported versions
 

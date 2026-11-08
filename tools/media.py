@@ -8,8 +8,8 @@
   media/glance.{en,ru}[.dark].png   the whole of Pult in one look: its three sides — an app inside Telegram, any agent
                                     and model, models that work together — four tiles each
   media/steps.{en,ru}[.dark].png    how it works in three steps
-  media/f-<name>.{en,ru}[.dark].png one phone screen per feature: home, who, second, session, tags, pace, files,
-                                    newproject, parts (each from its stand — STANDS; MEDIA_PORT=<port> moves them all,
+  media/f-<name>.{en,ru}[.dark].png one phone screen per feature: home, who, local, second, session, tags, pace,
+                                    files, newproject, parts (each from its stand — STANDS; MEDIA_PORT=<port> moves them all,
                                     beside a stand someone else runs)
   media/social.png                  1280×640, the link preview: GitHub takes it only in the repository's settings
                                     (Settings → General → Social preview); there is no API for it
@@ -31,14 +31,17 @@ FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
 # a feature's screen: the stand's link, the window's height (CSS px at 412 wide), what to do before the picture, which
 # stand it comes from, and how long to wait after that (a second opinion takes the stand's Codex about five seconds)
 TO_BOTTOM = "window.scrollTo(0, document.documentElement.scrollHeight)"
-WHO = ("[...document.querySelectorAll('.form .field')].find((b) => b.previousElementSibling"
-       " && /^(Who does it|Кто делает)$/.test(b.previousElementSibling.textContent.trim())).click()")
+# a project's settings — the blog's: Claude's, nothing running there, so its model can be changed — and the model sheet open (7.2)
+WHO = "location.hash = '#/ps/-Users-x-blog'; setTimeout(() => document.querySelector('.psets .ps-model').click(), 900)"
+# the third tab of Resources — the local model's server: its disk, its card and the models by their weights
+LOCAL = ("[...document.querySelectorAll('.subtabs button')].find((b) => /^(Local model|Своя модель)$/.test(b.textContent.trim())).click()")
 # the first picture asks Codex; the second (the dark one) finds its card already there, kept till Reviewed
 SECOND = ("(() => { const b = document.querySelector('.card.outcome .sec-ask'); if (b) b.click();"
           " setTimeout(() => window.scrollTo(0, document.documentElement.scrollHeight), b ? 11000 : 300); })()")
 FEATURES = [
     ("home", "HOME", 760, "", "vendors", 1),
-    ("who", "NEW", 760, WHO, "vendors", 1),
+    ("who", "PROJ", 760, WHO, "vendors", 2),
+    ("local", "USAGE", 760, LOCAL, "local", 2),
     ("second", "SESS4", 760, SECOND, "second", 14),
     ("session", "SESS4", 760, TO_BOTTOM, "main", 1),
     ("tags", "PROJT", 760, "", "tags", 1),
@@ -48,11 +51,13 @@ FEATURES = [
     ("parts", "SETTINGS", 700, "", "tags", 1),
 ]
 # the plain stand; a third project full of tagged tasks and every part of Pult in Settings' table; a task on DeepSeek
-# running beside one on Opus, and other vendors in New task; Codex's second opinion on the shop's search
+# running beside one on Opus, and other vendors in New task; Codex's second opinion on the shop's search; the local
+# model's server with its reader beside Ollama, for the Local model tab
 PORT = int(os.environ.get("MEDIA_PORT") or 18097)
 STANDS = {"main": (str(PORT), {}), "tags": (str(PORT + 2), {"STAND_TAGS": "1", "STAND_PARTS": "now"}),
           "vendors": (str(PORT + 4), {"STAND_VENDORS": "1", "STAND_HOMES": "1"}),
-          "second": (str(PORT + 6), {"STAND_SECOND": "allowed"})}
+          "second": (str(PORT + 6), {"STAND_SECOND": "allowed"}),
+          "local": (str(PORT + 8), {"STAND_LOCAL": "on", "STAND_LOCAL_MANY": "1", "STAND_LOCAL_SRV": "1", "STAND_HOMES": "1"})}
 
 STEPS = {
     "en": [("Give the task to any model", "from the phone, or as usual in VS Code or a terminal: Pult picks up every session"),
@@ -72,7 +77,7 @@ GLANCE = {
                ("mic", "Voice and files", "speak — it arrives as text; files both ways")]),
            ("Any agent, any model", "on macOS, Linux or Windows", [
                ("tabs", "Every session", "VS Code tabs, a terminal, the phone"),
-               ("spark", "Who does it", "Claude, DeepSeek, GLM or Kimi"),
+               ("spark", "Who does it", "Claude, Codex, DeepSeek or your own"),
                ("gauge", "Model and effort", "per task, and a default"),
                ("tag", "Who did what", "the model on every card")]),
            ("Models work together", "one does the task, another checks it", [
@@ -87,7 +92,7 @@ GLANCE = {
                ("mic", "Голос и файлы", "скажи — придёт текстом; файлы в обе стороны")]),
            ("Любой агент и модель", "на macOS, Linux или Windows", [
                ("tabs", "Каждая сессия", "вкладки VS Code, терминал, телефон"),
-               ("spark", "Кто делает", "Claude, DeepSeek, GLM или Kimi"),
+               ("spark", "Кто делает", "Claude, Codex, DeepSeek или своя"),
                ("gauge", "Модель и раздумья", "на задачу и по умолчанию"),
                ("tag", "Кто что сделал", "модель на каждой карточке")]),
            ("Модели работают вместе", "одна делает задачу, другая проверяет", [

@@ -69,11 +69,12 @@ phone — on Claude's models or another vendor's, and another model can check wh
 
 ## Who does the task, who checks it
 
-Pult drives each vendor's own program: Claude Code for Claude's models and, inside it, for DeepSeek, GLM and Kimi;
-Codex for a second opinion. So one model can do a task and another check it — from the phone.
+Pult drives each vendor's own program: Claude Code for Claude's models and, inside it, for DeepSeek, GLM and Kimi and
+for a model of your own through Ollama; Codex for its own tasks and for a second opinion. So one model can do a task
+and another check it — from the phone.
 
-- **A project belongs to one model**: Claude, Codex, or DeepSeek, GLM or Kimi — it does every task of the project,
-  from the app and from Telegram. The project's screen names it under the name; the gear opens **Project settings**,
+- **A project belongs to one model**: Claude, Codex, DeepSeek, GLM or Kimi, or a model of your own — it does every task
+  of the project, from the app and from Telegram. The project's screen names it under the name; the gear opens **Project settings**,
   where it is changed — only while nothing runs in the project (a turn, a queue, a background task or helper), after
   saying where the code goes. The tasks of the model before stay, read only: open, read, copy; to go on with one, give
   the project its model back. New task's **Who does it** shows the project's model and leads to its settings; the model
@@ -188,9 +189,11 @@ code to Telegram the same way as Claude's turns.
   login again with the bot token, which never leaves it. The page runs scripts only from your server and Telegram.
 - **Alerts** with sound on an app login from a new network and on signs that someone else holds the bot token;
   Settings → Logins in the app logs every window out. A link whose words hide its address shows its domain.
-- **Other vendors:** a project's code reaches OpenAI only with a second opinion you ask for, and only once you
-  allowed that project. Codex reads in a read-only sandbox with your own ChatGPT sign-in; Pult gives it none of its
-  keys. Codex keeps the review in its own history, as with any task of yours.
+- **Other vendors:** a project's code reaches OpenAI only in a project whose model you made Codex — its tasks run in a
+  sandbox of the project's folder, and leaving it is asked — or with a second opinion you ask for, once you allowed that
+  project; a review reads in a read-only sandbox. Both with your own ChatGPT sign-in; Pult gives Codex none of its keys,
+  and it keeps the task or the review in its own history, as with any task of yours. DeepSeek, GLM and Kimi see a
+  project only as its model, with your key; your own model through Ollama sends nothing anywhere.
 - **Vendors' keys** live in `~/.config/pult/env` like the bot token; the app can set or remove one but never reads it
   back. Without a key Claude Code would send your Claude sign-in to the vendor's address, so Pult never starts a vendor
   session without one.
@@ -208,10 +211,12 @@ your accounts and your plans' limits, the same as you would by hand.
   including agents built on the Claude Agent SDK."* Pult doesn't offer a login: it runs your own Claude Code for
   you. Still, read the terms of your plan and decide for yourself. Claude Code can also be signed in with an
   Anthropic API key; Pult hasn't been tested that way yet.
-- **Codex** — your ChatGPT sign-in, in Codex's own program; a review takes a share of your plan's Codex windows (its card
-  says how much of the 5-hour one is taken).
+- **Codex** — your ChatGPT sign-in, in Codex's own program; a task or a review takes a share of your plan's Codex windows
+  (a review's card says how much of the 5-hour one is taken).
 - **DeepSeek, GLM, Kimi** — your key with each, paid to them at their prices. Claude Code's prompts are written for
   Claude, and Anthropic doesn't support other models inside it.
+- **A model of your own** — Ollama on your computer, or on another one of yours: free, and nothing leaves them; weaker and
+  slower than Claude, for the simpler tasks.
 
 Pult is an independent open-source project, not affiliated with or endorsed by Anthropic, OpenAI or any other vendor
 it works with. Claude and Claude Code are trademarks of Anthropic, Codex and ChatGPT of OpenAI; other names belong to

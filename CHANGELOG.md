@@ -4,6 +4,14 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.54 — 2026-11-08
+
+- **The docs brought up to date.** README's pictures taken on the current app — the context line along Home's cards,
+  the model on every card, Pult's parts with the fresh Claude Code rows — and a picture of the Local model tab, its own
+  section; the guide, SECURITY, CONTRIBUTING, ARCHITECTURE and the agents' notes say that Codex does a project's tasks
+  too, not only a second opinion, name the small reader beside Ollama and the copies of Claude Code the app's tasks run
+  on; the install guide lists the Claude Code versions Pult's own check passed.
+
 ## 0.18.53 — 2026-11-08
 
 - **A tab for your own model.** Resources gets a third tab, Local model (Settings' card is now a line that opens it):

@@ -22,7 +22,7 @@ flowchart LR
     D <-->|"local socket"| WRAP["tab wrapper<br/>pult_tab.py"]
     WRAP <-->|"stream-json, byte for byte"| CCT["Claude Code<br/>in a VS Code tab"]
     D -->|"Agent SDK"| CCS["Claude Code<br/>sessions from the phone"]
-    D <-->|"app-server, read-only"| CX["Codex<br/>a second opinion"]
+    D <-->|"app-server: tasks in a sandbox, reviews read-only"| CX["Codex<br/>tasks and a second opinion"]
     LOGS[("transcripts<br/>~/.claude/projects")] -.->|"read only"| D
     D --- DB[("state.db")]
   end
@@ -51,8 +51,8 @@ flowchart LR
 | **pult_tab.py** | an optional `claudeCode.claudeProcessWrapper` between the VS Code extension and Claude Code | the only way to put a message into a tab that is already open |
 | **Agent SDK** | sessions started from Telegram or the app run your own Claude Code in the project's folder, by default in its `auto` permission mode (`PULT_PERMISSION_MODE`) — Claude's own on the newest version VS Code has downloaded that passed Pult's check of such a session on your computer (Pult keeps a copy of it), else on the one the SDK carries | same settings, same system prompt, same plan as a terminal |
 | **another vendor's model** | DeepSeek, GLM and Kimi answer Claude Code's own protocol at an address of theirs: a session Pult starts gets that address, your key and the vendor's models by role (`pult_vendors.py`) | the same Claude Code, hooks and cards — only the model differs; only in a project you allowed, never without a key |
-| **a model of your own** | Ollama answers the same protocol at this computer's own address — http://127.0.0.1 or localhost only; another computer is reached by a tunnel you keep. Pult asks it which models can use tools and each one's context (`num_ctx`), takes only those with 16K or more, gives the session a stand-in key, the five core tools and one model for every role, and checks the server answers before a task starts (`pult_vendors.py`) | free, the code stays home; Ollama cuts a longer request silently, so the context must be known; all 25 tools were slow and sloppy on a 12B model, the five right in seconds (probe 2026-11-04) |
-| **Codex** | OpenAI's agent, found where ChatGPT for Mac or the `codex` command is; driven over its `app-server` protocol (JSON-RPC), in a read-only sandbox that asks nothing, one review at a time (`pult_codex.py`) | a second opinion from another vendor, on your own ChatGPT sign-in; Pult gives it none of its keys |
+| **a model of your own** | Ollama answers the same protocol at this computer's own address — http://127.0.0.1 or localhost only; another computer is reached by a tunnel you keep. Pult asks it which models can use tools and each one's context (`num_ctx`), takes only those with 16K or more, gives the session a stand-in key, the five core tools and one model for every role, and checks the server answers before a task starts (`pult_vendors.py`); the server's disk and card, for the Local model tab, come from a small reader beside Ollama (`deploy/ollama-info/`) | free, the code stays home; Ollama cuts a longer request silently, so the context must be known; all 25 tools were slow and sloppy on a 12B model, the five right in seconds (probe 2026-11-04) |
+| **Codex** | OpenAI's agent, found where ChatGPT for Mac or the `codex` command is; driven over its `app-server` protocol (JSON-RPC): a project's tasks in a sandbox of its folder, asking only to leave it (`pult_driven.CodexDriven`); a review in a read-only one that asks nothing, one at a time (`pult_codex.py`) | a task or a second opinion from another vendor, on your own ChatGPT sign-in; Pult gives it none of its keys |
 | **relay.py** | a WebSocket relay on a small Linux server (~50 MB of memory) | Telegram opens Mini Apps only from public HTTPS; the computer stays closed |
 | **Mini App** | Preact + htm, no build step, served by the relay | a full screen on the phone: transcripts, answers, new tasks, usage |
 
@@ -251,6 +251,7 @@ flowchart LR
 | `src/pultctl.py`, `src/pult_setup.py` | the `pult` command; install, the setup wizard, the report, uninstall |
 | `relay/relay.py`, `relay/web/` | the relay and the Mini App (Preact + htm, no build step) |
 | `deploy/relay/` | the relay on your server: `install.sh`, its systemd units, `update.py` — the updater that takes the computer's release from GitHub |
+| `deploy/ollama-info/` | a small reader beside Ollama for the Local model tab: the server's disk and graphics card as one JSON per request, a systemd socket on 127.0.0.1:11436 (Ollama tells neither); forward its port the way Ollama's goes |
 
 ## Where things live
 
@@ -263,6 +264,7 @@ flowchart LR
 | hooks | `~/.claude/settings.json`, entries that name `pult_hook.py` |
 | the tab wrapper | the VS Code setting `claudeCode.claudeProcessWrapper` (you add the line) |
 | logs | `~/Library/Logs/pult.log` (macOS), `~/.local/state/pult/pult.log` (Linux, Windows) |
+| copies of Claude Code for the app's tasks | `~/.local/share/pult/claude/<version>/claude` — a version VS Code downloaded that passed Pult's check, the two newest kept; the tasks from the app run on the newest, other vendors' and your own model on the SDK's built-in one |
 
 ## Tests
 
