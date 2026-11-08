@@ -30,11 +30,24 @@ Modelfile), so a model made from another with a context set ("gemma4-32k" from g
 and a model without a context gets a copy with one on the owner's tap (/api/create: "from" and "parameters" — no second
 copy of the weights). tests/probe_local.py --copy on Ollama 0.40.14 (2026-11-08): a copy and its base name one blob in
 their FROM; the copy came in 0.15 s with its base's weights, and the models' folder kept its size.
+What an "uncensored" model that refused inside Pult showed (a gemma4 12B from Ollama's library, Ollama 0.40.14, Claude
+Code 2.1.300; its task's own request replayed, 3 tries a variant, 2026-11-08):
+  • a request with a system prompt of its own goes without the model's SYSTEM from its Modelfile, and Claude Code always
+    brings one; that model is uncensored by its SYSTEM and a thought its template puts before each answer — its weights
+    alone refused 6 times of 6 — so its task's request, replayed, refused 6 of 6: "my rules forbid it". Its SYSTEM after
+    the line on who it is: no refusal of 3 — so a session of one's own model gets it there (model_system, identity);
+  • the line's "its tools and rules are yours" was what tipped it: without "and rules", or without the line, no refusal of
+    3; the line now gives Claude Code's tools, not Claude's rules;
+  • Claude Code reads CLAUDE.md in every folder above the project, and from ~ it took the owner's ~/.claude/CLAUDE.md for a
+    project's in a session with a home of its own (tests/probe_home.py, the project's folder inside ~ as the owner's are;
+    before, in the system's temporary folder, it never showed) — claudeMdExcludes in the session's settings keeps it out
+    (md_excludes); the owner's skills stayed out either way.
 Standard library and httpx (the key's check). Design: docs/project.html, stage M.
 """
 import json
 import os
 import re
+from pathlib import Path
 
 import httpx
 
@@ -77,6 +90,7 @@ LOCAL_CTX_MIN = 16384      # tokens: the five tools' first request is ~5K (the p
 LOCAL_CTX_COPY = 32768     # the context of a copy Pult makes: the one gemma4:12b ran with on a 16 GB card (the probe, 2026-11-04)
 LOCAL_OUT_MAX = 8192       # tokens an answer may take: it has to fit in the context with the prompt
 LOCAL_REACH = 3            # s to answer "is it there" before a task starts
+OWN_SYSTEM_MAX = 4000      # chars of one's own model's own instructions passed on: a Modelfile's SYSTEM is a few lines
 LOOPBACK = re.compile(r"http://(127\.0\.0\.1|localhost|\[::1\])(:\d{1,5})?")
 CLOUD = re.compile(r"(^|[-:])cloud\b", re.I)       # Ollama's cloud models run on ollama.com: not one's own
 
@@ -91,12 +105,33 @@ MAKERS = {"deepseek": "a DeepSeek model", "glm": "a GLM model by Z.ai", "kimi": 
 LANGS = {"en": "English", "ru": "Russian"}
 
 
-def identity(vid, model):
-    """The line appended to Claude Code's system prompt in a session on another vendor's model: who it is."""
+def identity(vid, model, own=""):
+    """The line appended to Claude Code's system prompt in a session on another vendor's model: who it is — Claude Code's
+    tools are its, nothing said of Claude's rules ("its tools and rules are yours" made a model of one's own refuse,
+    citing its rules: 2026-11-08). own — one's own model's instructions from its Modelfile, after the line: Ollama
+    leaves them out of a request that brings a system prompt (model_system)."""
     model = re.sub(r"\[1m\]$", "", str(model or ""))
-    return ("Who you are: you are not Claude. You are %s, %s, working inside Claude Code through Pult. The text above "
-            "was written for Claude: its tools and rules are yours, but when asked who or what you are, say you are %s."
+    line = ("Who you are: you are not Claude. You are %s, %s, working inside Claude Code through Pult. The text above "
+            "was written for Claude: its tools are yours, but when asked who or what you are, say you are %s."
             % (model, MAKERS.get(vid, "another vendor's model"), model))
+    own = str(own or "").strip()[:OWN_SYSTEM_MAX]
+    return line + ("\n\nYour own instructions, from your Modelfile:\n" + own if own else "")
+
+
+def md_excludes(home):
+    """claudeMdExcludes of a vendor's session: the owner's own CLAUDE.md and rules — in home (their Claude Code home,
+    ~/.claude) and in CLAUDE_CONFIG_DIR's when the daemon runs with one. Claude Code reads CLAUDE.md in every folder above
+    the project, and from ~ it takes ~/.claude/CLAUDE.md for a project's when the session's home is another
+    (tests/probe_home.py, 2.1.300); the patterns are absolute paths, matched with forward slashes."""
+    homes = [Path(home).expanduser()]
+    if os.environ.get("CLAUDE_CONFIG_DIR"):
+        homes.append(Path(os.environ["CLAUDE_CONFIG_DIR"]).expanduser())
+    out = []
+    for h in homes:
+        for x in ((h / "CLAUDE.md").as_posix(), (h / "rules").as_posix() + "/**"):
+            if x not in out:
+                out.append(x)
+    return out
 
 
 def home_rules(lang):
@@ -250,7 +285,7 @@ async def check_local(url, transport=None):
             models = []
             for m in tags:
                 name = m.get("name") or m.get("model")
-                if not isinstance(name, str) or CLOUD.search(name) or not MODEL_RE.fullmatch(name):
+                if not isinstance(name, str) or CLOUD.search(name) or not MODEL_RE.fullmatch(name) or name.startswith(WAS_NS):
                     continue
                 show = (await c.post(url + "/api/show", json={"model": name})).json()
                 n = re.search(r"(?m)^num_ctx\s+(\d+)", show.get("parameters") or "")
@@ -296,6 +331,20 @@ async def make_copy(url, name, ctx, taken, transport=None):
     if r.status_code != 200 or got.get("status") != "success":
         raise VendorError("other", str(got.get("error") or got.get("status") or "HTTP %d" % r.status_code)[:200])
     return new
+
+
+async def model_system(url, model, transport=None):
+    """One's own model's own instructions — the SYSTEM of its Modelfile (/api/show) — or "": none, or no answer. A request
+    with a system prompt of its own goes without them, and Claude Code always brings one, so Pult passes them on after the
+    line on who the model is (identity). Never through a proxy, never loads the model."""
+    kw = dict(transport=transport) if transport is not None else {}
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5, connect=LOCAL_REACH), trust_env=False, **kw) as c:
+            r = await c.post(str(url).rstrip("/") + "/api/show", json={"model": model})
+            text = r.json().get("system") if r.status_code == 200 else None
+    except (httpx.HTTPError, ValueError, AttributeError):
+        return ""
+    return text.strip() if isinstance(text, str) else ""
 
 
 async def reach(url, transport=None):
@@ -411,7 +460,7 @@ async def local_now(url, transport=None):
             tags, ps = [], []
             for m in (await c.get(url + "/api/tags")).json().get("models") or []:
                 name = m.get("name") or m.get("model")
-                if isinstance(name, str) and MODEL_RE.fullmatch(name) and not CLOUD.search(name):
+                if isinstance(name, str) and MODEL_RE.fullmatch(name) and not CLOUD.search(name) and not name.startswith(WAS_NS):
                     tags.append({"name": name.removesuffix(":latest"), "size": _int(m.get("size")),
                                  "digest": str(m.get("digest") or "")[:12]})
             for m in (await c.get(url + "/api/ps")).json().get("models") or []:
@@ -553,3 +602,202 @@ async def _local_call(url, method, path, body, transport=None):
         except ValueError:
             why = None
         raise VendorError("other", str(why or "HTTP %d" % r.status_code)[:200])
+
+
+# One's own model's settings (stage M, step 6.5; the owner, 2026-11-08: "the system settings of each model separately" —
+# lesson 6 of his own course on local models: "the system prompt, the temperature, the context length — through the
+# Modelfile"). What reaches the model, found 2026-11-08 — Claude Code 2.1.300 as Pult runs one's own model, on a stand-in
+# server (tools: the five; thinking off, effort low, auto — each tried), and Ollama 0.40.14's own source:
+#   • Claude Code's request names no temperature, top_p, top_k or stop — only max_tokens and its effort (and adaptive
+#     thinking); Ollama lays a request's options over the Modelfile's PARAMETERs, and those over the weights' own
+#     sampling (general.sampling.*: server/routes.go modelOptions) — so a task gets the Modelfile's sampling and context;
+#   • its SYSTEM Ollama leaves out — Claude Code brings a system prompt of its own — and Pult passes it on (model_system);
+#   • thinking isn't the Modelfile's to set, nor Pult's: Claude Code never says "disabled", and Ollama has a model that
+#     can think do so when nothing says otherwise; keep_alive isn't a Modelfile's parameter either;
+#   • /api/create from the model over its own name keeps every layer it isn't given (the weights, the template),
+#     replaces the SYSTEM it is given — never with nothing — and lays the parameters over the ones there
+#     (create.ApplyModelfileLayers): a parameter once set can't be unset, an instruction can't be emptied. So the first
+#     change keeps the model as it was in a copy of its own (WAS_NS — a few lines, the weights stay one) to come back to.
+TUNE = {"temperature": (0.0, 2.0), "top_k": (1, 200), "top_p": (0.05, 1.0), "min_p": (0.0, 1.0),
+        "repeat_penalty": (0.5, 2.0), "presence_penalty": (-2.0, 2.0)}
+TUNE_INT = ("top_k",)
+OLLAMA_DEFAULTS = {"temperature": 0.8, "top_k": 40, "top_p": 0.9, "min_p": 0.0, "repeat_penalty": 1.0,
+                   "presence_penalty": 0.0}              # api.DefaultOptions, v0.40.14: what is left when nothing sets one
+SAMPLING = {"temperature": "general.sampling.temp", "top_k": "general.sampling.top_k", "top_p": "general.sampling.top_p"}
+CTXS = (16384, 32768, 65536, 131072, 262144)
+CARD_OVERHEAD = int(1.3 * 1000 ** 3)   # bytes a loaded model takes past its weights and cache: gemma4-32k took 10.2 GB of
+                                       # the card with 32K (nvidia-smi, 2026-11-04) — 8.02 of weights, 0.87 of cache
+WAS_NS = "pult-was/"                   # the copy of a model as it was before Pult first changed it
+LOCAL_ALL_CTX = 65536                  # all of Claude Code's tools: their descriptions alone are ~22K tokens of the first
+                                       # request (tests/probe_local.py, 2026-11-04) — a context of 64K at least
+
+
+def parse_params(text):
+    """/api/show's "parameters" — lines of "name value", a name more than once for a list (stop) → {name: value}."""
+    out = {}
+    for line in str(text or "").splitlines():
+        k, _, v = line.strip().partition(" ")
+        v = v.strip()
+        if not k or not v:
+            continue
+        if len(v) >= 2 and v[0] == v[-1] == '"':
+            v = v[1:-1]
+        val = int(v) if re.fullmatch(r"-?\d+", v) else float(v) if re.fullmatch(r"-?(\d+\.\d*|\.\d+|\d+(\.\d*)?e-?\d+)", v) else v
+        out[k] = (out[k] if isinstance(out[k], list) else [out[k]]) + [val] if k in out else val
+    return out
+
+
+def kv_cost(info):
+    """What a model's cache takes on the card, by its make (/api/show's model_info): bytes per token of the context — the
+    layers that see the whole of it — and a fixed part — the layers that see a window (gemma4: 40 of its 48, 1024 tokens)
+    or keep a state of their own (qwen3.5: 24 of 32 take nothing that grows); f16 — two bytes a number, keys and
+    values. → (per_token, fixed), or None when the make isn't told."""
+    arch = info.get("general.architecture") if isinstance(info, dict) else None
+    if not isinstance(arch, str):
+        return None
+
+    def g(k):
+        return info.get("%s.%s" % (arch, k))
+    n, kv = g("block_count"), g("attention.head_count_kv")
+    kl, vl = g("attention.key_length"), g("attention.value_length")
+    if not isinstance(n, int) or n <= 0 or kv is None:
+        return None
+    if not isinstance(kl, int) or not isinstance(vl, int):
+        emb, heads = g("embedding_length"), g("attention.head_count")
+        if not (isinstance(emb, int) and isinstance(heads, int) and heads > 0):
+            return None
+        kl = vl = emb // heads
+    kls, vls = g("attention.key_length_swa") or kl, g("attention.value_length_swa") or vl
+    swa, win = g("attention.sliding_window_pattern"), g("attention.sliding_window")
+    rec, every = g("attention.recurrent_layers"), g("full_attention_interval")
+    per = fixed = 0
+    for i in range(n):
+        h = kv[i] if isinstance(kv, list) and i < len(kv) else kv
+        if not isinstance(h, int) or isinstance(h, bool):
+            return None
+        if isinstance(rec, list) and i < len(rec):
+            state = bool(rec[i])
+        else:
+            state = isinstance(every, int) and every > 1 and (i + 1) % every != 0
+        if state:
+            continue
+        if isinstance(swa, list) and i < len(swa) and swa[i] and isinstance(win, int) and win > 0:
+            fixed += h * (kls + vls) * 2 * win
+        else:
+            per += h * (kl + vl) * 2
+    return per, fixed
+
+
+def vram_at(size, cost, ctx):
+    """How much of the card a model takes with this context: its weights, its cache by its make (kv_cost) and what a
+    loaded model takes past them — a rough count; without the make — the cache growing as vram_need has it at 32K."""
+    if not size:
+        return None
+    if not cost:
+        return int(size * (1 + 0.2 * ctx / LOCAL_CTX_COPY))
+    per, fixed = cost
+    return int(size + fixed + per * ctx + CARD_OVERHEAD)
+
+
+def local_tools(ctx, choice):
+    """The tools a task of one's own model gets: the five core ones (LOCAL_TOOLS), or — when its settings say "all" and
+    its context takes them (LOCAL_ALL_CTX) — None: no list, every tool Claude Code has."""
+    return None if choice == "all" and (ctx or 0) >= LOCAL_ALL_CTX else list(LOCAL_TOOLS)
+
+
+def tune_value(k, v):
+    """One of the owner's values for parameter k → the number to write, or ValueError: a name not offered, a value out
+    of its range."""
+    if k not in TUNE or isinstance(v, bool):
+        raise ValueError(k)
+    lo, hi = TUNE[k]
+    x = float(v)
+    if not lo <= x <= hi:
+        raise ValueError(k)
+    return int(round(x)) if k in TUNE_INT else round(x, 3)
+
+
+async def model_show(url, model, transport=None):
+    """A model's settings as its server has them (/api/show): its SYSTEM, its PARAMETERs, what it was trained for, what
+    it can do, its cache's cost (kv_cost) and its weights' own sampling — what a parameter not set falls back to. Never
+    through a proxy, never loads it. → {"system", "params", "max", "caps", "cost", "sampling"}; VendorError "url",
+    "net", "model" (no such model there)."""
+    url = str(url or "").rstrip("/")
+    if not url_ok(LOCAL, url):
+        raise VendorError("url", url)
+    kw = dict(transport=transport) if transport is not None else {}
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10, connect=LOCAL_REACH), trust_env=False, **kw) as c:
+            r = await c.post(url + "/api/show", json={"model": model})
+    except httpx.TransportError as e:
+        raise VendorError("net", type(e).__name__) from None
+    try:
+        d = r.json() if r.status_code == 200 else {}
+    except ValueError:
+        d = {}
+    if not isinstance(d, dict) or not d:
+        raise VendorError("model", model)
+    info = d.get("model_info") if isinstance(d.get("model_info"), dict) else {}
+    top = next((v for k, v in info.items() if k.endswith(".context_length") and isinstance(v, int)), None)
+    sampling = {k: info[x] for k, x in SAMPLING.items() if isinstance(info.get(x), (int, float)) and not isinstance(info.get(x), bool)}
+    system = d.get("system") if isinstance(d.get("system"), str) else ""
+    return {"system": system.strip(), "params": parse_params(d.get("parameters")), "max": top,
+            "caps": [x for x in d.get("capabilities") or [] if isinstance(x, str)], "cost": kv_cost(info), "sampling": sampling}
+
+
+def was_name(model):
+    """The name of a model's copy as it was before Pult first changed it: "qwen3.5:4b" → "pult-was/qwen3.5-4b"."""
+    return WAS_NS + re.sub(r"[:/]", "-", model.removesuffix(":latest"))[:70]
+
+
+async def tune(url, model, system=None, params=None, keep=False, transport=None):
+    """A model's settings into the model itself (Settings of a model → "Save", the owner's tap): first, when keep — the
+    model as it was, into its copy WAS_NS (a few lines; its weights stay one copy); then /api/create from the model over
+    its own name with the SYSTEM (an empty one can't be written: a space takes its place, and Pult passes nothing on)
+    and the parameters laid over its own. VendorError "url", "net", "other"."""
+    url = str(url or "").rstrip("/")
+    if not url_ok(LOCAL, url):
+        raise VendorError("url", url)
+    if keep and not await _exists(url, was_name(model), transport):    # one kept already is the true "as it was"
+        await _create(url, {"model": was_name(model), "from": model}, transport)
+    body = {"model": model, "from": model}
+    if system is not None:
+        body["system"] = str(system).strip()[:OWN_SYSTEM_MAX] or " "
+    if params:
+        body["parameters"] = dict(params)
+    if len(body) > 2:
+        await _create(url, body, transport)
+
+
+async def untune(url, model, transport=None):
+    """A model back as it was before Pult first changed it: made anew from its copy WAS_NS, which then goes."""
+    url = str(url or "").rstrip("/")
+    if not url_ok(LOCAL, url):
+        raise VendorError("url", url)
+    await _create(url, {"model": model, "from": was_name(model)}, transport)
+    await _local_call(url, "DELETE", "/api/delete", {"model": was_name(model)}, transport)
+
+
+async def _exists(url, model, transport=None):
+    """Whether the server has this model (/api/show answers it): nothing is loaded."""
+    kw = dict(transport=transport) if transport is not None else {}
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10, connect=LOCAL_REACH), trust_env=False, **kw) as c:
+            return (await c.post(url + "/api/show", json={"model": model})).status_code == 200
+    except httpx.TransportError as e:
+        raise VendorError("net", type(e).__name__) from None
+
+
+async def _create(url, body, transport=None):
+    kw = dict(transport=transport) if transport is not None else {}
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=LOCAL_REACH), trust_env=False, **kw) as c:
+            r = await c.post(url + "/api/create", json=dict(body, stream=False))
+    except httpx.TransportError as e:
+        raise VendorError("net", type(e).__name__) from None
+    try:
+        got = r.json()
+    except ValueError:
+        got = {}
+    if r.status_code != 200 or got.get("status") != "success":
+        raise VendorError("other", str(got.get("error") or got.get("status") or "HTTP %d" % r.status_code)[:200])

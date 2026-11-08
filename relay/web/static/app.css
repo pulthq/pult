@@ -1126,3 +1126,57 @@ button.tagc { border: 0; font-family: inherit; cursor: pointer; }
   border-top: 1px solid var(--line); color: var(--link, var(--accent)); text-decoration: none; font-weight: 600; }
 .lp-bar.thin { height: 5px; margin: 6px 0 2px; }
 .lp-home { margin-top: 8px; }
+
+/* a model's settings (stage M, step 6.5): Resources → Local model → a model → Settings */
+.lm { padding-bottom: 24px; }
+.lm h3 { margin-top: 22px; }
+.lm-t { overflow-wrap: anywhere; margin-bottom: 2px; }
+.lm-sub { font-size: var(--fs-sec); }
+.lm-in { margin-top: 10px; }
+.lm-in-t { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lm-in-t svg { width: 18px; height: 18px; flex: none; }
+.lm-sys { width: 100%; min-height: 120px; background: var(--card); border-color: var(--line); line-height: 1.4; font-size: var(--fs-sec); }
+.lm-cnt { display: flex; justify-content: space-between; gap: 12px; margin-top: 6px; }
+.lm-n { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.lm-ctxs { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 6px; }
+.lm-ctx { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 2px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--card); color: var(--ink); cursor: pointer; font-size: var(--fs-sec); }
+.lm-ctx b { white-space: nowrap; font-size: clamp(12px, 3.6vw, 15px); }
+.lm-ctx span { font-size: clamp(10.5px, 2.9vw, 12px); color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.lm-ctx.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.lm-ctx.on span { color: inherit; opacity: .85; }
+.lm-ctx.over:not(.on) span { color: var(--attn-ink); }
+.lm-ctx.over.on { background: var(--attn-ink); border-color: var(--attn-ink); }
+.lm-ctx:disabled { opacity: .55; cursor: default; }
+.lm-note { margin-top: 6px; }
+.lm-note.warn { color: var(--attn-ink); }
+.lm-h { display: flex; align-items: baseline; justify-content: space-between; }
+.lm-val { font-variant-numeric: tabular-nums; font-weight: 600; }
+.lm-range { -webkit-appearance: none; appearance: none; width: 100%; height: 28px; background: transparent; padding: 0; margin: 4px 0 0; border: 0; }
+.lm-range::-webkit-slider-runnable-track { height: 6px; border-radius: 3px;
+  background: linear-gradient(to right, var(--accent) 0 var(--p), var(--line) var(--p) 100%); }
+.lm-range::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; margin-top: -9px; border-radius: 50%;
+  background: var(--card); border: 2px solid var(--accent); box-shadow: 0 1px 3px rgba(0, 0, 0, .2); }
+.lm-range::-moz-range-track { height: 6px; border-radius: 3px; background: var(--line); }
+.lm-range::-moz-range-progress { height: 6px; border-radius: 3px; background: var(--accent); }
+.lm-range::-moz-range-thumb { width: 22px; height: 22px; border-radius: 50%; background: var(--card); border: 2px solid var(--accent); }
+.lm-scale { display: flex; justify-content: space-between; }
+.lm-fine-h { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 8px; margin-top: 14px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--ink); text-align: left; cursor: pointer; }
+.lm-fine-h span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.lm-fine-h i { font-style: normal; font-size: 12px; overflow-wrap: anywhere; }
+.lm-fine-h.open { border-radius: 12px 12px 0 0; }
+.lm-fine { margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0; }
+.lm-p { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.lm-p span { display: flex; flex-direction: column; min-width: 0; }
+.lm-p b { font-family: var(--mono, ui-monospace, monospace); font-size: 13.5px; font-weight: 600; }
+.lm-p i { font-style: normal; font-size: 12px; }
+.lm-p input { width: 76px; flex: none; text-align: right; background: var(--card); border-color: var(--line); font-variant-numeric: tabular-nums; }
+.lm-l { margin: 12px 0 6px; font-size: var(--fs-sec); font-weight: 600; }
+.lm .seg button { white-space: normal; line-height: 1.2; }
+.lm-save { margin-top: 24px; }
+.lm-where { margin-top: 8px; }
+.lm-was { display: inline-flex; align-items: center; gap: 4px; margin-top: 14px; }
+.lm-chev { display: inline-flex; transform: rotate(90deg); transition: transform .15s; color: var(--muted); }
+.lm-fine-h.open .lm-chev { transform: rotate(-90deg); }
+.lm-p.def input { color: var(--muted); }

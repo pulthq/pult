@@ -95,7 +95,9 @@ a project unless you switch it on; its Telegram topic can get only "done", witho
 
 Ollama on this computer, or on another one through a tunnel — free, and the code stays home. It takes a project like
 any other model; the Local model tab in Resources shows that server's disk and graphics card and what each model
-takes, unloads, removes and downloads models, with the download's progress on Home too.
+takes, unloads, removes and downloads models, with the download's progress on Home too. Each model has its own
+settings — the system prompt, the context length with the graphics card it would take, the temperature — written into
+the model itself, with a way back to how it was.
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="media/f-local.en.dark.png"><img src="media/f-local.en.png" width="330" alt="Resources in the app, the Local model tab: the server's disk — 150 GB free, the models' 17.9 GB and the room for new ones with 60 GB kept free — its graphics card with no model loaded yet, and the models by their weights: gemma4:12b with its 32k copy that adds 0 GB, then qwen3.5:9b"></picture></p>
 

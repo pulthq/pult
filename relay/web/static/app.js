@@ -9,7 +9,7 @@ import { UPD_RUN_MAX } from "./core/update.js";
 import { Home } from "./screens/home.js";
 import { NewProject, NewTask, Project, Projects } from "./screens/projects.js";
 import { ProjectSettings } from "./screens/projset.js";
-import { LocalPanel } from "./screens/local.js";
+import { LocalModel, LocalPanel } from "./screens/local.js";
 import { Resources } from "./screens/resources.js";
 import { FileHost, Session, TurnFilesScreen } from "./screens/session.js";
 import { Settings, ddmm } from "./screens/settings.js";
@@ -62,6 +62,7 @@ function App() {
     : r.name === "usage" ? html`<${Resources}/>`
     : r.name === "load" ? html`<${Load}/>`
     : r.name === "local" ? html`<${LocalPanel}/>`
+    : r.name === "lm" ? html`<${LocalModel} key=${r.id} name=${r.id}/>`
     : r.name === "settings" ? html`<${Settings}/>`
     : html`<${Home}/>`;
   const tab = (name, h, label, icon) => html`<a class=${(r.name === name ? "on" : "") + (name === "new" ? " new" : "")} href=${h}><span class="ti">${ic(icon, 22)}</span><span class="tl">${label}</span></a>`;

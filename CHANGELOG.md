@@ -4,6 +4,30 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.55 — 2026-11-08
+
+- **The settings of each model of your own.** A tap on a model in Resources → Local model → **Settings of the model**:
+  its system prompt, its context length — each length with how much of the graphics card it would take, counted from
+  the model's own layers — its temperature and, folded under **Fine tuning**, top_k, top_p, min_p, repeat_penalty and
+  presence_penalty. They go into the model itself (`/api/create` over its own name), the way `ollama create` does it:
+  Claude Code's requests carry none of them, so a task gets what the Modelfile says, and the model behaves the same
+  outside Pult. The first change keeps the model as it was in a copy of a few lines (`pult-was/…`, the weights stay
+  one), **Back as it was before Pult** restores it — Ollama can't empty a prompt or unset a parameter. Pult's own part,
+  per model: all of Claude Code's tools instead of the five (from a 64K context), and freeing the graphics card after
+  each turn. The context doesn't change under a running task, and a change of it or of the tools closes the model's
+  idle task processes, so the next turn starts with the new window. Thinking stays as the model has it: Claude Code
+  never asks for none, and Ollama has a model that can think do so.
+- **Your own model keeps its own instructions, and your global CLAUDE.md stays out of other models' tasks.** Ollama
+  drops a model's SYSTEM (from its Modelfile) whenever a request brings a system prompt, and Claude Code always does, so
+  a model whose behaviour lives there — a persona, a language, fewer refusals — lost it inside Pult. Pult now asks Ollama
+  for it before a task starts and passes it on after the line that tells the model who it is; that line, for every
+  other vendor's model, now gives it Claude Code's tools and no longer "Claude's rules", which a local model took for
+  refusals of its own. Claude Code reads CLAUDE.md in every folder above a project, so in a project inside your home
+  folder another vendor's task took your `~/.claude/CLAUDE.md` for the project's, its own Claude Code home
+  notwithstanding: every such task now excludes it (`claudeMdExcludes`). The isolation probe and the live test now put
+  the project inside the home folder, where the check can fail. A task continued from before keeps the system prompt it
+  began with — Claude Code restores it from the conversation — so a model's instructions reach new tasks only.
+
 ## 0.18.54 — 2026-11-08
 
 - **The docs brought up to date.** README's pictures taken on the current app — the context line along Home's cards,

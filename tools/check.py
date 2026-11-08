@@ -52,6 +52,8 @@ CHECKS = {
                "STAND_LANG": "ru"}, "out", []),                               # stage M, step 6.4: the local model's panel
     "panel-busy": ({"STAND_LOCAL": "on", "STAND_LOCAL_MANY": "1", "STAND_LOCAL_SRV": "busy", "STAND_HOMES": "1", "STAND_LANG": "ru"},
                    "out", ["busy"]),                                          # … a model in the card's memory
+    "tune": ({"STAND_LOCAL": "on", "STAND_LOCAL_MANY": "1", "STAND_LOCAL_SRV": "1", "STAND_HOMES": "1", "STAND_LANG": "ru"},
+             "out", []),                                                      # stage M, step 6.5: a model's settings
     "gotit": ({"STAND_REPORT": "1", "STAND_LANG": "ru"}, "out", []),   # every finished task waits for "Got it" (2026-10-30)
     "states": ({"STAND_TAGS": "1", "STAND_ASK2": "1", "STAND_LANG": "ru"}, "out", []),   # a task's state in colour (Q110–Q112)
     "worktime": ({"STAND_VENDORS": "1", "STAND_HOMES": "1", "STAND_REPORT": "1", "STAND_LANG": "ru"}, "out", []),   # one clock per task (Q117)

@@ -22,8 +22,11 @@ the conversation's context (skipped without Codex); its row says how full its co
 owner's move on Home does by Claude Code's (Q151). A task on another vendor's model (stage M, step 2): a stand-in for DeepSeek on this computer gets the session's requests with
 Pult's key and never the subscription's token; the outcome comes; the transcript names the vendor's model, and so does its
 row — Claude's session's row its real model, and so does the owner's move on Home. One's own model (stage M, step 6): the
-same stand-in as a local server — Pult's stand-in key, the five core tools, one model for every role. Each vendor's task
-runs once the project is given that model, as its settings page does (stage M, 7.2), when nothing runs there.
+same stand-in as a local server — Pult's stand-in key, the five core tools, one model for every role, the model's own
+instructions (its Modelfile's SYSTEM) after the line on who it is. Each vendor's task runs once the project is given that
+model, as its settings page does (stage M, 7.2), when nothing runs there — in a project inside the home folder, as the
+owner's are: Claude Code reads CLAUDE.md in every folder above the project, and the owner's ~/.claude/CLAUDE.md must not
+reach another vendor (2026-11-08: from a folder outside ~ that check could never fail).
 E2E_CLAUDE=<a Claude Code program, say the one VS Code downloaded>: every session of Claude's own from the app starts on
 Pult's own copy of it, as on a computer where it passed the check's app step (stage A2), other vendors' on the one the SDK
 carries; unset — all on the one the SDK carries.
@@ -44,6 +47,8 @@ import pultd
 
 PROJ = TMP / "proj"
 PROJ.mkdir()
+# the vendors' project: inside the home folder, as the owner's projects are (Claude Code reads CLAUDE.md above it, ~/.claude's too)
+VPROJ = Path(tempfile.mkdtemp(prefix=".pult-e2e-proj-", dir=Path.home()))
 pultd.SKIP_PREFIXES = ()
 pult_driven.PERMISSION_MODE = "default"
 pultd.EDIT_EVERY = 0.5
@@ -436,15 +441,41 @@ async def main():
     md = Path("~/.claude/CLAUDE.md").expanduser()                     # the owner's global rules: a line of them, if any
     owner_md = next((x.strip() for x in (md.read_text(errors="replace").splitlines() if md.exists() else []) if len(x.strip()) > 40), "")
 
+    own_sys = "You are Stand Local. Answer in one word."             # the stand-in model's own SYSTEM, as Ollama's /api/show says it
+    # the stand-in's models as Ollama keeps them (stage M, step 6.5): /api/create from a model over a name — the SYSTEM it's
+    # given replaces, the parameters lay over its own (create.ApplyModelfileLayers, v0.40.14); a kept copy; /api/delete
+    held = {"stand-local-32k": {"system": own_sys, "params": {"num_ctx": 32768}}}
+
     async def stand_in(req):
-        body = await req.json() if req.method == "POST" else {}
+        body = await req.json() if req.method in ("POST", "DELETE") and req.can_read_body else {}
         sysp = body.get("system")
         sysp = sysp if isinstance(sysp, str) else " ".join(b.get("text", "") for b in sysp or [] if isinstance(b, dict))
         asked.append({"path": req.path, "x": req.headers.get("x-api-key"), "auth": req.headers.get("authorization") or "",
                       "model": body.get("model"), "sys": sysp[:160], "max": body.get("max_tokens"),
                       "tools": len(body.get("tools") or []), "who": "you are not Claude" in sysp,
                       "names": sorted(t.get("name") or "?" for t in body.get("tools") or []),
+                      "own": "Your own instructions, from your Modelfile:\n" + own_sys in sysp, "rules": "rules are yours" in sysp,
+                      "tuned": "Your own instructions, from your Modelfile:\nYou are Stand Tuned." in sysp, "keep": body.get("keep_alive"),
                       "owner_md": bool(owner_md) and owner_md in json.dumps(body, ensure_ascii=False)})
+        name = str(body.get("model") or "").removesuffix(":latest")
+        if req.path == "/api/show":
+            if name not in held:
+                return web.json_response({"error": "model '%s' not found" % name}, status=404)
+            m = held[name]
+            return web.json_response({"system": m["system"], "capabilities": ["completion", "tools"],
+                                      "parameters": "\n".join("%s %s" % kv for kv in m["params"].items()),
+                                      "model_info": {"general.architecture": "llama", "llama.context_length": 131072}})
+        if req.path == "/api/version":
+            return web.json_response({"version": "0.40.14"})
+        if req.path == "/api/tags":
+            return web.json_response({"models": [{"name": n + ":latest", "size": 1000} for n in held]})
+        if req.path == "/api/create":
+            src = held[body["from"].removesuffix(":latest")]
+            held[name] = {"system": body.get("system") or src["system"], "params": dict(src["params"], **(body.get("parameters") or {}))}
+            return web.json_response({"status": "success"})
+        if req.path == "/api/delete":
+            held.pop(name, None)
+            return web.json_response({})
         if not req.path.endswith("/messages"):
             return web.json_response({"input_tokens": 9} if req.path.endswith("count_tokens") else {}, status=200)
         resp = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
@@ -471,9 +502,12 @@ async def main():
     V.PRESETS["deepseek"]["url"] = "http://127.0.0.1:%d" % site._server.sockets[0].getsockname()[1]   # never DeepSeek here
     key = "stand-in-key-0123456789abcdef"
     p.env[V.key_name("deepseek")] = key
-    # the project's model (stage M, 7.2): changed once nothing runs there — the turns above have ended by now
-    await model_of(p, pkey5, "deepseek")
-    sid11 = (await p.api_new(pkey5, "Reply with one word: PONG.", vendor="deepseek"))["sid"]
+    # the project's model (stage M, 7.2): changed once nothing runs there; a project of its own inside ~ (VPROJ)
+    pkeyv = pultd.sanitize(str(VPROJ))
+    store.set_topic(pkeyv, str(VPROJ), "proj-home", 19)
+    log("проект других моделей — внутри домашней папки:", VPROJ, "· глобальный CLAUDE.md есть:", bool(owner_md))
+    await model_of(p, pkeyv, "deepseek")
+    sid11 = (await p.api_new(pkeyv, "Reply with one word: PONG.", vendor="deepseek"))["sid"]
     await until(lambda: (p.attn.rec.get(sid11) or {}).get("ts"), what="итог сессии на модели DeepSeek")
     models = sorted({a["model"] for a in asked if a["model"]})
     tr = Path(p.transcript_of(sid11)[0]).read_text()
@@ -488,9 +522,11 @@ async def main():
     assert "deepseek-flash" in models and '"model":"deepseek-flash"' in tr.replace(" ", ""), "the vendor's model isn't in the transcript"
     # isolation (stage M, 7.1): its own Claude Code home, a line on who it is, the owner's global CLAUDE.md never in a request
     log("   дом:", p.transcript_of(sid11)[0].startswith(str(pultd.HOMES / "deepseek")), "· «кто ты»:",
-        all(a["who"] for a in asked if a["tools"]), "· глобальный CLAUDE.md в запросах:", any(a["owner_md"] for a in asked))
+        all(a["who"] for a in asked if a["tools"]), "· глобальный CLAUDE.md в запросах:", any(a["owner_md"] for a in asked),
+        "· «rules» в строке:", any(a["rules"] for a in asked))
     assert p.transcript_of(sid11)[0].startswith(str(pultd.HOMES / "deepseek")), "the vendor's transcript isn't in its own home"
     assert all(a["who"] for a in asked if a["tools"]) and not any(a["owner_md"] for a in asked), "the vendor's session isn't isolated"
+    assert not any(a["rules"] or a["own"] for a in asked), "a cloud vendor's line gives Claude's rules, or a Modelfile's"
     assert p.store.vendor_of(sid11) == "deepseek"
     llm11 = (await p.row_stats(sid11))[1]
     log("модель в строке:", llm11)
@@ -503,13 +539,16 @@ async def main():
     conf = p.store.get("vendors.conf") or {}
     conf["local"] = {"on": True, "url": url, "models": ["stand-local-32k"], "ctx": {"stand-local-32k": 32768}}
     p.store.put("vendors.conf", conf)
-    await model_of(p, pkey5, "local")
-    sid13 = (await p.api_new(pkey5, "Reply with one word: PONG."))["sid"]
+    await model_of(p, pkeyv, "local")
+    sid13 = (await p.api_new(pkeyv, "Reply with one word: PONG."))["sid"]
     await until(lambda: (p.attn.rec.get(sid13) or {}).get("ts"), what="итог сессии на своей модели")
     msgs = [a for a in asked if a["path"].endswith("/messages")]
     log("своя модель (подставная): запросов", len(msgs), "· модели", sorted({a["model"] for a in msgs}),
         "· инструментов", sorted({a["tools"] for a in msgs}), "· max_tokens", sorted({a["max"] for a in msgs}),
-        "· итог:", p.attn.rec[sid13]["line"])
+        "· итог:", p.attn.rec[sid13]["line"], "· своя инструкция:", all(a["own"] for a in msgs if a["tools"]),
+        "· /api/show:", sum(1 for a in asked if a["path"] == "/api/show"), "· глобальный CLAUDE.md:", any(a["owner_md"] for a in msgs))
+    assert all(a["own"] for a in msgs if a["tools"]) and not any(a["rules"] for a in msgs), \
+        "the local model's own instructions didn't come after the line on who it is"
     assert msgs and all(a["x"] == V.LOCAL_KEY and "sk-ant" not in a["auth"] for a in msgs), "another credential reached the local model"
     assert {a["model"] for a in msgs} == {"stand-local-32k"}, "a role went to another model"
     assert max(a["tools"] for a in msgs) == len(V.LOCAL_TOOLS), \
@@ -521,6 +560,25 @@ async def main():
     log("модель в строке:", llm13)
     assert llm13 and llm13.get("vendor") in ("Local", "Своя") and llm13["model"] == "stand-local-32k", "the row doesn't say the local model"
     assert all(a["max"] <= 8192 for a in msgs if a["tools"]), "an answer may run past the local model's context"
+    # a model's settings (stage M, step 6.5): saved into the model itself — kept as it was first — a new task gets the
+    # new system prompt and, with a context of 64K, all of Claude Code's tools; its turn over, the card is freed; back as
+    # it was — the stand-in's model as before, the kept copy gone
+    await p.api_vendor_local(url)
+    r = await p.api_local_tune("stand-local-32k", system="You are Stand Tuned. Answer in one word.", ctx=65536, tools="all", after="free")
+    assert r["was"] and r["ctx"] == 65536 and "pult-was/stand-local-32k" in held, "the settings didn't go into the model"
+    asked.clear()
+    sid14 = (await p.api_new(pkeyv, "Reply with one word: PONG."))["sid"]
+    await until(lambda: any(a["path"] == "/api/generate" for a in asked), what="выгрузка своей модели после хода")
+    msgs = [a for a in asked if a["path"].endswith("/messages")]
+    log("настройки модели: инструментов", sorted({a["tools"] for a in msgs}), "· новый промпт:", all(a["tuned"] for a in msgs if a["tools"]),
+        "· выгрузка после хода:", [a["keep"] for a in asked if a["path"] == "/api/generate"])
+    assert p.store.vendor_of(sid14) == "local" and {a["model"] for a in msgs} == {"stand-local-32k"}, "the task didn't run on the model"
+    assert max(a["tools"] for a in msgs) > len(V.LOCAL_TOOLS), "the task didn't get all the tools its settings give"
+    assert all(a["tuned"] for a in msgs if a["tools"]), "the task didn't get the model's new system prompt"
+    assert [a["keep"] for a in asked if a["path"] == "/api/generate"] == [0], "the card wasn't freed after the turn"
+    r = await p.api_local_untune("stand-local-32k")
+    assert not r["was"] and r["ctx"] == 32768 and held["stand-local-32k"]["system"] == own_sys and "pult-was/stand-local-32k" not in held, \
+        "the model didn't come back as it was"
     await runner.cleanup()
     # Codex doing a task (stage M, M4.1): the real Codex of this computer, on the owner's ChatGPT plan — a file in the
     # project's folder, written without asking (its sandbox is that folder, Q121); the outcome as Claude's, its own
@@ -581,5 +639,8 @@ async def main():
     server.close()
 
 
-asyncio.run(main())
+try:
+    asyncio.run(main())
+finally:
+    shutil.rmtree(VPROJ, ignore_errors=True)
 shutil.rmtree(TMP, ignore_errors=True)
