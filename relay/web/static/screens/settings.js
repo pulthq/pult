@@ -430,9 +430,9 @@ function Settings() {
     ${d.gh && d.gh.release ? html`<div class="list">${sw("gh", t("gh"), d.gh.at && d.prefs.gh ? t(d.gh.ok ? "gh.at" : "gh.fail", { hm: hhmm(toDate(d.gh.at)) }) : t("gh.short"), t("gh.about"))}</div>` : ""}
     ${"vcheck" in d.prefs ? html`<div class="list">${sw("vcheck", t("vcheck"), t("vcheck.short"), t("vcheck.about"))}${"ccfresh" in d.prefs ? sw("ccfresh", t("ccfresh"), t("ccfresh.short"), t("ccfresh.about")) : ""}</div>` : ""}
     ${"model" in d.prefs ? html`<h3>${t("model.pick")}</h3>
-    <button class="field" onClick=${openPick}><span>${choiceText(d.prefs.model, d.prefs.effort)}</span><span class="dim">${ic("down", 18)}</span></button>
+    <button class="field" onClick=${openPick}><span>${choiceText(d.prefs.model, d.prefs.effort, null, d.cc_models)}</span><span class="dim">${ic("down", 18)}</span></button>
     <div class="dim small">${t("def.about")}</div>
-    ${pick && html`<${ChoicePick} model=${d.prefs.model} effort=${d.prefs.effort} def=${d.cc} top=${t("pick.as.cc.short")}
+    ${pick && html`<${ChoicePick} model=${d.prefs.model} effort=${d.prefs.effort} def=${d.cc} models=${d.cc_models} top=${t("pick.as.cc.short")}
       note=${t("def.cc.note")} onClose=${closePick} onPick=${setChoice}/>`}` : ""}
     <h3>${t("notifications")}</h3><div class="list">${sw("pager", t("pager"), t("pager.short"), t("pager.about"))}${d.prefs.pager ? "" : sw("vehi", t("vehi"), t("vehi.about"))}${sw("brief", t("brief"), t("brief.short"), t("brief.about"))}${"hashtags" in d.prefs ? sw("hashtags", t("hashtags"), t("hashtags.short"), t("hashtags.about")) : ""}</div>
     <h3>${t("where")}</h3>

@@ -31,7 +31,9 @@ CHECKS = {
     "files": ({"STAND_LANG": "ru"}, "SESS4", []),
     "tags": ({"STAND_TAGS": "1", "STAND_LANG": "ru"}, "out", []),
     "tags-job": ({"STAND_TAGS": "1", "STAND_TAGJOB": "1", "STAND_LANG": "ru"}, "out", []),     # T2: a made-up model sorts
-    "choice": ({"STAND_LANG": "ru"}, "out", []),
+    "choice": ({"STAND_LANG": "ru", "STAND_CCM": "none"}, "out", []),   # the default's logic, on the names without versions
+    "models": ({"STAND_LANG": "ru", "STAND_TAB": "1"}, "out", []),     # Claude Code's names with versions, a tab's own (Q173)
+    "models-none": ({"STAND_LANG": "ru", "STAND_CCM": "none"}, "out", ["none"]),   # … no list known yet: as before
     "ticks": ({"STAND_TICKS": "4", "STAND_LANG": "ru"}, "out", []),
     "copy": ({"STAND_COPY": "1", "STAND_ASK2": "1", "STAND_LANG": "ru"}, "out", []),
     "ask": ({"STAND_ASK2": "1", "STAND_LANG": "ru"}, "out", []),

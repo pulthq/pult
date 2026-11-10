@@ -109,6 +109,16 @@ def newest_extension(dirs):
 CLAUDE_EXE = "claude.exe" if KIND == "windows" else "claude"
 
 
+def extension_claude(dirs, v):
+    """The claude program of Claude Code extension version v that VS Code keeps in dirs, or None."""
+    for d in dirs:
+        for p in sorted(Path(d).glob("anthropic.claude-code-%s-*" % v)) + [Path(d) / ("anthropic.claude-code-" + v)]:
+            b = p / "resources" / "native-binary" / CLAUDE_EXE
+            if b.is_file():
+                return b
+    return None
+
+
 def claude_copies(home):
     """Pult's own copies of the Claude Code versions that passed its check's app step (stage A2), which sessions from
     the app start on: {version: program}, as home/claude/<version>/claude."""

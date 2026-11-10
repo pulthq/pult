@@ -27,8 +27,10 @@ phone — on Claude's models or another vendor's, and another model can check wh
   keeps the bold, the links, the code and the quotes — and as Claude's markdown for plain-text places; one of yours
   goes as you wrote it. A tap on a grey block of code still copies just that block.
 - **A session** shows the whole conversation, live, with the model, the effort and the context gauge by the message
-  field. Pick the model (Fable, Opus, Sonnet, Haiku) and how hard Claude thinks for that session; a running one
-  switches at once. Settings → Model and effort sets what sessions from the app and Telegram start with; VS Code tabs
+  field. Pick the model and how hard Claude thinks for that session; a running one switches at once. The models carry
+  the versions the session's own Claude Code gives them — "Fable 5.2", "Opus 5.5" — so a VS Code tab on an older Claude
+  Code may say "Fable 5.1"; **Other versions** under the menu keeps a session on an older one, as Claude Code's own menu
+  does. Settings → Model and effort sets what sessions from the app and Telegram start with; VS Code tabs
   keep their own settings.
 - **Tags**: every task gets two — the section of the project it belongs to and the topic in it — from the same small
   model that writes the result line, as soon as its request is in and again when its turn ends; turn it on in

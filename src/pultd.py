@@ -92,7 +92,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.55"
+VERSION = "0.18.56"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -388,6 +388,7 @@ class Pult(Api, Parts):
         self._cc = (0.0, None)         # Claude Code on this computer (cc_facts), kept half a minute
         self.tab_checking = None       # the Claude Code version Pult checks for the tabs right now (stage A)
         self.cc_look = None            # when Pult last asked npm what Claude Code is out (stage A2), monotonic
+        self.cc_models_tried = {}      # Claude Code version → when its list of models was last read (Q173), epoch
         self.srv = None                # the relay's server (stage U3): {"can": [...], "upd": the updater's report}
         self.told = (None, 0.0)        # the release the relay's server was last told this computer runs, and when
         self.srv_rel = (0.0, None, None)   # what to tell it (Parts.release_for_server): when found, for what, what

@@ -10,7 +10,7 @@ import { html, useEffect, useMemo, useRef, useState } from "../vendor/htm-preact
 import { Replies, ResumeAt, copyWhy, forkAsk } from "./home.js";
 import { TagPick } from "../ui/cards.js";
 import { Req, useRcpt } from "../ui/cards.js";
-import { Dots, Loading, ModelPick, Sheet, SwipeRow, avatar, bgChip, copyRich, dayLabel, dot, dotted, dur, effortName, hhmm, home, ic, kilo, llmName, modelName, num, pauseChip, plainField, queueChip, sendKey, tagChips, toDate, useNow, workChip } from "../ui/kit.js";
+import { Dots, Loading, ModelPick, Sheet, SwipeRow, avatar, bgChip, choiceDone, choiceName, copyRich, dayLabel, dot, dotted, dur, effortName, hhmm, home, ic, kilo, llmName, modelName, num, pauseChip, plainField, queueChip, sendKey, tagChips, toDate, useNow, workChip } from "../ui/kit.js";
 import { BgSheet, bgCount, bgLine } from "../ui/load.js";
 import { Attach, Pic, Thumbs, Viewer, useAttach, useNoFold } from "../ui/pics.js";
 
@@ -569,8 +569,9 @@ function Session({ sid }) {
   // the model: the one picked for the session, else the one its last request used; the effort — the same way
   const chosen = info.choice && info.choice.model;
   const vend = info.vendor;                    // another vendor's model (stage M, step 2): its name and the model as it is
+  // a picked one in the words of this session's Claude Code — "Fable 5.2" (Q173); "▸" while its last request ran on another
   const modelText = vend ? llmName({ vendor: vend.short || vend.name, model: chosen || (info.stats && info.stats.model) || vend.models[0] })
-    : chosen ? chosen.charAt(0).toUpperCase() + chosen.slice(1) + (info.stats && info.stats.model && !modelName(info.stats.model).toLowerCase().startsWith(chosen) ? " ▸" : "")
+    : chosen ? choiceName(chosen, info.cc_models) + (choiceDone(chosen, info.stats && info.stats.model, info.cc_models) ? "" : " ▸")
     : info.stats && info.stats.model ? modelName(info.stats.model) : "";
   // Codex's task (M4.1): the level picked for it, else its model's own default; another vendor's — none of its own
   const cxModel = vend && vend.own ? chosen || vend.models[0] : null;
@@ -624,7 +625,7 @@ function Session({ sid }) {
     <div ref=${bottom}></div>
     ${(unread || far) && html`<button class=${"tobottom" + (unread ? " fresh" : "")} aria-label=${t("to.bottom")} onClick=${() => { toBottom(); setUnread(false); }}>${unread ? t("new.msgs") : "↓"}</button>`}
     <div class="composer" ref=${comp}>
-      ${pick && html`<${ModelPick} sid=${sid} choice=${info.choice} now=${info.stats || {}} driven=${lv.driven} tab=${lv.tab} dflt=${info.default} canModel=${info.switch} canEffort=${info.switch_effort && !vend} vendor=${vend} onClose=${closePick} onDone=${() => load("after")}/>`}
+      ${pick && html`<${ModelPick} sid=${sid} choice=${info.choice} now=${info.stats || {}} driven=${lv.driven} tab=${lv.tab} dflt=${info.default} models=${info.cc_models} canModel=${info.switch} canEffort=${info.switch_effort && !vend} vendor=${vend} onClose=${closePick} onDone=${() => load("after")}/>`}
       ${note && html`<${Sheet} title=${info.title} lines=${note} onClose=${closeNote}/>`}
       ${bgs && html`<${BgSheet} sid=${sid} onClose=${closeBgs}/>`}
       ${tagPick && html`<${TagPick} sid=${sid} info=${info} onDone=${() => load("after")} onClose=${closeTagPick}/>`}

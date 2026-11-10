@@ -35,6 +35,13 @@ ANNOUNCE_EVERY = 600     # s; the relay's server is reminded of the release this
 # the server's updater failed for a reason of the moment: it tries again on the next reminder, nobody is told
 SRV_TRANSIENT = ("network", "pip", "no_mac_before", "git", "no_git", "no_mac_retry")
 SRV_KEYS = ("state", "tag", "commit", "have", "from", "step", "why", "detail", "back", "back_ok", "ts")   # relay.STATUS_KEYS
+# the models each Claude Code version names (Q173): its menu's rows from the answer to initialize
+CC_MODELS_KEEP = 6           # versions whose list is kept
+CC_MODELS_FRESH = 24 * 3600  # s; a list read again after this — the server adds rows (Fable 5.2 came to older versions so)
+CC_MODELS_WAIT = 60          # s for one reading: Claude Code started, its answer read, closed
+MODEL_FAMILIES = ("fable", "opus", "sonnet", "haiku")      # the menu's order — Pult's own since 0.9.17
+# a row's value goes back to Claude Code as a session's model: only names pult_api.MODEL_RE lets through
+MODEL_VALUE = re.compile(r"[A-Za-z0-9][\w.\-\[\]]{0,63}")
 
 
 def log(*a):
@@ -78,6 +85,65 @@ def bundled_cli():
         return __cli_version__
     except Exception:
         return None
+
+
+def model_rows(models):
+    """Claude Code's list of models — "models" in its answer to initialize, the rows of its model menu: "value" (an
+    alias or a model id), "resolvedModel" (the model the value stands for), "displayName" — → [[value, name, model]] in
+    its order, or None when there is no such list. Its own "default" row stays out: Pult has a Default of its own."""
+    if not isinstance(models, list):
+        return None
+    out = []
+    for m in models[:60]:
+        if not isinstance(m, dict):
+            continue
+        v, n, r = m.get("value"), m.get("displayName"), m.get("resolvedModel")
+        if not isinstance(v, str) or v == "default" or not MODEL_VALUE.fullmatch(v) or not isinstance(n, str) or not n.strip():
+            continue
+        out.append([v, n.strip()[:40], r if isinstance(r, str) and MODEL_VALUE.fullmatch(r) else None])
+    return out or None
+
+
+def model_family(row):
+    """"fable", "opus", "sonnet", "haiku" — or None — of a row, by the model it stands for, else by its value."""
+    for s in (row[2], row[0]):
+        m = re.match(r"(?:claude-)?([a-z]+)", (s or "").lower())
+        if m and m.group(1) in MODEL_FAMILIES:
+            return m.group(1)
+    return None
+
+
+def model_version(row):
+    """(major, minor) of the model a row stands for: claude-opus-4-8 → (4, 8), claude-fable-5 → (5, 0), the date of
+    claude-haiku-4-5-20251001 aside; (-1, -1) — not known (an alias Claude Code didn't resolve)."""
+    s = row[2] or (row[0] if row[0].startswith("claude-") else "")
+    nums = [int(x) for x in re.findall(r"-(\d{1,2})(?=-|$)", s)]
+    return (nums + [0])[:2] if nums else [-1, -1]
+
+
+def menu_of(rows):
+    """The model menu from Claude Code's rows (Q173): "main" — the newest model of each family, in Pult's order, an
+    alias before a model id that stands for the same model (it keeps following Claude Code); "more" — the others, by
+    family and newest first, none twice. Up to 2.1.319 that puts the row claude-fable-5-2 the server added on top and
+    "fable", still Fable 5.1 there, below; in 2.1.322 "fable" itself is Fable 5.2 (tests/probe_models.py)."""
+    main = {}
+    for r in rows:
+        f = model_family(r)
+        if f and (f not in main or (model_version(r), not r[0].startswith("claude-"))
+                  > (model_version(main[f]), not main[f][0].startswith("claude-"))):
+            main[f] = r
+    top = [main[f] for f in MODEL_FAMILIES if f in main]
+    taken = {r[2] or r[0] for r in top}
+    more, seen = [], set()
+    for r in rows:
+        k = r[2] or r[0]
+        if r in top or k in taken or k in seen:
+            continue
+        seen.add(k)
+        more.append(r)
+    order = {f: i for i, f in enumerate(MODEL_FAMILIES)}
+    more.sort(key=lambda r: (order.get(model_family(r), len(order)), [-x for x in model_version(r)]))
+    return {"main": top, "more": more}
 
 
 def npm_latest(proxy=None, url=NPM_LATEST):
@@ -646,6 +712,10 @@ class Parts:
                 await self.cc_tidy()
             except Exception as e:
                 log("Claude Code versions:", repr(e))
+            try:
+                await self.cc_models_look()
+            except Exception as e:
+                log("Claude Code's models:", repr(e))
             await asyncio.sleep(TAB_CHECK_EVERY)
 
     async def cc_latest_look(self):
@@ -675,6 +745,100 @@ class Parts:
             if str(kept[v]) not in cmds:
                 await asyncio.to_thread(pult_os.drop_claude, self.D.HOME, v)
                 log("Claude Code %s: Pult's copy removed — a newer one is kept" % v)
+
+    # ----- the models each Claude Code version names, for the model menus and labels (Q173) -----
+
+    def cc_models_put(self, v, models):
+        """Claude Code v named these models at start-up (its answer to initialize): kept for its menus. → True when
+        kept; a list that isn't one, or a version that isn't one, changes nothing."""
+        rows = model_rows(models)
+        if not rows or not re.fullmatch(r"\d+(\.\d+){1,3}", str(v or "")):
+            return False
+        kept = self.store.get("cc_models") or {}
+        old = (kept.get(v) or {}).get("rows")
+        kept[v] = {"rows": rows, "ts": time.time()}
+        for x in sorted(kept, key=vnum)[:-CC_MODELS_KEEP]:
+            kept.pop(x, None)
+        self.store.put("cc_models", kept)
+        if old != rows:
+            m = menu_of(rows)["main"]
+            log("Claude Code %s names its models: %s%s" % (v, ", ".join("%s → %s" % (r[0], r[1]) for r in m),
+                                                          " and %d more" % (len(rows) - len(m)) if len(rows) > len(m) else ""))
+        return True
+
+    def cc_models_view(self, v):
+        """The model menu of Claude Code v for the app: {"v", "main": [[value, name, model]], "more": [...]}; None — its
+        list isn't known yet (the app shows the four names without versions, as before)."""
+        rec = (self.store.get("cc_models") or {}).get(v or "")
+        return dict(menu_of(rec["rows"]), v=v) if rec and rec.get("rows") else None
+
+    def cc_model_of(self, value, v):
+        """The model a value of the menu stands for in Claude Code v ("fable" → claude-fable-5-2 in 2.1.322), else the
+        value as it is."""
+        rec = (self.store.get("cc_models") or {}).get(v or "") or {}
+        return next((r[2] for r in rec.get("rows") or [] if r[0] == value and r[2]), value)
+
+    def app_cc_version(self):
+        """The Claude Code version a session from the app starts on: Pult's newest copy (app_cli), else the SDK's own."""
+        cli = self.app_cli()
+        return cli.parent.name if cli else bundled_cli()
+
+    def cc_version_of(self, sid):
+        """The Claude Code version session sid runs on, or would run on, continued from here: its VS Code tab's; a
+        session Pult runs — the one its process started on; else the app's, which a continuation starts on."""
+        tab = self.tab_for(sid)
+        if tab and getattr(tab, "version", None):
+            return tab.version
+        dr = self.driven.get(sid)
+        return getattr(dr, "cc_version", None) or self.app_cc_version()
+
+    async def cc_models_look(self):
+        """The lists of the Claude Code versions in use: the app's, the tabs', the newest one VS Code has downloaded
+        (the tabs move to it) — one without a list, or with a list older than CC_MODELS_FRESH, is read; one that
+        couldn't be read waits TAB_RETRY. A session Pult runs refreshes its version's list at every start anyway."""
+        kept, now = self.store.get("cc_models") or {}, time.time()
+        want = {}                                    # version → its claude; None — the SDK's own
+        app = self.app_cli()
+        if app:
+            want[app.parent.name] = app
+        elif bundled_cli():
+            want[bundled_cli()] = None
+        for v in sorted({t.version for t in self.tabs.values() if getattr(t, "version", None)}
+                        | {pult_os.newest_extension(EXT_DIRS)} - {None}, key=vnum):
+            if v not in want and re.fullmatch(r"\d+(\.\d+){1,3}", str(v)):    # a wrapper's word: a version, no pattern
+                b = await asyncio.to_thread(pult_os.extension_claude, EXT_DIRS, v)
+                if b:
+                    want[v] = b
+        for v, cli in want.items():
+            if now - (kept.get(v) or {}).get("ts", 0) < CC_MODELS_FRESH or now - self.cc_models_tried.get(v, 0) < TAB_RETRY:
+                continue
+            self.cc_models_tried[v] = now
+            await self.cc_models_read(v, cli)
+
+    async def cc_models_read(self, v, cli=None):
+        """Claude Code v's list of models, read as tests/probe_models.py reads it: started in an empty folder of its
+        own, with no settings and no hooks (PULT_OFF keeps Pult's hook quiet), its answer to initialize taken, closed —
+        nothing is asked: no request to a model, no transcript; ~3 s. → True when kept."""
+        import tempfile
+        from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+        # its folder may outlive it a moment on Windows: a list read must not be lost to the clean-up
+        with tempfile.TemporaryDirectory(prefix="pult-models-", ignore_cleanup_errors=True) as tmp:
+            opts = ClaudeAgentOptions(cwd=tmp, setting_sources=[], tools=[], stderr=lambda s: None,
+                                      env={"PULT_OFF": "1", "PULT_SOCK": str(Path(tmp) / "none")},
+                                      **({"cli_path": str(cli)} if cli else {}))
+
+            async def read():
+                async with ClaudeSDKClient(options=opts) as c:
+                    return await c.get_server_info() or {}
+            try:
+                info = await asyncio.wait_for(read(), CC_MODELS_WAIT)
+            except Exception as e:                   # couldn't start, no login, the network: tried again later
+                log("Claude Code %s: its models not read — %s" % (v, repr(e)[:200]))
+                return False
+        ok = self.cc_models_put(info.get("claude_code_version") or v, info.get("models"))
+        if not ok:
+            log("Claude Code %s: no list of models in its answer" % v)
+        return ok
 
     async def tab_version_check(self):
         """VS Code has downloaded a Claude Code version tab.json doesn't list: the wrapper stays out of tabs on it until

@@ -155,7 +155,8 @@ of waiting for a Pult release — and a new Codex against its own protocol befor
 And:
 
 - **Voice** — a voice message in the topic, or the microphone in the app, arrives as text (Groq Whisper, with a key of yours).
-- **Model and effort** — per session, switched while it runs; a default for the sessions Pult starts.
+- **Model and effort** — per session, switched while it runs; a default for the sessions Pult starts. The models carry
+  their versions as the session's Claude Code names them ("Fable 5.2", "Opus 5.5"), older ones under Other versions.
 - **Ticks** on your message — sent, read by the agent — and a pager that knows whether you're at the computer.
 - **Pinned and hidden projects** — a slide along the row.
 - **`pult run`** for your own long commands, reported like a turn.

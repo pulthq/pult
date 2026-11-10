@@ -17,9 +17,10 @@ ROOT = Path.home() / ".claude" / "projects"
 REPO = Path(__file__).resolve().parent.parent
 GAP = 600                        # s: a pause up to this inside a session is work
 KINDS = ("read", "write_1h", "write_5m", "output", "input")
-# The API's prices per million tokens on 2026-10-06 (Claude's own reference): input, cache write for 5 min and for
-# 1 h, cache read, output. A model not listed takes its family's; Haiku over 100 K tokens of prompt costs five times.
-PRICE = {"claude-fable-5-1": (10, 12.5, 20, 0.25, 50), "claude-opus-5-5": (4, 5, 8, 0.20, 20),
+# The API's prices per million tokens on 2026-10-06 (Claude's own reference; Fable 5.2 — 2026-11-10): input, cache
+# write for 5 min and for 1 h, cache read, output. A model not listed takes its family's; Haiku over 100 K tokens of
+# prompt costs five times.
+PRICE = {"claude-fable-5-1": (10, 12.5, 20, 0.25, 50), "claude-fable-5-2": (8, 10, 16, 0.20, 40), "claude-opus-5-5": (4, 5, 8, 0.20, 20),
          "claude-sonnet-5-5": (2, 2.5, 4, 0.20, 10), "claude-haiku-5-5": (0.10, 0.125, 0.20, 0.01, 0.50)}
 HAIKU_LONG = 100_000
 

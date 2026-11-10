@@ -189,6 +189,7 @@ class Driven:
         self.dropped = asyncio.Event()    # Stop while it waits: the message goes
         self.queue_msg = None     # the topic's "⏳ in the queue" message, removed once the turn starts
         self.own_system = ""      # one's own model's instructions from its Modelfile (prepare), after the line on who it is
+        self.cc_version = None    # the Claude Code version the process runs (its answer to initialize), for the menus (Q173)
         self.task = asyncio.create_task(self.run())
 
     @property
@@ -410,12 +411,26 @@ class Driven:
             self.result.set()                    # the process has ended, so the query doesn't wait forever
             self.q.put_nowait(None)
 
+    async def models_seen(self, c):
+        """Claude's own session: the models its Claude Code names at start-up, kept for the model menus (Q173) — free,
+        the answer to initialize is in already. Another vendor's session names the aliases its own way — not kept. Never
+        in the session's way."""
+        if self.d.store.vendor_of(self.sid):
+            return
+        try:
+            info = await c.get_server_info() or {}
+            self.cc_version = info.get("claude_code_version") or None
+            self.d.cc_models_put(self.cc_version, info.get("models"))
+        except Exception as e:
+            log("Telegram session %s: its Claude Code's models not kept: %s" % (self.sid[:8], type(e).__name__))
+
     async def run(self):
         from claude_agent_sdk import ClaudeSDKClient
         try:
             await self.prepare()
             async with ClaudeSDKClient(options=self.options()) as c:
                 self.client = c
+                await self.models_seen(c)
                 reader = asyncio.create_task(self.read(c))
                 try:
                     while True:

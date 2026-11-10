@@ -62,7 +62,9 @@ context made from their bases and one without a copy, whose "Make a copy with 32
 background — their PostToolUse and the helpers' own records; SESS7 — its screen (tools/helpers_check.py). STAND_REPORT=1: the weekly report hasn't
 been put away — a plain report waits in "Your move" for "Got it" like any other (tools/gotit_check.py); without it (and
 without STAND_ASK2) the owner has put it away. VS Code's settings and the tab switch are made up on every stand: the app
-never reads this computer's."""
+never reads this computer's. Claude Code's model menus (Q173) are the lists two versions named on 2026-11-10: the app's
+version — Fable 5.2 for "fable", the tab's 2.1.301 — Fable 5.1, Fable 5.2 a row of its own; STAND_CCM=none — none known
+yet, the four names without versions (tools/models_check.py)."""
 import asyncio, base64, hashlib, hmac, json, os, random, shutil, signal, sys, time, urllib.parse
 from pathlib import Path
 
@@ -690,6 +692,23 @@ async def main():
     async def no_drive(sid, path, text, *a, **kw):
         print("DRIVE", path, json.dumps(text[:80], ensure_ascii=False), flush=True)
     p.drive = no_drive
+    # Claude Code's model menus (Q173): the lists two versions named on 2026-11-10 (tests/probe_models.py) — the one
+    # the app's tasks start on says "fable" is Fable 5.2; the tabs' older one (2.1.301 here) still Fable 5.1, with
+    # Fable 5.2 a row of its own. STAND_CCM=none — no list known yet: the four names without versions, as before
+    if os.environ.get("STAND_CCM") != "none":
+        def cc_row(v, m, n):
+            return {"value": v, "resolvedModel": m, "displayName": n, "description": ""}
+        rest = [cc_row("claude-haiku-4-5-20251001", "claude-haiku-4-5-20251001", "Haiku 4.5"),
+                cc_row("claude-sonnet-5", "claude-sonnet-5", "Sonnet 5"), cc_row("claude-opus-5", "claude-opus-5", "Opus 5"),
+                cc_row("claude-fable-5", "claude-fable-5", "Fable 5")] + [
+                cc_row("claude-opus-4-%d" % n, "claude-opus-4-%d" % n, "Opus 4.%d" % n) for n in (8, 7, 6)] + [
+                cc_row("claude-sonnet-4-6", "claude-sonnet-4-6", "Sonnet 4.6")]
+        top = [cc_row("default", "claude-opus-5-5", "Default (recommended)"), cc_row("opus", "claude-opus-5-5", "Opus 5.5")]
+        tail = [cc_row("sonnet", "claude-sonnet-5-5", "Sonnet 5.5"), cc_row("haiku", "claude-haiku-5-5", "Haiku 5.5")]
+        p.cc_models_put(p.app_cc_version() or "2.1.322", top + [cc_row("fable", "claude-fable-5-2", "Fable 5.2")] + tail
+                        + [cc_row("claude-fable-5-1", "claude-fable-5-1", "Fable 5.1")] + rest)
+        p.cc_models_put("2.1.301", top + [cc_row("claude-fable-5-2", "claude-fable-5-2", "Fable 5.2")] + tail
+                        + [cc_row("fable", "claude-fable-5-1", "Fable 5.1")] + rest)
     sock = await asyncio.start_unix_server(p.handle_conn, path=os.environ["PULT_SOCK"])
     runner = web.AppRunner(relay.app())
     await runner.setup()

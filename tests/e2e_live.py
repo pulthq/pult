@@ -5,7 +5,8 @@ Run (uses a little of the subscription, ~90 s):
 
 
 A new session from "Telegram" → permission via a button → question via buttons → result;
-continuing the same session; a fork of a session "open on the Mac";
+continuing the same session; the models its Claude Code named at start-up kept for the menus, and a version's list read
+with no request to a model (Q173); a fork of a session "open on the Mac";
 a background command — "in the background" in the result, the load view finds its process, a turn when it ends,
 the next prompt with its own result; that result is the owner's move on Home — opened, too — until "Got it".
 With Telegram as a pager: a task from the app makes no turn or result message; its question is paged once.
@@ -43,6 +44,7 @@ sys.path.insert(0, str(SRC))
 import httpx
 import pult_api
 import pult_driven
+import pult_parts
 import pultd
 
 PROJ = TMP / "proj"
@@ -174,6 +176,17 @@ async def main():
                         "reply_to_message": {"message_id": row["msg"]}})
     await until(lambda: any(t.startswith("✅") for t in texts(mark)), what="итог продолжения")
     log("продолжение:", [t for t in texts(mark) if t.startswith("✅")][-1])
+
+    # Q173: the session's Claude Code named its models at start-up, and Pult kept the list for its menus — free; and a
+    # version without one is read without a request to a model (the SDK's own Claude Code here)
+    ver = p.app_cc_version()
+    menu = p.cc_models_view(ver)
+    log("модели %s:" % ver, menu and [r[1] for r in menu["main"]], menu and len(menu["more"]))
+    assert menu and [pult_parts.model_family(r) for r in menu["main"]] == list(pult_parts.MODEL_FAMILIES), "no model menu kept"
+    assert all(r[2] and r[2].startswith("claude-") for r in menu["main"]), "a model of the menu without its id"
+    store.put("cc_models", {})
+    assert await p.cc_models_read(pult_parts.bundled_cli()), "the SDK's Claude Code: its models not read"
+    assert p.cc_models_view(pult_parts.bundled_cli()), "the list read isn't kept"
 
     # 3. a session "open on the Mac" → fork
     while sid in p.driven:                       # close the process as if the session moved to VS Code
