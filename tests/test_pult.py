@@ -3099,18 +3099,18 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             # which versions: the app's, the tabs', the newest downloaded — once, then not before it's a day old
             self.store.put("cc_models", {})
             self.p.cc_models_tried.clear()
-            ext = TMP / "ext-models" / "anthropic.claude-code-2.1.318-darwin-arm64" / "resources" / "native-binary" / "claude"
+            # the program's own name on this system: claude.exe on Windows (the first CI run there didn't find "claude")
+            ext = TMP / "ext-models" / "anthropic.claude-code-2.1.318-darwin-arm64" / "resources" / "native-binary" / pult_os.CLAUDE_EXE
             ext.parent.mkdir(parents=True, exist_ok=True)
             ext.write_text("")
+            app = TMP / "claude" / "2.1.322" / pult_os.CLAUDE_EXE
             self.p.tabs[778] = types.SimpleNamespace(sid=None, version="2.1.318", caps=[], pid=778)
             with mock.patch.object(pult_parts, "EXT_DIRS", [ext.parents[3]]), \
-                    mock.patch.object(self.p, "app_cli", return_value=TMP / "claude" / "2.1.322" / "claude"), \
+                    mock.patch.object(self.p, "app_cli", return_value=app), \
                     mock.patch.object(self.p, "cc_models_read", mock.AsyncMock(return_value=True)) as rd:
                 try:
                     await self.p.cc_models_look()
-                    self.assertEqual([(c.args[0], c.args[1].name if c.args[1] else None) for c in rd.call_args_list],
-                                     [("2.1.322", "claude"), ("2.1.318", "claude")])
-                    self.assertEqual(rd.call_args_list[1].args[1], ext)
+                    self.assertEqual([c.args[:2] for c in rd.call_args_list], [("2.1.322", app), ("2.1.318", ext)])
                     await self.p.cc_models_look()                       # tried a moment ago: not again yet
                     self.assertEqual(rd.await_count, 2)
                 finally:
