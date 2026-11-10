@@ -176,7 +176,8 @@ class Api:
 
     def llm_view(self, sid, stats):
         """Which model does a session's work, for its row (the owner, 2026-10-30: two tasks running, one of them on
-        DeepSeek — which is which?): {"model"} — Claude's, as its last request said, else as picked for it; {"vendor",
+        DeepSeek — which is which?): {"model"} — Claude's, as its last request said, else the model picked for it — an
+        alias as the session's Claude Code resolves it, so the label has the version (Q173); {"vendor",
         "model"} — another vendor's (stage M, step 2): as picked, else as it answered, else its main one; None — not
         known yet (no answer so far, nothing picked)."""
         model, chosen = (stats or {}).get("model"), (self.choice.get(sid) or {}).get("model")
@@ -188,7 +189,9 @@ class Api:
         p = self.vendor_profiles().get(vid) if vid else None
         if p:
             return {"vendor": p.get("short") or p["name"], "model": chosen or model or next(iter(p["models"]), None)}
-        return {"model": model or chosen} if model or chosen else None
+        if not model and chosen:                     # no answer yet: what the picked alias stands for there (Q173)
+            model = self.cc_model_of(chosen, self.cc_version_of(sid))
+        return {"model": model} if model else None
 
     async def board(self, agents):
         """The Home board (stage V): every session worth a look grouped by project; and "mine": the outcomes that
@@ -459,12 +462,13 @@ class Api:
         # is open, then by recency; the hidden last — the app folds them (Q101)
         out.sort(key=lambda r: (-r["pinned"], r["hidden"] > 0, -(r["mine"] > 0), -(r["work"] + r["ask"] > 0), -(r["open"] > 0), -r["last"]))
         # stt: the app shows the microphone only with a key; create: this daemon makes new projects (stage S);
-        # choice: the default model and effort from Settings, what a new task starts with when nothing is picked
+        # choice: the default model and effort from Settings, what a new task starts with when nothing is picked;
+        # cc_models: the model menu of the Claude Code a new task starts on — its names with versions (Q173)
         p = self.prefs()
         # vendors: who else can do a task (stage M, step 2) — each with its key's state and models
         return {"projects": out, "stt": self.stt_state()["on"], "create": True,
-                "choice": {"model": p["model"], "effort": p["effort"]}, "vendors": self.vendors_list(),
-                "vendor_all": self.vendor_all(), "codex": self.codex_view()}
+                "choice": {"model": p["model"], "effort": p["effort"]}, "cc_models": self.cc_models_view(self.app_cc_version()),
+                "vendors": self.vendors_list(), "vendor_all": self.vendor_all(), "codex": self.codex_view()}
 
     async def known_project(self, pkey):
         """A project the computer knows — with a topic, or with transcripts: the only ones the app's lists show."""
@@ -1012,6 +1016,9 @@ class Api:
                 "ctx": {"window": ctx[0], "max_out": ctx[1], "usable": self.ctx_room(sid, ctx)} if ctx else None,
                 "pending": [self.req_item(r) for r in lv.pending.values() if not r.fut.done()],
                 "out": self.out_view(sid), "second": await self.second_view(sid, rec, lv), "vendor": self.vendor_view(sid),
+                # the model menu of the Claude Code this session runs on — a tab's own, else the app's (Q173); another
+                # vendor's session has its own models
+                "cc_models": None if self.store.vendor_of(sid) else self.cc_models_view(self.cc_version_of(sid)),
                 # ro: another model's task than its project's — read only (stage M, 7.2; Q148): its model and the project's
                 "ro": self.ro_view(sid, lv.pkey)}
 
@@ -2918,7 +2925,7 @@ class Api:
                 "mac": {"idle": idle, "away": await self.away(), "mode": self.mode()},
                 "telegram": "proxy" if len(self.tg.clients) > 1 and self.tg.cur == 0 else "direct",
                 "stt": self.stt_state(), "cc": self.cc_choice(), "vendors": self.vendors_list(), "vendor_all": self.vendor_all(),
-                "codex": self.codex_view(),
+                "codex": self.codex_view(), "cc_models": self.cc_models_view(self.app_cc_version()),
                 "log": [x for x in lines if "Bearer" not in x][-40:]}
 
     async def api_prefs(self, **kw):

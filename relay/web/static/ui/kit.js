@@ -184,15 +184,34 @@ const sendKey = (send, setText) => (e) => {
   else if (DESKTOP && !e.shiftKey && !e.altKey) { e.preventDefault(); send(); }
 };
 
-// the model of a session from Telegram: aliases Claude Code accepts, plus whatever the settings say
-const MODELS = [["", ""], ["fable", "Fable"], ["opus", "Opus"], ["sonnet", "Sonnet"], ["haiku", "Haiku"]];
+// the model of a session from Telegram: the menu of the Claude Code the session runs on (Q173) — [value, name, model]
+// rows: the newest of each family on top ("Fable 5.2", "Opus 5.5"…), the rest under "Other versions"; while Pult
+// doesn't know that Claude Code's list yet — the four aliases without versions, as before
+const MODELS = [["fable", "Fable"], ["opus", "Opus"], ["sonnet", "Sonnet"], ["haiku", "Haiku"]];
+const menuOf = (cc) => (cc && cc.main && cc.main.length ? { main: cc.main, more: cc.more || [] } : { main: MODELS, more: [] });
+const ccRow = (m, cc) => (cc ? [...(cc.main || []), ...(cc.more || [])].find((r) => r[0] === m) : null);
+// a picked model in the menu's words: "fable" → "Fable 5.2" where that Claude Code says so, else as modelName has it
+const choiceName = (m, cc) => { const r = ccRow(m, cc); return r ? r[1] : modelName(m); };
+// the session's last request ran on the model picked for it — else "▸" after the name: it goes with the next turn
+const bareModel = (m) => String(m || "").replace(/\[1m\]$/i, "").replace(/-\d{8}$/, "");
+const choiceDone = (m, last, cc) => {
+  if (!m || !last) return true;
+  const r = ccRow(m, cc), want = r && r[2] ? r[2] : /^claude-/.test(m) ? m : null;
+  return want ? bareModel(want) === bareModel(last) : modelName(last).toLowerCase().startsWith(bareModel(m).toLowerCase());
+};
 const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
 // the model and the effort for a new session, in words: what is picked, the rest from Pult's default (Settings);
 // nothing in either — as Claude Code's own settings say
-const choiceText = (model, effort, def) => {
+const choiceText = (model, effort, def, cc) => {
   const m = model || (def && def.model), e = effort || (def && def.effort);
-  return !m && !e ? t("pick.as.cc") : [m ? modelName(m) : t("pick.model.def"), e ? effortName(e) : t("pick.effort.def")].join(" · ");
+  return !m && !e ? t("pick.as.cc") : [m ? choiceName(m, cc) : t("pick.model.def"), e ? effortName(e) : t("pick.effort.def")].join(" · ");
 };
+// the rest of Claude Code's list under the two columns (Q173 (b)): a task kept on a version of its own — Fable 5.1
+// while "Fable" means 5.2; the same rows as Claude Code's own menu on the computer
+function MoreModels({ rows, on, can = true, busy, onPick }) {
+  return html`<div class="pick-more"><div class="pick-t">${t("pick.more")}</div><div class="pick-chips">
+    ${rows.map(([v, label]) => html`<button key=${v} class=${"opt" + (v === on ? " on" : "") + (can ? "" : " off")} disabled=${busy} onClick=${() => onPick(v)}>${label}</button>`)}</div></div>`;
+}
 const effortName = (e) => (!e ? t("pick.default") : EFFORT_N[e] ? t("effort." + e) : e);
 // effort as VS Code draws it by its model name: five dots, as many lit as the level
 const EFFORT_N = { low: 1, medium: 2, high: 3, xhigh: 4, max: 5, ultra: 5 };     // ultra — Codex's own, past max
@@ -208,7 +227,7 @@ function Sheet({ title, lines, onClose }) {
 }
 
 // the model and the effort of a session, side by side; each tap switches one of them and the menu stays open
-function ModelPick({ sid, choice, now, driven, tab, dflt, canModel, canEffort, vendor, onDone, onClose }) {
+function ModelPick({ sid, choice, now, driven, tab, dflt, canModel, canEffort, vendor, models, onDone, onClose }) {
   const [busy, setBusy] = useState(false);
   const [cur, setCur] = useState(choice || {});
   const [nudge, setNudge] = useState(0);          // a tap on a column that can't switch here: its reason lights up
@@ -236,11 +255,14 @@ function ModelPick({ sid, choice, now, driven, tab, dflt, canModel, canEffort, v
   if (vendor) return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick"><div class="q-t pick-h">${vendor.local ? t("vend.local.model") : t("vend.model.pick", { name: vendor.name })}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
     <div class="pick-col">${vendor.models.map((m) => html`<button key=${m} class=${"opt" + (m === (cur.model || vendor.models[0]) ? " on" : "")} disabled=${busy} onClick=${() => pick({ model: m })}>${m}</button>`)}</div>
     <div class="dim small">${vendor.local ? t("model.local") : t("model.vendor", { name: vendor.name })}</div></div>`;
+  const menu = menuOf(models);
   return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick"><div class="q-t pick-h">${t("model.pick")}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
     <div class="pick-cols">
-      ${col(t("model"), MODELS.map(([m, label]) => [m, m ? label : t("pick.default")]), cur.model || "", "model", canModel, now.model && modelName(now.model))}
+      ${col(t("model"), [["", t("pick.default")], ...menu.main], cur.model || "", "model", canModel, now.model && modelName(now.model))}
       ${col(t("effort"), EFFORTS.map((e) => [e, effortName(e)]), cur.effort || "", "effort", canEffort, now.effort && effortName(now.effort))}
     </div>
+    ${menu.more.length ? html`<${MoreModels} rows=${menu.more} on=${cur.model || ""} can=${canModel} busy=${busy}
+      onPick=${(v) => (canModel ? pick({ model: v }) : (haptic("warning"), setNudge(nudge + 1)))}/>` : ""}
     ${why && html`<div key=${nudge} class=${"pick-why" + (nudge ? " lit" : "")}>${why}</div>`}
     <div class="dim small">${notes.filter(Boolean).join(" ")}</div></div>`;
 }
@@ -453,16 +475,18 @@ function CodexCols({ v, model, effort, busy, onPick }) {
   </div>`;
 }
 
-function ChoicePick({ model, effort, def, top, note, onPick, onClose }) {
+function ChoicePick({ model, effort, def, top, note, models, onPick, onClose }) {
   const col = (title, items, on, key, cur) => html`<div class="pick-col"><div class="pick-t">${title}</div>
     ${items.map(([v, label]) => html`<button key=${v} class=${"opt" + (v === on ? " on" : "")} onClick=${() => onPick({ [key]: v })}>${label}${!v && cur ? html`<span class="dim">${cur}</span>` : ""}</button>`)}</div>`;
-  const d = def || {};
+  const d = def || {}, menu = menuOf(models);
   return html`<div class="backdrop" onClick=${onClose}></div><div class="card pick tall fixed">
     <div class="q-t pick-h">${t("model.pick")}<button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
     <div class="pick-cols">
-      ${col(t("model"), MODELS.map(([m, label]) => [m, m ? label : top || t("pick.default")]), model || "", "model", d.model && modelName(d.model))}
+      ${col(t("model"), [["", top || t("pick.default")], ...menu.main], model || "", "model", d.model && choiceName(d.model, models))}
       ${col(t("effort"), EFFORTS.map((e) => [e, e ? effortName(e) : top || t("pick.default")]), effort || "", "effort", d.effort && effortName(d.effort))}
-    </div>${note ? html`<div class="dim small">${note}</div>` : ""}</div>`;
+    </div>
+    ${menu.more.length ? html`<${MoreModels} rows=${menu.more} on=${model || ""} onPick=${(v) => onPick({ model: v })}/>` : ""}
+    ${note ? html`<div class="dim small">${note}</div>` : ""}</div>`;
 }
 
 // "how it's counted": behind ⓘ, not on the screen all the time
@@ -480,4 +504,4 @@ function Loading({ err }) {
     : ["offline", "connecting", "busy"].includes(c.state) ? t("loading.connection") : t("loading"))}</div>`;
 }
 
-export { About, ChoicePick, CodexCols, Dots, GEAR, GLYPH, Loading, MODES, ModePick, ModelPick, Sheet, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, bytes, choiceText, codexModel, copyRich, ctxBar, dayLabel, dot, dotted, dur, durShort, effortName, hhmm, home, hue, ic, keyTap, kilo, level, llmName, modelName, nb, num, pauseChip, pct, plainField, queueChip, quiet, resetText, sendKey, TAG_H, tagChips, tagJob, tagSt, toDate, useNow, workChip };
+export { About, ChoicePick, CodexCols, Dots, GEAR, GLYPH, Loading, MODES, ModePick, ModelPick, Sheet, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, bytes, choiceDone, choiceName, choiceText, codexModel, copyRich, ctxBar, dayLabel, dot, dotted, dur, durShort, effortName, hhmm, home, hue, ic, keyTap, kilo, level, llmName, modelName, nb, num, pauseChip, pct, plainField, queueChip, quiet, resetText, sendKey, TAG_H, tagChips, tagJob, tagSt, toDate, useNow, workChip };

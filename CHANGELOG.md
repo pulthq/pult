@@ -4,6 +4,20 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.56 — 2026-11-10
+
+- **Claude's models with their versions.** The model menu said "Fable", "Opus", "Sonnet", "Haiku", and what each alias
+  stands for moves with Claude Code: "fable" was Fable 5.1 up to 2.1.319 and is Fable 5.2 in 2.1.322, so a VS Code tab
+  and a task from the app could run different models under one name. Claude Code names its models itself when it
+  starts — the rows of its own model menu, each with the model it resolves to (`models` in its answer to `initialize`,
+  no request to a model) — and Pult now keeps that list for each Claude Code version: the menu, the line under the
+  message field, a card before the first answer, New task and Settings → Model and effort say "Fable 5.2", "Opus 5.5",
+  for the version that task runs on — a tab its own, a task from the app the app's. **Other versions** under the menu
+  are the rest of that list (Fable 5.1, Opus 4.8…): a session kept on an older model, as Claude Code's own menu allows.
+  A session Pult runs refreshes its version's list at every start; a version in use without one — a tab's, the newest
+  one VS Code has downloaded — is read in about 3 s, once a day at most. No list yet — the four names, as before.
+  `tests/probe_models.py` reads the lists of every Claude Code on the computer; `tools/models_check.py` drives the menus.
+
 ## 0.18.55 — 2026-11-08
 
 - **The settings of each model of your own.** A tap on a model in Resources → Local model → **Settings of the model**:

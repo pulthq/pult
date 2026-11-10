@@ -220,7 +220,7 @@ function NewTask({ pkey }) {
     ${vend && !vend.key && html`<div class="pick-why">${whoGo(vend)}</div>`}`}
     <label class="lbl">${vend ? (vend.local ? t("vend.local.model") : t("vend.model.pick", { name: vend.name })) : t("model.pick")}</label>
     <button class="field" onClick=${() => setSheet({ k: "model" })}>
-      <span>${vend && vend.own ? codexText(vend, model, effort) : vend ? model || vend.models[0] : choiceText(model, effort, d.choice)}</span><span class="dim">${ic("down", 18)}</span></button>
+      <span>${vend && vend.own ? codexText(vend, model, effort) : vend ? model || vend.models[0] : choiceText(model, effort, d.choice, d.cc_models)}</span><span class="dim">${ic("down", 18)}</span></button>
     <button class="btn wide" disabled=${busy || !p || (!text.trim() && !a.files.length)} onClick=${send}>${t("new.start")}</button>
     <div class="dim small">${vend ? (vend.own ? t("new.about.codex") : vend.local ? t("new.about.local") : t("new.about.vendor", { name: vend.name })) : t("new.about")}</div>
     ${sheet && sheet.k === "project" && html`<${ProjectPick} projects=${sheet.list} cur=${p} create=${d.create} onClose=${close} onPick=${(k) => { if (k !== p) { setModel(""); setEffort(""); } setP(k); haptic("success"); close(); }}/>`}
@@ -231,7 +231,7 @@ function NewTask({ pkey }) {
         if ("effort" in c) setEffort(c.effort);
         haptic("success"); }}/></div>`}
     ${sheet && sheet.k === "model" && !(vend && vend.own) && (vend ? html`<${VendorModels} v=${vend} cur=${model} onClose=${close} onPick=${(m) => { setModel(m); haptic("success"); close(); }}/>`
-      : html`<${ChoicePick} model=${model} effort=${effort} def=${d.choice} onClose=${close}
+      : html`<${ChoicePick} model=${model} effort=${effort} def=${d.choice} models=${d.cc_models} onClose=${close}
       onPick=${(c) => { if ("model" in c) setModel(c.model); if ("effort" in c) setEffort(c.effort); haptic("success"); }}/>`)}
   </div>`;
 }
@@ -361,7 +361,7 @@ function NewProject() {
     ${d && d.stt && html`<${Mic} v=${v} disabled=${busy} wide=${true}/>`}
     ${(how === "describe" || text.trim() || a.files.length > 0) && html`<label class="lbl">${vend ? (vend.local ? t("vend.local.model") : t("vend.model.pick", { name: vend.name })) : t("model.pick")}</label>
       <button class="field" onClick=${() => setSheet("model")}>
-        <span>${vend && vend.own ? codexText(vend, model, effort) : vend ? model || vend.models[0] : choiceText(model, effort, d && d.choice)}</span><span class="dim">${ic("down", 18)}</span></button>`}
+        <span>${vend && vend.own ? codexText(vend, model, effort) : vend ? model || vend.models[0] : choiceText(model, effort, d && d.choice, d && d.cc_models)}</span><span class="dim">${ic("down", 18)}</span></button>`}
     <button class="btn wide" disabled=${!ready} onClick=${() => create()}>${busy ? (job ? t("np.cloning") + (step ? " · " + step : "") + " · " + dur(job.sec) : "…") : t("np.go")}</button>
     <div class="dim small">${t("np.help")}</div>
     ${sheet === "dir" && html`<${FolderPick} start=${place && place.path} onClose=${close} onPick=${(x) => { setPlace(x); haptic("success"); close(); }}/>`}
@@ -373,7 +373,7 @@ function NewProject() {
         if ("effort" in c) setEffort(c.effort);
         haptic("success"); }}/></div>`}
     ${sheet === "model" && vend && !vend.own && html`<${VendorModels} v=${vend} cur=${model} onClose=${close} onPick=${(m) => { setModel(m); haptic("success"); close(); }}/>`}
-    ${sheet === "model" && !vend && html`<${ChoicePick} model=${model} effort=${effort} def=${d && d.choice} onClose=${close}
+    ${sheet === "model" && !vend && html`<${ChoicePick} model=${model} effort=${effort} def=${d && d.choice} models=${d && d.cc_models} onClose=${close}
       onPick=${(c) => { if ("model" in c) setModel(c.model); if ("effort" in c) setEffort(c.effort); haptic("success"); }}/>`}
   </div>`;
 }

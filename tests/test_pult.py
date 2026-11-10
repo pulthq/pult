@@ -2991,6 +2991,131 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(pultd, "SETTINGS", TMP / "none.json"):
             self.assertEqual(pultd.Pult.cc_choice(), {"model": None, "effort": None})
 
+    async def test_cc_models(self):
+        # Q173: each Claude Code version names its models at start-up (the answer to initialize, tests/probe_models.py);
+        # Pult keeps the list per version and shows the names with versions — "Fable 5.2" — by the version the task runs on
+        import claude_agent_sdk
+        P = pult_parts
+        row = lambda v, m, n: {"value": v, "resolvedModel": m, "displayName": n, "description": "…"}
+        older = [row("default", "claude-opus-5-5", "Default (recommended)"), row("opus", "claude-opus-5-5", "Opus 5.5"),
+                 row("claude-fable-5-2", "claude-fable-5-2", "Fable 5.2"), row("sonnet", "claude-sonnet-5-5", "Sonnet 5.5"),
+                 row("haiku", "claude-haiku-5-5", "Haiku 5.5"), row("fable", "claude-fable-5-1", "Fable 5.1"),
+                 row("claude-haiku-4-5-20251001", "claude-haiku-4-5-20251001", "Haiku 4.5"),
+                 row("claude-sonnet-5", "claude-sonnet-5", "Sonnet 5"), row("claude-opus-5", "claude-opus-5", "Opus 5"),
+                 row("claude-fable-5", "claude-fable-5", "Fable 5"), row("claude-opus-4-8", "claude-opus-4-8", "Opus 4.8")]
+        newer = [r if r["value"] not in ("claude-fable-5-2", "fable") else
+                 row("fable", "claude-fable-5-2", "Fable 5.2") if r["value"] == "claude-fable-5-2" else
+                 row("claude-fable-5-1", "claude-fable-5-1", "Fable 5.1") for r in older]
+        # 2.1.318: the row the server added (claude-fable-5-2) on top, the alias "fable" — still Fable 5.1 — below
+        m = P.menu_of(P.model_rows(older))
+        self.assertEqual([(r[0], r[1]) for r in m["main"]], [("claude-fable-5-2", "Fable 5.2"), ("opus", "Opus 5.5"),
+                                                             ("sonnet", "Sonnet 5.5"), ("haiku", "Haiku 5.5")])
+        self.assertEqual([r[1] for r in m["more"]], ["Fable 5.1", "Fable 5", "Opus 5", "Opus 4.8", "Sonnet 5", "Haiku 4.5"])
+        self.assertEqual(m["more"][0][:2], ["fable", "Fable 5.1"])
+        # 2.1.322: "fable" itself is Fable 5.2 — the alias goes on top, before a model id of the same model
+        m = P.menu_of(P.model_rows(newer + [row("claude-fable-5-2", "claude-fable-5-2", "Fable 5.2")]))
+        self.assertEqual(m["main"][0][:2], ["fable", "Fable 5.2"])
+        self.assertEqual([r[1] for r in m["more"]][:2], ["Fable 5.1", "Fable 5"])     # Fable 5.2 isn't there twice
+        # what isn't a list, or a row that can't go back to Claude Code as a model, stays out; the rule is pult_api's own
+        self.assertIsNone(P.model_rows({"value": "opus"}))
+        self.assertIsNone(P.model_rows([row("default", "claude-opus-5-5", "Default")]))
+        self.assertEqual(P.model_rows([row("opus; rm -rf", "x", "Opus"), {"value": "opus"}, "opus", row("opus", None, " Opus ")]),
+                         [["opus", "Opus", None]])
+        self.assertEqual(P.MODEL_VALUE.pattern, pult_api.MODEL_RE.pattern)
+        # kept per version, the six newest; a list that isn't one changes nothing
+        self.assertTrue(self.p.cc_models_put("2.1.318", older))
+        self.assertTrue(self.p.cc_models_put("2.1.322", newer))
+        self.assertFalse(self.p.cc_models_put("2.1.323", "no list"))
+        self.assertFalse(self.p.cc_models_put("x", older))
+        for v in ("2.1.300", "2.1.301", "2.1.310", "2.1.319", "2.1.317"):
+            self.p.cc_models_put(v, older)
+        self.assertEqual(sorted(self.store.get("cc_models"), key=pult_parts.vnum),
+                         ["2.1.301", "2.1.310", "2.1.317", "2.1.318", "2.1.319", "2.1.322"])
+        self.assertEqual(self.p.cc_models_view("2.1.322")["main"][0][1], "Fable 5.2")
+        self.assertIsNone(self.p.cc_models_view("2.1.200"))
+        self.assertEqual((self.p.cc_model_of("fable", "2.1.318"), self.p.cc_model_of("fable", "2.1.322"),
+                          self.p.cc_model_of("fable", "2.1.200")), ("claude-fable-5-1", "claude-fable-5-2", "fable"))
+        # the screens: a VS Code tab — its own version's menu; a closed session, New task, Settings — the app's
+        self.store.touch_session(SID, PKEY, path="/Users/x/proj")
+        self.p.live_of(SID, PKEY).transcript = TP
+        Path(TP).parent.mkdir(parents=True, exist_ok=True)
+        Path(TP).write_text("")
+        with mock.patch.object(self.p, "app_cc_version", return_value="2.1.322"):
+            self.assertEqual((await self.p.api_session(SID))["cc_models"]["v"], "2.1.322")
+            self.assertEqual((await self.p.api_projects())["cc_models"]["main"][0][:2], ["fable", "Fable 5.2"])
+            self.assertEqual((await self.p.api_settings())["cc_models"]["v"], "2.1.322")
+            # a card before the first answer: the alias as the session's Claude Code resolves it — "Fable 5.2" in the app
+            self.p.set_choice(SID, "fable", "")
+            self.assertEqual(self.p.llm_view(SID, None), {"model": "claude-fable-5-2"})
+            self.assertEqual(self.p.llm_view(SID, {"model": "claude-opus-5-5"}), {"model": "claude-opus-5-5"})   # it answered
+            self.p.tabs[777] = types.SimpleNamespace(sid=SID, version="2.1.318", caps=["model", "ctx", "control"], pid=777)
+            try:
+                info = await self.p.api_session(SID)
+                self.assertEqual((info["cc_models"]["v"], info["cc_models"]["main"][0][0]), ("2.1.318", "claude-fable-5-2"))
+                self.assertEqual(self.p.llm_view(SID, None), {"model": "claude-fable-5-1"})        # the tab's "fable"
+            finally:
+                del self.p.tabs[777]
+            self.p.set_choice(SID, "", "")
+            with mock.patch.object(self.store, "vendor_of", return_value="deepseek"):
+                self.assertIsNone((await self.p.api_session(SID))["cc_models"])           # its own models
+        # a session Pult runs keeps its version's list at the start — the answer to initialize is in already
+        self.store.put("cc_models", {})
+        info = {"claude_code_version": "2.1.322", "models": newer}
+        d = types.SimpleNamespace(store=self.store, cc_models_put=self.p.cc_models_put)
+        dr = types.SimpleNamespace(d=d, sid=SID, cc_version=None)
+        await pult_driven.Driven.models_seen(dr, types.SimpleNamespace(get_server_info=mock.AsyncMock(return_value=info)))
+        self.assertEqual((dr.cc_version, sorted(self.store.get("cc_models"))), ("2.1.322", ["2.1.322"]))
+        self.store.put("cc_models", {})
+        with mock.patch.object(self.store, "vendor_of", return_value="deepseek"):     # another vendor's: not kept
+            await pult_driven.Driven.models_seen(dr, types.SimpleNamespace(get_server_info=mock.AsyncMock(return_value=info)))
+        await pult_driven.Driven.models_seen(dr, types.SimpleNamespace())             # an SDK without it: no harm
+        self.assertEqual(self.store.get("cc_models"), {})
+        # a version without a list is read: Claude Code started with nothing of the owner's, nothing asked, closed
+        seen = []
+
+        class Fake:
+            def __init__(self, options):
+                seen.append(options)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                pass
+
+            async def get_server_info(self):
+                if "no-login" in str(seen[-1].cli_path):
+                    raise RuntimeError("not logged in")
+                return info
+
+            async def query(self, text):
+                raise AssertionError("nothing is asked")
+        with mock.patch.object(claude_agent_sdk, "ClaudeSDKClient", Fake):
+            self.assertTrue(await self.p.cc_models_read("2.1.322", TMP / "claude"))
+            o = seen[-1]
+            self.assertEqual((o.setting_sources, o.tools, o.env["PULT_OFF"], str(o.cli_path)), ([], [], "1", str(TMP / "claude")))
+            self.assertFalse(Path(o.cwd).exists())                                     # its empty folder is gone
+            self.assertFalse(await self.p.cc_models_read("2.1.330", TMP / "no-login" / "claude"))
+            # which versions: the app's, the tabs', the newest downloaded — once, then not before it's a day old
+            self.store.put("cc_models", {})
+            self.p.cc_models_tried.clear()
+            # the program's own name on this system: claude.exe on Windows (the first CI run there didn't find "claude")
+            ext = TMP / "ext-models" / "anthropic.claude-code-2.1.318-darwin-arm64" / "resources" / "native-binary" / pult_os.CLAUDE_EXE
+            ext.parent.mkdir(parents=True, exist_ok=True)
+            ext.write_text("")
+            app = TMP / "claude" / "2.1.322" / pult_os.CLAUDE_EXE
+            self.p.tabs[778] = types.SimpleNamespace(sid=None, version="2.1.318", caps=[], pid=778)
+            with mock.patch.object(pult_parts, "EXT_DIRS", [ext.parents[3]]), \
+                    mock.patch.object(self.p, "app_cli", return_value=app), \
+                    mock.patch.object(self.p, "cc_models_read", mock.AsyncMock(return_value=True)) as rd:
+                try:
+                    await self.p.cc_models_look()
+                    self.assertEqual([c.args[:2] for c in rd.call_args_list], [("2.1.322", app), ("2.1.318", ext)])
+                    await self.p.cc_models_look()                       # tried a moment ago: not again yet
+                    self.assertEqual(rd.await_count, 2)
+                finally:
+                    del self.p.tabs[778]
+
     async def test_driven_big_line(self):
         # a picture Claude reads comes in the stream's line twice: one ~470 KB screenshot made a line over the SDK's
         # own 1 MB limit, and a session from the app crashed in its first turn (2026-10-21). Through the real SDK,
@@ -4561,7 +4686,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         # the app shows the microphone only when there is a key: the flag rides with the projects (and the session)
         with mock.patch.object(self.p, "list_projects", lambda known: []):
             got = await self.p.api_projects()
-            self.assertEqual({k: v for k, v in got.items() if k not in ("vendors", "vendor_all", "codex")},
+            self.assertEqual({k: v for k, v in got.items() if k not in ("vendors", "vendor_all", "codex", "cc_models")},
                              {"projects": [], "stt": False, "create": True, "choice": {"model": None, "effort": None}})
             self.assertEqual([v["id"] for v in got["vendors"]], ["deepseek", "glm", "kimi", "local"])   # stage M, steps 2 and 6
             self.p.stt = FakeStt()

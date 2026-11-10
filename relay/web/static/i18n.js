@@ -722,6 +722,7 @@ const S = {
   "effort.reload": { en: "Effort can be switched from here after Reload Window in VS Code: this tab runs an older Pult wrapper.",
     ru: "Раздумья можно будет менять отсюда после Reload Window в VS Code: во вкладке старая обёртка Пульта." },
   "pick.default": { en: "Default", ru: "По умолчанию" },
+  "pick.more": { en: "Other versions", ru: "Другие версии" },
   "pick.as.cc": { en: "As in Claude Code's settings", ru: "Как в настройках Claude Code" },
   "pick.model.def": { en: "the default model", ru: "модель по умолчанию" },
   "pick.effort.def": { en: "default effort", ru: "раздумья по умолчанию" },

@@ -381,6 +381,10 @@ pre.cmdline { background: var(--code); border-radius: 8px; padding: 6px 9px; fon
 .pick-col .opt { padding: 8px 10px; margin: 5px 0; font-size: var(--fs-sec); }
 .pick-col .opt.off { opacity: .45; }
 .pick-col .opt:disabled { opacity: .45; }
+.pick-more { margin-top: 6px; }
+.pick-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 2px; }
+.pick-chips .opt { display: inline-block; width: auto; padding: 7px 11px; margin: 0; font-size: var(--fs-sec); }
+.pick-chips .opt.off, .pick-chips .opt:disabled { opacity: .45; }
 /* why a column can't switch here: shown always, and flashes when a dim option is tapped */
 .pick-why { margin: 8px 0 6px; padding: 8px 10px; border-radius: 10px; background: var(--code); font-size: var(--fs-sec); color: var(--warn); }
 .pick-why.lit { animation: nudge .7s ease-out; }
