@@ -177,7 +177,7 @@ const tagsAct = (r, onTags) => [{ ic: "tag", label: t("row.tags"), on: () => onT
 function BoardRow({ r, now, onBg, onTags }) {
   const bgTap = (e) => { e.stopPropagation(); onBg(r); };
   const llm = llmName(r.llm);
-  const right = r.state === "work" ? workChip(r.since, now)
+  const right = r.state === "work" ? workChip(r.since, now, r.silent)
     : r.state === "queue" ? queueChip(r.since, now)
     : r.state === "bg" ? bgChip(r.since, now, bgTap)
     : html`<span class="dim nowrap">${agoShort(r.ts)}</span>`;
@@ -202,7 +202,7 @@ const sameStart = (a, b) => { const x = String(a || "").replace(/…$/, ""), y =
 // At the top line's right end — which model does the task (2026-10-30); the project and the tags give way to it
 function RunRow({ r, now, onBg, onTags, showProject = true }) {
   const bgTap = (e) => { e.stopPropagation(); onBg(r); };
-  const chip = r.state === "work" ? workChip(r.since, now) : r.state === "queue" ? queueChip(r.since, now) : bgChip(r.since, now, bgTap);
+  const chip = r.state === "work" ? workChip(r.since, now, r.silent) : r.state === "queue" ? queueChip(r.since, now) : bgChip(r.since, now, bgTap);
   // a computer before 0.17.3 gives a turn one line: Claude's words, else the request when it was typed there
   const said = r.state === "queue" ? "" : r.state === "work" && "now" in r ? r.now || (!r.ask && r.note) : r.line;
   const asked = r.state === "queue" ? r.line : r.state === "work" ? r.ask : "";

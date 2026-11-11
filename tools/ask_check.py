@@ -163,6 +163,29 @@ async def main():
             t0 = time.time() - 0.5
             verdict("Allow turns the card into \"Allowed\"", await until("!!document.querySelector('.card.rcpt')"))
             await linger("the session", t0)
+            # what waits for your move is seen from every screen (review 2026-11-11, UX1): in a task — a line about
+            # the other tasks that wait; on Home's tab — their count; put away, the line stays away
+            ok = await until("!!document.querySelector('.wait-line')", 80)
+            verdict("the open task says another one waits", ok, await js("(document.querySelector('.session') || {}).textContent.slice(0, 200)"))
+            line = await js("(document.querySelector('.wait-line .wl-go') || {}).textContent") or ""
+            verdict("... in words: how many, or which and what", line.startswith("Ждёт тебя") or line.startswith("Ждут тебя: "), line)
+            sess = await js("location.hash")
+            await js("location.hash = '#/projects'")
+            verdict("Home's tab carries the count of tasks that wait for you",
+                    await until("/^[1-9]/.test((document.querySelector('.tabs a .tbadge') || {}).textContent || '')", 80),
+                    await js("(document.querySelector('.tabs') || {}).textContent"))
+            n = int(await js("(document.querySelector('.tabs a .tbadge') || {}).textContent") or 0)
+            verdict("... no fewer than the line named", "Ждут тебя: " not in line or int(line.split(": ")[1].split()[0]) <= n, line, n)
+            await js("location.hash = %s" % json.dumps(sess))
+            await until("!!document.querySelector('.wait-line .wl-x')", 80)
+            await js("document.querySelector('.wait-line .wl-x').click()")
+            verdict("put away, the line is gone", await until("!document.querySelector('.wait-line')", 40))
+            await js("location.hash = '#/projects'")
+            await until("!document.querySelector('.session')")
+            await js("location.hash = %s" % json.dumps(sess))
+            await until("!!document.querySelector('.session')", 80)
+            await asyncio.sleep(1.5)
+            verdict("... and stays away while nothing new waits", await js("!document.querySelector('.wait-line')"))
             verdict("no script errors", not errors, errors)
     finally:
         p.kill()

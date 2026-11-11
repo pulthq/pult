@@ -162,6 +162,12 @@ and another check it — from the phone.
 
 Every project gets a topic in your group; its sessions' turns, results, questions and permission requests go there.
 
+**When Telegram calls you** (with the app set up, Telegram is a pager — it rings only for what waits for you):
+a call about something that ended while the app was on your screen waits five minutes after you leave the app, and
+comes only if it still waits; a question or a permission you haven't answered is called about again after 30 minutes
+and after 2 hours; from 23:00 to 8:00 everything comes without sound, except security alerts; and once a day, at 9:00,
+one message in General sums up what waits for you, by project. All four are in the app: Settings → Notifications.
+
 | | |
 |---|---|
 | reply to a session's message | continue that session |

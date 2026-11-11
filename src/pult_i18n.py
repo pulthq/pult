@@ -216,6 +216,13 @@ S = {
     "dur.s": {"en": "{n} s", "ru": "{n} сек"},
     "dur.m": {"en": "{n} min", "ru": "{n} мин"},
     "dur.h": {"en": "{n} h", "ru": "{n} ч"},
+    "dur.d": {"en": "{n} d", "ru": "{n} дн."},
+    # ----- the day's summary and the reminder about a question left unanswered (review 2026-11-11, block 2) -----
+    "digest.head": {"en": "🟠 <b>Your move: {n}</b> · projects: {p}", "ru": "🟠 <b>Твой ход: {n}</b> · проектов: {p}"},
+    "digest.oldest": {"en": "The oldest has waited {dur}", "ru": "Самое старое ждёт {dur}"},
+    "digest.reports": {"en": "Reports not put away: {n}", "ru": "Отчётов без «Понятно»: {n}"},
+    "digest.open": {"en": "Open Pult", "ru": "Открыть Пульт"},
+    "remind.req": {"en": "still waits for your answer — {dur}", "ru": "всё ещё ждёт твоего ответа — {dur}"},
     "reset.at": {"en": "at {hm} ({left})", "ru": "в {hm} ({left})"},
     "reset.in": {"en": "in {left}", "ru": "через {left}"},
     "weekdays": {"en": "Mon Tue Wed Thu Fri Sat Sun", "ru": "пн вт ср чт пт сб вс"},
@@ -376,6 +383,11 @@ S = {
                      "ru": "Пульт перезапустился, пока шёл этот ход, — сделанное видно в переписке. "
                            "Напиши, чтобы продолжить."},
     "lost.go_on": {"en": "Go on", "ru": "Продолжай"},
+    "fail.silent": {"en": "the turn ended without a word", "ru": "ход кончился без итога"},
+    "lost.silent": {"en": "The turn's end never reached Pult, and the session has nothing more to say — what it had done "
+                          "is in the chat. Send a message to go on.",
+                    "ru": "Конец хода до Пульта не дошёл, и сессии больше нечего сказать, — сделанное видно в переписке. "
+                          "Напиши, чтобы продолжить."},
     "fail.codex_overloaded": {"en": "Codex's model is overloaded — wait or pick another",
                               "ru": "модель Codex перегружена — подожди или выбери другую"},
     "fail.codex_limit": {"en": "Codex hit the ChatGPT plan's limit — wait for it to reset",

@@ -2,6 +2,7 @@
 // Moved from app.js as it was (review 2026-10-27, 6.4).
 import { api, apiOnce, conn, emit, on, pacer, useLive } from "../core/conn.js";
 import { drafts, openLayer, typed, useBackFor, useDraft, useOverlay } from "../core/nav.js";
+import { WaitLine } from "../ui/wait.js";
 import { alertBox, confirmBox, haptic } from "../core/tg.js";
 import { Mic, useRecorder } from "../core/voice.js";
 import { locale, plural, q, t } from "../i18n.js";
@@ -565,7 +566,7 @@ function Session({ sid }) {
   if (out && (!firstOut.current || firstOut.current.ts !== out.ts)) firstOut.current = { ts: out.ts, state: out.state };
   const outState = out ? (["you", "fail"].includes(firstOut.current.state) ? firstOut.current.state : out.state) : null;
   const st = lv.state === "ask" ? html`<span class="chip warn">${t("st.ask")}</span>`
-    : lv.state === "work" ? workChip(lv.run || lv.started, now)
+    : lv.state === "work" ? workChip(lv.run || lv.started, now, lv.silent)
     : lv.state === "queue" ? queueChip(lv.queued, now)
     : lv.bg && lv.bg.length > 0 ? bgChip(lv.bg_since || (out && out.ts), now, openBgs)
     : pauseChip(lv.work);                          // the task's clock, stopped: "working N" goes on from it (2026-10-30)
@@ -604,8 +605,9 @@ function Session({ sid }) {
       ${info.tagset && html`<button class="sess-tags" onClick=${() => (tagPick ? closeTagPick() : openTagPick())}>${(info.tags || []).length ? tagChips(info.tags) : html`<span class="dim">${t("tags.none")}</span>`}<span class="caret">${ic("down", 14)}</span></button>`}
       <div class="dim">${home(20)}${info.project !== info.title ? html`<span class="sep">›</span><a class="crumb" href=${"#/p/" + encodeURIComponent(info.pkey)}>${info.project}</a>` : ""} ${st}</div>
       ${lv.state !== "work" && lv.bg && lv.bg.length > 0 && html`<button class="bg tap plain" onClick=${openBgs}>${bgLine(lv.bg)} ${ic("chev", 14)}</button>`}</div>
+    ${!away && !pin && html`<${WaitLine} sid=${sid}/>`}
     ${s.before != null && html`<button class="link center earlier" disabled=${early} onClick=${earlier}>${t(early ? "earlier.loading" : "earlier")}</button>`}
-    ${(away || pin) && html`<div class="sess-top">
+    ${(away || pin) && html`<div class="sess-top"><${WaitLine} sid=${sid}/>
       ${away && html`<div class="where-bar">${home(22)}${avatar(info.project, 30)}<span class="wb-body">
         <a class="wb-p" href=${"#/p/" + encodeURIComponent(info.pkey)}>${info.project}</a>
         ${info.title !== info.project && html`<span class="wb-t">${tagChips(info.tags)}${info.title}</span>`}</span>${st}</div>`}

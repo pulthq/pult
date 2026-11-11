@@ -54,6 +54,9 @@ import pult_tg  # noqa: E402
 import pult_web as PW  # noqa: E402
 import pult_update as U  # noqa: E402
 import pultd  # noqa: E402
+# The checks run at any hour, on computers in any time zone: no quiet hours and no day's summary unless a check asks for
+# them — a call "with sound" would be silent on a runner whose clock says night (review 2026-11-11, block 2)
+pultd.PREFS.update(quiet=None, digest=None)
 sys.path.insert(1, str(Path(__file__).resolve().parent))
 import fake_codex  # noqa: E402  (a stand-in for Codex's program: stage M)
 
@@ -2144,7 +2147,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
     async def test_prefs(self):
         self.assertEqual(self.p.prefs(), {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": None, "pace": 90,
                                           "model": None, "effort": None, "gh": True, "vcheck": True, "hashtags": True,
-                                          "ccfresh": True})
+                                          "ccfresh": True, "digest": None, "quiet": None, "page_delay": 5, "remind": True})
         self.p.env["PULT_FORCE_AWAY"] = "0"                                           # you are at the Mac
         self.assertFalse(await self.p.loud())
         self.assertTrue(await self.p.loud(driven=True))                     # auto: a session from Telegram — with sound
@@ -2152,7 +2155,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
                                      hashtags="yes", ccfresh="on")                  # garbage is rejected
         self.assertEqual(res, {"vehi": True, "mode": "phone", "lang": None, "brief": False, "pager": None, "pace": 90,
                                "model": None, "effort": None, "gh": True, "vcheck": True, "hashtags": True,
-                               "ccfresh": True})
+                               "ccfresh": True, "digest": None, "quiet": None, "page_delay": 5, "remind": True})
         self.assertFalse((await self.p.api_prefs(ccfresh=False))["ccfresh"])        # stage A2: the app on the SDK's own
         await self.p.api_prefs(ccfresh=True)
         self.assertFalse((await self.p.api_prefs(hashtags=False))["hashtags"])      # stage T, T3: no hashtags under results
@@ -5931,6 +5934,326 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.p.attn.rec[SID]["model"] = True
         await self.p.page_due()
         self.assertTrue(any(t.startswith("🟠") and "Нужен твой выбор." in t for t in self.texts()))
+
+    async def test_silent_turn(self):
+        """A turn with no step and no word for 15 minutes is "silent" for the app — unless a tool is still out, a
+        background task runs or the owner is asked; and when Claude Code itself calls the session idle, the turn's end
+        never came: it is closed by the transcript's last words (review 2026-11-11, D6; Q179)."""
+        tp = TMP / "silent.jsonl"
+        say = lambda *blocks: json.dumps({"type": "assistant", "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+                                          "message": {"role": "assistant", "content": list(blocks)}})
+        res = lambda i: json.dumps({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": i, "content": "ok"}]}})
+        use = lambda i: {"type": "tool_use", "id": i, "name": "Bash", "input": {"command": "make test"}}
+        tp.write_text(say({"type": "text", "text": "Запускаю проверки."}, use("t1")) + "\n")
+        self.assertTrue(pultd.tool_running(str(tp)))                  # a command still out: at work
+        tp.write_text(say(use("t1")) + "\n" + res("t1") + "\n")
+        self.assertFalse(pultd.tool_running(str(tp)))                 # it came back; Claude thinks — or hangs
+        tp.write_text(say(use("t1"), use("t2")) + "\n" + res("t1") + "\n")
+        self.assertTrue(pultd.tool_running(str(tp)))                  # one of two still out
+        tp.write_text(say({"type": "text", "text": "Готово: всё зелёное."}) + "\n")
+        self.assertFalse(pultd.tool_running(str(tp)))
+        self.assertTrue(pultd.tool_running(str(TMP / "none.jsonl")))  # unknown — no mark
+        lv = self.p.live_of(SID, PKEY)
+        lv.transcript = str(tp)
+        t = self.p.start_turn(lv, "сделай")
+        agents = []
+
+        async def fake_agents():
+            return agents
+        self.p.agents = fake_agents
+        await self.p.silence(lv, t)
+        self.assertIsNone(t.silent)                                   # it has only begun
+        t.last = t.started = time.time() - 16 * 60
+        tp.write_text(say(use("t1")) + "\n")
+        await self.p.silence(lv, t)
+        self.assertIsNone(t.silent)                                   # a long command
+        tp.write_text(say(use("t1")) + "\n" + res("t1") + "\n")
+        lv.bg = [{"id": "b1", "type": "shell"}]
+        await self.p.silence(lv, t)
+        self.assertIsNone(t.silent)                                   # a background task runs
+        lv.bg = []
+        req = pultd.Req(SID, "Bash", {"command": "ls"}, None)
+        lv.pending[req.rid] = req
+        await self.p.silence(lv, t)
+        self.assertIsNone(t.silent)                                   # it waits for the owner
+        lv.pending.clear()
+        t.heard = time.time() - 60
+        await self.p.silence(lv, t)
+        self.assertIsNone(t.silent)                                   # it said something a minute ago
+        t.heard = 0.0
+        await self.p.silence(lv, t)
+        self.assertAlmostEqual(t.silent, t.last, delta=1)
+        self.assertAlmostEqual(self.p.live_item(lv)["silent"], t.last, delta=1)
+        self.assertIsNotNone(lv.turn)                                 # nothing is stopped: Claude Code says nothing of it
+        # Claude Code calls it busy — the mark stays; a step — the mark goes
+        agents[:] = [{"sessionId": SID, "status": "busy"}]
+        t.idle_asked = 0.0
+        await self.p.silence(lv, t)
+        self.assertIsNotNone(lv.turn)
+        t.last = time.time()
+        await self.p.silence(lv, t)
+        self.assertIsNone(t.silent)
+        # idle there, a turn here: its end never came — closed by its last words, an outcome like any other
+        t.last = time.time() - 16 * 60
+        tp.write_text(say({"type": "text", "text": "Готово: проверки зелёные. Выкладывать?"}) + "\n")
+        agents[:] = [{"sessionId": SID, "status": "idle"}]
+        t.idle_asked = 0.0
+        await self.p.silence(lv, t)
+        self.assertIsNone(lv.turn)
+        await until(lambda: self.p.attn.rec.get(SID, {}).get("line"))
+        r = self.p.attn.rec[SID]
+        self.assertEqual((r["fail"], r["line"]), (None, "Готово: проверки зелёные."))
+        # ... and with nothing said in it — as cut short, "Go on" ready
+        t = self.p.start_turn(lv, "ещё")
+        t.last = t.started = time.time() - 16 * 60
+        tp.write_text(res("t9") + "\n")
+        await self.p.silence(lv, t)
+        await until(lambda: self.p.attn.rec.get(SID, {}).get("fail") == "silent")
+        self.assertEqual(self.p.attn.rec[SID]["replies"], ["Продолжай"])
+
+    async def test_waiting_for_your_move(self):
+        """What waits for the owner's move, for the app's count on Home's tab and the line in a task (review
+        2026-11-11, UX1): questions, permissions, outcomes that need the owner or broke off — no plain reports, nothing
+        put away, no session that has gone on; the task open now is left out of `others`."""
+        self.assertEqual(await self.p.api_waiting(), {"n": 0, "others": 0, "top": None})
+        now = time.time()
+        self.store.set_topic(PKEY, "/Users/x/proj", "proj", 55)
+        self.p.attn.finished("s-you", PKEY, 5, "", "Выбери вариант", True, now=now - 300)
+        self.p.attn.finished("s-fail", PKEY, 5, "", "Оборвалось", True, fail="process", now=now - 200)
+        self.p.attn.finished("s-report", PKEY, 5, "", "Отчёт", False, now=now - 100)
+        self.p.attn.finished("s-seen", PKEY, 5, "", "Убрано", True, now=now - 50)
+        self.p.attn.rec["s-seen"]["seen"] = True
+        self.p.attn.finished("s-goes", PKEY, 5, "", "Уже идёт дальше", True, now=now - 40)
+        self.p.start_turn(self.p.live_of("s-goes", PKEY), "ещё")
+        got = await self.p.api_waiting()
+        self.assertEqual((got["n"], got["others"]), (2, 2))
+        self.assertEqual(got["top"], {"sid": "s-fail", "project": "proj", "what": "fail", "ts": now - 200})
+        req = pultd.Req("s-ask", "AskUserQuestion", {"questions": [{"question": "Да?", "options": [{"label": "Да"}]}]}, None)
+        self.p.req_by_rid[req.rid] = req
+        self.p.live_of("s-ask", PKEY)
+        got = await self.p.api_waiting(but="s-fail")
+        self.assertEqual((got["n"], got["others"], got["top"]["sid"], got["top"]["what"]), (3, 2, "s-ask", "ask"))
+        perm = pultd.Req("s-you", "Bash", {"command": "ls"}, None)       # a session with an outcome and a request: one task
+        self.p.req_by_rid[perm.rid] = perm
+        self.assertEqual((await self.p.api_waiting())["n"], 3)
+        self.assertEqual((await self.p.api_waiting(but="s-ask"))["others"], 2)
+        self.p.req_by_rid.clear()
+        self.p.finish_turn(self.p.live["s-goes"], "⏹")
+        self.assertIn("waiting", PW.CAPS)
+
+    async def test_loops_are_looked_after(self):
+        """An error in one of the daemon's own loops starts that loop again instead of ending the daemon with every
+        session it runs; the journal says where it broke (review 2026-11-11, D11). A loop that ends by itself is done."""
+        runs, naps = [], []
+
+        async def loop():
+            runs.append(len(runs))
+            if len(runs) < 3:
+                raise RuntimeError("сломалось %d" % len(runs))
+            return "ended"
+
+        async def nap(s):
+            naps.append(s)
+        with mock.patch.object(pultd.asyncio, "sleep", nap), mock.patch.object(pultd, "log") as lg:
+            self.assertEqual(await pultd.forever("the attention watch", loop), "ended")
+        self.assertEqual((len(runs), naps), (3, [1, 2]))
+        said = [c.args[0] for c in lg.call_args_list]
+        self.assertTrue(said[0].startswith("the attention watch stopped by an error — started again in 1 s\nTraceback"), said[0])
+        self.assertIn("RuntimeError: сломалось 1", said[0])
+        self.assertIn("in loop", said[0])                              # where it broke
+
+        async def stopped():
+            raise asyncio.CancelledError()
+        with self.assertRaises(asyncio.CancelledError):                # Pult stopping is no error
+            await pultd.forever("the queue", stopped)
+        with mock.patch.object(pultd, "log") as lg:
+            try:
+                raise ValueError("никто не ждал")
+            except ValueError as e:
+                pultd.task_error(None, {"message": "Task exception was never retrieved", "exception": e})
+        self.assertIn("a task broke: Task exception was never retrieved\nTraceback", lg.call_args.args[0])
+        self.assertIn("ValueError: никто не ждал", lg.call_args.args[0])
+        # the journal knows of turns: when one began and how it ended (D17)
+        lv = self.p.live_of(SID, PKEY)
+        with mock.patch.object(pultd, "log", wraps=pultd.log) as lg:
+            self.p.start_turn(lv, "сделай")
+            lv.turn.n = 4
+            self.p.finish_turn(lv, "✔️")
+        said = [c.args[0] for c in lg.call_args_list if c.args and str(c.args[0]).startswith("turn ")]
+        self.assertEqual(said[0], "turn %s: begins" % SID[:8])
+        self.assertTrue(said[1].startswith("turn %s: ends ✔️ — " % SID[:8]) and said[1].endswith("4 step(s)"), said[1])
+
+    async def test_send_docs_one_sound(self):
+        """Several files of one `pult send` ring once, not once each (review 2026-11-11, T21)."""
+        d = TMP / "many"
+        d.mkdir(exist_ok=True)
+        paths = []
+        for n in range(3):
+            (d / ("f%d.txt" % n)).write_text("x")
+            paths.append(str(d / ("f%d.txt" % n)))
+        got = await self.p.send_docs(SID, PKEY, paths, caption="три файла")
+        self.assertEqual(len(got["sent"]), 3)
+        docs = self.fake.of("sendDocument")[-3:]
+        self.assertEqual([x["disable_notification"] for x in docs], ["false", "true", "true"])
+        with mock.patch.object(self.p, "quiet_now", lambda now=None: True):
+            await self.p.send_docs(SID, PKEY, paths[:1])
+        self.assertEqual(self.fake.of("sendDocument")[-1]["disable_notification"], "true")
+
+    async def test_pager_when_it_calls(self):
+        """When Telegram calls (review 2026-11-11, block 2; the owner's answers Q175, Q176): what ended with the app
+        on the screen is called about five minutes after the app left, and only if it still waits; quiet hours take
+        the sound away, but not an alert's; a question left unanswered is called about again at 30 minutes and at 2
+        hours and the reminders go with the answer; once a day — a summary of all that waits."""
+        self.p.env.update(PULT_APP_LINK="https://t.me/b/pult", PULT_RELAY_URL="wss://h.example/pult/agent")
+        self.p._procs = (time.monotonic() + 1e6, None)
+        self.assertEqual({k: pultd.PREFS[k] for k in ("page_delay", "remind")}, {"page_delay": 5, "remind": True})
+        lv = self.p.live_of(SID, PKEY)
+        sends = lambda: len(self.fake.of("sendMessage"))
+        await self.p.send(PKEY, "тема есть")                           # the project's topic, with its own first words
+        await asyncio.sleep(0.2)
+        # --- ended with the app on the screen
+        await self.p.api_presence(True)
+        self.p.outcome(lv, None, "Готово. Какой вариант берём?")
+        r = self.p.attn.rec[SID]
+        self.assertTrue(r.get("app"))
+        r["model"] = True
+        await self.p.api_presence(False)
+        n = sends()
+        await self.p.page_due()
+        self.assertEqual(sends(), n)                                   # just left the app: not under the hand
+        self.p.app_seen = time.time() - 4 * 60
+        await self.p.page_due()
+        self.assertEqual(sends(), n)
+        self.p.app_seen = time.time() - 5 * 60 - 1
+        await self.p.page_due()
+        self.assertEqual(sends(), n + 1)                               # five minutes on, and it still waits
+        self.assertTrue(self.fake.of("sendMessage")[-1]["text"].startswith("🟠"))
+        # put away meanwhile — no call at all; ended with the app off the screen — at once, as before
+        self.p.outcome(lv, None, "Ещё вопрос: выкладывать?")
+        self.assertFalse(self.p.attn.rec[SID].get("app"))
+        self.p.attn.rec[SID]["model"] = True
+        await self.p.page_due()
+        self.assertEqual(sends(), n + 2)
+        await self.p.api_presence(True)
+        self.p.outcome(lv, None, "И ещё один")
+        self.p.attn.rec[SID]["model"] = True
+        await self.p.api_presence(False)
+        await self.p.api_seen(SID)
+        self.p.app_seen = time.time() - 600
+        await self.p.page_due()
+        self.assertEqual(sends(), n + 2)
+        # the delay is the owner's to set: 0 — at once
+        await self.p.api_prefs(page_delay=0)
+        await self.p.api_presence(True)
+        self.p.outcome(lv, None, "Без отсрочки")
+        self.p.attn.rec[SID]["model"] = True
+        await self.p.api_presence(False)
+        await self.p.page_due()
+        self.assertEqual(sends(), n + 3)
+        await self.p.api_seen(SID)
+        # --- quiet hours: no sound, but for an alert
+        night = time.mktime(time.localtime()[:3] + (2, 30, 0) + time.localtime()[6:])
+        noon = time.mktime(time.localtime()[:3] + (12, 0, 0) + time.localtime()[6:])
+        self.assertFalse(self.p.quiet_now(night))                      # none set (the checks' default)
+        await self.p.api_prefs(quiet=[23, 8])
+        self.assertEqual([self.p.quiet_now(x) for x in (night, noon)], [True, False])
+        self.assertTrue(self.p.quiet_now(time.mktime(time.localtime()[:3] + (23, 5, 0) + time.localtime()[6:])))
+        self.assertFalse(self.p.quiet_now(time.mktime(time.localtime()[:3] + (8, 0, 0) + time.localtime()[6:])))
+        with mock.patch.object(self.p, "quiet_now", lambda now=None: True):
+            await self.p.send(PKEY, "ночной вызов", notify=True)
+            self.assertEqual(self.fake.of("sendMessage")[-1]["disable_notification"], "true")
+            await self.p.send(PKEY, "вход из новой сети", notify=True, urgent=True)
+            self.assertEqual(self.fake.of("sendMessage")[-1]["disable_notification"], "false")
+        with mock.patch.object(self.p, "quiet_now", lambda now=None: False):
+            await self.p.send(PKEY, "дневной вызов", notify=True)
+            self.assertEqual(self.fake.of("sendMessage")[-1]["disable_notification"], "false")
+        for bad in ([23, 23], [25, 8], "ночью", [23], [True, 8]):
+            await self.p.api_prefs(quiet=bad)
+            self.assertEqual(self.p.prefs()["quiet"], [23, 8], bad)
+        await self.p.api_prefs(quiet=None)
+        # --- a question left unanswered: called about again at 30 minutes and at 2 hours
+        req = pultd.Req(SID, "AskUserQuestion", {"questions": [{"question": "Выкладывать?", "options": [{"label": "Да"}, {"label": "Нет"}]}]}, None)
+        self.p.req_by_rid[req.rid] = req
+        lv.pending[req.rid] = req
+        await self.p.page_due()
+        self.assertTrue(req.paged and req.msgs)
+        n = sends()
+        await self.p.page_due()
+        self.assertEqual((sends(), req.reminded), (n, 0))
+        req.ts = time.time() - 31 * 60
+        await self.p.page_due()
+        self.assertEqual((sends(), req.reminded, len(req.nags)), (n + 1, 1, 1))
+        nag = self.fake.of("sendMessage")[-1]
+        self.assertIn("всё ещё ждёт твоего ответа — 31 мин", nag["text"])
+        self.assertEqual(json.loads(nag["reply_parameters"])["message_id"], req.msgs[0][0])
+        await self.p.page_due()
+        self.assertEqual(sends(), n + 1)                               # once per mark
+        req.ts = time.time() - 3 * 3600
+        await self.p.page_due()
+        self.assertEqual((sends(), req.reminded), (n + 2, 2))
+        await self.p.page_due()
+        self.assertEqual(sends(), n + 2)                               # and no more after the last one
+        # both marks passed while the owner was here: one reminder when they leave, not two
+        late = pultd.Req(SID, "Bash", {"command": "make deploy"}, None)
+        late.paged, late.ts = True, time.time() - 3 * 3600
+        self.p.req_by_rid[late.rid] = late
+        await self.p.page_due()
+        self.assertEqual((sends(), late.reminded), (n + 3, 2))
+        await self.p.api_prefs(remind=False)
+        other = pultd.Req(SID, "Bash", {"command": "ls"}, None)
+        other.paged, other.ts = True, time.time() - 3 * 3600
+        self.p.req_by_rid[other.rid] = other
+        await self.p.page_due()
+        self.assertEqual((sends(), other.reminded), (n + 3, 0))
+        for x in (req, late, other):
+            self.p.req_by_rid.pop(x.rid, None)
+        lv.pending.clear()
+        await self.p.api_prefs(remind=True)
+        # --- the day's summary
+        self.assertIsNone(self.p.digest_text())                        # nothing waits: nothing to say
+        self.assertFalse(await self.p.digest_due())                    # none asked for (the checks' default)
+        now = time.time()
+        self.p.attn.rec.clear()
+        self.p.attn.finished("s-a1", PKEY, 5, "", "Нужен ответ про кэш", True, now=now - 3 * 86400)
+        self.p.attn.finished("s-a2", PKEY, 5, "", "Упало", True, fail="process", now=now - 7200)
+        self.p.attn.finished("s-b1", "-Users-x-other", 5, "", "Выбери вариант", True, now=now - 600)
+        self.p.attn.finished("s-r1", PKEY, 5, "", "Отчёт готов", False, now=now - 600)
+        self.p.attn.finished("s-old", PKEY, 5, "", "Убрано", True, now=now - 600)
+        self.p.attn.rec["s-old"]["seen"] = True
+        text, loud = self.p.digest_text(now)
+        self.assertEqual(text.split("\n"), ["🟠 <b>Твой ход: 3</b> · проектов: 2", "proj — 2 · other — 1",
+                                            "Самое старое ждёт 3 дн.", "Отчётов без «Понятно»: 1"])
+        self.assertTrue(loud)
+        self.p.attn.rec["s-a1"]["ts"] = now - 5 * 3600 - 120
+        self.assertIn("Самое старое ждёт 5 ч", self.p.digest_text(now)[0])
+        for sid in ("s-a1", "s-a2", "s-b1"):
+            self.p.attn.rec[sid]["seen"] = True
+        self.assertEqual(self.p.digest_text(now), ("Отчётов без «Понятно»: 1", False))   # reports alone: no sound
+        self.p.attn.rec["s-b1"]["seen"] = False
+        at9 = time.mktime(time.localtime()[:3] + (9, 0, 30) + time.localtime()[6:])
+        await self.p.api_prefs(digest=9)
+        n = sends()
+        self.assertFalse(await self.p.digest_due(at9 - 3600))          # before its hour
+        self.assertFalse(await self.p.digest_due(at9 + 7 * 3600))      # the computer was off all morning: not that day
+        self.assertEqual(sends(), n)
+        self.assertTrue(await self.p.digest_due(at9))
+        msg = self.fake.of("sendMessage")[-1]
+        self.assertTrue(msg["text"].startswith("🟠 <b>Твой ход: 1</b> · проектов: 1\nother — 1"), msg["text"])
+        self.assertNotIn("message_thread_id", msg)                     # General
+        self.assertIn("Открыть Пульт", msg["reply_markup"])
+        self.assertEqual(msg["disable_notification"], "false")
+        self.assertFalse(await self.p.digest_due(at9 + 600))           # once a day
+        self.assertEqual(sends(), n + 1)
+        self.store.put("digest_day", None)
+        await self.p.api_prefs(quiet=[23, 10])
+        self.assertFalse(await self.p.digest_due(at9))                 # still the quiet hours: it waits for their end
+        self.assertTrue(await self.p.digest_due(at9 + 3600))
+        self.store.put("digest_day", None)
+        await self.p.api_prefs(quiet=None, digest=None)
+        self.assertFalse(await self.p.digest_due(at9))
+        for bad in (24, -1, "9", True):
+            await self.p.api_prefs(digest=bad)
+            self.assertIsNone(self.p.prefs()["digest"], bad)
 
     async def test_turn_cut_short(self):
         """A session Pult runs is gone with its turn open — the process died, or Pult was restarted under it: the turn

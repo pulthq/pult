@@ -374,6 +374,7 @@ const S = {
   bg: { en: "In the background: {list}", ru: "В фоне: {list}" },
   "st.ask": { en: "waiting for you", ru: "ждёт ответа" },
   "st.work": { en: "working {dur}", ru: "работает {dur}" },
+  "st.silent": { en: "silent {dur}", ru: "молчит {dur}" },
   "st.queue": { en: "in the queue {dur}", ru: "в очереди {dur}" },
   "queue.title": { en: "In the queue", ru: "В очереди" },
   "queue.why": { en: "Up to {n} tasks from the phone run at once, and all places are taken: this one starts as soon as one ends.",
@@ -1167,6 +1168,29 @@ const S = {
 
   // tabs
   "tab.home": { en: "Home", ru: "Главная" },
+  // when Telegram calls — four rows of Settings → Notifications (review 2026-11-11, block 2)
+  "digest": { en: "The day's summary", ru: "Сводка «Твой ход»" },
+  "digest.short": { en: "Once a day, one message: what waits for you and in which projects.", ru: "Раз в день одним сообщением: что ждёт тебя и в каких проектах." },
+  "digest.at": { en: "at {h}:00", ru: "в {h}:00" },
+  "set.none": { en: "none", ru: "нет" },
+  "quiet": { en: "Quiet hours", ru: "Тихие часы" },
+  "quiet.short": { en: "Everything comes without sound then, except security alerts.", ru: "В это время всё приходит без звука, кроме тревог безопасности." },
+  "remind": { en: "Remind me of a question", ru: "Напоминать о вопросе" },
+  "remind.short": { en: "After 30 minutes and after 2 hours, while the task stands and waits for an answer.", ru: "Через 30 минут и через 2 часа, пока задача стоит и ждёт ответа." },
+  "pagedelay": { en: "After the app", ru: "После приложения" },
+  "pagedelay.short": { en: "How long to wait before calling about what you have already seen in the app.", ru: "Сколько ждать, прежде чем звать о том, что ты уже видел в приложении." },
+  "pagedelay.now": { en: "at once", ru: "сразу" },
+  "pagedelay.min": { en: "{n} min", ru: "{n} мин" },
+  // what waits for your move, seen from any screen: the count on Home's tab, the line in a task (ui/wait.js)
+  "wait.count": { en: "Waiting for your move: {n}", ru: "Ждут твоего хода: {n}" },
+  "wait.one": { en: "Waits for you", ru: "Ждёт тебя" },
+  "wait.many": { en: "Waiting for you: {n}", ru: "Ждут тебя: {n}" },
+  "wait.ask": { en: "a question", ru: "вопрос" },
+  "wait.perm": { en: "a permission", ru: "разрешение" },
+  "wait.plan": { en: "a plan to look at", ru: "план на согласование" },
+  "wait.you": { en: "done, your move", ru: "готово, твой ход" },
+  "wait.fail": { en: "the turn broke off", ru: "ход оборвался" },
+  "wait.hide": { en: "Hide", ru: "Скрыть" },
   "tab.projects": { en: "Projects", ru: "Проекты" },
 };
 

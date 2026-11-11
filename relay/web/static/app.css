@@ -760,7 +760,21 @@ h3 .chev { vertical-align: -2px; }
 .ph .sum { margin: 2px 0 0; }
 /* the tab bar: icons over words, New in the accent */
 .tabs a { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 4px 9px; font-size: var(--fs-cap); font-weight: 600; }
-.tabs a .ti { display: flex; height: 26px; align-items: center; }
+.tabs a .ti { display: flex; height: 26px; align-items: center; position: relative; }
+/* how many tasks wait for your move, on Home's tab */
+.tbadge { position: absolute; top: -4px; left: 15px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--attn);
+  color: #fff; font-size: 11.5px; font-weight: 700; line-height: 18px; text-align: center; }
+/* the line in a task about another one that waits for you */
+.wait-line { display: flex; align-items: stretch; max-width: 692px; margin: 8px auto; border-radius: 12px; background: var(--attn-soft);
+  box-shadow: inset 4px 0 0 var(--attn); }
+.sess-top .wait-line { margin: 0 auto; border-radius: 0; }
+.wait-line .wl-go { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 8px 4px 8px 14px; border: 0;
+  background: none; font: inherit; font-size: var(--fs-sec); color: var(--ink); text-align: left; cursor: pointer; }
+.wait-line .wl-go b { color: var(--attn-ink); white-space: nowrap; }
+.wait-line .wl-what { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wait-line .wl-chev { color: var(--muted); display: flex; }
+.wait-line .wl-x { flex: 0 0 44px; min-height: 44px; border: 0; background: none; color: var(--muted); cursor: pointer; display: flex;
+  align-items: center; justify-content: center; }
 .tabs a.new .ti { width: 34px; height: 26px; border-radius: 10px; background: var(--accent); color: var(--accent-ink); justify-content: center; }
 .tabs a.new .ti .ic { width: 20px; height: 20px; }
 .where-b .tl-l .ic { vertical-align: -2px; }
@@ -779,6 +793,10 @@ h3 .chev { vertical-align: -2px; }
 .item.sw-row { cursor: default; }
 .sw-h { display: flex; width: 100%; justify-content: space-between; align-items: center; gap: 10px; background: none; border: 0; padding: 0; text-align: left; cursor: pointer; }
 .sw-h b { font-weight: 600; }
+/* a setting picked from a short list: its value on the right, the phone's own picker under the finger */
+.pick-h2 { cursor: default; }
+.pick-v { flex: 0 0 auto; max-width: 55%; min-height: 36px; padding: 4px 6px; border: 0; border-radius: 8px; background: none; color: var(--link);
+  font: inherit; font-weight: 600; text-align: right; text-align-last: right; cursor: pointer; }
 .sw-row .about-b { padding-top: 6px; }
 .login .ok { color: var(--ok); } .login .ic { vertical-align: -2px; }
 /* the forms (New task, New project) sit on the page's own background: fields get the card's colour and a hairline */
