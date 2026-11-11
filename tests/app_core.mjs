@@ -63,6 +63,9 @@ globalThis.history = {
   },
 };
 const store = new Map();
+const kept = new Map();       // the phone's own storage: what is typed and not sent lives there (FE4)
+globalThis.localStorage = { getItem: (k) => (kept.has(k) ? kept.get(k) : null), setItem: (k, v) => kept.set(k, String(v)), removeItem: (k) => kept.delete(k),
+  key: (n) => [...kept.keys()][n] ?? null, get length() { return kept.size; } };
 globalThis.sessionStorage = { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) };
 // the relay's socket: what the app sends, and what it is told; "on screen" every 20 s and the language at a login are
 // answered at once, as the computer does — left waiting, they would count as calls on their way; a ping — by the
@@ -307,6 +310,66 @@ await check("connection: a relay before 0.18.40 (no pong in its hello) is never 
   answerAll(cur);
 });
 
+await check("once: a message whose answer was lost goes again by itself with its key — the computer does it once", async () => {
+  C.reconnect();
+  await readyOn(ws());
+  const w1 = ws();
+  tell(w1, { t: "res", id: 0, data: null, caps: ["once"] });          // the computer says it knows keys (with "lang")
+  assert.deepEqual(C.conn.caps, ["once"]);
+  const p = C.apiOnce("send", { sid: "s1", text: "deploy" });
+  const first = asked(w1, "send")[0];
+  assert.ok(typeof first.once === "string" && first.once.length >= 8, "a key of its own");
+  close(w1, 1006);                                                     // the link drops before the answer
+  await later(600);
+  const w2 = ws();
+  assert.notEqual(w2, w1);
+  await readyOn(w2);                                                   // answers what waits — the same message, sent again
+  const again = asked(w2, "send");
+  assert.equal(again.length, 1);
+  assert.equal(again[0].once, first.once);
+  assert.deepEqual(again[0].args, first.args);
+  assert.equal(await p, null);
+});
+await check("once: a computer that doesn't know keys gets no second send; its own refusal comes back at once", async () => {
+  C.conn.caps = [];
+  const w = ws();
+  const p = C.apiOnce("send", { sid: "s1", text: "again?" }).catch((e) => e);
+  close(w, 1006);
+  assert.equal((await p).lost, true);                                  // as before: the words come back, the person decides
+  await later(600);
+  await readyOn(ws());
+  assert.equal(asked(ws(), "send").length, 0);
+  C.conn.caps = ["once"];
+  const no = C.apiOnce("send", { sid: "s1", text: "x" }).catch((e) => e);
+  tell(ws(), { t: "res", id: asked(ws(), "send")[0].id, error: "the session is another model's" });
+  assert.equal((await no).message, "the session is another model's");
+  assert.equal(asked(ws(), "send").length, 1);
+});
+await check("once: with no link the message waits for it — two minutes at most — and a slow answer is asked for again", async () => {
+  const w = ws();
+  close(w, 1006);
+  const p = C.apiOnce("new", { pkey: "-p", text: "a task" });          // nothing left: tried again whatever the computer
+  await later(600);
+  await readyOn(ws());
+  assert.equal(asked(ws(), "new").length, 1);
+  assert.equal(await p, null);
+  close(ws(), 1006);
+  const never = C.apiOnce("new", { pkey: "-p", text: "nobody home" }).catch((e) => e);
+  for (let i = 0; i < 14; i++) { await later(10_000); if (ws().readyState !== 3) close(ws(), 1006); }
+  assert.equal((await never).unsent, true);
+  C.reconnect();
+  await readyOn(ws());
+  ws().slow = true;
+  const late = C.apiOnce("send", { sid: "s1", text: "a long start" });
+  await later(30_000);                                                 // no answer in 30 s: asked again, the same key
+  const both = asked(ws(), "send");
+  assert.equal(both.length, 2);
+  assert.equal(both[1].once, both[0].once);
+  tell(ws(), { t: "res", id: both[1].id, data: { ok: true } });
+  assert.deepEqual(await late, { ok: true });
+  ws().slow = false;
+  answerAll(ws());
+});
 await check("where: a session's link from Telegram opens that session", async () => {
   assert.equal(location.hash, "#/s/" + SID);
   assert.deepEqual(N.stack, ["#/s/" + SID]);
@@ -350,6 +413,27 @@ await check("where: words dictated after their screen went wait for it, once", a
   N.drafts.put("s1", "second");
   assert.equal(N.drafts.take("s1"), "first second");
   assert.equal(N.drafts.take("s1"), "");
+});
+await check("where: what is typed and not sent stays by its place — a week, then goes; sent, it is gone", async () => {
+  N.typed.set("s:1", "half a thought");
+  N.typed.set("new", "a task for tomorrow");
+  assert.equal(N.typed.get("s:1"), "half a thought");
+  assert.equal(N.typed.get("s:1"), "half a thought");          // reading keeps it: only sending takes it away
+  assert.equal(N.typed.get("s:2"), "");
+  N.typed.set("s:1", "");
+  assert.equal(localStorage.getItem("pult.typed.s:1"), null);
+  localStorage.setItem("pult.typed.old", JSON.stringify({ t: "last month's", at: Date.now() - 8 * 86400e3 }));
+  localStorage.setItem("pult.typed.odd", "not json");
+  N.typed.tidy();
+  assert.equal(localStorage.getItem("pult.typed.old"), null);
+  assert.equal(N.typed.get("odd"), "");
+  assert.equal(N.typed.get("new"), "a task for tomorrow");
+  const real = localStorage.setItem;
+  localStorage.setItem = () => { throw new Error("QuotaExceededError"); };      // a full or closed storage loses nothing else
+  N.typed.set("new", "more");
+  localStorage.setItem = real;
+  assert.equal(N.typed.get("new"), "a task for tomorrow");
+  N.typed.set("new", "");
 });
 await check("where: a link to a project file opens over the screen; a web link — outside, through Telegram", async () => {
   const files = [];

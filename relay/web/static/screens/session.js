@@ -1,7 +1,7 @@
 // Pult app — a session: the chat, a turn's files, a project's file opened over the screen.
 // Moved from app.js as it was (review 2026-10-27, 6.4).
-import { api, conn, emit, on, pacer, useLive } from "../core/conn.js";
-import { drafts, openLayer, useBackFor, useOverlay } from "../core/nav.js";
+import { api, apiOnce, conn, emit, on, pacer, useLive } from "../core/conn.js";
+import { drafts, openLayer, typed, useBackFor, useDraft, useOverlay } from "../core/nav.js";
 import { alertBox, confirmBox, haptic } from "../core/tg.js";
 import { Mic, useRecorder } from "../core/voice.js";
 import { locale, plural, q, t } from "../i18n.js";
@@ -255,7 +255,7 @@ function FileView({ job }) {
     : dotted([up, fsize(d.size), t("fv.changed", { at: turnWhen(d.mt) })]);
   let view;
   if (err) view = html`<div class="empty">${err}</div>`;
-  else if (!d) view = html`<div class="empty">${t("loading")}</div>`;
+  else if (!d) view = html`<div class="empty" data-wait="1">${t("loading")}</div>`;
   else if (isDir) {
     view = html`${d.entries.length ? html`<div class="list fv-list">${d.entries.map((x) => html`<button key=${x.n} class=${"fv-row" + (x.lock ? " lock" : "")}
         disabled=${x.lock} onClick=${() => openAt((d.p ? d.p + "/" : "") + x.n)}>
@@ -378,7 +378,7 @@ function Session({ sid }) {
   // sits before that padding, so scrollIntoView stopped short) — that room made first: set a frame later by its
   // observer, it came after the scroll now and then, and the chat opened a little above its end (ticks_check, 2026-10-28)
   const toBottom = () => { room(); window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" }); };
-  const [text, setText] = useState("");
+  const [text, setText] = useDraft("s:" + sid);      // typed and not sent: here again when the screen is (FE4)
   const [busy, setBusy] = useState(false);
   // what this screen has just sent, until the computer's outbox has it (Q56): the clock at once, ✓ on the answer
   const [sending, setSending] = useState([]);
@@ -412,7 +412,14 @@ function Session({ sid }) {
     if (earlyRef.current || !ref.current.info || ref.current.before == null) return;
     earlyRef.current = true;
     setEarly(true);
-    loadRef.current("before").finally(() => { earlyRef.current = false; setEarly(false); });
+    const from = ref.current.before;
+    loadRef.current("before").finally(() => {
+      earlyRef.current = false;
+      setEarly(false);
+      // a chunk of steps alone adds little height, and no scroll event follows it: the next one is asked for from
+      // here while the top is still near — only when this one did go back (a request that failed isn't repeated)
+      setTimeout(() => { if (window.scrollY < 900 && ref.current.before != null && ref.current.before < from) earlier(); }, 80);
+    });
   };
   const a = useAttach();
   const comp = useRef(null);
@@ -498,9 +505,12 @@ function Session({ sid }) {
     setSending((m) => [...m, { key, text: words.trim(), n: a.files.length, ts: Date.now() / 1000, st: "sending" }]);
     setText("");
     fit();
-    const back = () => { setSending((m) => m.filter((x) => x.key !== key)); setText(words); fit(); };
+    // the words go back to their place in the phone too: the screen may be gone by the time the answer is
+    const back = () => { typed.set("s:" + sid, words); setSending((m) => m.filter((x) => x.key !== key)); setText(words); fit(); };
     try {
-      const r = await api("send", { sid, text: words, fork: !!fork, files: a.payload() });
+      // once, and not lost: with no answer (the link dropped, the computer was slow) it goes again by itself when
+      // the link is back, and the computer knows it for the same message (FE3)
+      const r = await apiOnce("send", { sid, text: words, fork: !!fork, files: a.payload() });
       if (r.need === "fork") {
         back();
         setBusy(false);

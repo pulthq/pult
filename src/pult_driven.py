@@ -35,7 +35,22 @@ ASK_TIMEOUT = 6 * 3600   # how long to wait for a permission answer in a session
 # the longest line of the Claude process's stream: a picture Claude reads comes in it twice (the result and
 # tool_use_result), and the SDK's own 1 MB cut off a session at one ~470 KB screenshot (2026-10-21)
 SDK_LINE_MAX = 64 * 1024 * 1024
+PERMISSION_MODES = ("default", "acceptEdits", "plan", "bypassPermissions", "dontAsk", "auto")    # the SDK's PermissionMode
 PERMISSION_MODE = os.environ.get("PULT_PERMISSION_MODE", "auto")
+
+
+def permission_mode(env):
+    """The permission mode of the sessions Pult runs, as Pult's settings file says: PULT_PERMISSION_MODE there did
+    nothing — only the process's own environment was read, and the service's has no such line (review 2026-11-11,
+    S2). A word Claude Code doesn't know would fail every session at its start: it is refused here, the mode stays."""
+    global PERMISSION_MODE
+    want = str((env or {}).get("PULT_PERMISSION_MODE") or "").strip()
+    if want in PERMISSION_MODES:
+        PERMISSION_MODE = want
+    elif want:
+        log("PULT_PERMISSION_MODE: %r is not a mode Claude Code knows (%s) — it stays %s"
+            % (want, ", ".join(PERMISSION_MODES), PERMISSION_MODE))
+    return PERMISSION_MODE
 
 
 def log(*a):
@@ -478,6 +493,8 @@ class Driven:
             if self.d.driven.get(self.sid) is self:      # a message may have started a new one for the session meanwhile
                 self.d.driven.pop(self.sid, None)
                 self.d.out_gone_all(self.sid)
+                # the process is gone; a turn still open after its last events is one it never finished (D5)
+                asyncio.create_task(self.d.turn_lost_soon(self.sid, "process"))
 
 
 # ---------- a task Codex does (stage M, step M4.1; Q121–Q123) ----------
@@ -733,11 +750,14 @@ class CodexDriven(Driven):
                     await self.server.close()
                 except Exception as e:
                     log("Codex task %s: closing its app-server — %r" % (self.sid[:8], e))
+            if self.d.driven.get(self.sid) is self:
+                self.d.driven.pop(self.sid, None)
+                self.d.out_gone_all(self.sid)
+                # a turn still open here is one Codex never finished (its app-server died): said so before the
+                # session's end closes it without a word (review 2026-11-11, D5)
+                self.d.turn_lost(self.sid, "process")
             if self.thread:
                 try:
                     await self.hook("SessionEnd")
                 except Exception as e:
                     log("Codex task %s: its end — %r" % (self.sid[:8], e))
-            if self.d.driven.get(self.sid) is self:
-                self.d.driven.pop(self.sid, None)
-                self.d.out_gone_all(self.sid)

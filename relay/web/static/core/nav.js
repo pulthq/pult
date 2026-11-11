@@ -1,7 +1,7 @@
 // Pult app — where you are: routes, our own history, layers over the screen, Back; links out and to files.
 // Moved from app.js as it was (review 2026-10-27, 6.4).
 import { t } from "../i18n.js";
-import { useEffect, useRef, useState } from "../vendor/htm-preact-3.1.1.js";
+import { useEffect, useMemo, useRef, useState } from "../vendor/htm-preact-3.1.1.js";
 import { emit } from "./conn.js";
 import { tg } from "./tg.js";
 
@@ -59,6 +59,44 @@ const drafts = {
   take(k) { try { const v = sessionStorage.getItem("pult.draft." + k) || ""; sessionStorage.removeItem("pult.draft." + k); return v; } catch (e) { return ""; } },
   put(k, v) { try { const old = sessionStorage.getItem("pult.draft." + k); sessionStorage.setItem("pult.draft." + k, old ? old + " " + v : v); } catch (e) { /* lost */ } },
 };
+// what is typed and not sent yet, by its place — a session's field, the new task, an answer in a card. It lived in the
+// screen's own state: a tap on a tab below, Back, a look at the turn's files, or Android unloading Telegram, and half a
+// screen of words was gone (review 2026-11-11, FE4). Kept in the phone as it is typed, for TYPED_DAYS; attachments
+// are not. Storage that isn't there or is full — the words live as long as the screen, as before
+const TYPED = "pult.typed.", TYPED_DAYS = 7;
+const typed = {
+  get(k) {
+    try {
+      const v = JSON.parse(localStorage.getItem(TYPED + k) || "null");
+      if (v && typeof v.t === "string" && Date.now() - v.at < TYPED_DAYS * 86400e3) return v.t;
+      if (v) localStorage.removeItem(TYPED + k);
+    } catch (e) { /* none */ }
+    return "";
+  },
+  set(k, text) {
+    try { if (text) localStorage.setItem(TYPED + k, JSON.stringify({ t: text, at: Date.now() })); else localStorage.removeItem(TYPED + k); } catch (e) { /* lost */ }
+  },
+  tidy() {       // the ones never sent and never opened again
+    try {
+      for (let n = localStorage.length - 1; n >= 0; n--) { const k = localStorage.key(n); if (k && k.startsWith(TYPED)) typed.get(k.slice(TYPED.length)); }
+    } catch (e) { /* none */ }
+  },
+};
+typed.tidy();
+// useState("") for a field whose words are kept by `k`: → [text, setText, forget]. forget() — the words went where
+// they were meant to (a card that closes with its answer): the field keeps them, the phone doesn't. No key — plain state
+function useDraft(k) {
+  const [st, set] = useState(() => ({ k, v: k ? typed.get(k) : "" }));
+  const cur = st.k === k ? st : { k, v: k ? typed.get(k) : "" };      // the same screen, another place: its own words
+  if (cur !== st) set(cur);
+  const setText = useMemo(() => (v) => set((c) => {
+    const text = typeof v === "function" ? v(c.k === k ? c.v : k ? typed.get(k) : "") : v;
+    if (k) typed.set(k, text);
+    return { k, v: text };
+  }), [k]);
+  const forget = useMemo(() => () => { if (k) typed.set(k, ""); }, [k]);
+  return [cur.v, setText, forget];
+}
 // the overlays open now, the newest last — a picture full screen, the model menu, a file: each a step in the history,
 // so Back closes the top one, not the screen. Each used to listen for Back itself: one Back closed a file and the sheet
 // under it, and the sheet's step stayed — the next Back did nothing (review 2026-10-27, П8)
@@ -108,10 +146,10 @@ try {
   const re = JSON.parse(localStorage.getItem("pult.reopen") || "null");
   localStorage.removeItem("pult.reopen");
   if (re && !start && (!location.hash || tgHash(location.hash)) && Date.now() - re.at < REOPEN_MS && /^#\/[\w/?=&%.-]*$/.test(re.h || "")) {
-    if (re.k && re.text) drafts.put(re.k, re.text);
+    if (re.k && re.text && typed.get(re.k) !== re.text) drafts.put(re.k, re.text);      // a field that keeps its words has them
     history.replaceState(null, "", re.h); stack[0] = re.h;
     setTimeout(() => emit("toast", t("pick.again")), 1000);      // the toast listens once the app is on the screen
   }
 } catch (e) { /* no storage: the start screen as always */ }
 
-export { back, drafts, go, holdBy, holds, layers, openLayer, parse, stack, useBackFor, useHold, useOverlay, useRoute };
+export { back, drafts, go, holdBy, holds, layers, openLayer, parse, stack, typed, useBackFor, useDraft, useHold, useOverlay, useRoute };

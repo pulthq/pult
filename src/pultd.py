@@ -35,6 +35,7 @@ from pult_api import EFFORTS, MODEL_RE, Api   # the app's screens: handlers of t
 import pult_attn as A
 import pult_brief as B
 from pult_driven import MAX_RUNNING, CodexDriven, Driven, Job, Live, Req, Turn   # sessions Pult runs (review 2026-10-27, 6.2)
+from pult_driven import permission_mode
 import pult_files as F
 import pult_i18n as I
 import pult_load as L
@@ -82,6 +83,8 @@ APP_ON = 45              # s: the app said "on screen" this recently — the own
 AWAY_LOCKABLE = 300      # s: where the screen lock can be read, away after this long without input (locked — at once)
 PAGE_WAIT = 20           # s: a "your move" waits this long for the model's line before Telegram gets it
 PAGE_OLD = 12 * 3600     # s: older outcomes are never paged (say, after a restart)
+PAGE_RETRY = 20          # s: a call Telegram didn't take is made again after this long, then twice as long each time
+PAGE_RETRY_MAX = 300     # s: ... up to this long between the tries (and no longer than PAGE_OLD in all)
 CONTINUE = "Continue where you stopped: the usage limit has reset."   # said for the owner when the limit resets
 USAGE_TTL = 60           # s to keep the usage answer: the app window is opened and refreshed often
 LOAD_TTL = 4             # s to keep the snapshot of processes (~50 ms of ps): the app asks on every change
@@ -92,7 +95,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.56"
+VERSION = "0.18.57"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -361,7 +364,12 @@ class Pult(Api, Parts):
         self.recent = collections.deque(maxlen=20)   # latest results — for the app's Home screen
         self.attn = A.Attn(store)      # whose move: each session's last outcome and whether the owner has seen it
         for r in self.attn.rec.values():
-            r.setdefault("paged", True)    # outcomes from before this start were announced then: no burst of calls now
+            if not r.get("page_tries"):    # ... but a call that never got through is still owed (review 2026-11-11, T1)
+                r.setdefault("paged", True)    # outcomes from before this start were announced then: no burst of calls now
+            r.pop("page_at", None)
+        # turns that run now in the sessions Pult itself runs, kept through a restart: such a session's process dies
+        # with the daemon, and its turn used to vanish without a word (review 2026-11-11, D2) — after_restart says so
+        self.open_turns = dict(store.get("turns_open") or {})
         self.brief_sem = asyncio.Semaphore(1)        # the result-reading model: one request at a time
         self.tidying = set()           # projects whose tags the model looks over now (stage T, T2: offers to merge)
         self.tidy_failed = {}          # pkey → (the list's names, when): the model gave nothing — not again at once
@@ -898,6 +906,9 @@ class Pult(Api, Parts):
     def start_turn(self, lv, prompt=None, reply_to=None, note=None, pid=None):
         t = lv.turn = Turn(prompt, reply_to)
         t.note, t.prompt_id = note, pid
+        if lv.driven or lv.sid in self.driven:
+            self.open_turns[lv.sid] = {"pkey": lv.pkey, "ts": t.started}
+            self.store.put("turns_open", self.open_turns)
         waiting = [r.ts for r in lv.pending.values() if not r.fut.done()]
         if waiting:
             t.wait_start(min(waiting))       # a request older than the turn (a restart mid-turn): its wait is no work
@@ -1013,8 +1024,42 @@ class Pult(Api, Parts):
                 self.store.add_work(lv.sid, t.work(), t.started)
         if lv.turn is t:
             lv.turn = None
+            if self.open_turns.pop(lv.sid, None):
+                self.store.put("turns_open", self.open_turns)
         self.changed(lv.sid)
         return t
+
+    def turn_lost(self, sid, fail):
+        """A session Pult runs is gone with its turn still open — its process died ("process"), or Pult itself was
+        restarted under it ("restart"): the turn ends as a failure with an outcome, so it is the owner's move, the app
+        says what happened and Telegram calls — before, the app showed "working" for up to 20 minutes more and then
+        closed the turn without a word, and after a restart nothing said a turn had been there (review 2026-11-11,
+        D5, D2). → whether there was such a turn."""
+        lv = self.live.get(sid)
+        if fail == "restart":
+            lv = self.stub(sid, (self.open_turns.pop(sid, None) or {}).get("pkey"))
+            self.store.put("turns_open", self.open_turns)
+            t = None
+        elif not lv or not lv.turn or lv.turn.done or sid in self.driven:
+            return False                       # it ended by itself, or a new process has the session already
+        else:
+            self.resolve_all(lv, self.t("req.session_closed"))
+            t = self.finish_turn(lv, "⚠️")
+        log("session %s: its turn was cut short — %s" % (sid[:8], fail))
+        asyncio.create_task(self.post_result(lv, t, self.t("lost." + fail), fail=fail))
+        return True
+
+    async def turn_lost_soon(self, sid, fail, wait=3.0):
+        """The process of a session Pult runs has ended: its own last events (Stop, SessionEnd) may still be on their
+        way through the hook — the turn is taken for lost only if it is still open after them."""
+        await asyncio.sleep(wait)
+        self.turn_lost(sid, fail)
+
+    async def after_restart(self):
+        """Once at the start: the turns that ran in Pult's own sessions when the daemon stopped (a crash, the
+        computer's restart, a forced install) — each gets its outcome, "cut short by Pult's restart"."""
+        for sid in list(self.open_turns):
+            self.turn_lost(sid, "restart")
 
     async def on_hook(self, msg, reader, writer):
         """One hook event. A session's events are taken one at a time: each comes over a connection of its own, and
@@ -1226,13 +1271,14 @@ class Pult(Api, Parts):
                                 "ts": time.time(), "dur": t.work() if t and t.done else None,
                                 "text": R.plain(text, 400)})
         self.changed(lv.sid)
+        called = None                  # the outcome this result stands for as its call (a dialog in a topic)
         if self.pager():
             if not (t and t.reply_to) and not (sent and sent[0]):
                 return                         # not a dialog in a topic: the app has it, a "your move" gets paged
             if t and t.msg:                    # one message per turn: the answer takes the place of the turn message
                 asyncio.create_task(self.drop(t.msg))
             reply_to = sent[0] if sent and sent[0] else t.reply_to        # under the owner's own message
-            r = self.attn.rec.get(lv.sid)
+            r = called = self.attn.rec.get(lv.sid)
             if r:
                 r["paged"] = True              # the answer itself is the call
                 self.attn.save()
@@ -1252,14 +1298,19 @@ class Pult(Api, Parts):
                 asyncio.create_task(self.drop(mid))
         if not self.topic_full(lv.pkey):
             # the project's topic gets only "done" (stage M, 7.2; Q145): none of the task's words — the app has them
-            await self.send(lv.pkey, "%s %s%s" % ("⚠️" if fail else "✅", self.head(lv), when), notify=notify, sid=lv.sid,
-                            reply_to=reply_to, kind="result", buttons=self.with_app(None, lv.sid))
-            return
-        tags = self.hashtag_line(lv.sid) if self.prefs()["hashtags"] else ""
-        await self.send_long(lv.pkey, "%s %s%s\n%s%s" % ("⚠️" if fail else "✅", self.head(lv), when, you,
-                                                          R.esc(bg) + "\n" if bg else ""), text,
-                             notify=notify, sid=lv.sid, reply_to=reply_to,
-                             files_row=self.files_row(lv.sid, tf) if tf else None, tail="\n" + tags if tags else "")
+            got = [await self.send(lv.pkey, "%s %s%s" % ("⚠️" if fail else "✅", self.head(lv), when), notify=notify,
+                                   sid=lv.sid, reply_to=reply_to, kind="result", buttons=self.with_app(None, lv.sid))]
+        else:
+            tags = self.hashtag_line(lv.sid) if self.prefs()["hashtags"] else ""
+            got = await self.send_long(lv.pkey, "%s %s%s\n%s%s" % ("⚠️" if fail else "✅", self.head(lv), when, you,
+                                                                    R.esc(bg) + "\n" if bg else ""), text,
+                                       notify=notify, sid=lv.sid, reply_to=reply_to,
+                                       files_row=self.files_row(lv.sid, tf) if tf else None, tail="\n" + tags if tags else "")
+        if called and not any(got or []) and self.attn.rec.get(lv.sid) is called:
+            # the answer was to be the call, and nothing of it reached Telegram (the network's moment): the outcome
+            # is paged as any other "your move" — before, it counted as called and nobody was (review 2026-11-11, T1)
+            called.pop("paged", None)
+            self.attn.save()
 
     def hashtag_line(self, sid):
         """The task's section and topic as hashtags for its result in the topic (stage T, T3; Q65, Q94) —
@@ -1283,6 +1334,9 @@ class Pult(Api, Parts):
         line = self.fail_text(fail) if fail else B.first_sentence(text)
         dur = t.work() if t and t.done else None              # Claude's work in the turn, without its waits
         rec = self.attn.finished(lv.sid, lv.pkey, dur, R.plain(text, 600), line, waits, fail=fail, watched=watched)
+        if fail in ("process", "restart"):
+            rec["replies"] = [self.t("lost.go_on")]         # one tap goes on from where it stopped
+            self.attn.save()
         if files:
             rec["turn_files"] = files                      # {id, n, size}: the app's line to the turn's files (stage F4)
             self.attn.save()
@@ -1359,6 +1413,8 @@ class Pult(Api, Parts):
         for sid, r in list(self.attn.rec.items()):
             if r.get("seen") or r.get("paged") or not (r.get("you") or r.get("fail")) or now - r["ts"] > PAGE_OLD:
                 continue
+            if now < r.get("page_at", 0):
+                continue                                   # Telegram didn't take the call: the next try isn't due yet
             if not r.get("fail") and self.prefs()["brief"] and not r.get("model") and now - r["ts"] < PAGE_WAIT:
                 continue
             lv = self.live.get(sid)
@@ -1387,7 +1443,19 @@ class Pult(Api, Parts):
                           else self.t("btn.resume_after"), "callback_data": "z:" + sid}])
         m = await self.send(r["pkey"], text, buttons=self.with_app(rows or None, sid), notify=True, prio=2, sid=sid,
                             kind="page")
+        if not m:
+            # nothing reached Telegram — the proxy's moment, a timeout. Marked as made all the same, the call was
+            # lost for good: the task asked, and the owner never knew (2026-11-05 14:38: "not sent" and "page … your
+            # move" in the same second; review 2026-11-11, T1). page_due comes back to it, less and less often
+            n = r["page_tries"] = r.get("page_tries", 0) + 1
+            r["page_at"] = time.time() + min(PAGE_RETRY_MAX, PAGE_RETRY * 2 ** (n - 1))
+            self.attn.save()
+            log("page %s: not sent, try %d — again in %d s" % (sid[:8], n, r["page_at"] - time.time()))
+            return
         r["paged"], r["page"] = True, m
+        if r.pop("page_tries", None):
+            log("page %s: sent at last" % sid[:8])
+        r.pop("page_at", None)
         self.attn.save()
         log("page %s: %s" % (sid[:8], "fail" if r.get("fail") else "your move"))
 
@@ -1669,12 +1737,20 @@ class Pult(Api, Parts):
     async def on_run(self, m):
         rid, op = str(m.get("id") or ""), m.get("op")
         j = self.jobs.get(rid)
-        if op == "start" and rid and j is None:
+        # a command that outlived a restart of Pult: the daemon that heard its start is gone, and this one knew nothing
+        # of it — its end never came, the old "⚙️ … runs" hung for good (review 2026-11-11, D4). `pult run` now says
+        # what it runs with every word; a command of its that isn't known is taken on from there, with a new message
+        again = j is None and op in ("tick", "end") and bool(m.get("cmd"))
+        if rid and j is None and (op == "start" or again):
             cwd = str(m.get("cwd") or "")
             j = self.jobs[rid] = Job(rid, str(m.get("cmd") or "?"), cwd, m.get("pid"), self.pkey_for_cwd(cwd))
-            log("job %s: %s · %s" % (rid, R.short(j.cmd, 80), cwd))
+            if again and isinstance(m.get("since"), (int, float)) and 0 < m["since"] <= time.time():
+                j.started = float(m["since"])
+            log("job %s: %s · %s%s" % (rid, R.short(j.cmd, 80), cwd, " — went on through Pult's restart" if again else ""))
             j.msg = await self.job_send(j, self.render_job(j), prio=4)
             j.watch = asyncio.create_task(self.job_watch(j))
+        if op == "start":
+            pass
         elif op == "tick" and j:
             j.last = str(m.get("last") or "")
             self.edit(j.msg, self.render_job(j))
@@ -3798,6 +3874,9 @@ async def amain():
         if d.exists():
             pult_os.private_dir(d)
     __import__("claude_agent_sdk")   # up front: the first import takes ~0.4 s, better not in the middle of events
+    mode = permission_mode(env)
+    if mode != "auto":
+        log("sessions Pult runs ask for permissions in the mode:", mode)
     tg = Tg(token, proxy=env.get("PULT_PROXY") or None)
     store = Store(HOME / "state.db")
     store.prune()
@@ -3809,7 +3888,7 @@ async def amain():
         if pult_os.link_tcp() else "; socket: " + SOCK)
     # the panel is sent via the message queue, so it must run alongside it, or startup hangs (seen 2026-10-16, 0.6.0)
     jobs = [p.out.run(), p.telegram_start(), p.usage_watch(), p.attention_watch(), p.update_watch(), p.release_watch(),
-            p.outbox_watch()]
+            p.outbox_watch(), p.after_restart()]
     if env.get("PULT_RELAY_URL") and env.get("PULT_RELAY_SECRET"):
         p.web = PW.Web(p, env["PULT_RELAY_URL"], env["PULT_RELAY_SECRET"], token, p.allowed,
                        proxy=env.get("PULT_PROXY") or None, manifest=WEB_MANIFEST)

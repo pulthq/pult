@@ -726,7 +726,14 @@ class Installer:
             self.stop()
             self.restore(added)
             if reqs:
-                self.pip()
+                try:
+                    self.pip()
+                except Exception as e:
+                    # the old packages didn't go back in — no network, often the very reason the update failed. The old
+                    # version is started all the same: before, this was where the way back ended, and Pult stayed
+                    # stopped until someone came to the computer (review 2026-11-11, S4). If it can't run on the
+                    # packages as they are, the check below says so and the alarm goes out
+                    say("rollback: the old packages didn't install —", repr(e)[:300], "— starting the old version as it is")
             self.install()
             ok, _ = self.healthy(t0, need_relay=False)        # it reached the server before: up is enough
         except Exception as e:

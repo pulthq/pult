@@ -139,11 +139,20 @@ def page(name, body, css):
     return p.as_uri()
 
 
+# an app's screen is ready for its picture once nothing on it still waits for its data (ui/kit.js Loading)
+READY = "!!document.querySelector('main') && !document.querySelector('[data-wait]')"
+
+
 def screens(lang):
-    """The features' screens from the stands in this language, light and dark: {(name, dark): png}."""
+    """The features' screens from the stands in this language, light and dark: {(name, dark): png}.
+    MEDIA_FEATURES="who local" — only these (and only the stands they need)."""
     procs, urls = [], {}
+    only = set((os.environ.get("MEDIA_FEATURES") or "").split())
+    features = [f for f in FEATURES if not only or f[0] in only]
     try:
         for which, (port, extra) in STANDS.items():
+            if which not in {f[4] for f in features}:
+                continue
             log = TMP / ("stand.%s.%s.out" % (which, lang))   # a file, not a pipe: a full pipe would stall the stand mid-shot
             with open(log, "w") as f:
                 procs.append(subprocess.Popen([PY, str(REPO / "tools" / "stand.py")], stdout=f, stderr=subprocess.DEVNULL,
@@ -154,10 +163,10 @@ def screens(lang):
                     break
                 time.sleep(0.5)
         out = {}
-        for name, key, height, js, which, after in FEATURES:
+        for name, key, height, js, which, after in features:
             for dark in (False, True):
                 png = TMP / ("%s.%s%s.png" % (name, lang, ".dark" if dark else ""))
-                shot(urls[which][key], png, dark=dark, SHOT_HEIGHT=str(height), SHOT_AFTER=str(after),
+                shot(urls[which][key], png, dark=dark, SHOT_HEIGHT=str(height), SHOT_AFTER=str(after), SHOT_READY=READY,
                      **({"SHOT_JS": js} if js else {}))
                 out[(name, dark)] = png
         return out
@@ -264,7 +273,7 @@ def main():
     MEDIA.mkdir(exist_ok=True)
     subprocess.run([PY, str(REPO / "tools" / "brand.py")], check=True, stdout=subprocess.DEVNULL)
     still = None
-    for lang in ("en", "ru"):
+    for lang in (os.environ.get("MEDIA_LANGS") or "en ru").split():
         if "screens" in only:
             for (name, dark), png in screens(lang).items():
                 framed(png, MEDIA / ("f-%s.%s%s.png" % (name, lang, ".dark" if dark else "")), dark)

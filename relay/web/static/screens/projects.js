@@ -1,7 +1,7 @@
 // Pult app — projects and their tags, a new task, a new project.
 // Moved from app.js as it was (review 2026-10-27, 6.4).
-import { api, conn, on, useLive } from "../core/conn.js";
-import { drafts, go, useOverlay } from "../core/nav.js";
+import { api, apiOnce, conn, on, useLive } from "../core/conn.js";
+import { drafts, go, useDraft, useOverlay } from "../core/nav.js";
 import { alertBox, confirmBox, haptic } from "../core/tg.js";
 import { Mic, useRecorder } from "../core/voice.js";
 import { plural, q, t } from "../i18n.js";
@@ -175,7 +175,7 @@ function VendorModels({ v, cur, onPick, onClose }) {
 function NewTask({ pkey }) {
   const [d, err] = useLive(() => api("projects"), [], () => false);
   const [p, setP] = useState(pkey || "");
-  const [text, setText] = useState("");
+  const [text, setText, forget] = useDraft("new");
   const [busy, setBusy] = useState(false);
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
@@ -198,8 +198,8 @@ function NewTask({ pkey }) {
     setBusy(true);
     try {
       // the model the form showed: if the project's changed meanwhile, the computer says so instead of starting it
-      const r = await api("new", { pkey: p, text, files: a.payload(), model, effort, vendor: whoNow });
-      LAST_NEW.set(p); haptic("success"); go("#/s/" + r.sid, true);
+      const r = await apiOnce("new", { pkey: p, text, files: a.payload(), model, effort, vendor: whoNow });   // one task, not two (FE3)
+      forget(); LAST_NEW.set(p); haptic("success"); go("#/s/" + r.sid, true);
     }
     catch (e) { alertBox(e.message); }
     setBusy(false);
@@ -261,14 +261,14 @@ function FolderPick({ start, onPick, onClose }) {
 
 function NewProject() {
   const [d] = useLive(() => api("projects"), [], () => false);       // only for the microphone: shown with a key
-  const [title, setTitle] = useState("");
+  const [title, setTitle, noTitle] = useDraft("np.title");      // the form's words stay until it is sent (FE4)
   const [name, setName] = useState("");
   const [edited, setEdited] = useState(false);       // the owner typed the folder's name: it no longer follows the title
   const [place, setPlace] = useState(null);           // {path, show, tabs}
   const [how, setHow] = useState("empty");
-  const [about, setAbout] = useState("");
-  const [link, setLink] = useState("");
-  const [text, setText] = useState("");
+  const [about, setAbout, noAbout] = useDraft("np.about");
+  const [link, setLink, noLink] = useDraft("np.link");
+  const [text, setText, noText] = useDraft("np.text");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [who, setWho] = useState(null);               // the project's model; null — the model of new projects (Q147)
@@ -296,6 +296,7 @@ function NewProject() {
     return () => clearTimeout(timer);
   }, [title, link, how, edited]);
   const finish = (r) => {
+    [noTitle, noAbout, noLink, noText].forEach((f) => f());
     haptic("success");
     if (r.git === false) alertBox(t("np.nogit"));
     if (r.busy) alertBox(r.busy);            // the project is made; its first turn has no place yet (0.18.6)

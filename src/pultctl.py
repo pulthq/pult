@@ -219,8 +219,9 @@ def cmd_run(argv):
         return 2
     rid = uuid.uuid4().hex[:8]
     line = subprocess.list2cmdline(argv) if os.name == "nt" else " ".join(shlex.quote(a) for a in argv)
-    tell({"op": "start", "id": rid, "cmd": line, "cwd": os.getcwd(),
-          "pid": os.getpid()})
+    # what runs goes with every word, not only the first: a Pult restarted meanwhile takes the command on (D4)
+    job = {"id": rid, "cmd": line, "cwd": os.getcwd(), "pid": os.getpid(), "since": time.time()}
+    tell(dict(job, op="start"))
     cp, env = S.pult_os.console_encoding(), None
     if cp:          # Windows: Python writes to a pipe in the system's code page (cp1251) — ask it for UTF-8
         env = dict(os.environ)
@@ -229,7 +230,7 @@ def cmd_run(argv):
         p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
     except OSError as e:
         print(T("cli.run.failed"), e, file=sys.stderr)
-        tell({"op": "end", "id": rid, "code": 127, "tail": [str(e)]})
+        tell(dict(job, op="end", code=127, tail=[str(e)]))
         return 127
     tail, part, tick = collections.deque(maxlen=40), b"", time.time()
     show = screen_writer(cp)
@@ -245,14 +246,14 @@ def cmd_run(argv):
             # with \r\n) is not a rewrite
             tail.extend(x for x in (last_state(ln, cp) for ln in lines) if x)
             if time.time() - tick >= RUN_TICK and tail:
-                tell({"op": "tick", "id": rid, "last": tail[-1]})
+                tell(dict(job, op="tick", last=tail[-1]))
                 tick = time.time()
     except KeyboardInterrupt:
         pass                                   # the command got Ctrl+C too; wait for it to finish
     code = p.wait()
     if part.strip():
         tail.append(last_state(part, cp))
-    tell({"op": "end", "id": rid, "code": code, "tail": list(tail)[-30:]})
+    tell(dict(job, op="end", code=code, tail=list(tail)[-30:]))
     return code
 
 

@@ -952,6 +952,25 @@ class UpdateTest(Base):
         self.commit("Pult 1.1: fixed")
         self.assertFalse(U.check()["failed"])
 
+    def test_installer_goes_back_without_the_network(self):
+        """The new version's packages didn't install — no network — and on the way back pip fails the same way: the
+        old version is started all the same (review 2026-11-11, S4). Before, the way back ended at pip: the service
+        stayed stopped, and only the alarm went out."""
+        self.files({"src/pultd.py": 'VERSION = "1.1"\n', "requirements.txt": "aiohttp\nmore\n"})
+        self.commit("Pult 1.1: new packages")
+        inst, calls = self.installer([(True, None)])
+
+        def pip():
+            calls.append("pip")
+            raise U.Fail("pip", "Could not fetch URL https://pypi.org/simple/more/")
+        inst.pip = pip
+        self.assertEqual(inst.run(), 1)
+        self.assertEqual(calls, ["stop", "pip", "stop", "pip", "install"])       # no alarm: the old version is up
+        self.assertEqual(inst.checks, [False])
+        self.assertEqual((S.HOME / "pultd.py").read_text(), 'VERSION = "1.0"\n')
+        st = U.read(U.STATUS)
+        self.assertEqual((st["state"], st["why"], st["back"], st["back_ok"]), ("fail", "pip", True, True))
+
     def test_installer_server_down(self):
         # the app's server answers nobody while the new version starts: the update counts — before 0.18.5 it went back
         # and said neither version came up (the old one couldn't reach the server either)

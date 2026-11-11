@@ -145,6 +145,10 @@ async def main():
             verdict("Projects has a way in", True)
             await tap("document.querySelector('main .stick .btn')")
             await until("location.hash === '#/newproject' && !!document.querySelector('main h2')")
+            # the form that wasn't sent keeps its words (review 2026-11-11, FE4): the title refused above is still there
+            verdict("the form left unsent still has its title", await until("(%s).value === 'Дача у моря'" % TITLE, 40), await val(TITLE))
+            await js("(() => { const el = %s; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, '');"
+                     " el.dispatchEvent(new Event('input', {bubbles: true})); })()" % TITLE)      # emptied, as a person clears it
             await tap(HOW % 2)
             await until("document.querySelectorAll('main input').length === 3")
             await type_into("document.querySelectorAll('main input')[2]", "git@github.com:example/Shop-API.git")

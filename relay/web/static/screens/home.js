@@ -1,7 +1,7 @@
 // Pult app — Home: whose move, what runs, the projects; the rows Home and a project share.
 // Moved from app.js as it was (review 2026-10-27, 6.4).
-import { api, useLang, useLive } from "../core/conn.js";
-import { drafts, go, useHold, useOverlay } from "../core/nav.js";
+import { api, apiOnce, useLang, useLive } from "../core/conn.js";
+import { drafts, go, useDraft, useHold, useOverlay } from "../core/nav.js";
 import { alertBox, confirmBox, haptic } from "../core/tg.js";
 import { Mic, useRecorder } from "../core/voice.js";
 import { plural, t } from "../i18n.js";
@@ -40,10 +40,10 @@ const forkAsk = (r) => (copyWhy(r) ? copyWhy(r) + "\n\n" + t("fork.copy") : t("f
 // a message from a card or a ready reply into the session: the same ways as the session's own field — straight in,
 // into the tab, or a copy when it is open on the computer without Pult (asked first)
 async function sendTo(sid, text) {
-  let r = await api("send", { sid, text });
+  let r = await apiOnce("send", { sid, text });      // once, and not lost with a blink of the network (FE3)
   if (r.need === "fork") {
     if (!(await confirmBox(forkAsk(r)))) return false;
-    r = await api("send", { sid, text, fork: true });
+    r = await apiOnce("send", { sid, text, fork: true });
     if (r.how === "fork") alertBox(t("fork.started"));
   }
   haptic("success");
@@ -85,7 +85,7 @@ function Replies({ sid, replies, onSent }) {
 
 // your own words right in the card: a line and the microphone, Enter or the arrow sends
 function QuickReply({ sid, stt, onSent }) {
-  const [text, setText] = useState("");
+  const [text, setText] = useDraft("q:" + sid);
   const [busy, setBusy] = useState(false);
   const v = useRecorder((w) => setText((c) => (c ? c.replace(/\s+$/, "") + " " : "") + w), "q:" + sid);
   useEffect(() => { const d = drafts.take("q:" + sid); if (d) setText((c) => (c ? c + " " : "") + d); }, [sid]);

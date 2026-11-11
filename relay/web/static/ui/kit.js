@@ -500,7 +500,8 @@ function About({ text, label }) {
 // in the phone), instead of "Loading…" for ever under the banner
 function Loading({ err }) {
   const c = useConn();
-  return html`<div class="empty">${err || (c.state === "nomac" ? t("loading.nomac") : c.state === "denied" ? ""
+  // data-wait: a screen that has nothing of its own yet — tools/shot.py takes no picture of it (SHOT_READY)
+  return html`<div class="empty" data-wait="1">${err || (c.state === "nomac" ? t("loading.nomac") : c.state === "denied" ? ""
     : ["offline", "connecting", "busy"].includes(c.state) ? t("loading.connection") : t("loading"))}</div>`;
 }
 

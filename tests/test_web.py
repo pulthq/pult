@@ -342,7 +342,7 @@ class TranscriptTest(unittest.TestCase):
 
     def test_before_after(self):
         size = self.p.stat().st_size
-        page = PW.transcript_page(str(self.p), page=400)
+        page = PW.transcript_page(str(self.p), page=400, want=0)        # by bytes alone: where a chunk ends
         self.assertIsNotNone(page["before"])
         older = PW.transcript_page(str(self.p), before=page["before"], page=10000)
         self.assertEqual(older["items"][0]["text"], "Сделай отчёт")
@@ -352,6 +352,73 @@ class TranscriptTest(unittest.TestCase):
         self.assertEqual([i["text"] for i in new["items"]], ["Новое"])
         self.assertEqual(PW.transcript_page(str(self.p), after=0, page=100)["reset"], True)
         self.assertGreater(new["end"], size)
+
+    def test_chunk_by_messages(self):
+        """An older chunk is filled by what the chat shows, not by the file's bytes (review 2026-11-11, FE1): steps
+        with long results between the messages, and 1.5 MB of a real transcript brought one message or none."""
+        p = T.TMP / "steps.jsonl"
+        rows = []
+        for n in range(12):
+            rows.append(line("user", "Запрос %d" % n))
+            for k in range(6):
+                rows.append(line("assistant", [{"type": "tool_use", "id": "t%d_%d" % (n, k), "name": "Read", "input": {}}]))
+                rows.append(line("user", [{"type": "tool_result", "tool_use_id": "t%d_%d" % (n, k), "content": "x" * 3000}]))
+            rows.append(line("assistant", [{"type": "text", "text": "Ответ %d" % n}]))
+        p.write_text("\n".join(rows) + "\n")
+        said = lambda page: [i["text"] for i in page["items"] if i["k"] in ("user", "text")]
+        small = PW.transcript_page(str(p), page=8000, want=0)
+        self.assertLess(len(said(small)), 2)                             # by bytes: the last answer at most
+        page = PW.transcript_page(str(p), page=8000, want=4)
+        self.assertGreaterEqual(len(said(page)), 4)
+        self.assertEqual(said(page)[-1], "Ответ 11")
+        self.assertIsNotNone(page["before"])
+        got, before, calls = said(page), page["before"], 0
+        while before is not None:                                        # every chunk brings messages and goes on
+            older = PW.transcript_page(str(p), before=before, page=8000, want=4)
+            self.assertTrue(said(older), "an empty chunk at %s" % before)
+            self.assertLess(older["before"] or 0, before)
+            got, before, calls = said(older) + got, older["before"], calls + 1
+        self.assertEqual(got, [x for n in range(12) for x in ("Запрос %d" % n, "Ответ %d" % n)])
+        self.assertLess(calls, 8)
+        # the window grows PAGE_GROW times at most: a stretch of steps longer than that comes as it is, and goes on
+        far = PW.transcript_page(str(p), page=200, want=50)
+        self.assertIsNotNone(far["before"])
+        # newer lines are read as before — whatever came, nothing grown
+        self.assertEqual(PW.transcript_page(str(p), after=page["end"], page=8000)["items"], [])
+
+    def test_record_longer_than_a_chunk(self):
+        """A record longer than a chunk (a screenshot Claude read) no longer stops the history: "older" came back empty
+        with the same `before` for good, and with such a record last the chat was empty (review 2026-11-11, FE2, A1)."""
+        p = T.TMP / "long.jsonl"
+        big = line("user", [{"type": "tool_result", "tool_use_id": "pic", "content": "P" * 9000}])
+        head = [line("user", "Раньше %d" % n) for n in range(3)]
+        tail = [line("assistant", [{"type": "text", "text": "Позже %d" % n}]) for n in range(3)]
+        p.write_text("\n".join(head + [big] + tail) + "\n")
+        texts = lambda page: [i["text"] for i in page["items"] if i["k"] in ("user", "text")]
+        first = PW.transcript_page(str(p), page=2000, want=0)
+        self.assertEqual(texts(first), ["Позже 0", "Позже 1", "Позже 2"])
+        older = PW.transcript_page(str(p), before=first["before"], page=2000, want=0)
+        self.assertLess(older["before"], first["before"])                # it moved: the long record is behind
+        self.assertEqual([i["k"] for i in older["items"]], ["result"])
+        self.assertEqual(texts(PW.transcript_page(str(p), before=older["before"], page=2000, want=0)),
+                         ["Раньше 0", "Раньше 1", "Раньше 2"])
+        # filled by messages, the same file reads in one go
+        self.assertEqual(texts(PW.transcript_page(str(p), page=2000)), ["Раньше %d" % n for n in range(3)] + texts(first))
+        # the long record last: the chat isn't empty
+        p.write_text("\n".join(head + tail + [big]) + "\n")
+        last = PW.transcript_page(str(p), page=2000)
+        self.assertEqual(texts(last)[-1], "Позже 2")
+        self.assertEqual(last["end"], p.stat().st_size)
+        # a record beyond LINE_MAX is passed over, the chat above it is still there
+        with mock.patch.object(PW, "LINE_MAX", 4000):
+            over = PW.transcript_page(str(p), page=2000, want=0)
+            self.assertEqual((over["items"], over["end"]), ([], p.stat().st_size))
+            self.assertEqual(texts(PW.transcript_page(str(p), before=over["before"], page=2000, want=0)), texts(last))
+        # the first record of the file longer than a chunk: read from the file's start, nothing older
+        p.write_text(big + "\n" + tail[0] + "\n")
+        # where the second record begins, as the file has it: written as text, Windows ends its lines with \r\n
+        top = PW.transcript_page(str(p), before=p.read_bytes().index(b"\n") + 1, page=2000, want=0)
+        self.assertEqual(([i["k"] for i in top["items"]], top["before"]), (["result"], None))
 
 
 def usage_reply(session=12, week=4, fable=0, share=None):
@@ -828,6 +895,69 @@ class ChainTest(ChainBase):
             pultd.CLAUDE_PROJECTS = old
         await ws.close()
 
+
+
+class OnceTest(unittest.IsolatedAsyncioTestCase):
+    async def test_a_keyed_request_is_done_once(self):
+        """A request the app marks with its own key runs once, however many times it is asked (review 2026-11-11, FE3):
+        the link dropped before the answer, the app sends it again — a message must not reach Claude twice, a new task
+        must not start two. Without a key — as before; the answer to "lang" says the computer knows keys."""
+        calls = []
+
+        class P:
+            async def api_send(self, sid, text):
+                calls.append(text)
+                await asyncio.sleep(0.05)
+                return {"ok": True, "n": len(calls)}
+
+            async def api_new(self, text):
+                calls.append("new " + text)
+                raise ValueError("все места заняты")
+
+            async def api_lang(self):
+                return "ru"
+        web = PW.Web.__new__(PW.Web)                 # only what answers a request: no link, no logins
+        web.p, web.once = P(), {}
+        sent = []
+
+        async def send(m):
+            sent.append(m)
+        web.send = send
+        req = lambda rid, op, once=None, **args: dict({"t": "req", "id": rid, "op": op, "args": args}, **({"once": once} if once else {}))
+        # the same key while the first still runs, and after it: one run, the same answer for each
+        await asyncio.gather(web.answer("c1", req(1, "send", "send-abc12345", sid="s", text="выкладывай")),
+                             web.answer("c1", req(2, "send", "send-abc12345", sid="s", text="выкладывай")))
+        await web.answer("c2", req(3, "send", "send-abc12345", sid="s", text="выкладывай"))
+        self.assertEqual(calls, ["выкладывай"])
+        self.assertEqual([(m["id"], m["data"]) for m in sent], [(1, {"ok": True, "n": 1}), (2, {"ok": True, "n": 1}), (3, {"ok": True, "n": 1})])
+        # another key is another message; no key — every time, as before
+        await web.answer("c1", req(4, "send", "send-zzz99999", sid="s", text="выкладывай"))
+        await web.answer("c1", req(5, "send", sid="s", text="выкладывай"))
+        await web.answer("c1", req(6, "send", sid="s", text="выкладывай"))
+        self.assertEqual(len(calls), 4)
+        # a refusal is the same refusal for the repeat: nothing is tried a second time behind the person's back
+        await web.answer("c1", req(7, "new", "new-abc12345", text="задача"))
+        await web.answer("c1", req(8, "new", "new-abc12345", text="задача"))
+        self.assertEqual(calls.count("new задача"), 1)
+        self.assertEqual([m.get("error") for m in sent[-2:]], ["все места заняты"] * 2)
+        # the same key under another request is not that request; a key too short or not a string is no key
+        await web.answer("c1", req(9, "send", "new-abc12345", sid="s", text="другое"))
+        await web.answer("c1", req(10, "send", "k", sid="s", text="ещё"))
+        await web.answer("c1", req(11, "send", "k", sid="s", text="ещё"))
+        self.assertEqual(calls[-3:], ["другое", "ещё", "ещё"])
+        # answers are kept for ONCE_KEEP, ONCE_MAX of them at most
+        with mock.patch.object(PW, "ONCE_KEEP", 0):
+            await asyncio.sleep(0.01)
+            await web.answer("c1", req(12, "send", "send-abc12345", sid="s", text="выкладывай"))
+        self.assertEqual(calls[-1], "выкладывай")
+        with mock.patch.object(PW, "ONCE_MAX", 2):
+            for n in range(5):
+                await web.answer("c1", req(20 + n, "send", "send-many%04d" % n, sid="s", text="m%d" % n))
+        self.assertLessEqual(len(web.once), 2)
+        # what the computer can do goes with the answer to "lang" — and only there
+        await web.answer("c1", req(30, "lang"))
+        self.assertEqual((sent[-1]["data"], sent[-1]["caps"]), ("ru", ["once"]))
+        self.assertNotIn("caps", sent[0])
 
 
 class SecurityTest(ChainBase):

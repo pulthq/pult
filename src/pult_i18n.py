@@ -364,6 +364,18 @@ S = {
     "fail.invalid_request": {"en": "the request was rejected", "ru": "запрос отклонён"},
     "fail.max_output_tokens": {"en": "the answer hit the length limit", "ru": "ответ упёрся в предел длины"},
     "fail.model_not_found": {"en": "the model is unavailable", "ru": "модель недоступна"},
+    # a turn of a session Pult runs that never ended: its process died, or Pult was restarted under it
+    "fail.process": {"en": "the agent's process stopped in the middle of the turn", "ru": "процесс агента остановился посреди хода"},
+    "fail.restart": {"en": "cut short by Pult's restart", "ru": "оборвано перезапуском Пульта"},
+    "lost.process": {"en": "The agent's process stopped before the turn ended — what it had done is in the chat. "
+                           "Send a message to go on.",
+                     "ru": "Процесс агента остановился, не закончив ход, — сделанное видно в переписке. "
+                           "Напиши, чтобы продолжить."},
+    "lost.restart": {"en": "Pult was restarted while this turn ran — what it had done is in the chat. "
+                           "Send a message to go on.",
+                     "ru": "Пульт перезапустился, пока шёл этот ход, — сделанное видно в переписке. "
+                           "Напиши, чтобы продолжить."},
+    "lost.go_on": {"en": "Go on", "ru": "Продолжай"},
     "fail.codex_overloaded": {"en": "Codex's model is overloaded — wait or pick another",
                               "ru": "модель Codex перегружена — подожди или выбери другую"},
     "fail.codex_limit": {"en": "Codex hit the ChatGPT plan's limit — wait for it to reset",

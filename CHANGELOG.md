@@ -4,6 +4,47 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.57 — 2026-11-11
+
+- **A long task's history can be read from the phone.** The chat's earlier part came in chunks of 1.5 MB of the
+  transcript file — on real transcripts a dozen steps and their results, so "Earlier" brought one message in the median
+  and none every third time, and the loading stopped by itself on an empty chunk. A chunk is now filled by what the
+  chat shows: it goes back through the file until it has 20 messages or 200 items (12 MB read at most, ~0.1 s), and
+  the app asks for the next one while the top of the screen is near. A record longer than a chunk — a screenshot
+  Claude read — no longer ends the history above it, and a chat that ends with one is no longer empty. Codex tasks
+  read the same way.
+
+- **What you typed stays where you typed it.** A message in a session's field, the new task, an answer in a card and
+  the new project's form lived in the screen alone: a tap on a tab below, Back, a look at the turn's files, or Android
+  unloading Telegram — and the words were gone. They are kept in the phone as you type (a week at most, attachments
+  are not) and are there when the screen is; sent, they go.
+- **A message goes once — and isn't lost with a blink of the network.** When the link dropped between a tap on Send
+  and the computer's answer, the app said "connection lost" and gave the words back while the message had gone: sent
+  again, Claude got it twice, and a new task started two. A message and a new task now carry a key of their own; the
+  computer does a keyed request once and answers its repeat as the first time, and the app sends it again by itself
+  when the link is back (two minutes at most) — also when it was typed with no link at all. A computer before this
+  version gets no second send. A refusal of the computer's own comes back at once, as before.
+
+- **A call that Telegram didn't take is made again.** A "your move" was marked as called before anyone looked whether
+  the message went: with the network down for a moment, the task asked and nobody was told. The call is now owed until
+  it gets through — tried again in 20 s, then less and less often (5 minutes at most), a restart of Pult doesn't
+  forgive it; the same for an answer in a topic that was to be the call itself.
+
+- **A task cut short says so.** When the process of a task Pult runs died in the middle of a turn (out of memory, a
+  crash, Codex's app-server gone), the app showed "working" for up to 20 minutes more and then closed the turn without
+  a word; when Pult itself was restarted under a running turn (a crash, the computer's restart), nothing said a turn
+  had been there. The turn now ends at once as a failure — "the agent's process stopped in the middle of the turn",
+  "cut short by Pult's restart" — in Your move, with a call in Telegram and **Go on** ready to tap.
+- **A command under `pult run` survives a restart of Pult.** Its end used to never come: the new daemon hadn't heard
+  its start. Every word of `pult run` now says what runs, and a command Pult doesn't know is taken on from there.
+- **`PULT_PERMISSION_MODE` in Pult's settings file works.** The permission mode of the sessions Pult runs was read
+  from the service's environment alone, where the file's line never got: the switch SECURITY.md names did nothing.
+  A word that isn't one of Claude Code's modes is refused with a line in the journal, and the mode stays.
+
+- **An update that fails without a network no longer leaves Pult stopped.** When the new version's packages didn't
+  install and the way back couldn't reinstall the old ones either (the same network), the installer stopped there: the
+  service stayed down until someone came to the computer. The old version is now started on the packages as they are.
+
 ## 0.18.56 — 2026-11-10
 
 - **Claude's models with their versions.** The model menu said "Fable", "Opus", "Sonnet", "Haiku", and what each alias
