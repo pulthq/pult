@@ -298,7 +298,7 @@ function FileView({ job }) {
 
 // the session's last outcome at the end of the chat; how long Claude worked — the task's clock at the top, stopped
 // (2026-10-30); a computer before 0.18.34 says here how long the last turn took
-function Outcome({ sid, out, state, now, second, ro }) {
+function Outcome({ sid, out, state, now, second, fix, ro }) {
   const [resume, setResume] = useState(out.resume);
   const [got, setGot] = useState(false);
   const mine = state === "you" || state === "fail";
@@ -311,7 +311,7 @@ function Outcome({ sid, out, state, now, second, ro }) {
     ${ro ? "" : out.fail === "rate_limit" ? html`<${ResumeAt} sid=${sid} resume=${resume} reset=${out.reset} onSet=${setResume}/>` : html`<${Replies} sid=${sid} replies=${out.replies}/>`}
     ${out.changes && html`<${ChangesLine} sid=${sid} c=${out.changes}/>`}
     ${out.turn_files && html`<${TurnLine} sid=${sid} tf=${out.turn_files}/>`}
-    ${(mine || second) && html`<div class="foot quiet">${second ? html`<button class="link sec-ask" onClick=${second}>${ic("eye", 15)} ${t("sec.ask")}</button>` : html`<span></span>`}
+    ${(mine || second) && html`<div class="foot quiet">${second ? html`<button class="link sec-ask" onClick=${second}>${ic("eye", 15)} ${t(fix ? "sec.fix.ask" : "sec.ask")}</button>` : html`<span></span>`}
       ${!mine ? "" : got ? html`<span class="dim">${ic("check", 14)} ${t("mine.got")}</span>` : html`<button class="link" onClick=${gotIt}>${ic("check", 15)} ${t("mine.got")}</button>`}</div>`}
   </div>`;
 }
@@ -321,25 +321,38 @@ function Outcome({ sid, out, state, now, second, ro }) {
 // project (a tap opens the file at that line) — "Send to Claude" puts them into this session as your message (it names
 // the doer: "Send to DeepSeek" when another vendor's model did the task, Q116), "Got it" puts the card away. A project
 // goes to another vendor only once you allowed it, asked once (Q105)
+// what a vendor's task has cost so far (block 6): "$0,04"; less than a cent — "< $0,01"
+const money = (usd) => (usd < 0.005 ? "< $0" + t("num.dec") + "01" : "$" + (usd >= 100 ? String(Math.round(usd)) : usd.toFixed(2).replace(".", t("num.dec"))));
 const vendorModel = (m) => String(m || "").replace(/^gpt/i, "GPT").replace(/-([a-z])/g, (x, c) => "-" + c.toUpperCase());
 // a finding's place opens the file's change at that line (block 5) — the file as it is when it didn't change, or when
-// the computer is older than "Changes"
-function SecondItem({ sid, it }) {
+// the computer is older than "Changes". A finding has a tick (review 2026-11-11, block 6): taken off, it doesn't go
+// and the task's next review won't repeat it. After a check of the fixes each earlier finding says what became of it —
+// fixed (one line, its text is no longer the point), left (with what is still wrong), deliberate; only what is left
+// and what is new can still go
+function SecondItem({ sid, it, on, toggle }) {
   const body = useMemo(() => md(it.body || ""), [it.body]);
   const at = it.file && (it.line != null ? it.file + ":" + it.line + (it.end && it.end !== it.line ? "-" + it.end : "") : it.file);
   const diff = () => emit("diff", { sid, p: it.file, line: it.line });
-  return html`<li>${it.prio && html`<span class=${"prio p" + it.prio.slice(1)}>${it.prio}</span> `}<b>${it.title}</b>
+  const note = useMemo(() => md(it.note || ""), [it.note]);
+  const closed = it.st === "fixed" || it.st === "meant";
+  return html`<li class=${(toggle && !on ? "off" : "") + (it.st ? " st-" + it.st : "")}>
+    ${toggle && html`<button class="sec-pick" role="checkbox" aria-checked=${!!on} aria-label=${it.title} onClick=${toggle}>${on ? ic("check", 15) : ""}</button>`}
+    ${it.st && html`<span class=${"sec-st " + it.st}>${it.st === "fixed" ? ic("check", 12) : ""}${t("sec.st." + it.st)}</span> `}${it.prio && !closed && html`<span class=${"prio p" + it.prio.slice(1)}>${it.prio}</span> `}<b>${it.title}</b>
     ${at && html`<div class="sec-at">${it.file.startsWith("/") ? html`<code>${at}</code>`
       : conn.caps.includes("changes") ? html`<a class="flink" role="link" tabindex="0" onClick=${diff} onKeyDown=${(e) => { if (e.key === "Enter") diff(); }}>${at}</a>`
       : html`<a class="flink" role="link" tabindex="0" data-file=${it.file + (it.line != null ? "#L" + it.line : "")}>${at}</a>`}</div>`}
-    ${it.body && html`<div class="md" dangerouslySetInnerHTML=${{ __html: body }}/>`}</li>`;
+    ${it.note && html`<div class="md sec-note" dangerouslySetInnerHTML=${{ __html: note }}/>`}
+    ${it.body && !it.st && html`<div class="md" dangerouslySetInnerHTML=${{ __html: body }}/>`}</li>`;
 }
 function Second({ sid, job, now, onAgain, who }) {
   const [busy, setBusy] = useState(false);
+  const picks = conn.caps.includes("picks");       // a computer before block 6 sends every finding and knows no ticks
+  const [off, setOff] = useState([]);              // the places of the findings whose tick the owner took off
+  const flip = (k) => setOff((o) => (o.includes(k) ? o.filter((x) => x !== k) : o.concat(k)));
   const act = async (a, fork) => {
     setBusy(true);
     try {
-      const r = await api("second", { sid, act: a, fork: !!fork });
+      const r = await api("second", Object.assign({ sid, act: a, fork: !!fork }, picks && (a === "send" || a === "away") ? { off } : {}));
       if (r.need === "fork") {
         setBusy(false);
         if (await confirmBox(forkAsk(r))) return act(a, true);
@@ -350,10 +363,11 @@ function Second({ sid, job, now, onAgain, who }) {
     } catch (e) { alertBox(e.message); }
     setBusy(false);
   };
-  const head = (more) => html`<div class="k">${ic("eye", 14)} ${t("sec.title")}${more ? " · " + more : ""}</div>`;
+  const check = job.kind === "check";             // a check of the fixes, not a review
+  const head = (more) => html`<div class="k">${ic("eye", 14)} ${t(check ? "sec.title.check" : "sec.title")}${more ? " · " + more : ""}</div>`;
   if (job.st === "wait" || job.st === "run") return html`<div class="card second run">
     ${head("")}
-    <div class="o-l"><span class="sec-dot"></span>${job.st === "wait" ? t("sec.wait") : t("sec.run", { dur: dur(now - job.t0) })}${job.steps ? " · " + job.steps + " " + plural(job.steps, "command") : ""}</div>
+    <div class="o-l"><span class="sec-dot"></span>${job.st === "wait" ? t("sec.wait") : t(check ? "sec.run.check" : "sec.run", { dur: dur(now - job.t0) })}${job.steps ? " · " + job.steps + " " + plural(job.steps, "command") : ""}</div>
     <div class="dim small">${t("sec.run.about")}</div>
     <div class="foot quiet"><span></span><button class="link" disabled=${busy} onClick=${() => act("cancel")}>${t("sec.cancel")}</button></div></div>`;
   if (job.st === "fail") return html`<div class="card second fail">
@@ -363,12 +377,17 @@ function Second({ sid, job, now, onAgain, who }) {
     <div class="foot"><button class="link" disabled=${busy} onClick=${() => act("away")}>${t("sec.fail.away")}</button><button class="btn" disabled=${busy} onClick=${onAgain}>${t("sec.again")}</button></div></div>`;
   const items = job.items || [];
   const l = (job.limits || [])[0];
+  const open = items.map((it, k) => k).filter((k) => !["fixed", "meant"].includes(items[k].st));     // what can still go
+  const go = open.filter((k) => !off.includes(k));
+  const cnt = (s) => items.filter((it) => (it.st || "new") === s).length;
+  const sum = ["left", "fixed", "meant", "new"].filter(cnt).map((s) => t("sec.n." + s, { n: cnt(s) })).join(" · ");
   return html`<div class="card second">
     ${head([vendorModel(job.model), job.dur ? dur(job.dur) : ""].filter(Boolean).join(" · "))}
-    <div class="o-l">${items.length ? html`<b>${items.length} ${plural(items.length, "finding")}</b>` : html`<b>${t("sec.none")}</b>`}${job.summary ? html` <span class="dim">${job.summary}</span>` : ""}</div>
-    ${items.length > 0 && html`<ol class="sec-list">${items.map((it, k) => html`<${SecondItem} key=${k} sid=${sid} it=${it}/>`)}</ol>`}
+    <div class="o-l">${check ? html`<b>${sum}</b>` : items.length ? html`<b>${items.length} ${plural(items.length, "finding")}</b>` : html`<b>${t("sec.none")}</b>`}${job.summary ? html` <span class="dim">${job.summary}</span>` : ""}</div>
+    ${items.length > 0 && html`<ol class=${"sec-list" + (picks ? " picks" : "")}>${items.map((it, k) => html`<${SecondItem} key=${k} sid=${sid} it=${it} on=${!off.includes(k)} toggle=${picks && open.includes(k) ? () => flip(k) : null}/>`)}</ol>`}
+    ${off.length > 0 && html`<div class="dim small sec-off">${t("sec.off.note", { who })}</div>`}
     ${l && l.mins && html`<div class="dim small">${t("sec.limit", { pct: Math.round(l.pct), h: Math.round(l.mins / 60) })}</div>`}
-    ${items.length > 0 ? html`<div class="foot"><button class="link" disabled=${busy} onClick=${() => act("away")}>${t("mine.got")}</button><button class="btn" disabled=${busy} onClick=${() => act("send")}>${t("sec.send", { who })}</button></div>`
+    ${open.length > 0 ? html`<div class="foot"><button class="link" disabled=${busy} onClick=${() => act("away")}>${t("mine.got")}</button><button class="btn sec-send" disabled=${busy || !go.length} onClick=${() => act("send")}>${go.length < open.length ? t("sec.send.n", { who, n: go.length, all: open.length }) : check ? t("sec.send.left", { who, n: go.length }) : t("sec.send", { who })}</button></div>`
       : html`<div class="foot quiet"><span></span><button class="link" disabled=${busy} onClick=${() => act("away")}>${ic("check", 15)} ${t("mine.got")}</button></div>`}</div>`;
 }
 
@@ -558,16 +577,20 @@ function Session({ sid }) {
     r.ok ? haptic("success") : alertBox(r.note || t("failed"));
   };
   // a second opinion (stage M): the first time in a project it asks whether its code may go to OpenAI; a Codex Pult
-  // can't use says why at once
+  // can't use says why at once. act "check" — a check of the fixes of the findings that went to the doer (block 6):
+  // allowed first the same way, and still a check after that
   const askSecond = async (act) => {
     const sec = ref.current.info && ref.current.info.second;
     if (sec && sec.why) return alertBox(t("sec.why." + sec.why, { v: sec.v || "?" }));
     try {
       const r = await api("second", { sid, act: act || "start" });
       if (r.need === "allow") {
-        if (await confirmBox(t("sec.allow", { p: q(r.project) }))) return askSecond("allow");
-        return;
+        if (!(await confirmBox(t("sec.allow", { p: q(r.project) })))) return;
+        if (act !== "check") return askSecond("allow");
+        await api("vendors_ok", { pkey: ref.current.info.pkey, on: true });
+        return askSecond("check");
       }
+      if (r.ok === false && r.note) return alertBox(r.note);
       haptic("success");
       load("after");
     } catch (e) { alertBox(e.message); }
@@ -587,6 +610,7 @@ function Session({ sid }) {
     : lv.bg && lv.bg.length > 0 ? bgChip(lv.bg_since || (out && out.ts), now, openBgs)
     : pauseChip(lv.work);                          // the task's clock, stopped: "working N" goes on from it (2026-10-30)
   const ts = info.stats && info.stats.turn;
+  const cost = info.cost;                          // a vendor's task with a price list: {usd, in, out, models}
   // the context gauge, the same number VS Code shows: used ÷ (window − the reserve for the answer)
   const used = info.ctx && info.stats ? Math.min(100, Math.round(info.stats.context * 100 / info.ctx.usable)) : null;   // not pct(): that is the helper
   // the status under the message field: where the text goes (a tab, a copy), the model, the context gauge
@@ -610,6 +634,8 @@ function Session({ sid }) {
     info.stats && info.stats.model ? t("ex.model", { m: modelName(info.stats.model) }) + (info.switch ? "" : " " + (lv.tab ? t("model.reload") : t("model.fixed"))) : "",
     effortNow ? t("ex.effort", { e: effortName(effortNow).toLowerCase() }) + (lv.tab && info.switch && !info.switch_effort ? " " + t("effort.reload") : "") : "",
     info.stats && info.stats.model ? t("ex.ctx", { n: kilo(info.stats.context), win: used !== null ? t("ex.ctx.win", { w: kilo(info.ctx.window), pct: used }) : "" }) : "",
+    // what a vendor's task has cost so far, and what the figure is made of (block 6)
+    cost ? t("ex.cost", { usd: money(cost.usd), i: kilo(cost.in), o: kilo(cost.out), m: cost.models.join(", ") }) : "",
     // the last turn's figures — once in the session's header, now here: the header keeps the title and the state
     ts ? t("turn.stats", { n: ts.req, requests: plural(ts.req, "request"), out: kilo(ts.out) }) + (ts.think ? t("turn.think", { n: kilo(ts.think) }) : "") : "",
     // a turn in a tab has no Stop here, and nothing said why (UX13)
@@ -621,7 +647,7 @@ function Session({ sid }) {
   return html`<div class="session">
     <div class="sess-h"><h2>${info.title}</h2>
       ${info.tagset && html`<button class="sess-tags" onClick=${() => (tagPick ? closeTagPick() : openTagPick())}>${(info.tags || []).length ? tagChips(info.tags) : html`<span class="dim">${t("tags.none")}</span>`}<span class="caret">${ic("down", 14)}</span></button>`}
-      <div class="dim">${home(20)}${info.project !== info.title ? html`<span class="sep">›</span><a class="crumb" href=${"#/p/" + encodeURIComponent(info.pkey)}>${info.project}</a>` : ""} ${st}</div>
+      <div class="dim">${home(20)}${info.project !== info.title ? html`<span class="sep">›</span><a class="crumb" href=${"#/p/" + encodeURIComponent(info.pkey)}>${info.project}</a>` : ""} ${st}${cost ? html`<button class="chip cost" onClick=${explain}>≈ ${money(cost.usd)}</button>` : ""}</div>
       ${lv.state !== "work" && lv.bg && lv.bg.length > 0 && html`<button class="bg tap plain" onClick=${openBgs}>${bgLine(lv.bg)} ${ic("chev", 14)}</button>`}</div>
     ${!away && !pin && html`<${WaitLine} sid=${sid}/>`}
     ${s.before != null && html`<button class="link center earlier" disabled=${early} onClick=${earlier}>${t(early ? "earlier.loading" : "earlier")}</button>`}
@@ -649,8 +675,8 @@ function Session({ sid }) {
       <div class="dim small">${t("queue.why", { n: lv.slots })}</div>
       <div class="foot"><span></span><button class="btn" onClick=${jump}>${t("queue.jump")}</button></div></div>`}
     ${out && lv.state !== "work" && lv.state !== "queue" && !info.pending.length && (outState === "you" || outState === "fail" || out.need || (out.replies && out.replies.length) || out.resume || out.turn_files || out.changes || canSecond)
-      && html`<${Outcome} key=${out.ts} sid=${sid} out=${out} state=${outState} now=${now} second=${canSecond ? () => askSecond() : null} ro=${!!info.ro}/>`}
-    ${sec && sec.job && html`<${Second} sid=${sid} job=${sec.job} now=${now} who=${vend ? vend.name : "Claude"} onAgain=${() => askSecond()}/>`}
+      && html`<${Outcome} key=${out.ts} sid=${sid} out=${out} state=${outState} now=${now} second=${canSecond ? () => askSecond(sec.fix ? "check" : "") : null} fix=${!!sec.fix} ro=${!!info.ro}/>`}
+    ${sec && sec.job && html`<${Second} sid=${sid} job=${sec.job} now=${now} who=${vend ? vend.name : "Claude"} onAgain=${() => askSecond(sec.job.kind === "check" ? "check" : "")}/>`}
     ${pending.map((r) => html`<${Req} key=${r.rid} r=${r} stt=${info.stt} showWhere=${false}/>`)}
     <div ref=${bottom}></div>
     ${(unread || far) && html`<button class=${"tobottom" + (unread ? " fresh" : "")} aria-label=${t("to.bottom")} onClick=${() => { toBottom(); setUnread(false); }}>${unread ? t("new.msgs") : "↓"}</button>`}

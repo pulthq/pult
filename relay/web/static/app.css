@@ -1035,6 +1035,25 @@ button.tagc { border: 0; font-family: inherit; cursor: pointer; }
 .sec-list li b { font-weight: 600; }
 .sec-list .md { margin-top: 3px; font-size: var(--fs-sec); }
 .sec-list .md p { margin: 2px 0; }
+/* what a vendor's task has cost so far, beside its clock (review 2026-11-11, block 6): a tap says what it is made of */
+.chip.cost { border: 0; font-family: inherit; cursor: pointer; position: relative; }
+.chip.cost::after { content: ""; position: absolute; inset: -12px -6px; }
+/* a finding's tick, and what a check of the fixes says of it (review 2026-11-11, block 6) */
+.sec-list.picks { list-style: none; padding-left: 0; }
+.sec-list.picks li { position: relative; padding-left: 38px; }
+.sec-pick { position: absolute; left: 0; top: -1px; width: 26px; height: 26px; border-radius: 8px; border: 2px solid var(--muted);
+  background: transparent; color: #fff; display: inline-flex; align-items: center; justify-content: center; padding: 0; cursor: pointer; }
+.sec-pick::after { content: ""; position: absolute; inset: -11px; }             /* 44 px under the finger: the box inside the border is 22 */
+.sec-pick[aria-checked=true] { background: var(--accent); border-color: var(--accent); }
+.sec-list li.off > b, .sec-list li.off > .md, .sec-list li.off > .sec-at { opacity: .45; }
+.sec-list li.off > b { text-decoration: line-through; text-decoration-thickness: 1px; }
+.sec-st { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 700; line-height: 1; padding: 3px 6px;
+  border-radius: 6px; vertical-align: 2px; }
+.sec-st.fixed { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+.sec-st.left { background: var(--attn-soft); color: var(--attn-ink); }
+.sec-st.meant { background: var(--code); color: var(--muted); }
+.sec-list li.st-fixed > b, .sec-list li.st-meant > b { font-weight: 500; }
+.sec-off { margin: 2px 0 6px; }
 .sec-at { font-size: var(--fs-cap); margin-top: 2px; }
 .sec-at .flink, .sec-at code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .sec-at .flink { color: var(--link); cursor: pointer; text-decoration: underline;

@@ -613,6 +613,9 @@ class UsageStatsTest(unittest.TestCase):
         self.assertEqual(got["turn"], {"req": 1, "out": 7, "think": 3})        # a new prompt — a new turn
         self.assertEqual(got["sess"], {"req": 4, "out": 167})
         self.assertEqual(got["effort"], "high")
+        # the session's tokens by model — what the model read (input, cache reads and writes) and wrote: the price of
+        # a vendor's task is counted from these (review 2026-11-11, block 6)
+        self.assertEqual(got["by"], {"claude-opus-5-5": {"in": 1012 + 2012 + 3012 + 4012, "out": 167}})
         # Claude Code's own line after an API error has usage too, all zeros: no request — the model and the context
         # stay the last real ones (the app showed "<synthetic>" for the model and an empty gauge)
         with p.open("a") as f:

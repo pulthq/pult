@@ -105,7 +105,8 @@ the model itself, with a way back to how it was.
 
 Under an outcome, **Second opinion · Codex**: OpenAI's agent, on your ChatGPT subscription, reads what the task
 changed — with your request and the report, so what was done on purpose isn't taken for a bug. A finding opens the
-change at its line; **Send to Claude** — or to DeepSeek, whoever did the task — hands them all back to it.
+change at its line and has a tick; **Send to Claude** — or to DeepSeek, whoever did the task — hands the ticked ones
+back to it. Then **Check the fixes · Codex** says of each finding: fixed, left, or deliberate.
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="media/f-second.en.dark.png"><img src="media/f-second.en.png" width="330" alt="A second opinion in the app: under the outcome of a task done on Opus 5.5, Codex on GPT-5.6-Sol found two things in five seconds, each with its priority, its place in the project and what to do; the buttons Reviewed and Send to Claude"></picture></p>
 

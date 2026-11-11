@@ -6,7 +6,8 @@ account/rateLimits/read. Standard library only.
 FAKE_CODEX_CONF names a JSON file that shapes it, read anew on every start: version; schema — "old" leaves out the custom
 review target; login — false: not signed in; fail — a codexErrorInfo ("usageLimitExceeded", "unauthorized") or "other";
 wait — seconds the review takes; hang — seconds it stays silent before going on (past a test's timeout); ask — it
-asks an approval of its own; steps — commands it runs; review — its answer; big — bytes its answer to account/read
+asks an approval of its own; steps — commands it runs; review — its answer; check — its answer to a check of the
+fixes (an ordinary turn in the review's read-only thread: one line for each earlier finding); big — bytes its answer to account/read
 grows by (longer than a test's LINE_MAX); log — a file where
 every request lands as a JSON line (the tests read the sandbox and the instructions there; initialize — with the PULT_
 names of its environment). launcher(folder, conf) makes
@@ -35,6 +36,9 @@ Full review comments:
 
 - [P2] Skip fuzzy search for one or two letters — {cwd}/search/query.py:12-12
   A query of one or two letters returns half the catalogue; search with typos only from three characters, and test it."""
+
+CHECK = """1. FIXED — The index adds the new item's trigrams only.
+2. LEFT — A query of two letters still goes to the fuzzy search."""
 
 
 def conf():
@@ -225,6 +229,38 @@ def serve(c):
                 result["thread"]["turns"] = [{"id": "old", "items": [
                     {"type": "agentMessage", "id": "old-message", "text": "x" * c["resume_bytes"]}]}]
             say({"id": i, "result": result})
+        elif meth == "review/start" or (meth == "turn/start" and prm.get("threadId") == "th-1"):
+            plain = meth == "turn/start"                    # a check of the fixes: an ordinary turn in the review's thread
+            say({"id": i, "result": {"turn": {"id": "tu-1", "status": "inProgress", "items": []}, "reviewThreadId": "th-1"}})
+            say({"method": "turn/started", "params": {"threadId": "th-1", "turn": {"id": "tu-1", "status": "inProgress", "items": []}}})
+            if not plain:
+                say({"method": "item/started", "params": {"threadId": "th-1", "item": {"type": "enteredReviewMode", "id": "r0", "review": "x"}}})
+            n = int(c.get("steps", 2))
+            for k in range(n):
+                time.sleep(float(c.get("wait", 0.2)) / max(1, n + 1))
+                say({"method": "item/completed", "params": {"threadId": "th-1", "item": {
+                    "type": "commandExecution", "id": "c%d" % k, "command": "git diff", "status": "completed"}}})
+            if c.get("ask"):                                # a request of its own: Pult declines it
+                say({"id": 99, "method": "item/commandExecution/requestApproval",
+                     "params": {"threadId": "th-1", "turnId": "tu-1", "itemId": "c0", "command": "rm -rf x"}})
+            if c.get("hang"):
+                time.sleep(float(c["hang"]))
+            time.sleep(float(c.get("wait", 0.2)) / max(1, n + 1))
+            if c.get("fail"):
+                info = c["fail"]
+                err = {"message": "made-up failure: " + info, "codexErrorInfo": info}
+                say({"method": "error", "params": {"threadId": "th-1", "turnId": "tu-1", "willRetry": False, "error": err}})
+                say({"method": "turn/completed", "params": {"threadId": "th-1", "turn": {"id": "tu-1", "status": "failed",
+                                                                                         "items": [], "error": err}}})
+                continue
+            if plain:
+                say({"method": "item/completed", "params": {"threadId": "th-1", "item": {
+                    "type": "agentMessage", "id": "m1", "text": c.get("check", CHECK).replace("{cwd}", cwd)}}})
+            else:
+                say({"method": "item/completed", "params": {"threadId": "th-1", "item": {
+                    "type": "exitedReviewMode", "id": "r1", "review": c.get("review", REVIEW).replace("{cwd}", cwd)}}})
+            say({"method": "turn/completed", "params": {"threadId": "th-1", "turn": {"id": "tu-1", "status": "completed",
+                                                                                     "items": []}}})
         elif meth == "turn/start":
             text = " ".join(str(x.get("text") or "") for x in prm.get("input") or [] if isinstance(x, dict))
             say({"id": i, "result": {"turn": {"id": "tu-%d" % (doer.n + 1), "status": "inProgress", "items": []}}})
@@ -253,33 +289,6 @@ def serve(c):
             say({"id": i, "result": {"thread": {"id": "th-1"}, "model": "gpt-5.6-sol", "reasoningEffort": "high",
                                      "cwd": prm.get("cwd"), "sandbox": {"type": prm.get("sandbox")},
                                      "approvalPolicy": prm.get("approvalPolicy")}})
-        elif meth == "review/start":
-            say({"id": i, "result": {"turn": {"id": "tu-1", "status": "inProgress", "items": []}, "reviewThreadId": "th-1"}})
-            say({"method": "turn/started", "params": {"threadId": "th-1", "turn": {"id": "tu-1", "status": "inProgress", "items": []}}})
-            say({"method": "item/started", "params": {"threadId": "th-1", "item": {"type": "enteredReviewMode", "id": "r0", "review": "x"}}})
-            n = int(c.get("steps", 2))
-            for k in range(n):
-                time.sleep(float(c.get("wait", 0.2)) / max(1, n + 1))
-                say({"method": "item/completed", "params": {"threadId": "th-1", "item": {
-                    "type": "commandExecution", "id": "c%d" % k, "command": "git diff", "status": "completed"}}})
-            if c.get("ask"):                                # a request of its own: Pult declines it
-                say({"id": 99, "method": "item/commandExecution/requestApproval",
-                     "params": {"threadId": "th-1", "turnId": "tu-1", "itemId": "c0", "command": "rm -rf x"}})
-            if c.get("hang"):
-                time.sleep(float(c["hang"]))
-            time.sleep(float(c.get("wait", 0.2)) / max(1, n + 1))
-            if c.get("fail"):
-                info = c["fail"]
-                err = {"message": "made-up failure: " + info, "codexErrorInfo": info}
-                say({"method": "error", "params": {"threadId": "th-1", "turnId": "tu-1", "willRetry": False, "error": err}})
-                say({"method": "turn/completed", "params": {"threadId": "th-1", "turn": {"id": "tu-1", "status": "failed",
-                                                                                         "items": [], "error": err}}})
-                continue
-            text = c.get("review", REVIEW).replace("{cwd}", cwd)
-            say({"method": "item/completed", "params": {"threadId": "th-1", "item": {"type": "exitedReviewMode", "id": "r1",
-                                                                                     "review": text}}})
-            say({"method": "turn/completed", "params": {"threadId": "th-1", "turn": {"id": "tu-1", "status": "completed",
-                                                                                     "items": []}}})
         elif meth == "account/rateLimits/read":
             now = int(time.time())
             say({"id": i, "result": {"rateLimits": {"planType": "plus",
