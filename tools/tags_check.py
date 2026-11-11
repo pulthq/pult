@@ -314,7 +314,7 @@ async def main():
             two = next(r for r in await js(rows_js) if len(r[2]) >= 2)
             await tap_text(".tagscr .ttops .tagc", two[2][0])
             verdict("a topic's sheet", await until("document.querySelectorAll('.tagsheet .opt').length >= 3"))
-            await js("[...document.querySelectorAll('.tagsheet .opt')].find((o) => /Слить|Merge/.test(o.textContent)).click()")
+            await js("[...document.querySelectorAll('.tagsheet .opt')].find((o) => /Влить|Merge/.test(o.textContent)).click()")
             verdict("…merge into: the topics of its section first", await until("(document.querySelector('.tagsheet .pick-t') || {}).textContent === %s" % json.dumps(two[0])))
             await calm()
             await shot("10-merge.png")

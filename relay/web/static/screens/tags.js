@@ -129,7 +129,7 @@ function Tags({ pkey, open: open0 }) {
         <div class="foot"><button class="link" disabled=${busy} onClick=${() => edit({ op: "apart", sec: m.a.sec, topic: m.a.topic, to_sec: m.b.sec, to_topic: m.b.topic })}>${t("tags.offer.no." + kind)}</button>
           <button class="btn" disabled=${busy} onClick=${() => edit({ op: "merge", sec: m.a.sec, topic: m.a.topic, to_sec: m.b.sec, to_topic: m.b.topic }, t("tags.merged"))}>${t("tags.offer.do")}</button></div></div>`;
     })}
-    ${!d.secs.length && !d.hidden.length && html`<div class="empty">${t("tags.empty")}</div>`}
+    ${!d.secs.length && !d.hidden.length && html`<a class="empty set-go" href="#/settings/models">${t("tags.empty")}</a>`}
     ${d.secs.length > 0 && html`<h3>${t("tags.list", { n: d.secs.length })}</h3>
     <div class="list">${d.secs.map((s) => {
       const on = open === s.n, nw = s.topics.find((y) => y.fresh);
@@ -155,7 +155,7 @@ function Tags({ pkey, open: open0 }) {
           <button class="link" disabled=${busy} onClick=${() => edit({ op: "show", sec: h.sec, topic: h.topic })}>${t("tags.show")}</button></div></div>`)}</div>
         <div class="dim small">${t("tags.hidden.about")}</div>`}`}
     ${(d.secs.length > 0 || d.hidden.length > 0) && html`<div class="tbtns"><button class="btn ghost" disabled=${busy || !!d.job || !d.model} onClick=${resort}>${ic("auto", 16)} ${t("tags.resort")}</button></div>
-      ${!d.model && html`<div class="dim small">${t(d.haiku === false ? "tags.resort.haiku" : "tags.resort.off")}</div>`}`}
+      ${!d.model && (d.haiku === false ? html`<div class="dim small">${t("tags.resort.haiku")}</div>` : html`<a class="dim small set-go" href="#/settings/models">${t("tags.resort.off")}</a>`)}`}
     <div class="dim small tfoot">${t("tags.foot")}</div>
     ${sheet && sheet.k === "topic" && g && x && html`<${TopicSheet} pkey=${pkey} g=${g} x=${x} busy=${busy} onAct=${act} onClose=${closeSheet}/>`}
     ${sheet && sheet.k === "rename" && html`<${RenameSheet} key=${sheet.sec + "/" + (sheet.topic || "")} sec=${sheet.sec} topic=${sheet.topic} busy=${busy}

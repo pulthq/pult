@@ -149,9 +149,25 @@ async def main():
             await cmd("Page.navigate", url=URLS["HOME"])
             verdict("opened again: the computer kept the first answer", await until("(%s || {}).done === 1" % state, 150), await js(state))
             verdict("…in one's own words", OWN in await js("(document.querySelector('.card.ask .q.done') || {}).textContent || ''"))
+            # an option tapped goes three seconds later, "Undo" beside it (review 2026-11-11, UX8): it went with the touch,
+            # and the cards of "Your move" move under the finger when a new one comes
+            held = "(() => { const c = document.querySelector('.card.hold'); return c && [c.querySelector('.hold-l span').textContent, c.querySelector('.hold-l .link').textContent, getComputedStyle(c.querySelector('.rcpt-bar')).animationDuration]; })()"
+            opt = await js("document.querySelectorAll('.card.ask .q:not(.done) .opt')[1].querySelector('b').textContent")
             await tap(".card.ask .q:not(.done) .opt", 1)
-            t0 = time.time() - 0.5                  # tap() waits half a second after the finger
-            verdict("the last part closes the card with \"Answer sent\"", await until("!!document.querySelector('.card.rcpt')"))
+            verdict("a tapped option waits: «Отправлю «…»», «Отменить», a bar of 3 s", await js(held) == ["Отправлю «%s»" % opt, "Отменить", "3s"], await js(held))
+            verdict("… nothing is sent yet", await js("!document.querySelector('.card.rcpt')"))
+            await shot("3-hold.png")
+            await tap(".card.hold .hold-l .link")
+            s = await js(state)
+            verdict("«Отменить» brings the card back as it was, nothing sent", s and s["done"] == 1 and s["open"] == 1 and s["opts"] == 2
+                    and not await js("!!document.querySelector('.card.hold, .card.rcpt')"), s)
+            await asyncio.sleep(3.3)
+            s = await js(state)
+            verdict("… and three seconds later still nothing went", s and s["open"] == 1 and not await js("!!document.querySelector('.card.rcpt')"), s)
+            await tap(".card.ask .q:not(.done) .opt", 1)
+            verdict("tapped again and left alone: the last part closes the card with \"Answer sent\" in 3 s", await js("!!document.querySelector('.card.hold')")
+                    and await until("!!document.querySelector('.card.rcpt')", 45))
+            t0 = time.time()
             await shot("3-sent.png")
             await linger("Home", t0)
 
@@ -159,23 +175,32 @@ async def main():
             await cmd("Page.navigate", url="about:blank")
             await cmd("Page.navigate", url=URLS["SESS"])
             verdict("the session shows its permission", await until("!!document.querySelector('.card.perm .btn')", 150))
+            # what "Always allow" would allow is said under its link (UX7): the stand's request is a compound command
+            always = await js("(document.querySelector('.card.perm .always-w') || {}).textContent")
+            verdict("the card says what «Разрешать всегда» would allow, and where",
+                    always == "«Всегда» разрешит: команды make deploy-staging …, git commit … — в этом проекте, насовсем", always)
+            await asyncio.sleep(0.8)                # the chat is still on its way to the bottom: the finger comes after
             await tap(".card.perm .btn", 0)
-            t0 = time.time() - 0.5
-            verdict("Allow turns the card into \"Allowed\"", await until("!!document.querySelector('.card.rcpt')"))
+            verdict("Allow waits too: «Разрешаю», «Отменить»", (await js(held) or [None])[:2] == ["Разрешаю", "Отменить"], await js(held))
+            await tap(".card.hold .hold-l .link")
+            verdict("«Отменить» — the request is there again, undecided", await js("!!document.querySelector('.card.perm .btn') && !document.querySelector('.card.hold, .card.rcpt')"))
+            await tap(".card.perm .btn", 0)
+            verdict("Allow, left alone, turns the card into \"Allowed\" in 3 s", await until("!!document.querySelector('.card.rcpt')", 45))
+            t0 = time.time()
             await linger("the session", t0)
             # what waits for your move is seen from every screen (review 2026-11-11, UX1): in a task — a line about
             # the other tasks that wait; on Home's tab — their count; put away, the line stays away
             ok = await until("!!document.querySelector('.wait-line')", 80)
             verdict("the open task says another one waits", ok, await js("(document.querySelector('.session') || {}).textContent.slice(0, 200)"))
             line = await js("(document.querySelector('.wait-line .wl-go') || {}).textContent") or ""
-            verdict("... in words: how many, or which and what", line.startswith("Ждёт тебя") or line.startswith("Ждут тебя: "), line)
+            verdict("... in words: how many, or which and what", line.startswith("Твой ход"), line)
             sess = await js("location.hash")
             await js("location.hash = '#/projects'")
             verdict("Home's tab carries the count of tasks that wait for you",
                     await until("/^[1-9]/.test((document.querySelector('.tabs a .tbadge') || {}).textContent || '')", 80),
                     await js("(document.querySelector('.tabs') || {}).textContent"))
             n = int(await js("(document.querySelector('.tabs a .tbadge') || {}).textContent") or 0)
-            verdict("... no fewer than the line named", "Ждут тебя: " not in line or int(line.split(": ")[1].split()[0]) <= n, line, n)
+            verdict("... no fewer than the line named", not line.split(": ")[1].split()[0].isdigit() or int(line.split(": ")[1].split()[0]) <= n, line, n)
             await js("location.hash = %s" % json.dumps(sess))
             await until("!!document.querySelector('.wait-line .wl-x')", 80)
             await js("document.querySelector('.wait-line .wl-x').click()")

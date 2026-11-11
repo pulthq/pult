@@ -1,7 +1,7 @@
 """Web app test stand: a local relay (127.0.0.1:18097) + the daemon with a fake Telegram and made-up sessions:
 one working, one waiting for a permission, one waiting for an answer, jobs without Claude, a final result. Login
-is signed with test keys (tests/test_web.py). Prints the screen URLs (HOME, SESS, USAGE, SETTINGS, NEW, PROJ, PROJECTS,
-LOAD, NEWPROJ), stays up HOLD s.
+is signed with test keys (tests/test_web.py). Prints the screen URLs (HOME, SESS, USAGE, SETTINGS — the menu, SETP, SETM, SETC —
+its screens of Pult's parts, the models and the calls, NEW, PROJ, PROJECTS, LOAD, NEWPROJ), stays up HOLD s.
 
   HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out &
   ~/.local/share/pult/venv/bin/python tools/shot.py "$(grep ^HOME /tmp/stand.out | cut -d' ' -f2)" home.png 412 4 [dark]
@@ -1060,7 +1060,10 @@ async def main():
     (await taken(p, T.SID)).turn.started -= 380
     await T.run_hook(ev("PermissionRequest", T.SID, tool_name="Bash",
                         tool_input={"command": D["cmd"], "description": D["cmd_desc"]},
-                        permission_suggestions=[{"type": "addRules"}]), wait=False)
+                        # as Claude Code 2.1.322 suggests for a compound command (tests/probe_always.py)
+                        permission_suggestions=[{"type": "addRules", "destination": "localSettings", "behavior": "allow", "rules": [
+                            {"toolName": "Bash", "ruleContent": "make deploy-staging *"},
+                            {"toolName": "Bash", "ruleContent": "git commit *"}]}]), wait=False)
     q = {"questions": [{"question": D["question"], "header": D["header"], "multiSelect": False,
                         "options": [{"label": D["opt1"], "description": D["opt1d"]}, {"label": D["opt2"]}]}]}
     if os.environ.get("STAND_ASK2") == "1":            # two questions in one: answered one by one (tools/ask_check.py)
@@ -1422,6 +1425,10 @@ async def main():
           (PORT, urllib.parse.quote(init("load"))), flush=True)
     print("SETTINGS http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
           (PORT, urllib.parse.quote(init("settings"))), flush=True)
+    # Settings is a menu (review 2026-11-11, block 4): its screens — the parts' table, the models, the calls
+    for name, at in (("SETP", "parts"), ("SETM", "models"), ("SETC", "calls")):
+        print("%s http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
+              (name, PORT, urllib.parse.quote(init("settings_" + at))), flush=True)
     print("HOME http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
           (PORT, urllib.parse.quote(init("home"))), flush=True)
     # opened as the bot's menu button and Pult's plain links open it: no start parameter

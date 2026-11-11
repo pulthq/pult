@@ -310,6 +310,38 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(R.permission_line("Bash", {"command": "make", "description": "Собрать\n  и проверить"}),
                          "Выполнить команду: <b>«Собрать и проверить»</b>")
 
+    def test_always_says_what_it_allows(self):
+        # "Always allow" applied Claude Code's suggestions blind — one command or the whole of Bash, for the task or for
+        # good (review 2026-11-11, UX7). The shapes — tests/probe_always.py, Claude Code 2.1.322
+        rules = lambda dest, *rs: {"type": "addRules", "destination": dest, "behavior": "allow",
+                                   "rules": [{"toolName": t, "ruleContent": c} for t, c in rs]}
+        both = [rules("localSettings", ("Bash", "make deploy-staging *"), ("Bash", "git commit *"))]
+        self.assertEqual(R.always_facts(both), [("project", "cmd", ["make deploy-staging …", "git commit …"])])
+        self.assertEqual(R.always_text(both), "«Всегда» разрешит: команды <code>make deploy-staging …</code>, "
+                                              "<code>git commit …</code> — в этом проекте, насовсем")
+        self.assertEqual(R.always_text([rules("localSettings", ("Bash", "npm test:*"))]),          # the older spelling
+                         "«Всегда» разрешит: команду <code>npm test …</code> — в этом проекте, насовсем")
+        self.assertIn("команду <code>ls -la</code> — во всех проектах, насовсем", R.always_text([rules("userSettings", ("Bash", "ls -la"))]))
+        # a file: the mode for the task; one outside the folder — its folder too, once (macOS names /tmp twice)
+        edit = [{"type": "setMode", "destination": "session", "mode": "acceptEdits"},
+                {"type": "addDirectories", "destination": "session", "directories": ["/tmp/out", "/private/tmp/out"]}]
+        self.assertEqual(R.always_text(edit), "«Всегда» разрешит: правку файлов без вопроса, доступ к папке <code>/tmp/out</code> — до конца задачи")
+        read = [rules("session", ("Read", "//etc/**")), rules("session", ("Read", "//private/etc/**"))]
+        self.assertEqual(R.always_text(read), "«Всегда» разрешит: чтение файлов в <code>/etc</code> — до конца задачи")
+        self.assertIn("чтение файлов в <code>docs</code>", R.always_text([rules("session", ("Read", "//p/shop/docs/**"))], "/p/shop"))
+        # two places — two phrases; a mode that allows everything says so
+        mixed = R.always_text([rules("localSettings", ("Bash", "npm test *")), {"type": "setMode", "destination": "session", "mode": "bypassPermissions"}])
+        self.assertEqual(mixed, "«Всегда» разрешит: команду <code>npm test …</code> — в этом проекте, насовсем; любые действия без вопроса — до конца задачи")
+        self.assertIn("инструменты files: read, WebFetch · domain:example.com", R.always_text([rules("session", ("mcp__files__read", ""), ("WebFetch", "domain:example.com"))]))
+        # what Pult can't read it doesn't pass over in silence, and says no place it doesn't know
+        self.assertEqual(R.always_text([{"type": "addRules"}]), "«Всегда» разрешит: то, чего Пульт не умеет назвать (addRules)")
+        self.assertEqual(R.always_text([{"type": "setMode", "mode": "<b>", "destination": "session"}]),
+                         "«Всегда» разрешит: то, чего Пульт не умеет назвать (setMode) — до конца задачи")
+        self.assertIn("&lt;b&gt;", R.always_text([rules("cliArg", ("Bash", "echo <b> *"))]))
+        self.assertNotIn(" — ", R.always_text([rules("cliArg", ("Bash", "echo *"))]))
+        for nothing in (None, [], "addRules", ["addRules"]):
+            self.assertEqual(R.always_text(nothing), "")
+
     def test_permission_text(self):
         t = R.permission_text("Bash", {"command": "ls -la", "description": "Список файлов"})
         self.assertIn("Выполнить команду: <b>«Список файлов»</b>", t)
@@ -2148,15 +2180,18 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
     async def test_prefs(self):
         self.assertEqual(self.p.prefs(), {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": None, "pace": 90,
                                           "model": None, "effort": None, "gh": True, "vcheck": True, "hashtags": True,
-                                          "ccfresh": True, "digest": None, "quiet": None, "page_delay": 5, "remind": True})
+                                          "ccfresh": True, "digest": None, "quiet": None, "page_delay": 5, "remind": True,
+                                          "mode_until": None})
         self.p.env["PULT_FORCE_AWAY"] = "0"                                           # you are at the Mac
         self.assertFalse(await self.p.loud())
         self.assertTrue(await self.p.loud(driven=True))                     # auto: a session from Telegram — with sound
         res = await self.p.api_prefs(mode="phone", vehi="да", lang="xx", brief="да", evil=True, pace="90", gh="off",
-                                     hashtags="yes", ccfresh="on")                  # garbage is rejected
+                                     hashtags="yes", ccfresh="on", mode_until=1)    # garbage is rejected
+        # … and how long "Computer" holds is not the app's to say (mode_until)
         self.assertEqual(res, {"vehi": True, "mode": "phone", "lang": None, "brief": False, "pager": None, "pace": 90,
                                "model": None, "effort": None, "gh": True, "vcheck": True, "hashtags": True,
-                               "ccfresh": True, "digest": None, "quiet": None, "page_delay": 5, "remind": True})
+                               "ccfresh": True, "digest": None, "quiet": None, "page_delay": 5, "remind": True,
+                               "mode_until": None})
         self.assertFalse((await self.p.api_prefs(ccfresh=False))["ccfresh"])        # stage A2: the app on the SDK's own
         await self.p.api_prefs(ccfresh=True)
         self.assertFalse((await self.p.api_prefs(hashtags=False))["hashtags"])      # stage T, T3: no hashtags under results
@@ -4747,6 +4782,10 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             await self.p.on_message(dict(base, message_id=22, **voice))
             drive.assert_called_once()
             body = drive.call_args.args[2]
+        # what was heard is said back under the voice message, without sound (review 2026-11-11, T8)
+        said = self.fake.of("sendMessage")[-1]
+        self.assertEqual((said["text"], json.loads(said["reply_parameters"])["message_id"], said.get("disable_notification")),
+                         ("🎤 Услышал: «сделай деплой»", 22, "true"))
         self.assertTrue(body.startswith("сделай деплой\n\n[Spoken message"), body)
         self.assertEqual(R.prompt_text(body), "🎤 сделай деплой")
         blob, kind, language, prompt = stt.calls[0]
@@ -5311,6 +5350,18 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         ov = await self.p.api_overview()
         self.assertEqual(ov["mine"], [])
         self.assertEqual([(r["state"], r["line"]) for r in ov["board"][0]["rows"]], [("idle", "Отчёт готов.")])
+        # "Bring back", a moment later (review 2026-11-11, UX9: one tap in a card's corner put a task away for good):
+        # it waits again; the app is told the computer can; later than UNSEEN, or never put away — it can't
+        self.assertIn("unseen", PW.CAPS)
+        self.assertEqual(await self.p.api_unseen(SID), {"ok": True})
+        self.assertEqual([(r["sid"], r["state"]) for r in (await self.p.api_overview())["mine"]], [(SID, "you")])
+        self.assertEqual((await self.p.api_unseen(SID))["ok"], False)                 # it waits already
+        await self.p.api_seen(SID)
+        self.p.attn.rec[SID]["seen_at"] -= A.UNSEEN + 1
+        r = await self.p.api_unseen(SID)
+        self.assertEqual((r["ok"], r["note"]), (False, "Вернуть уже нельзя — задача в своём проекте, в «Сегодня»."))
+        self.assertEqual((await self.p.api_overview())["mine"], [])
+        self.assertEqual((await self.p.api_unseen("no-such"))["ok"], False)
         # at the computer: the owner watched the turn end — Telegram won't call about it, yet it waits on Home
         self.p.env["PULT_FORCE_AWAY"] = "0"
         await run_hook(ev("UserPromptSubmit", prompt="Ещё раз"))
@@ -8307,6 +8358,63 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await self.p.on_callback({"id": "3", "from": {"id": OWNER}, "data": "p:%s:y" % rid2})
         await proc.stdout.read()
         await until(lambda: any(t.endswith(" → <b>✔️ разрешено</b>") for t in self.texts("editMessageText")), timeout=15)
+
+    async def test_computer_mode_ends_by_itself(self):
+        # "Computer" kept Telegram silent with no end: switched on and forgotten, no call came until the owner
+        # remembered (review 2026-11-11, T23; Q181). It holds until the morning, then it is "Auto" again
+        at = lambda day, h, m=0: time.mktime((2026, 11, day, h, m, 0, 0, 0, -1))
+        self.assertEqual(self.p.mode_end(at(11, 10)), at(12, 8))          # picked in the day: tomorrow's morning
+        self.assertEqual(self.p.mode_end(at(11, 5)), at(11, 8))           # at night: this morning
+        self.assertEqual(self.p.mode_end(at(11, 7, 30)), at(12, 8))       # half an hour before it: not for half an hour
+        await self.p.api_prefs(quiet=[23, 7])
+        self.assertEqual(self.p.mode_end(at(11, 22)), at(12, 7))          # the morning is where the quiet hours end
+        await self.p.api_prefs(quiet=None)
+        got = await self.p.api_prefs(mode="mac")
+        self.assertEqual((got["mode"], self.p.mode()), ("mac", "mac"))
+        self.assertTrue(pultd.MAC_MIN <= got["mode_until"] - time.time() <= 26 * 3600, got["mode_until"])
+        self.assertEqual((await self.p.api_overview())["mac"]["until"], got["mode_until"])
+        self.assertIn(time.strftime(" До %H:%M — потом снова «Авто».", time.localtime(got["mode_until"])), self.p.panel_text())
+        self.assertFalse(await self.p.page_now())
+        await self.p.mode_over()                                          # not yet
+        self.assertEqual(self.p.mode(), "mac")
+        self.store.put("prefs", dict(self.p.prefs(), mode_until=time.time() - 1))
+        self.assertEqual(self.p.mode(), "auto")                           # at once, before anything is written
+        await self.p.mode_over()
+        p = self.p.prefs()
+        self.assertEqual((p["mode"], p["mode_until"]), ("auto", None))
+        self.assertNotIn("потом снова", self.p.panel_text())
+        # "Phone" has no end; a "Computer" picked before it had one gets its morning
+        self.assertIsNone((await self.p.api_prefs(mode="phone"))["mode_until"])
+        self.store.put("prefs", dict(self.p.prefs(), mode="mac", mode_until=None))
+        await self.p.mode_over()
+        p = self.p.prefs()
+        self.assertEqual(p["mode"], "mac")
+        self.assertTrue(p["mode_until"] > time.time())
+        await self.p.api_prefs(mode="auto")
+
+    async def test_always_is_said_before_the_tap(self):
+        # the request in Telegram and the app's card say what "Always allow" would allow, and where (UX7)
+        sug = [{"type": "addRules", "destination": "localSettings", "behavior": "allow",
+                "rules": [{"toolName": "Bash", "ruleContent": "git push *"}]}]
+        proc = await run_hook(ev("PermissionRequest", tool_name="Bash", tool_input={"command": "git push origin main"},
+                                 permission_suggestions=sug), wait=False)
+        await until(lambda: self.fake.buttons("p:"))
+        said = "«Всегда» разрешит: команду <code>git push …</code> — в этом проекте, насовсем"
+        self.assertIn("<i>%s</i>" % said, self.texts()[-1])
+        rid = self.fake.buttons("p:")[0].split(":")[1]
+        item = self.p.req_item(self.p.req_by_rid[rid])
+        self.assertEqual((item["suggest"], item["always"]), (True, said))
+        await self.p.on_callback({"id": "1", "from": {"id": OWNER}, "data": "p:%s:a" % rid})
+        d = json.loads((await proc.stdout.read()).decode())["hookSpecificOutput"]["decision"]
+        self.assertEqual(d["updatedPermissions"], sug)            # applied as they came
+        # nothing suggested — no button, no line, no field
+        proc = await run_hook(ev("PermissionRequest", tool_name="Bash", tool_input={"command": "git status"}), wait=False)
+        await until(lambda: len(self.fake.buttons("p:")) > 0 and self.fake.buttons("p:")[-1].split(":")[1] != rid)
+        rid2 = self.fake.buttons("p:")[-1].split(":")[1]
+        self.assertNotIn("Всегда", self.texts()[-1])
+        self.assertNotIn("always", self.p.req_item(self.p.req_by_rid[rid2]))
+        await self.p.on_callback({"id": "2", "from": {"id": OWNER}, "data": "p:%s:y" % rid2})
+        await proc.stdout.read()
 
     async def test_permission_decided_in_flight(self):
         # decided while its message was still on its way (the computer's dialog, the app or a tap in that very moment):

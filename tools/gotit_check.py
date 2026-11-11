@@ -112,7 +112,28 @@ async def main():
             await tap(got)
             verdict("«Got it» there turns into a quiet tick", await until("!(%s) && !!document.querySelector('.card.outcome .foot .dim')" % got, 50),
                     await js("(document.querySelector('.card.outcome .foot') || {}).innerText"))
+            # a tap in a card's corner put the task away for good: a note offers to bring it back (review 2026-11-11, UX9)
+            note = "(() => { const n = document.querySelector('.toast.act'); return n && [n.querySelector('span').textContent, n.querySelector('.link').textContent]; })()"
+            verdict("… and a note offers to bring it back", await until("!!(%s)" % note, 20) and await js(note) == ["Убрано из «Твой ход»", "Вернуть"], await js(note))
             await shot("3-session-put-away.png")
+            await tap("document.querySelector('.toast.act .link')")
+            verdict("«Вернуть»: the outcome offers «Got it» again, the note is gone", await until("!!(%s) && !document.querySelector('.toast.act')" % got, 50))
+            await cmd("Page.navigate", url="about:blank")
+            await cmd("Page.navigate", url=URLS["HOME"])
+            verdict("… and it is in «Your move» again", await until("!!(%s)" % card, 150))
+            await tap("(%s).querySelector('.foot button.link:last-child')" % card)
+            verdict("«Got it» on the card: it goes at once, the same note", await until("!(%s) && !!(%s)" % (card, note), 50))
+            await tap("document.querySelector('.toast.act .link')")
+            verdict("«Вернуть» there: the card is back", await until("!!(%s)" % card, 80))
+            await cmd("Page.navigate", url="about:blank")
+            await cmd("Page.navigate", url=sess)
+            await until("!!(%s)" % got, 150)
+            await asyncio.sleep(0.8)                # the chat is still on its way to the bottom: the finger comes after
+            await tap(got)
+            verdict("put away again: the quiet tick", await until("!(%s) && !!document.querySelector('.card.outcome .foot .dim')" % got, 50),
+                    await js("(document.querySelector('.card.outcome .foot') || {}).innerText"))
+            verdict("… and the note goes by itself in five seconds", await until("!!document.querySelector('.toast.act')", 20)
+                    and await until("!document.querySelector('.toast.act')", 70))
             await cmd("Page.navigate", url="about:blank")
             await cmd("Page.navigate", url=URLS["HOME"])
             await until("!!document.querySelector('.card.mine')", 150)

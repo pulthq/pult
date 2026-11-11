@@ -1,4 +1,5 @@
-// Pult app — Settings: Pult and its parts, logins, the switches.
+// Pult app — Settings: the menu and its five screens — the calls, the models and keys, the voice and the language,
+// Pult and its parts, the logins.
 // Moved from app.js as it was (review 2026-10-27, 6.4).
 import { api, useLang, useLive } from "../core/conn.js";
 import { useOverlay } from "../core/nav.js";
@@ -6,7 +7,7 @@ import { alertBox, confirmBox, haptic, tick } from "../core/tg.js";
 import { OWN_V, checkServed, noteUpd, phoneOld, served, useServed } from "../core/update.js";
 import { locale, plural, t } from "../i18n.js";
 import { html, useEffect, useState } from "../vendor/htm-preact-3.1.1.js";
-import { About, ChoicePick, Loading, ModePick, ago, choiceText, dur, hhmm, ic, num, plainField, toDate } from "../ui/kit.js";
+import { About, ChoicePick, Loading, MODES, ModePick, ago, choiceText, dur, hhmm, ic, num, plainField, toDate } from "../ui/kit.js";
 import { UpdBody, UpdCard, tOr } from "../ui/upd.js";
 
 
@@ -177,7 +178,7 @@ function Parts() {
   }
   const b = d.branch || "main";
   const late = rows.filter((r) => r.st === "warn" || r.st === "bad").length, note = rows.filter((r) => r.st === "attn").length;
-  return html`<h3>${t("pt.h")}</h3><div class=${"card upg parts upd-s-" + mac.upd.state}>
+  return html`<div class=${"card upg parts upd-s-" + mac.upd.state}>
     <div class="upd-h"><b>${late ? html`<span class="upd-attn">${ic("up", 17)}</span>` : html`<span class="upd-ok">${ic("check", 17)}</span>`}
       ${late ? t("pt.late", { n: late, all: rows.length }) : t("pt.allok", { b })}</b>
       <span class=${"chip " + (late || note ? "warn" : "ok")}>${late ? t("pt.chip.late") : note ? t("pt.chip.note", { n: note }) : t("upd.ok.chip")}</span></div>
@@ -348,7 +349,7 @@ function CloudCard({ v, onRow }) {
     <div class="vend-h"><b>${v.name}</b><span class=${"vend-st" + (v.key ? " on" : "")}>${v.key ? t("vend.key.on") : t("vend.key.off")}</span></div>
     <div class="keyrow"><input type="password" ref=${plainField} placeholder=${v.key ? t("vend.key.new") : t("vend.key.ph", { name: v.name })} value=${key} onInput=${(e) => setKey(e.target.value)}/>
       <button class="btn" disabled=${!key.trim() || !!busy} onClick=${() => saveKey(key)}>${t("voice.save")}</button></div>
-    ${v.key ? html`<button class="link" disabled=${!!busy} onClick=${() => saveKey("")}>${t("vend.key.remove")}</button>` : ""}
+    ${v.key ? html`<button class="link" disabled=${!!busy} onClick=${async () => { if (await confirmBox(t("vend.key.remove.ask", { name: v.name }))) saveKey(""); }}>${t("vend.key.remove")}</button>` : ""}
     ${v.key ? html`<div class="vl-lg dim">${t("vend.list.legend")}</div>
     <${ModelRows} rows=${rows} models=${v.models} busy=${!!busy} onSet=${(ms) => save(ms)} one=${t("vend.list.one")}/>
     ${add == null ? html`<button class="vl-add" disabled=${!!busy || v.models.length >= 8} onClick=${() => setAdd("")}>${ic("plus", 16)} ${t("vend.list.add")}</button>`
@@ -384,7 +385,20 @@ function Vendors({ list, all, codex, onChange, onAll }) {
     <div class="dim small">${t("vend.about")}</div>`;
 }
 
-function Settings() {
+const isArr = Array.isArray;
+// the menu's line about Pult's parts: the version, and whether anything is behind — the table's own count
+function PartsSum({ v }) {
+  const [d] = useLive(() => api("parts"), [], (m) => m.kind === "update", 30000, "parts.sum");
+  useServed();
+  if (!d) return t("set.sum.parts.v", { v });
+  const late = d.rows.filter((r) => r.st === "warn" || r.st === "bad").length + (OWN_V && served.v && phoneOld() ? 1 : 0);
+  return late ? html`<span class="set-late">${t("set.sum.parts.late", { v, n: late })}</span>` : t("set.sum.parts", { v });
+}
+// Settings (review 2026-11-11, UX11; the owner's yes — Q181): a menu of five screens, each with an address of its own —
+// #/settings/<name>: calls, models, voice, parts, safe. It was one scroll of nearly five phone screens — Pult's
+// upkeep on top, the language in the middle, the vendors' keys at the very bottom — and nothing could lead into it
+const SETS = ["calls", "models", "voice", "parts", "safe"];
+function Settings({ at }) {
   const [d, err, set] = useLive(() => api("settings"), [], () => false, 30000, "settings");
   const [key, setKey] = useState("");
   const [kbusy, setKbusy] = useState(false);
@@ -441,23 +455,33 @@ function Settings() {
     catch (e) { alertBox(e.message); }
     setKbusy(false);
   };
-  return html`<div><h2>${t("settings")}</h2>
-    <${Parts}/>
+  const p = d.prefs, vs = d.vendors || [];
+  const partsS = html`<${Parts}/>
     ${d.gh && d.gh.release ? html`<div class="list">${sw("gh", t("gh"), d.gh.at && d.prefs.gh ? t(d.gh.ok ? "gh.at" : "gh.fail", { hm: hhmm(toDate(d.gh.at)) }) : t("gh.short"), t("gh.about"))}</div>` : ""}
     ${"vcheck" in d.prefs ? html`<div class="list">${sw("vcheck", t("vcheck"), t("vcheck.short"), t("vcheck.about"))}${"ccfresh" in d.prefs ? sw("ccfresh", t("ccfresh"), t("ccfresh.short"), t("ccfresh.about")) : ""}</div>` : ""}
-    ${"model" in d.prefs ? html`<h3>${t("model.pick")}</h3>
+    <h3>${t("status")}</h3><div class="list"><div class="item static">
+      <div>${t("status.pult", { v: d.version, mac: d.mac.away ? t("mac.away", { dur: dur(d.mac.idle) }) : t("mac.here") })}</div>
+      <div class="dim">${t("status.tg", { how: t("tg." + (d.telegram === "proxy" ? "proxy" : "direct")) })}</div>
+    </div></div>
+    <details class="logbox"><summary>${t("log", { n: d.log.length })}</summary>
+      <pre class="log">${d.log.slice().reverse().join("\n")}</pre></details>`;
+  const callsS = html`<h3>${t("where")}</h3>
+    <${ModePick} mode=${d.prefs.mode} pager=${d.prefs.pager} until=${d.prefs.mode_until} onSet=${(m, till) => set(Object.assign({}, d, { prefs: Object.assign({}, d.prefs, { mode: m, mode_until: till || null }) }))}/>
+    <h3>${t("set.calls.tg")}</h3><div class="list">${sw("pager", t("pager"), t("pager.short"), t("pager.about"))}${d.prefs.pager ? "" : sw("vehi", t("vehi"), t("vehi.about"))}${"hashtags" in d.prefs ? sw("hashtags", t("hashtags"), t("hashtags.short"), t("hashtags.about")) : ""}</div>
+    ${calls ? html`<h3>${t("set.calls.when")}</h3>${calls}` : ""}`;
+  const modelsS = html`${"model" in d.prefs ? html`<h3>${t("model.pick")}</h3>
     <button class="field" onClick=${openPick}><span>${choiceText(d.prefs.model, d.prefs.effort, null, d.cc_models)}</span><span class="dim">${ic("down", 18)}</span></button>
     <div class="dim small">${t("def.about")}</div>
     ${pick && html`<${ChoicePick} model=${d.prefs.model} effort=${d.prefs.effort} def=${d.cc} models=${d.cc_models} top=${t("pick.as.cc.short")}
       note=${t("def.cc.note")} onClose=${closePick} onPick=${setChoice}/>`}` : ""}
-    <h3>${t("notifications")}</h3><div class="list">${sw("pager", t("pager"), t("pager.short"), t("pager.about"))}${d.prefs.pager ? "" : sw("vehi", t("vehi"), t("vehi.about"))}${sw("brief", t("brief"), t("brief.short"), t("brief.about"))}${"hashtags" in d.prefs ? sw("hashtags", t("hashtags"), t("hashtags.short"), t("hashtags.about")) : ""}</div>
-    ${calls}
-    <h3>${t("where")}</h3>
-    <${ModePick} mode=${d.prefs.mode} pager=${d.prefs.pager} onSet=${(m) => set(Object.assign({}, d, { prefs: Object.assign({}, d.prefs, { mode: m }) }))}/>
+    <div class="list set-gap">${sw("brief", t("brief"), t("brief.short"), t("brief.about"))}</div>
     ${d.prefs.pace ? html`<h3>${t("pace")}</h3>
-    <div class="seg">${[85, 90, 95].map((n) => html`<button key=${n} class=${d.prefs.pace === n ? "on" : ""} onClick=${() => setPace(n)}>${n}\u00a0%</button>`)}</div>
+    <div class="seg">${[85, 90, 95].map((n) => html`<button key=${n} class=${d.prefs.pace === n ? "on" : ""} onClick=${() => setPace(n)}>${n} %</button>`)}</div>
     <div class="dim small">${t("pace.about", { n: d.prefs.pace })}</div>` : ""}
-    <h3>${t("language")}</h3>
+    ${d.vendors && html`<${Vendors} list=${d.vendors} all=${d.vendor_all} codex=${d.codex} onChange=${(f) => set((cur) => { const vs = f(cur.vendors);
+      return Object.assign({}, cur, { vendors: vs, vendor_all: cur.vendor_all === "codex" || vs.some((x) => x.id === cur.vendor_all && x.key) ? cur.vendor_all : null }); })}
+      onAll=${(v) => set(Object.assign({}, d, { vendor_all: v }))}/>`}`;
+  const voiceS = html`<h3>${t("language")}</h3>
     <div class="seg">${[["en", "English"], ["ru", "Русский"]].map(([k, label]) => html`<button key=${k}
       class=${d.prefs.lang === k ? "on" : ""} onClick=${() => setLangPref(k)}>${label}</button>`)}</div>
     <h3>${t("voice")}</h3><div class="list"><div class="item static">
@@ -465,23 +489,30 @@ function Settings() {
       <div class="dim">${t("voice.privacy", { lang: (d.stt && d.stt.lang) || "auto" })}</div>
       <div class="keyrow"><input type="password" ref=${plainField} placeholder=${t("voice.key")} value=${key} onInput=${(e) => setKey(e.target.value)}/>
         <button class="btn" disabled=${!key.trim() || kbusy} onClick=${() => saveKey(key)}>${t("voice.save")}</button></div>
-      ${d.stt && d.stt.on ? html`<button class="link" disabled=${kbusy} onClick=${() => saveKey("")}>${t("voice.remove")}</button>` : ""}
+      ${d.stt && d.stt.on ? html`<button class="link" disabled=${kbusy} onClick=${async () => { if (await confirmBox(t("voice.remove.ask"))) saveKey(""); }}>${t("voice.remove")}</button>` : ""}
     </div>
     ${d.stt && d.stt.on && typeof d.stt.words === "string" ? html`<div class="item static">
       <div>${t("voice.words")}</div><div class="dim">${t("voice.words.about")}</div>
       <div class="keyrow"><input ref=${plainField} maxlength="280" placeholder=${t("voice.words.ph")} value=${words === null ? d.stt.words : words} data-saved=${d.stt.words} onInput=${(e) => setWords(e.target.value)}/>
         <button class="btn" disabled=${words === null || words.trim() === d.stt.words || kbusy} onClick=${saveWords}>${t("voice.save")}</button></div>
-    </div>` : ""}</div>
-    ${d.vendors && html`<${Vendors} list=${d.vendors} all=${d.vendor_all} codex=${d.codex} onChange=${(f) => set((cur) => { const vs = f(cur.vendors);
-      return Object.assign({}, cur, { vendors: vs, vendor_all: cur.vendor_all === "codex" || vs.some((x) => x.id === cur.vendor_all && x.key) ? cur.vendor_all : null }); })}
-      onAll=${(v) => set(Object.assign({}, d, { vendor_all: v }))}/>`}
-    <${Logins}/>
-    <h3>${t("status")}</h3><div class="list"><div class="item static">
-      <div>${t("status.pult", { v: d.version, mac: d.mac.away ? t("mac.away", { dur: dur(d.mac.idle) }) : t("mac.here") })}</div>
-      <div class="dim">${t("status.tg", { how: t("tg." + (d.telegram === "proxy" ? "proxy" : "direct")) })}</div>
-    </div></div>
-    <details class="logbox"><summary>${t("log", { n: d.log.length })}</summary>
-      <pre class="log">${d.log.slice().reverse().join("\n")}</pre></details>
+    </div>` : ""}</div>`;
+  const safeS = html`<${Logins}/>`;
+  const body = { calls: callsS, models: modelsS, voice: voiceS, parts: partsS, safe: safeS };
+  if (SETS.includes(at)) return html`<div class="set-sub" data-set=${at}><h2>${t("set." + at)}</h2>${body[at]}</div>`;
+  // the menu: a row each, under its name — what is set there now
+  const q = isArr(p.quiet) ? hours(p.quiet[0], p.quiet[1]) : null;
+  const others = vs.filter((v) => v.key).map((v) => v.short || v.name).concat(d.codex && d.codex.ok ? ["Codex"] : []);
+  const sum = {
+    calls: [t("mode." + (MODES.includes(p.mode) ? p.mode : "auto") + ".btn") + (p.mode === "mac" && p.mode_until ? " " + t("mode.mac.till", { hm: hhmm(toDate(p.mode_until)) }) : ""), q && t("set.sum.quiet", { h: q }), p.digest != null && t("set.sum.digest", { h: p.digest })].filter(Boolean).join(" · "),
+    models: ["Claude"].concat(others).join(" · "),
+    voice: [p.lang === "ru" ? "Русский" : "English", t(d.stt && d.stt.on ? "set.sum.voice.on" : "set.sum.voice.off")].join(" · "),
+    parts: html`<${PartsSum} v=${d.version}/>`,
+    safe: t("set.sum.safe"),
+  };
+  const ICN = { calls: "bell", models: "spark", voice: "mic", parts: "server", safe: "shield" };
+  return html`<div class="set-menu"><h2>${t("settings")}</h2>
+    <div class="list">${SETS.map((k) => html`<a class="item set-row" key=${k} data-set=${k} href=${"#/settings/" + k}>
+      <span class="set-ic">${ic(ICN[k], 21)}</span><span class="set-x"><b>${t("set." + k)}</b><span class="dim">${sum[k]}</span></span>${ic("chev", 18)}</a>`)}</div>
   </div>`;
 }
 

@@ -40,7 +40,7 @@ Then **Developer: Reload Window** in VS Code, so open tabs pick up the hooks. Op
 - `pult tab setup` — writing into open tabs: one line for the VS Code settings;
 - `pult app` — the web app (below);
 - `pult stt` — voice messages as text, with a free Groq key;
-- in the app, Settings → Other vendors — a vendor's key, checked with one tiny request; Codex needs nothing there;
+- in the app, Settings → Models and keys — a vendor's key, checked with one tiny request; Codex needs nothing there;
   Local model — Ollama's address on this computer, **Check and turn on**.
 
 ## The web app (optional)

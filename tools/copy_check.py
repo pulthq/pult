@@ -18,7 +18,7 @@ os.makedirs(OUT, exist_ok=True)
 import _cdp  # noqa: E402  (tools/_cdp.py: where Chrome is, free ports, a profile that goes — review 2026-10-27, Т9)
 CHROME = _cdp.CHROME
 PORT = _cdp.free_port()
-COPY = re.compile(r"копией|as a copy")                    # "goes as a copy" under the field and on the card
+COPY = re.compile(r"в копию задачи|into a copy of the task")                    # "goes as a copy" under the field and on the card
 WHY = re.compile(r"2\.1\.311.*(не проверен|hasn't been checked)", re.S)
 ASK = re.compile(r"Продолжить копией|Continue as a copy")
 S4 = re.compile(r"Поиск: опечатки|Search: typo-tolerant")   # the stand's session that waits for you (SID4)
@@ -157,12 +157,12 @@ async def main():
             # the session's own screen
             await open_url(URLS["SESS4"])
             verdict("the session opens", await until("!!document.querySelector('textarea')", 150))
-            verdict("under the field: goes as a copy", await until("/копией|as a copy/.test((document.querySelector('.status .where') || {}).textContent || '')"),
+            verdict("under the field: goes as a copy", await until("/в копию задачи|into a copy of the task/.test((document.querySelector('.status .where') || {}).textContent || '')"),
                     await js("(document.querySelector('.status') || {}).textContent"))
             await shot("2-session.png")
             await tap_at("document.querySelector('.status .where')")
             sheet = await js("[...document.querySelectorAll('.card.pick .sheet-p')].map((p) => p.textContent)")
-            verdict("its explanation says why and that a copy follows", bool(sheet) and WHY.search(sheet[0]) and COPY.search(sheet[0]), sheet)
+            verdict("its explanation says why and that a copy follows", bool(sheet) and WHY.search(sheet[0]) and re.search(r"копией|as a copy", sheet[0]), sheet)
             await shot("3-why.png")
             await tap_at("document.querySelector('.card.pick .x')")
             words2 = "А теперь из сессии"

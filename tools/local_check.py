@@ -73,15 +73,15 @@ async def off_flow(pg):
     await blog_settings(pg)
     await pg.tap(MODEL, wait=0.6)
     row = await pg.js("(() => { const b = %s; return b ? [b.textContent.trim(), b.classList.contains('vo-off')] : null; })()" % (OPT % "Своя модель"))
-    verdict("the project's models list «Своя модель», grey while it is off", bool(row) and row[1] and "выключена — включи в «Настройках»" in row[0], row)
+    verdict("the project's models list «Своя модель», grey while it is off", bool(row) and row[1] and "выключена — включи в «Настройки → Модели и ключи»" in row[0], row)
     await pg.shot(os.path.join(OUT, "who-off.png"))
     await pg.tap(OPT % "Своя модель", wait=0.6)
     s = await said(pg)
-    verdict("… a tap says where to turn it on", s[0] == "alert" and "«Настройки → Другие производители»" in s[1], s)
+    verdict("… a tap says where to turn it on", s[0] == "alert" and "«Настройки → Модели и ключи»" in s[1], s)
     await pg.tap("document.querySelector('.card.pick .x')", wait=0.4)
 
     # Settings → Other vendors → Local model
-    await pg.js("location.hash = '#/settings'")
+    await pg.js("location.hash = '#/settings/models'")
     verdict("Settings has the local model's card", await pg.until("!!(%s)" % CARD, 150))
     await pg.js(SPY)
     await pg.js("(%s).scrollIntoView({block: 'center'})" % CARD)
@@ -160,7 +160,7 @@ async def off_flow(pg):
     await asyncio.sleep(0.3)
     await pg.shot(os.path.join(OUT, "panel-on-dark.png"))
     await pg.cmd("Emulation.setEmulatedMedia", features=[])
-    await pg.js("location.hash = '#/settings'")
+    await pg.js("location.hash = '#/settings/models'")
     await pg.until("!!(%s)" % CARD, 150)
     # Settings opens at once with what it showed last and then catches up (review 2026-11-11, FE12): wait for the new
     await pg.until("[...document.querySelectorAll('.vend-all button')].some((b) => b.textContent === 'Своя')", 60)
@@ -208,7 +208,7 @@ async def off_flow(pg):
     s = await said(pg)
     verdict("«Выключить»: off, the tasks of its projects won't start; the panel says it is off", s[0] == "alert" and "задачи её проектов не начнутся" in s[1]
             and await pg.until("[...document.querySelectorAll('.lp .vl-down')].some((x) => x.textContent.startsWith('Своя модель выключена'))", 30), s)
-    await pg.js("location.hash = '#/settings'")
+    await pg.js("location.hash = '#/settings/models'")
     verdict("… Settings' card: off, the address and «Проверить и включить» again", await pg.until(
         "!!(%s) && (%s).querySelector('.vend-st').textContent === 'выключена' && !!(%s).querySelector('.keyrow input')" % (CARD, CARD, CARD), 100))
     await blog_settings(pg)
@@ -245,7 +245,7 @@ async def down_flow(pg):
     verdict("… and offers no Claude in its place (Q143)", "с Claude" not in s[1] and not await pg.js("window.__said.some((x) => x[0] === 'confirm')"), s)
     verdict("… nothing started", "NEWTASK" not in journal())
     # Settings: the look as they open finds the server silent — a line in the card; it stays on
-    await pg.js("location.hash = '#/settings'")
+    await pg.js("location.hash = '#/settings/models'")
     verdict("Settings: «Ollama сейчас не отвечает — список с проверки в …»", await pg.until(
         "!!(%s) && !!(%s).querySelector('.vl-down') && (%s).querySelector('.vl-down').textContent.startsWith('Ollama сейчас не отвечает — список с проверки в ')"
         % (CARD, CARD, CARD), 100))

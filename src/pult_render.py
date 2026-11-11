@@ -569,6 +569,82 @@ def permission_text(tool, inp, cwd=None):
     return "%s\n%s" % (what, _code(json.dumps(inp, ensure_ascii=False, indent=1), 900))
 
 
+# "Always allow" applies what Claude Code suggests with the request, as it is — and nothing said what that is: one
+# command, every `git`, the whole of Bash, for the task or for good (review 2026-11-11, UX7). The shapes — the probe
+# tests/probe_always.py, Claude Code 2.1.322: a command → addRules into localSettings, a rule a command of a compound
+# one ("npm test *"); a file → setMode acceptEdits for the session, with addDirectories when it lies outside the
+# folder; a read outside → addRules for Read ("//etc/**", and the same under /private) for the session
+ALWAYS_AT = {"session": "task", "localSettings": "project", "projectSettings": "project", "userSettings": "all"}
+ALWAYS_READ, ALWAYS_EDIT = ("Read", "Glob", "Grep"), ("Edit", "Write", "MultiEdit", "NotebookEdit")
+ALWAYS_MODES = ("acceptEdits", "bypassPermissions", "plan", "default", "auto", "dontAsk")
+
+
+def _always_path(p, cwd):
+    """A rule's path as a person reads it: "//etc/**" → /etc, one inside the project — from its root."""
+    p = str(p or "")
+    p = re.sub(r"(/\*\*?)+$", "", "/" + p.lstrip("/") if p.startswith("//") else p)
+    return _rel(p, cwd) if p.startswith("/") else p
+
+
+def _same_place(paths):
+    """macOS names /tmp and /etc twice — as they are and under /private: one is enough to read."""
+    return [p for p in dict.fromkeys(paths) if not (p.startswith("/private/") and p[len("/private"):] in paths)]
+
+
+def always_facts(suggestions, cwd=None):
+    """What "always allow" would allow → [(where, kind, items)] in the order given, alike ones together: where —
+    "task" | "project" | "all" | "" (a place Pult doesn't know); kind — "cmd", "read", "edit", "tool", "mode", "dir",
+    "other" (a suggestion Pult can't read: its type). None — nothing to say (no suggestions, or not a list of them)."""
+    if not isinstance(suggestions, list) or not suggestions:
+        return None
+    out = {}
+    for s in suggestions:
+        if not isinstance(s, dict):
+            return None
+        where, kind = ALWAYS_AT.get(s.get("destination"), ""), s.get("type")
+        if kind == "addRules" and s.get("behavior") == "allow" and isinstance(s.get("rules"), list) and s["rules"]:
+            for r in s["rules"]:
+                r = r if isinstance(r, dict) else {}
+                tool, rc = str(r.get("toolName") or ""), str(r.get("ruleContent") or "")
+                if tool == "Bash" and rc:
+                    # "npm test *" (and the older "npm test:*") — the command with anything after it
+                    out.setdefault((where, "cmd"), []).append(re.sub(r"(\s|:)\*$", " …", rc))
+                elif tool in ALWAYS_READ + ALWAYS_EDIT and rc:
+                    out.setdefault((where, "read" if tool in ALWAYS_READ else "edit"), []).append(_always_path(rc, cwd))
+                else:
+                    name = tool[5:].replace("__", ": ") if tool.startswith("mcp__") else tool or "?"
+                    out.setdefault((where, "tool"), []).append(name + (" · " + rc if rc else ""))
+        elif kind == "setMode" and s.get("mode") in ALWAYS_MODES:
+            out.setdefault((where, "mode"), []).append(s["mode"])
+        elif kind == "addDirectories" and isinstance(s.get("directories"), list) and s["directories"]:
+            out.setdefault((where, "dir"), []).extend(_rel(d, cwd) for d in _same_place([str(d) for d in s["directories"]]))
+        else:
+            out.setdefault((where, "other"), []).append(str(kind or "?"))
+    return [(where, kind, _same_place(items)) for (where, kind), items in out.items()]
+
+
+def always_text(suggestions, cwd=None):
+    """The same in the owner's words (HTML): «“Always” will allow: the commands npm test …, git commit … — in this
+    project, for good». "" — nothing to say."""
+    facts = always_facts(suggestions, cwd)
+    if not facts:
+        return ""
+    code = lambda items, n=4: ", ".join("<code>%s</code>" % esc(short(x, 60)) for x in items[:n]) + (" …" if len(items) > n else "")
+    by_place = {}
+    for where, kind, items in facts:
+        if kind == "mode":
+            said = ", ".join(T("always.mode." + m) if ("always.mode." + m) in I.S else T("always.mode", m=esc(m)) for m in items)
+        elif kind == "other":
+            said = T("always.other", list=esc(", ".join(items)))
+        elif kind == "tool":
+            said = T("always.tool", list=esc(", ".join(short(x, 60) for x in items[:4])))
+        else:
+            said = T("always.%s%s" % (kind, ".1" if len(items) == 1 and kind in ("cmd", "dir") else ""), list=code(items))
+        by_place.setdefault(where, []).append(said)
+    parts = [", ".join(said) + (" — " + T("always.at." + where) if where else "") for where, said in by_place.items()]
+    return T("always.will", what="; ".join(parts))
+
+
 # Claude's advice among a question's options: "(Recommended)" at the end of the label, as AskUserQuestion asks, or the
 # session's own language for it — "(Рекомендую)", "(Рекомендуется)", "(Рекоменд.)" (the probe of 2026-10-26)
 ADVICE_RE = re.compile(r"\((?:recommended|recommend|рекомендую|рекомендуется|рекомендовано|рекоменд\.?)\)", re.I)

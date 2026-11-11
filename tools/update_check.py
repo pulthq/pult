@@ -40,7 +40,7 @@ def stand(state, restart=None):
     for _ in range(120):
         text = out.read_text() if out.exists() else ""
         if "\nHOME " in "\n" + text and "SETTINGS " in text:
-            return p, dict(ln.split(" ", 1) for ln in text.splitlines() if ln[:5] in ("HOME ", "SETTI"))
+            return p, dict(ln.split(" ", 1) for ln in text.splitlines() if ln[:5] in ("HOME ", "SETTI", "SETP "))
         time.sleep(0.25)
     _cdp.stop(p)
     raise RuntimeError("the stand didn't come up (%s)" % state)
@@ -129,14 +129,14 @@ async def main():
                     if want is None:
                         verdict("ok: no line on Home", line is None, line)
                         await open_("about:blank")         # the Settings link differs from Home's only after #
-                        await open_(urls["SETTINGS"])
+                        await open_(urls["SETP"])
                     else:
                         verdict("%s: Home's line" % state, want in (line or "") and
                                 (("attn" in cls) if state in ("busy", "wait") else ("bad" in cls) if state == "fail" else True),
                                 line, cls)
                         await shot("home-" + state)
                         await js(row + ".click()")
-                        verdict("%s: the line leads to Settings" % state, await until("location.hash === '#/settings'"))
+                        verdict("%s: the line leads to Pult's parts in Settings" % state, await until("location.hash === '#/settings/parts'"))
                     got = await until(card + " && " + card + ".className.includes('upd-s-')")
                     cls = await js(card + " && " + card + ".className")
                     verdict("%s: Settings shows the Pult block" % state, got and ("upd-s-" + state) in (cls or ""), cls)
@@ -185,7 +185,7 @@ async def main():
                 proc, urls = stand("ready", restart=mode)
                 try:
                     await open_("about:blank")
-                    await open_(urls["SETTINGS"])
+                    await open_(urls["SETP"])
                     ready = await until(card + " && " + card + ".className.includes('upd-s-ready')")
                     await asyncio.sleep(0.6)             # a person's tap comes after the screen has settled, not in its frame
                     await js("window.__alerts = []; window.alert = (s) => window.__alerts.push(String(s))")

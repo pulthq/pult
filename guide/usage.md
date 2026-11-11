@@ -12,7 +12,11 @@ phone — on Claude's models or another vendor's, and another model can check wh
   so far), then what waits for you — permission requests to answer right there, and every session that ended, with
   ready replies taken from Claude's own message — then every project with its colour. A finished task stays there,
   a plain report too, until you tap **Reviewed** (on the card, or under the outcome in the session) or answer it:
-  opening it doesn't put it away, so nothing finished slips by unchecked. Each state has its colour: what runs is
+  opening it doesn't put it away, so nothing finished slips by unchecked. What a tap decides can be taken back: an
+  option of a question, **Allow** and **Deny** go three seconds later, with **Undo** beside them; **Reviewed** leaves a
+  note at the bottom — **Bring back** — for five seconds; **Stop** asks before it stops a turn. Under **Always allow**
+  the card says what it would allow and where — "the commands `npm test …` — in this project, for good", "edits of
+  files without asking — until the task ends". Each state has its colour: what runs is
   green, what waits for you warm — the whole card, a failed one red — and history plain, each row with a grey tick
   of a task you reviewed; a project's screen shows them the same way.
 - **Pinned projects**: slide a project's row to the left on the Projects screen and tap Pin, or tap the pin in a
@@ -30,16 +34,16 @@ phone — on Claude's models or another vendor's, and another model can check wh
   field. Pick the model and how hard Claude thinks for that session; a running one switches at once. The models carry
   the versions the session's own Claude Code gives them — "Fable 5.2", "Opus 5.5" — so a VS Code tab on an older Claude
   Code may say "Fable 5.1"; **Other versions** under the menu keeps a session on an older one, as Claude Code's own menu
-  does. Settings → Model and effort sets what sessions from the app and Telegram start with; VS Code tabs
+  does. Settings → Models and keys → Model and effort sets what sessions from the app and Telegram start with; VS Code tabs
   keep their own settings.
-- **Tags**: every task gets two — the section of the project it belongs to and the topic in it — from the same small
+- **Tags**: every task gets two — the section of the project it belongs to and the subsection in it — from the same small
   model that writes the result line, as soon as its request is in and again when its turn ends; turn it on in
-  Settings → A plain line for each result (it is off at first). The folders and files are only the model's hint: there
-  is nothing else to set up. Tap a section on top of a project's screen to see only its tasks (and its topics); tap the
-  tags under a task's title to correct them — your choice stays. `#topic` in a request sets it at once, even with the
+  Settings → Models and keys → One-line result and tags (it is off at first). The folders and files are only the model's hint: there
+  is nothing else to set up. Tap a section on top of a project's screen to see only its tasks (and its subsections); tap the
+  tags under a task's title to correct them — your choice stays. `#tag` in a request sets it at once, even with the
   switch off. In Telegram each result ends with them as hashtags — `#firmware #filament_sensor`: a tap shows every
-  message with one (Settings → Hashtags in Telegram). The tag button beside a project's sections opens all its tags,
-  the busiest first, each with how many tasks have it: rename a section or a topic, give a section its colour, merge
+  message with one (Settings → Notifications → Hashtags in Telegram). The tag button beside a project's sections opens all its tags,
+  the busiest first, each with how many tasks have it: rename a section or a subsection, give a section its colour, merge
   two into one, hide one (the tasks keep it; rows, the filter and Telegram don't show it — bring it back at the bottom
   of the screen). A tag Claude has just made is dashed until you keep it or merge it into another. Claude looks the
   list over too and offers to merge two tags that name the same thing; **Keep both**, and it won't offer them again.
@@ -66,6 +70,8 @@ phone — on Claude's models or another vendor's, and another model can check wh
 - **A new project**: a folder anywhere in your home folder — empty with git, with a `CLAUDE.md` that Claude writes
   from your description, or a clone of a repository. Its topic appears in the group at once.
 
+- **Settings** is a menu of five screens — Notifications, Models and keys, Voice and language, Pult and its parts,
+  Security — and each row says what is set there now.
 - **Pult itself**: Settings → Pult and its parts — the computer, the app and the relay on your server, this phone's
   copy, the VS Code tabs, the hooks, Claude Code and the release, each with what it runs and how far it is behind the
   branch Pult was installed from. A new release installs from there with one tap (macOS, Linux; a clone finds releases
@@ -89,9 +95,9 @@ and another check it — from the phone.
   the project its model back. New task's **Who does it** shows the project's model and leads to its settings; the model
   field lists that model's own models (and Codex's levels of effort). DeepSeek, GLM and Kimi run inside Claude Code —
   they answer its own protocol at an address of theirs — with your key: the turns, the cards, the outcome and the topic
-  work as with Claude. Put a key in Settings → Other vendors — it is checked with one tiny request and stays on the
+  work as with Claude. Put a key in Settings → Models and keys — it is checked with one tiny request and stays on the
   computer — and its models are a list there: a tick puts a model in a task's menu, the star makes it the main one,
-  **Helpers** names the one subagents run on; a model Pult doesn't list yet is added by its name. Settings → Other vendors → **The model of new projects** is what a project made in the app gets (its form
+  **Helpers** names the one subagents run on; a model Pult doesn't list yet is added by its name. Settings → Models and keys → **The model of new projects** is what a project made in the app gets (its form
   can pick another). A model without its key, or your own one turned off, can't take the project's task — Claude
   never takes it in its place. A vendor's session doesn't show in VS Code's list. Anthropic doesn't support this, and
   Claude Code's prompts are written for Claude: for the cheaper tasks, not the hard ones.
@@ -107,7 +113,7 @@ and another check it — from the phone.
   you switch it on in the project — otherwise their result line is the first sentence of the answer, and their tags are
   yours to set. A task begun before goes on as it was.
 - **A model of your own**: a project's model can be **Local model** too — Ollama on this computer, or on another one
-  through a tunnel you keep open (Pult reaches only this computer's own address). Settings → Other vendors → Local model →
+  through a tunnel you keep open (Pult reaches only this computer's own address). Settings → Models and keys → Local model →
   **Check and turn on** asks the server what it has: a model fits when it can use tools and its context is set to 16K
   or more (`PARAMETER num_ctx` in its Modelfile) — Ollama cuts a longer request silently, so a model without it isn't
   taken. Once on, it has a tab of its own — **Resources → Local model** (Settings' card opens it): the server's models
@@ -179,6 +185,8 @@ a call about something that ended while the app was on your screen waits five mi
 comes only if it still waits; a question or a permission you haven't answered is called about again after 30 minutes
 and after 2 hours; from 23:00 to 8:00 everything comes without sound, except security alerts; and once a day, at 9:00,
 one message in General sums up what waits for you, by project. All four are in the app: Settings → Notifications.
+The **Computer** mode, which keeps Telegram silent, ends by itself in the morning — at the hour the quiet hours end,
+8:00 without them — and is Auto again; Home says until when.
 
 | | |
 |---|---|
@@ -186,7 +194,7 @@ one message in General sums up what waits for you, by project. All four are in t
 | text in a topic | the topic's current session (🎯 in the pinned card); none — the only open one, else Pult asks once |
 | `/new text`, or `/new` then the text | a new session in this project |
 | files, photos, an album | land in the project's `inbox/<date>/` under their own names; files without words wait for your next message |
-| a voice message | becomes text (with a free Groq key, `pult stt`) |
+| a voice message | becomes text (with a free Groq key, `pult stt`); a quiet line under it says what was heard |
 | `/desk` `/phone` `/auto` `/mode` | where you are: silent at the computer, always sound, or sound after 2 minutes away |
 | `/status`, `/projects`, `/sessions` | what's open now; projects; recent sessions of this project |
 | `/stop` | interrupt the topic's current session started from Telegram |
@@ -221,7 +229,7 @@ code to Telegram the same way as Claude's turns.
 - **The relay** stores nothing and stops strangers by Telegram's signature and your ID; the computer checks every
   login again with the bot token, which never leaves it. The page runs scripts only from your server and Telegram.
 - **Alerts** with sound on an app login from a new network and on signs that someone else holds the bot token;
-  Settings → Logins in the app logs every window out. A link whose words hide its address shows its domain.
+  Settings → Security in the app logs every window out. A link whose words hide its address shows its domain.
 - **Other vendors:** a project's code reaches OpenAI only in a project whose model you made Codex — its tasks run in a
   sandbox of the project's folder, and leaving it is asked — or with a second opinion you ask for, once you allowed that
   project; a review reads in a read-only sandbox. Both with your own ChatGPT sign-in; Pult gives Codex none of its keys,

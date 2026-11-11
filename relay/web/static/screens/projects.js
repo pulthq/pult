@@ -12,6 +12,7 @@ import { Req, TagPick, useRcpt } from "../ui/cards.js";
 import { ChoicePick, CodexCols, GEAR, Loading, SwipeRow, agoShort, avatar, choiceText, codexModel, dot, dotted, dur, effortName, ic, keyTap, plainField, sendKey, tagChips, tagJob, tagSt, useNow } from "../ui/kit.js";
 import { BgSheet } from "../ui/load.js";
 import { Attach, Thumbs, useAttach } from "../ui/pics.js";
+import { isAway, useAway } from "../ui/undo.js";
 
 
 // every project in one list, in the same grammar as the board: who waits, who works, the latest outcome; quiet ones last;
@@ -88,7 +89,8 @@ function Project({ pkey, tag, topic }) {
   const [openBg, closeBg] = useOverlay(!!bgFor, (v) => { if (!v) setBgFor(null); });
   const [tagFor, setTagFor] = useState(null);           // a task's tags from its row's slide (stage Zh, step 2): {sid, info}
   const [openTag, closeTag] = useOverlay(!!tagFor, (v) => { if (!v) setTagFor(null); });
-  const yours = useRcpt(d ? moves(d.pending, d.mine) : [], moveKey);           // as on Home: one line by time
+  useAway();
+  const yours = useRcpt(d ? moves(d.pending, d.mine.filter((r) => !isAway(r.sid))) : [], moveKey);           // as on Home: one line by time
   if (!d) return html`<${Loading} err=${err}/>`;
   const onBg = (s) => { setBgFor(s.sid); openBg(); };
   const onTags = (sid) => api("taginfo", { sid }).then((info) => { setTagFor({ sid, info }); openTag(); }).catch((e) => alertBox(e.message));

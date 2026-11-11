@@ -24,9 +24,11 @@ import { EditHost, ViewHost } from "./ui/pics.js";
 // a short note at the bottom of the screen for a moment — an answer went — outliving the card it came from
 function Toast() {
   const [m, setM] = useState(null);
-  useEffect(() => on("toast", (text) => setM({ text, k: Date.now() })), []);
-  useEffect(() => { if (!m) return undefined; const id = setTimeout(() => setM(null), 1800); return () => clearTimeout(id); }, [m]);
-  return m ? html`<div class="toast" role="status" key=${m.k}>${m.text}</div>` : "";
+  // plain words, or {text, ms, label, on} — a note with one thing to tap for as long as it can still be taken back
+  useEffect(() => on("toast", (x) => setM(Object.assign({ k: Date.now() }, typeof x === "string" ? { text: x } : x))), []);
+  useEffect(() => { if (!m) return undefined; const id = setTimeout(() => setM(null), m.ms || 1800); return () => clearTimeout(id); }, [m]);
+  return m ? html`<div class=${"toast" + (m.on ? " act" : "")} role="status" key=${m.k}><span>${m.text}</span>${m.on
+    ? html`<button class="link" onClick=${() => { m.on(); setM(null); }}>${m.label}</button>` : ""}</div>` : "";
 }
 
 function Banner() {
@@ -66,10 +68,13 @@ function App() {
     : r.name === "load" ? html`<${Load}/>`
     : r.name === "local" ? html`<${LocalPanel}/>`
     : r.name === "lm" ? html`<${LocalModel} key=${r.id} name=${r.id}/>`
-    : r.name === "settings" ? html`<${Settings}/>`
+    : r.name === "settings" ? html`<${Settings} key=${r.id || ""} at=${r.id}/>`
     : html`<${Home}/>`;
   // Home's tab carries how many tasks wait for your move — seen from every screen with the tabs (UX1)
-  const tab = (name, h, label, icon) => html`<a class=${(r.name === name ? "on" : "") + (name === "new" ? " new" : "")} href=${h}><span class="ti">${ic(icon, 22)}${name === "home" ? html`<${WaitBadge}/>` : ""}</span><span class="tl">${label}</span></a>`;
+  // a screen under a tab keeps the tab lit: a project, its settings and tags — Projects; the load and one's own
+  // model — Resources; Settings — Home, whose gear leads there (review 2026-11-11, UX17)
+  const under = { p: "projects", ps: "projects", tags: "projects", newproject: "projects", load: "usage", local: "usage", lm: "usage", settings: "home" }[r.name] || r.name;
+  const tab = (name, h, label, icon) => html`<a class=${(under === name ? "on" : "") + (name === "new" ? " new" : "")} href=${h}><span class="ti">${ic(icon, 22)}${name === "home" ? html`<${WaitBadge}/>` : ""}</span><span class="tl">${label}</span></a>`;
   return html`<${Banner}/><${MemoryStatus}/><main class=${r.name === "s" ? "with-composer" : ""}>${screen}</main>
     ${r.name !== "s" && html`<nav class="tabs">${tab("home", "#/", t("tab.home"), "home")}${tab("projects", "#/projects", t("tab.projects"), "folder")}${tab("usage", "#/usage", t("tab.res"), "gauge")}${tab("new", ["p", "tags", "ps"].includes(r.name) && r.id ? "#/new?pkey=" + encodeURIComponent(r.id) : "#/new", t("tab.new"), "plus")}</nav>`}
     <${EditHost}/><${ViewHost}/><${DiffHost}/><${FileHost}/><${Toast}/>`;

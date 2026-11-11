@@ -277,21 +277,22 @@ function useNow(every = 15000) {
 
 // where the owner is: it only changes the sound, messages always arrive
 const MODES = ["auto", "mac", "phone"];
-function ModePick({ mode, onSet, pager }) {
+function ModePick({ mode, onSet, pager, until }) {
   const pick = async (m) => {
     if (m === mode) return;
-    try { await api("prefs", { mode: m }); onSet(m); haptic("success"); } catch (e) { alertBox(e.message); }
+    try { const p = await api("prefs", { mode: m }); onSet(m, p && p.mode_until); haptic("success"); } catch (e) { alertBox(e.message); }
   };
   const cur = MODES.includes(mode) ? mode : "auto";
   return html`<div class="modes"><div class="seg">${MODES.map((k) =>
     html`<button key=${k} class=${k === cur ? "on" : ""} onClick=${() => pick(k)}>${ic({ auto: "auto", mac: "monitor", phone: "phone" }[k], 16)} ${t("mode." + k + ".btn")}</button>`)}</div>
-    <div class="dim small">${t("mode." + cur + (pager ? ".pager" : ".about"))}</div></div>`;
+    <div class="dim small">${t("mode." + cur + (pager ? ".pager" : ".about"))}${cur === "mac" && until ? " " + t("mode.mac.until", { hm: hhmm(toDate(until)) }) : ""}</div></div>`;
 }
 
 // one line-icon set for the whole app (stroke, 24 grid): the same meaning — the same picture on every screen
 const IC = {
   diff: '<path d="M12 4v8M8 8h8M8 18h8"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
+  bell: '<path d="M6 9a6 6 0 0 1 12 0c0 6 2.5 7.5 2.5 7.5h-17S6 15 6 9"/><path d="M10 20a2.2 2.2 0 0 0 4 0"/>',
   checks: '<path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/>',
   shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/>',
   help: '<circle cx="12" cy="12" r="9.5"/><path d="M9.2 9.2a3 3 0 0 1 5.7 1.1c0 2-2.9 2.7-2.9 2.7"/><path d="M12 17h.01"/>',

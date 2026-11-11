@@ -63,6 +63,7 @@ CHECKS = {
     "ctx": ({"STAND_VENDORS": "1", "STAND_HOMES": "1", "STAND_REPORT": "1", "STAND_CTX": "1", "STAND_LANG": "ru"}, "out", []),   # the context's line (Q151)
     "paste": ({"STAND_HOMES": "1", "STAND_LANG": "ru"}, "out", []),      # a screenshot by ⌘V or a drag (Q127)
     "helpers": ({"STAND_HELPERS": "1", "STAND_LANG": "ru"}, "out", []),  # helpers in the background, seen mid-turn (Q128)
+    "settings": ({"STAND_VENDORS": "1", "STAND_HOMES": "1", "STAND_UPD": "ready", "STAND_PARTS": "lag", "STAND_LANG": "ru"}, "out", []),   # block 4: Settings as a menu
     "projset": ({"STAND_VENDORS": "1", "STAND_HOMES": "1", "STAND_REPORT": "1", "STAND_DESK": "deepseek", "STAND_LANG": "ru"}, "out", []),   # 7.2
     "parts": None,
     "update": None,

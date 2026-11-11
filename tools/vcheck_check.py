@@ -38,7 +38,7 @@ def stand(parts, lang="ru"):
     for _ in range(120):
         text = out.read_text() if out.exists() else ""
         if "\nHOME " in "\n" + text and "SETTINGS " in text:
-            return p, dict(ln.split(" ", 1) for ln in text.splitlines() if ln[:5] in ("HOME ", "SETTI"))
+            return p, dict(ln.split(" ", 1) for ln in text.splitlines() if ln[:5] in ("HOME ", "SETTI", "SETP "))
         time.sleep(0.25)
     _cdp.stop(p)
     raise RuntimeError("the stand didn't come up (%s)" % parts)
@@ -115,7 +115,7 @@ async def main():
             again = row + "?.querySelector('.part-x .btn')"
 
             async def settings(urls):
-                await open_(urls["SETTINGS"])
+                await open_(urls["SETP"])
                 ok = await until("document.querySelectorAll('.part').length >= 5", 150)
                 if ok and not await js(row + "?.classList.contains('open')"):
                     await tap_at(row + "?.querySelector('.part-r')")

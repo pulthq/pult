@@ -43,7 +43,7 @@ def stand(parts, lang="ru", upd=None):
     for _ in range(120):
         text = out.read_text() if out.exists() else ""
         if "\nHOME " in "\n" + text and "SETTINGS " in text:
-            return p, dict(ln.split(" ", 1) for ln in text.splitlines() if ln[:5] in ("HOME ", "SETTI"))
+            return p, dict(ln.split(" ", 1) for ln in text.splitlines() if ln[:5] in ("HOME ", "SETTI", "SETP "))
         time.sleep(0.25)
     _cdp.stop(p)
     raise RuntimeError("the stand didn't come up (%s)" % parts)
@@ -121,7 +121,7 @@ async def main():
 
             async def settings(urls):
                 await open_("about:blank")
-                await open_(urls["SETTINGS"])
+                await open_(urls["SETP"])
                 return await until("document.querySelectorAll('.part').length >= 5")
 
             async def home(urls):
@@ -143,7 +143,7 @@ async def main():
                 line, _ = await home(urls)
                 verdict("now: no line on Home", line is None, line)
                 verdict("now: the table", await settings(urls))
-                verdict("now: all as in main, one worth a look", "Всё как в main" in (await js(head) or "")
+                verdict("now: all up to date, one worth a look", "Всё обновлено" in (await js(head) or "")
                         and "на заметку: 1" in (await js(head) or ""), await js(head))
                 verdict("now: eight rows, the phone among them", await js("document.querySelectorAll('.part').length") == 8
                         and await chip("phone") == "свежая", await chip("phone"))
@@ -294,13 +294,13 @@ async def main():
                 os.utime(TOUCH, (time.time(), time.time() + 120))
                 await js("location.hash = '#/'")
                 await asyncio.sleep(0.5)
-                await js("location.hash = '#/settings'")                 # Settings asks the server again
+                await js("location.hash = '#/settings/parts'")                 # Settings asks the server again
                 verdict("phone: a newer copy on the server", await until(row("phone") + "?.querySelector('.pchip')?.textContent === 'есть новее'"),
                         await chip("phone"))
                 await js("location.hash = '#/'")
                 verdict("phone: Home — update the phone", await until("(document.querySelector('.upd-row')?.textContent || '').includes('Обновить: телефон')"),
                         await js("document.querySelector('.upd-row')?.textContent || null"))
-                await js("location.hash = '#/settings'")
+                await js("location.hash = '#/settings/parts'")
                 await until("document.querySelectorAll('.part').length >= 5")
                 text = await more("phone") if await tap_row("phone") else ""
                 verdict("phone: which copy, which the server has, the button", "Обновить приложение" in text, text[:120])
@@ -315,7 +315,7 @@ async def main():
                 os.utime(TOUCH, (time.time(), time.time() + 240))
                 await js("location.hash = '#/'")
                 await asyncio.sleep(0.5)
-                await js("location.hash = '#/settings'")
+                await js("location.hash = '#/settings/parts'")
                 verdict("phone: with nothing typed it reloads by itself", await until("window.__before_reload === undefined", 250))
                 verdict("phone: and the copy is current", await until("document.querySelectorAll('.part').length >= 5", 150)
                         and await until(row("phone") + "?.querySelector('.pchip')?.textContent === 'свежая'"), await chip("phone"))

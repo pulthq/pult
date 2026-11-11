@@ -99,7 +99,7 @@ class Api:
         for x in pending:                            # which model asks: a question's card says it too (Q108), and how
             x["ctx"], x["llm"] = await self.row_stats(x["sid"])      # full its context is — along its bottom edge (Q151)
             x["work"] = self.work_total(x["sid"])     # and the task's clock, stopped while it waits
-        return {"mac": {"idle": idle, "away": await self.away(), "mode": self.mode()}, "now": time.time(),
+        return {"mac": {"idle": idle, "away": await self.away(), "mode": self.mode(), "until": self.prefs()["mode_until"]}, "now": time.time(),
                 "lang": self.lang(), "load": self.load_sum(load[2], load[3]) if load else None,
                 # a session may end while this waited for the process snapshot (SessionEnd drops it): it is just gone
                 # from the list — before, Home failed with KeyError until the next event (review 2026-10-27, A1)
@@ -111,6 +111,15 @@ class Api:
     async def api_seen(self, sid):
         """"Got it" on a card of "Your move": the outcome is seen without opening the session."""
         self.mark_seen(sid)
+        return {"ok": True}
+
+    async def api_unseen(self, sid):
+        """"Bring back" in the app's note right after "Got it": the outcome waits in "Your move" again. A call about
+        it in Telegram, folded by "Got it", stays folded — the owner is looking at the card."""
+        if not self.attn.unseen(sid):
+            return {"ok": False, "note": self.t("note.unseen_late")}
+        log("outcome %s: brought back to «your move»" % sid[:8])
+        self.changed(sid)
         return {"ok": True}
 
     def live_item(self, lv):
@@ -133,6 +142,8 @@ class Api:
         d = {"rid": req.rid, "sid": req.sid, "kind": req.kind, "tool": req.tool, "title": self.title(lv),
              "project": self.project_label(lv.pkey), "suggest": bool(req.suggestions), "since": req.ts,
              "work": self.work_total(req.sid), "who": "codex" if self.store.vendor_of(req.sid) == "codex" else None}
+        if req.suggestions and not d["who"]:
+            d["always"] = R.always_text(req.suggestions, lv.cwd)       # what "always" would allow, in words (UX7)
         if req.kind == "ask":
             d["questions"] = req.inp.get("questions") or []
             d["chosen"] = {str(i): v for i, v in req.chosen.items()}
@@ -267,7 +278,7 @@ class Api:
             return bool(r and r["ts"] == e[0] and A.waiting(r))
         lines = []
         for pkey, e in sorted(last.items(), key=lambda x: -x[1][0])[:4]:
-            lines.append({"pkey": pkey, "name": self.name_of(pkey), "line": e[3], "you": waits(e), "fail": e[5]})
+            lines.append({"pkey": pkey, "sid": e[2], "name": self.name_of(pkey), "line": e[3], "you": waits(e), "fail": e[5]})
         return {"from": self.catch_from, "turns": len(es), "projects": len(last),
                 "done": sum(1 for e in es if not e[5] and not waits(e)), "lines": lines,
                 "mine": sum(1 for r in self.attn.rec.values() if A.waiting(r))}
@@ -3133,7 +3144,7 @@ class Api:
         return {"version": self.D.VERSION, "prefs": dict(self.prefs(), lang=self.lang(), pager=self.pager()), "hooks": sorted(hooks),
                 "gh": {"release": release, "at": self.gh["at"], "ok": self.gh["ok"]},
                 "hooks_missing": [e for e in pult_hook.EVENTS if e not in hooks] if hooks else [],
-                "mac": {"idle": idle, "away": await self.away(), "mode": self.mode()},
+                "mac": {"idle": idle, "away": await self.away(), "mode": self.mode(), "until": self.prefs()["mode_until"]},
                 "telegram": "proxy" if len(self.tg.clients) > 1 and self.tg.cur == 0 else "direct",
                 "stt": self.stt_state(), "cc": self.cc_choice(), "vendors": self.vendors_list(), "vendor_all": self.vendor_all(),
                 "codex": self.codex_view(), "cc_models": self.cc_models_view(self.app_cc_version()),
@@ -3160,6 +3171,7 @@ class Api:
         self.store.put("prefs", cur)
         if "mode" in kw:
             await self.set_mode(cur["mode"])
+            cur = self.prefs()                            # with the hour "Computer" holds until
         log("settings from the app:", cur)
         return cur
 
