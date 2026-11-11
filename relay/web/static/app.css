@@ -611,6 +611,36 @@ table.tv th { color: var(--muted); font-weight: 500; }
 /* the turn's files (stage F4): a line in the outcome, and their screen — ticks, "as one archive", the button under the thumb */
 .tfline { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 8px; padding-top: 8px;
   border-top: 1px solid var(--line); color: var(--link); text-decoration: none; font-weight: 600; }
+/* what a task changed (review 2026-11-11, block 5): the line under its outcome, the list of files, one file's change line
+   by line. Added and removed are told by the sign as well as by the colour */
+.chg-n { font: 600 var(--fs-cap)/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
+.pl { color: var(--ok); } .mi { color: var(--danger); }
+.chgline .chg-n { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sec); }
+.chg-h { margin-bottom: 12px; } .chg-h h2 { margin-bottom: 2px; }
+.chg-h a { display: block; text-decoration: none; overflow-wrap: anywhere; } .chg-h .small { margin-top: 4px; }
+.chg-h .sep { margin: 0 6px; }
+.chg-row { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 48px; padding: 10px 14px; border: 0;
+  border-bottom: 1px solid var(--line); background: none; color: var(--ink); font-size: var(--fs-body); text-align: left; cursor: pointer; }
+.chg-row:last-child { border-bottom: 0; }
+.chg-row.lock { opacity: .55; cursor: default; }
+.chg-p { flex: 1; min-width: 0; overflow-wrap: anywhere; } .chg-p b { font-weight: 600; }
+.chg-p .dim { font-size: var(--fs-sec); } .chg-was { display: block; }
+.chg-r { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 1px; font-size: var(--fs-cap); }
+.chg-more { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; margin: 14px 0 8px;
+  padding: 10px 14px; border: 0; border-radius: var(--r); background: var(--card); color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
+.chg-more b { display: block; font-weight: 600; } .chg-more .small { display: block; margin-top: 2px; }
+.chg-more .chev { flex: none; color: var(--muted); transition: transform .15s; } .chg-more .chev.open { transform: rotate(90deg); }
+.chg-cut { text-align: center; }
+.df-code { font: var(--fs-cap)/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--card); border-radius: 12px; padding: 8px 0; }
+.dl { display: flex; padding-right: 10px; }
+.dl .n { flex: none; width: 3.4em; padding-right: 6px; text-align: right; color: var(--muted); opacity: .7; user-select: none; -webkit-user-select: none; }
+.dl .s { flex: none; width: 1.1em; text-align: center; font-weight: 700; user-select: none; -webkit-user-select: none; }
+.dl .c { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.dl.a { background: color-mix(in srgb, var(--ok) 15%, transparent); } .dl.a .s { color: var(--ok); }
+.dl.d { background: color-mix(in srgb, var(--danger) 13%, transparent); } .dl.d .s { color: var(--danger); }
+.dl.hit { box-shadow: inset 3px 0 0 var(--attn); } .dl.k.hit { background: var(--attn-soft); }
+.dl.gap { justify-content: center; margin: 4px 0; padding: 5px 10px; background: var(--code); color: var(--muted);
+  font: var(--fs-cap)/1.4 -apple-system, "Segoe UI", Roboto, sans-serif; }
 .tf-nav { display: flex; align-items: center; gap: 8px; margin: 6px 0 12px; }
 .tf-nav .nv { flex: none; width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line); background: var(--card);
   color: var(--ink); font-size: 22px; line-height: 1; cursor: pointer; }

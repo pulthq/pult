@@ -290,6 +290,7 @@ function ModePick({ mode, onSet, pager }) {
 
 // one line-icon set for the whole app (stroke, 24 grid): the same meaning — the same picture on every screen
 const IC = {
+  diff: '<path d="M12 4v8M8 8h8M8 18h8"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   checks: '<path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/>',
   shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/>',

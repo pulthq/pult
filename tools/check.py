@@ -46,6 +46,7 @@ CHECKS = {
     "pins": ({"STAND_TAGS": "1", "STAND_HOMES": "1", "STAND_PINS": "blog,shop", "STAND_HIDES": "desk", "STAND_LANG": "ru"}, "out", []),   # stage Zh
     "msgcopy": ({"STAND_LANG": "ru"}, "out", []),                  # stage Zh, step 3: a slide copies Claude's message
     "second": ({"STAND_SECOND": "1", "STAND_LANG": "ru"}, "out", []),   # stage M, step 1: Codex's second opinion
+    "changes": ({"STAND_SECOND": "allowed", "STAND_CHANGES": "1", "STAND_LANG": "ru"}, "out", []),   # block 5: what a task changed
     "codexerrors": ({"STAND_SECOND": "allowed", "STAND_SECOND_FAIL": "serverOverloaded", "STAND_LANG": "ru"}, "out", []),
     "vendors": ({"STAND_VENDORS": "1", "STAND_HOMES": "1", "STAND_LANG": "ru"}, "out", []),   # stage M, step 2
     "local": ({"STAND_LOCAL": "1", "STAND_HOMES": "1", "STAND_LANG": "ru"}, "out", []),   # stage M, step 6: one's own model

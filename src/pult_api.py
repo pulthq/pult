@@ -25,6 +25,7 @@ import uuid
 from pathlib import Path
 
 import pult_attn as A
+import pult_changes as CH
 import pult_codex as CX
 from pult_driven import MAX_RUNNING   # turns at once — pult_driven's
 import pult_files as F
@@ -1081,6 +1082,8 @@ class Api:
         await self.work_ready(sid, path)
         if outcome:
             outcome["work"] = self.work_total(sid)       # the task's clock, stopped: all its work so far
+            # what the task changed, counted from git: the line "Changes: N files +a −b" under the outcome (block 5)
+            outcome["changes"] = await self.changes_brief(sid, rec.get("ts"))
         live = self.live_item(lv)
         # open on the computer without Pult's wrapper: a message from here goes as a copy — the app says so up front
         seen = sid in self.live and not lv.driven and lv.turn is not None
@@ -2837,6 +2840,119 @@ class Api:
         if "data" in got:
             got["data"] = base64.b64encode(got["data"]).decode()
         return dict(head, **got)
+
+    # ----- what a task changed, from git (review 2026-11-11, block 5: the view alone) -----
+
+    async def changes_facts(self, sid):
+        """What a task's changes are counted from: (its project's folder, when it began, the files known as its own —
+        the ones its edit tools wrote and its turns made or changed, as paths from the folder). The folder is None when
+        Pult doesn't know the session's project or the folder is gone; the start is None for a task without a
+        transcript. The transcript is read again only once it has grown."""
+        if not self.D.SID_RE.fullmatch(sid or ""):
+            raise ValueError(self.t("send.err.session"))
+        project = self.session_project(sid)[1]
+        if not project:
+            return None, None, []
+        try:
+            path = self.transcript_of(sid)[0]
+            st = os.stat(path)
+        except (ValueError, OSError):
+            return project, None, []
+        key, memo = (st.st_size, st.st_mtime_ns), self.facts_memo.get(path)
+        if not memo or memo[0] != key:
+            facts = await asyncio.to_thread(CX.task_facts, path, project)
+            if len(self.facts_memo) >= 60:
+                self.facts_memo.clear()
+            memo = self.facts_memo[path] = (key, facts["t0"], [f for f in facts["files"] if not os.path.isabs(f)])
+        own = dict.fromkeys(memo[2] + [f.replace(os.sep, "/") for f in self.store.task_files(sid)])
+        return project, memo[1], list(own)
+
+    async def changes_read(self, sid):
+        """A task's changes, read from git now: CH.changed's answer, or None — no folder, no git, no task yet."""
+        project, t0, own = await self.changes_facts(sid)
+        if not project or t0 is None:
+            return None
+        return await asyncio.to_thread(CH.changed, project, t0, own)
+
+    def changes_keep(self, sid, key, got, took=0.0):
+        """What the line under a task's outcome says, kept: {n, add, del} of the task's own changed files — None when
+        it has none. A slow count is kept longer, so a huge folder isn't walked every CH.KEEP s."""
+        brief = got["mine"] if got and got["mine"]["n"] else None
+        if len(self.changes_memo) >= 60:
+            self.changes_memo.clear()
+        self.changes_memo[sid] = {"key": key, "brief": brief, "until": time.time() + max(CH.KEEP, 30 * took)}
+        return brief
+
+    async def changes_brief(self, sid, key):
+        """For a task's screen: the line of its changes, counted for this outcome (key — the outcome's time) not longer
+        than CH.KEEP s ago. A count slower than CH.WAIT doesn't hold the screen: it goes on, and the screen hears when
+        the line is there."""
+        memo = self.changes_memo.get(sid)
+        if memo and memo["key"] == key and time.time() < memo["until"]:
+            return memo["brief"]
+        task = self.changes_tasks.get(sid)
+        if not task:
+            task = self.changes_tasks[sid] = asyncio.create_task(self.changes_count(sid, key))
+        await asyncio.wait({task}, timeout=CH.WAIT)
+        memo = self.changes_memo.get(sid)
+        return memo["brief"] if memo else None
+
+    async def changes_count(self, sid, key):
+        t0, got = time.monotonic(), None
+        try:
+            got = await self.changes_read(sid)
+        except Exception as e:
+            log("changes %s: not counted — %r" % (sid[:8], e))
+        finally:
+            self.changes_tasks.pop(sid, None)
+        old, took = self.changes_memo.get(sid), time.monotonic() - t0
+        brief = self.changes_keep(sid, key, got, took)
+        if took > CH.WAIT:
+            log("changes %s: counted in %.1f s" % (sid[:8], took))
+            if not old or old["brief"] != brief:
+                self.changed(sid)                      # the screen went on without the line: now it is there
+
+    async def api_changes(self, sid):
+        """The screen "Changes" of a task: git — whether its folder (or a part of it) is in git at all; since — when
+        the task began; files — its own changed files, each {p, was, st, add, del, bin, new, lock}, with n, add and del
+        of them all; more — what else changed in the folder since then (commands, other sessions); cut — the list is
+        longer than what is here, total — how long."""
+        t0 = time.monotonic()
+        project, since, own = await self.changes_facts(sid)
+        got = await asyncio.to_thread(CH.changed, project, since, own) if project and since is not None else None
+        rec, row = self.attn.rec.get(sid), self.store.session(sid)
+        self.changes_keep(sid, rec.get("ts") if rec else None, got, time.monotonic() - t0)
+        pkey = self.session_project(sid)[0]
+        head = {"project": self.project_label(pkey) if pkey else "", "title": (row["title"] if row else None) or "",
+                "git": got is not None, "since": since}
+        if not got:
+            return dict(head, files=[], more=[], cut=False, total=0, n=0, add=0, **{"del": 0})
+        mine = [f for f in got["files"] if f["own"]]
+        log("app: changes of %s — %d of the task's files (+%d −%d), %d more in the folder, %.0f ms" % (
+            sid[:8], got["mine"]["n"], got["mine"]["add"], got["mine"]["del"], got["total"] - got["mine"]["n"],
+            (time.monotonic() - t0) * 1000))
+        return dict(head, files=mine, more=[f for f in got["files"] if not f["own"]],
+                    cut=got["total"] > len(got["files"]), total=got["total"], **got["mine"])
+
+    async def api_diff(self, sid, p="", full=False):
+        """One changed file of a task line by line (CH.diff): rows — [kind, its number before, its number now, the
+        line] with kind 0 kept, 1 added, 2 removed, 3 a gap of that many unchanged lines; cut — only the start is
+        here; full — the whole file was asked for. same — the file didn't change since the task began: the app opens
+        it as it is. here — the file is there to be opened whole. Like keys or settings — never shown."""
+        project, since, own = await self.changes_facts(sid)
+        if not project:
+            raise ValueError(self.t("send.err.session"))
+        p = str(p or "").replace("\\", "/").strip("/")
+        if not p or F.secret_like(p):
+            raise ValueError(self.t("show.err.secret" if p else "send.err.none"))
+        got = await asyncio.to_thread(CH.diff, project, since, p, own, bool(full)) if since is not None else {"same": True}
+        if got is None:
+            raise ValueError(self.t("chg.err.git"))
+        if got.get("lock"):
+            raise ValueError(self.t("show.err.secret"))
+        if not got.get("same"):
+            got["here"] = not F.why_not_show(os.path.join(project, *p.split("/")), project)
+        return dict(got, project=self.project_label(self.session_project(sid)[0]))
 
     # ----- voice: words from a recording (pult_stt) -----
 

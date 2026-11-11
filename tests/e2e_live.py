@@ -13,6 +13,7 @@ With Telegram as a pager: a task from the app makes no turn or result message; i
 A message from the app mid-turn reaches Claude in that turn, the app shows it as written mid-turn, its ticks say read.
 Stop from the app closes the interrupted turn, though Claude Code sends no Stop hook for it.
 A new project "with a description" (stage S): git, its topic by the title, a first turn that writes CLAUDE.md.
+What that task changed is counted from git: the file its Write made is among its own changes and opens line by line (block 5).
 A file made in a session goes to the project's topic with `pult send`, and the turn's outcome lists it (stage F).
 With the model on, a new task gets its section and topic as soon as its request is in, and again with the result (stage T);
 the first open of the project sorts its earlier tasks without tags, in a batch (T2).
@@ -420,6 +421,15 @@ async def main():
     log("новый проект: git", r8["git"], "· CLAUDE.md", md.exists() and md.stat().st_size, "· тема", topic8,
         "· сессия", p.live[r8["sid"]].title)
     assert md.exists() and (md.parent / ".git").is_dir() and topic8 == "Дача у моря", "the new project isn't complete"
+    # what the task changed (review 2026-11-11, block 5): counted from git — a repository made a moment ago has no
+    # commit yet, so from nothing; the file the task's own Write made is its own, and opens line by line
+    ch8 = (await p.api_session(r8["sid"]))["outcome"]["changes"]
+    list8 = await p.api_changes(r8["sid"])
+    diff8 = await p.api_diff(r8["sid"], "CLAUDE.md")
+    log("изменения задачи:", ch8, "· свои:", [f["p"] for f in list8["files"]], "· строк в правке:", len(diff8["rows"]))
+    assert ch8 and ch8["n"] >= 1 and ch8["add"] >= 1, "the task's changes aren't counted"
+    assert "CLAUDE.md" in [f["p"] for f in list8["files"]] and list8["git"], "the task's own file isn't among its changes"
+    assert diff8["rows"] and all(r[0] == 1 for r in diff8["rows"]), "the new file's lines aren't all added"
     # task tags (stage T): with the model on, a new task gets its section and topic from the model as soon as its
     # request is in, and the result line's call brings them again when its turn ends
     await p.api_prefs(brief=True)

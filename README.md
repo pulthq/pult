@@ -104,15 +104,16 @@ the model itself, with a way back to how it was.
 ### Another model checks it
 
 Under an outcome, **Second opinion · Codex**: OpenAI's agent, on your ChatGPT subscription, reads what the task
-changed — with your request and the report, so what was done on purpose isn't taken for a bug. A finding opens its
-file at the line; **Send to Claude** — or to DeepSeek, whoever did the task — hands them all back to it.
+changed — with your request and the report, so what was done on purpose isn't taken for a bug. A finding opens the
+change at its line; **Send to Claude** — or to DeepSeek, whoever did the task — hands them all back to it.
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="media/f-second.en.dark.png"><img src="media/f-second.en.png" width="330" alt="A second opinion in the app: under the outcome of a task done on Opus 5.5, Codex on GPT-5.6-Sol found two things in five seconds, each with its priority, its place in the project and what to do; the buttons Reviewed and Send to Claude"></picture></p>
 
 ### The whole session in your pocket
 
 The conversation live, the outcome with ready replies taken from the agent's own message, the model and the context
-by the field. Slide a message to copy it with its formatting.
+by the field. Slide a message to copy it with its formatting. Under the outcome — **Changes**: what the task changed,
+from git, file by file and line by line.
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="media/f-session.en.dark.png"><img src="media/f-session.en.png" width="330" alt="A session in the app: Claude's report, its question, the outcome card waiting for you with three ready replies and the turn's files"></picture></p>
 

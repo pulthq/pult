@@ -56,6 +56,13 @@ phone — on Claude's models or another vendor's, and another model can check wh
   From 85 % of the computer's memory a line at the top of every screen says so, red from 95 %; a tap opens Resources.
 - **Files of the turn**: what Claude made or changed in the project — tick the ones you need and send them to the
   topic, one by one or as one archive; earlier turns' files stay a swipe away.
+- **Changes**: under a task's outcome — **Changes: 4 files +120 −30** — what the task changed in its project, counted
+  from git since the commit the folder stood at when the task began: committed since or not, new files too. A tap
+  lists the task's own files — the ones its tools wrote and its turns touched; what else changed in the folder
+  meanwhile, by commands or by other tasks, is folded under them. A file opens its change line by line: removed lines
+  with **−**, added ones with **+**, the unchanged stretch between two pieces as a count; **Whole file** shows all of
+  it with the changes in place. Files that look like keys or settings are counted and never shown. It is a view:
+  nothing is committed or changed from here. A project that isn't in git has no such line.
 - **A new project**: a folder anywhere in your home folder — empty with git, with a `CLAUDE.md` that Claude writes
   from your description, or a clone of a repository. Its topic appears in the group at once.
 
@@ -151,7 +158,8 @@ and another check it — from the phone.
   since the commit the folder was on, new files too; without git: the files Claude's edits wrote), together with your
   request and Claude's report, so what was done on purpose isn't taken for a bug. It reads in a read-only sandbox and
   asks nothing; one at a time, usually a minute or two, and **Stop** ends it. The findings come as a card at the end
-  of the session, each with its place in the project — a tap opens the file at that line; **Send to Claude** puts
+  of the session, each with its place in the project — a tap opens the file's change at that line (the file as it is,
+  when the task didn't change it); **Send to Claude** puts
   them into the session as your message — the button names whoever did the task: **Send to DeepSeek** on DeepSeek's
   model — and **Reviewed** puts the card away. The first time in a project you're asked
   whether its code may go to OpenAI; the project's screen then says so, and **Disallow** takes it back. The button

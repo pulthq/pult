@@ -36,6 +36,7 @@ import httpx  # noqa: E402
 
 import pult_api  # noqa: E402
 import pult_attn as A  # noqa: E402
+import pult_changes as CH  # noqa: E402
 import pult_codex as CX  # noqa: E402
 import pult_vendors as V  # noqa: E402
 import pult_brief as B  # noqa: E402
@@ -4532,6 +4533,93 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             await until(lambda: any(m.get("method") == "turn/start" and "После перерыва" in json.dumps(m, ensure_ascii=False)
                                     for m in sent()))
 
+    async def test_changes(self):
+        # review 2026-11-11, block 5 (the view alone): under a task's outcome — "Changes: N files +a −b", counted from
+        # git since the commit the folder stood at when the task began; the list — the task's own files first, what
+        # else changed in the folder apart; one file line by line; nothing like keys is ever shown
+        proj, base, conf, log = self.second_project()
+        self.assertIn("changes", PW.CAPS)
+        view = lambda: self.p.api_session(SID)                                      # noqa: E731
+        self.assertIsNone((await view())["outcome"])                                # no outcome — nothing is counted
+        self.assertEqual(self.p.changes_memo, {})
+        rec = self.p.attn.finished(SID, PKEY, 60, "Добавил median.", "Добавил median.", waits=True, watched=True)
+        (proj / "notes.txt").write_text("a\nb\nc\n")                               # the task's turn made it: not in git yet
+        (proj / "other.py").write_text("y = 1\n")                                   # another session's, the same hours
+        (proj / ".env").write_text("TOKEN=1\n")
+        self.store.add_turn(SID, PKEY, rec["ts"] - 60, 60, [{"p": "notes.txt", "size": 6, "mt": rec["ts"]}], 1)
+        # the line: the task's own two files — the one its Edit wrote and the one its turn made
+        self.assertEqual((await view())["outcome"]["changes"], {"n": 2, "add": 5, "del": 2})
+        # counted once for the outcome, not at every look of the screen
+        with mock.patch.object(CH, "changed", side_effect=AssertionError("counted again")):
+            self.assertEqual((await view())["outcome"]["changes"], {"n": 2, "add": 5, "del": 2})
+        # the list
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            got = await self.p.api_changes(SID)
+        self.assertEqual((got["project"], got["title"], got["git"], got["cut"]), ("proj", "Медиана", True, False))
+        self.assertEqual((got["n"], got["add"], got["del"]), (2, 5, 2))
+        self.assertEqual([(f["p"], f["st"], f["add"], f["del"], bool(f.get("new"))) for f in got["files"]],
+                         [("notes.txt", "A", 3, 0, True), ("stats.py", "M", 2, 2, False)])
+        self.assertEqual([(f["p"], f["lock"]) for f in got["more"]], [(".env", True), ("CLAUDE.md", False), ("other.py", False)])
+        self.assertAlmostEqual(got["since"], time.time() - 3600, delta=5)
+        self.assertIn("app: changes of %s — 2 of the task's files (+5 −2), 3 more in the folder" % SID[:8], said.getvalue())
+        # one file line by line
+        d = await self.p.api_diff(SID, "stats.py")
+        self.assertEqual(d["rows"], [[2, 1, None, "def mean(xs):"], [2, 2, None, "    return sum(xs) / len(xs)"],
+                                     [1, None, 1, "def median(xs):"], [1, None, 2, "    return sorted(xs)[len(xs) // 2]"]])
+        self.assertEqual((d["p"], d["st"], d["cut"], d["full"], d["here"], d["project"]), ("stats.py", "M", False, False, True, "proj"))
+        self.assertEqual((await self.p.api_diff(SID, "notes.txt"))["rows"], [[1, None, 1, "a"], [1, None, 2, "b"], [1, None, 3, "c"]])
+        self.assertEqual((await self.p.api_diff(SID, "other.py"))["rows"], [[1, None, 1, "y = 1"]])        # the rest opens too
+        # a file that didn't change (a finding's place): the app opens it as it is
+        subprocess.run(["git", "-C", str(proj), "add", "CLAUDE.md"], check=True, capture_output=True)
+        self.assertEqual((await self.p.api_diff(SID, "nope.py")), {"same": True, "project": "proj"})
+        # like keys or settings — never, whatever is asked
+        for bad in (".env", "../../etc/passwd.pem", ""):
+            with self.assertRaises(ValueError):
+                await self.p.api_diff(SID, bad)
+        self.assertEqual((await self.p.api_diff(SID, "../" + proj.name + "/stats.py")), {"same": True, "project": "proj"})
+        with self.assertRaises(ValueError):
+            await self.p.api_diff("../x", "stats.py")
+        # the next outcome is counted anew; a commit of the task's work changes nothing — it is still since the task began
+        subprocess.run(["git", "-C", str(proj), "add", "-A"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(proj), "commit", "-qm", "the task's own"], check=True, capture_output=True)
+        rec = self.p.attn.finished(SID, PKEY, 60, "Готово.", "Готово.", waits=True, watched=True, now=time.time() + 1)
+        self.assertEqual((await view())["outcome"]["changes"], {"n": 2, "add": 5, "del": 2})
+        # a slow count doesn't hold the screen: it opens without the line, and hears when the line is there
+        real, heard = CH.changed, []
+        self.p.changed = lambda sid=None: heard.append(sid)
+
+        def slow(*a):
+            time.sleep(0.3)
+            return real(*a)
+        rec = self.p.attn.finished(SID, PKEY, 60, "Ещё.", "Ещё.", waits=True, watched=True, now=time.time() + 2)
+        with mock.patch.object(CH, "changed", slow), mock.patch.object(CH, "WAIT", 0.05), \
+                contextlib.redirect_stdout(io.StringIO()) as said:
+            # … with the line as it was a turn ago meanwhile, when there was one
+            self.assertEqual((await view())["outcome"]["changes"], {"n": 2, "add": 5, "del": 2})
+            await until(lambda: not self.p.changes_tasks)
+            self.assertEqual(heard, [])                                             # the same line: nothing to redraw
+            self.p.changes_memo.clear()
+            self.assertIsNone((await view())["outcome"]["changes"])
+            await until(lambda: SID in heard)
+        self.assertEqual((await view())["outcome"]["changes"], {"n": 2, "add": 5, "del": 2})
+        self.assertIn("changes %s: counted in 0." % SID[:8], said.getvalue())
+        # a task that changed nothing of its own has no line, whatever else changed in the folder
+        self.store.db.execute("DELETE FROM turns")
+        Path(TP).write_text(tline("user", "Что тут?", ago=3600) + "\n" + tline("assistant", "Вот что.", ago=200) + "\n")
+        (proj / "other.py").write_text("y = 2\n")
+        rec = self.p.attn.finished(SID, PKEY, 60, "Вот что.", "Вот что.", waits=True, watched=True, now=time.time() + 3)
+        self.assertIsNone((await view())["outcome"]["changes"])
+        got = await self.p.api_changes(SID)
+        self.assertEqual((got["n"], got["files"], [f["p"] for f in got["more"]]), (0, [], [".env", "CLAUDE.md", "notes.txt", "other.py", "stats.py"]))
+        # a folder that isn't in git: no line, and the screen says so
+        plain = TMP / "plain-changes"
+        plain.mkdir(exist_ok=True)
+        self.store.set_topic(PKEY, str(plain), "proj", 77)
+        rec = self.p.attn.finished(SID, PKEY, 60, "Вот.", "Вот.", waits=True, watched=True, now=time.time() + 4)
+        self.assertIsNone((await view())["outcome"]["changes"])
+        got = await self.p.api_changes(SID)
+        self.assertEqual((got["git"], got["files"], got["more"]), (False, [], []))
+
     async def test_second_opinion_nested_repos(self):
         # one big project whose parts are repositories of their own (2026-10-31): the folder's own history doesn't
         # show their changes, so Codex gets each part's, found by the files the task's turns made or changed
@@ -8894,6 +8982,165 @@ class VendorsTest(unittest.TestCase):
         with sp.lock:
             worked = set().union(*(sl.work for sl in sp.slots.values()))
         self.assertEqual(worked, {"a"})                                 # the DeepSeek session isn't Claude's work
+
+
+class ChangesTest(unittest.TestCase):
+    """What a task changed, from git (review 2026-11-11, block 5): the list of changed files and one file line by line."""
+
+    def repo(self, name):
+        now = time.time()
+        root = TMP / name
+        base = git_repo(root, now - 7200, {
+            "app/a.py": "".join("line %d\n" % i for i in range(1, 41)), "app/old name.txt": "keep\nthis\nfile\nas\nit\nis\n",
+            "app/pic.bin": "\0\1\2" * 100, "app/gone.txt": "gone\n", "app/.env": "KEY=1\n", "top.txt": "x\n", "app/a[1].txt": "one\n"})
+        return root, base, now
+
+    def test_changed(self):
+        root, base, now = self.repo("chg-list")
+        app = root / "app"
+        g = lambda *a: subprocess.run(["git", "-C", str(root), *a], check=True, capture_output=True)      # noqa: E731
+        lines = (app / "a.py").read_text().split("\n")
+        lines[1], lines[30] = "line two", "line thirty-one"
+        (app / "a.py").write_text("\n".join(lines))
+        g("mv", "app/old name.txt", "app/new name.txt")
+        (app / "new name.txt").write_text("keep\nthis\nfile\nas\nit\nis\nmore\n")
+        g("commit", "-qam", "the task's own commit")                                   # committed since — still a change
+        (app / "a.py").write_text("\n".join(lines) + "\nline 41")                      # … and more, not committed
+        (app / "pic.bin").write_bytes(b"\0\3" * 100)
+        (app / "gone.txt").unlink()
+        (app / "нов ый.txt").write_text("new\nfile\n")
+        (app / "big.txt").write_text("x\n" * 10)
+        (app / ".env").write_text("KEY=2\n")
+        (root / "top.txt").write_text("x\ny\n")
+        if os.name != "nt":
+            os.symlink("/etc/hosts", app / "link")
+        index = (root / ".git" / "index").stat().st_mtime_ns
+        # the project is a folder inside the repository: only that folder, paths from it; the task's own first
+        with mock.patch.object(CH, "NEW_FILE_MAX", 15):
+            got = CH.changed(str(app), now - 3600, ["нов ый.txt", "new name.txt"])
+        rows = {f["p"]: f for f in got["files"]}
+        self.assertEqual([f["p"] for f in got["files"]][:2], ["new name.txt", "нов ый.txt"])
+        self.assertEqual(got["mine"], {"n": 2, "add": 3, "del": 0})
+        self.assertEqual(got["total"], len(got["files"]))
+        self.assertNotIn("top.txt", rows)
+        self.assertEqual({k: rows["new name.txt"][k] for k in ("was", "st", "add", "del", "own")},
+                         {"was": "old name.txt", "st": "R", "add": 1, "del": 0, "own": True})
+        self.assertEqual({k: rows["a.py"][k] for k in ("st", "add", "del", "bin", "own", "lock")},
+                         {"st": "M", "add": 4, "del": 2, "bin": False, "own": False, "lock": False})
+        self.assertEqual((rows["gone.txt"]["st"], rows["gone.txt"]["del"]), ("D", 1))
+        self.assertEqual((rows["pic.bin"]["bin"], rows["pic.bin"]["add"]), (True, None))
+        self.assertEqual((rows["нов ый.txt"]["st"], rows["нов ый.txt"]["new"], rows["нов ый.txt"]["add"]), ("A", True, 2))
+        self.assertIsNone(rows["big.txt"]["add"])                                       # too long to count: listed without
+        self.assertTrue(rows[".env"]["lock"])
+        if os.name != "nt":
+            self.assertEqual((rows["link"]["add"], rows["link"]["new"]), (1, True))
+        self.assertNotIn("_top", rows["a.py"])
+        # reading never writes the index (a session may be committing right now)
+        self.assertEqual((root / ".git" / "index").stat().st_mtime_ns, index)
+        # the whole repository: the file above the folder too
+        self.assertIn("top.txt", {f["p"] for f in CH.changed(str(root), now - 3600)["files"]})
+        self.assertIn("app/new name.txt", {f["p"] for f in CH.changed(str(root), now - 3600)["files"]})
+        # no more than FILES_MAX, and it says how many there are
+        with mock.patch.object(CH, "FILES_MAX", 3):
+            got = CH.changed(str(app), now - 3600, ["pic.bin"])
+        self.assertEqual((len(got["files"]), got["files"][0]["p"]), (3, "pic.bin"))
+        self.assertGreater(got["total"], 3)
+        # not in git, or git gone: None
+        plain = TMP / "chg-plain"
+        plain.mkdir(exist_ok=True)
+        self.assertIsNone(CH.changed(str(plain), now))
+        with mock.patch.object(CH.subprocess, "Popen", side_effect=OSError("no git")):
+            self.assertIsNone(CH.changed(str(app), now - 3600))
+        # a git that hangs is stopped
+        with mock.patch.object(CH, "GIT_TIME", 0.2), mock.patch.object(CH, "_DIFF", ["-c", "alias.zz=!sleep 5", "zz"]):
+            t = time.monotonic()
+            self.assertEqual(CH._git(str(app), CH._DIFF), (None, False))
+            self.assertLess(time.monotonic() - t, 3)
+
+    def test_nested(self):
+        # a folder that isn't in git with a repository inside, and one that is with a repository of its own inside
+        now = time.time()
+        top = TMP / "chg-nested"
+        git_repo(top / "builder", now - 7200, {"slice.py": "x = 1\n"})
+        (top / "builder" / "slice.py").write_text("x = 2\n")
+        (top / "notes.md").write_text("plain\n")
+        got = CH.changed(str(top), now - 3600, ["builder/slice.py"])
+        self.assertEqual([(f["p"], f["add"], f["del"], f["own"]) for f in got["files"]], [("builder/slice.py", 1, 1, True)])
+        self.assertIsNone(CH.changed(str(top), now - 3600, ["notes.md"]))             # the task touched nothing in git
+        d = CH.diff(str(top), now - 3600, "builder/slice.py")
+        self.assertEqual(d["rows"], [[2, 1, None, "x = 1"], [1, None, 1, "x = 2"]])
+        outer = TMP / "chg-outer"
+        git_repo(outer, now - 7200, {"a.txt": "a\n", ".gitignore": "inner/\n"})
+        git_repo(outer / "inner", now - 7200, {"b.txt": "b\n"})
+        (outer / "a.txt").write_text("A\n")
+        (outer / "inner" / "b.txt").write_text("B\n")
+        got = CH.changed(str(outer), now - 3600, ["inner/b.txt"])
+        self.assertEqual([(f["p"], f["own"]) for f in got["files"]], [("inner/b.txt", True), ("a.txt", False)])
+
+    def test_rows(self):
+        text = ("diff --git a/a.py b/a.py\nindex 1..2 100644\n--- a/a.py\n+++ b/a.py\n@@ -3,4 +3,5 @@ def f():\n ctx\n-old\r\n+new\n+more\n ctx2\n"
+                " \n@@ -20,2 +21,1 @@\n keep\n-drop\n\\ No newline at end of file\n@@ -30,0 +30,2 @@\n+x\n+" + "y" * 700 + "\n")
+        rows = CH.rows_of(text)
+        self.assertEqual(rows[:7], [[3, None, None, 2], [0, 3, 3, "ctx"], [2, 4, None, "old"], [1, None, 4, "new"], [1, None, 5, "more"],
+                                    [0, 5, 6, "ctx2"], [0, 6, 7, ""]])
+        self.assertEqual(rows[7:10], [[3, None, None, 13], [0, 20, 21, "keep"], [2, 21, None, "drop"]])
+        self.assertEqual(rows[10:12], [[3, None, None, 9], [1, None, 30, "x"]])       # "-30,0": after line 30 of the old
+        self.assertEqual((len(rows), len(rows[12][3]), rows[12][3][-1]), (13, CH.ROW_MAX, "…"))
+        # a file that became a link is two changes in one answer: the numbers start again
+        two = "diff --git a/k b/k\n--- a/k\n+++ /dev/null\n@@ -1 +0,0 @@\n-was\ndiff --git a/k b/k\n--- /dev/null\n+++ b/k\n@@ -0,0 +1 @@\n+a.txt\n"
+        self.assertEqual(CH.rows_of(two), [[2, 1, None, "was"], [1, None, 1, "a.txt"]])
+        self.assertEqual(CH.rows_of(""), [])
+
+    def test_diff(self):
+        root, base, now = self.repo("chg-diff")
+        app = root / "app"
+        lines = (app / "a.py").read_text().split("\n")
+        lines[1], lines[30] = "line two", "line thirty-one"
+        (app / "a.py").write_text("\n".join(lines))
+        d = CH.diff(str(root), now - 3600, "app/a.py")
+        kinds = [r[0] for r in d["rows"]]
+        self.assertEqual((kinds.count(1), kinds.count(2), kinds.count(3)), (2, 2, 1))      # two pieces, a gap between
+        self.assertEqual([r for r in d["rows"] if r[0] == 3], [[3, None, None, 22]])
+        self.assertIn([1, None, 31, "line thirty-one"], d["rows"])
+        self.assertEqual((d["p"], d["st"], d["add"], d["del"], d["cut"], d["full"]), ("app/a.py", "M", 2, 2, False, False))
+        # the whole file: every line once, the changes in place, no gap
+        full = CH.diff(str(root), now - 3600, "app/a.py", full=True)
+        self.assertEqual((len(full["rows"]), [r[0] for r in full["rows"]].count(3), full["full"]), (42, 0, True))
+        self.assertEqual(full["rows"][-1], [0, 40, 40, "line 40"])
+        # only the start of a long change, cut at a line's end
+        with mock.patch.object(CH, "DIFF_MAX", 300):
+            cut = CH.diff(str(root), now - 3600, "app/a.py", full=True)
+        self.assertTrue(cut["cut"] and 0 < len(cut["rows"]) < 42 and cut["rows"][-1][3].startswith("line"))
+        # a renamed file: its change against its earlier name
+        subprocess.run(["git", "-C", str(root), "mv", "app/old name.txt", "app/new name.txt"], check=True, capture_output=True)
+        (app / "new name.txt").write_text("keep\nthis\nfile\nas\nit\nis\nmore\n")
+        d = CH.diff(str(root), now - 3600, "app/new name.txt")
+        self.assertEqual((d["was"], d["st"], d["rows"][-1]), ("app/old name.txt", "R", [1, None, 7, "more"]))
+        # a name with a pattern's letters is a name
+        (app / "a[1].txt").write_text("one\ntwo\n")
+        (app / "a1.txt").write_text("not me\n")
+        self.assertEqual(CH.diff(str(root), now - 3600, "app/a[1].txt")["rows"], [[0, 1, 1, "one"], [1, None, 2, "two"]])
+        # removed, new, binary, like keys, a link, unchanged
+        (app / "gone.txt").unlink()
+        self.assertEqual(CH.diff(str(root), now - 3600, "app/gone.txt")["rows"], [[2, 1, None, "gone"]])
+        (app / "new.txt").write_text("n1\nn2")
+        d = CH.diff(str(root), now - 3600, "app/new.txt")
+        self.assertEqual((d["rows"], d["new"], d["st"]), ([[1, None, 1, "n1"], [1, None, 2, "n2"]], True, "A"))
+        with mock.patch.object(CH, "DIFF_MAX", 3):
+            d = CH.diff(str(root), now - 3600, "app/new.txt")
+        self.assertEqual((d["rows"], d["cut"]), ([[1, None, 1, "n1"]], True))
+        (app / "pic.bin").write_bytes(b"\0\3" * 100)
+        d = CH.diff(str(root), now - 3600, "app/pic.bin")
+        self.assertEqual((d["bin"], d["rows"]), (True, []))
+        (app / ".env").write_text("KEY=2\n")
+        d = CH.diff(str(root), now - 3600, "app/.env")
+        self.assertEqual((d["lock"], d["rows"]), (True, []))
+        if os.name != "nt":
+            os.symlink("/etc/hosts", app / "link")
+            self.assertEqual(CH.diff(str(root), now - 3600, "app/link")["rows"], [[1, None, 1, "→ /etc/hosts"]])   # never followed
+        self.assertEqual(CH.diff(str(root), now - 3600, "top.txt"), {"same": True})
+        self.assertEqual(CH.diff(str(root), now - 3600, "../x"), {"same": True})
+        self.assertIsNone(CH.diff(str(TMP), now - 3600, "x"))
 
 
 class CodexTest(unittest.TestCase):
