@@ -130,6 +130,12 @@ const fsize = (b) => (b >= 1048576 ? t("size.mb", { n: num(b / 1048576, 1) }) : 
 function TurnLine({ sid, tf }) {
   return html`<a class="tfline" href=${"#/f/" + sid + "?t=" + tf.id}><span>${ic("clip", 17)} ${t("files.line", { n: tf.n, size: fsize(tf.size) })}</span><span class="dim">${ic("chev", 16)}</span></a>`;
 }
+// what the task changed, counted from git since it began (review 2026-11-11, block 5): its own files, the lines added
+// and removed; a tap opens their list (screens/changes.js). A computer before this sends none — no line
+function ChangesLine({ sid, c }) {
+  return html`<a class="tfline chgline" href=${"#/c/" + sid}><span>${ic("diff", 17)} ${t("chg.line", { n: c.n, files: plural(c.n, "file") })}</span>
+    <span class="chg-n">${c.add ? html`<span class="pl">+${c.add}</span> ` : ""}${c.del ? html`<span class="mi">−${c.del}</span> ` : ""}<span class="dim">${ic("chev", 16)}</span></span></a>`;
+}
 
 // the screen of a turn's files: ‹ › through the session's turns that had files; nothing ticked at first, since the
 // list is everything the turn touched, side files too (decision Q43); more than ZIP_FROM go only as one archive (Q44)
@@ -304,6 +310,7 @@ function Outcome({ sid, out, state, now, second, ro }) {
     ${state !== "fail" && out.line && html`<div class="o-l"><b>${t("out.line")}</b> ${out.line}</div>`}
     ${out.need && html`<div class="o-l"><b>${t("out.need")}</b> ${out.need}</div>`}
     ${ro ? "" : out.fail === "rate_limit" ? html`<${ResumeAt} sid=${sid} resume=${resume} reset=${out.reset} onSet=${setResume}/>` : html`<${Replies} sid=${sid} replies=${out.replies}/>`}
+    ${out.changes && html`<${ChangesLine} sid=${sid} c=${out.changes}/>`}
     ${out.turn_files && html`<${TurnLine} sid=${sid} tf=${out.turn_files}/>`}
     ${(mine || second) && html`<div class="foot quiet">${second ? html`<button class="link sec-ask" onClick=${second}>${ic("eye", 15)} ${t("sec.ask")}</button>` : html`<span></span>`}
       ${!mine ? "" : got ? html`<span class="dim">${ic("check", 14)} ${t("mine.got")}</span>` : html`<button class="link" onClick=${gotIt}>${ic("check", 15)} ${t("mine.got")}</button>`}</div>`}
@@ -316,11 +323,15 @@ function Outcome({ sid, out, state, now, second, ro }) {
 // the doer: "Send to DeepSeek" when another vendor's model did the task, Q116), "Got it" puts the card away. A project
 // goes to another vendor only once you allowed it, asked once (Q105)
 const vendorModel = (m) => String(m || "").replace(/^gpt/i, "GPT").replace(/-([a-z])/g, (x, c) => "-" + c.toUpperCase());
-function SecondItem({ it }) {
+// a finding's place opens the file's change at that line (block 5) — the file as it is when it didn't change, or when
+// the computer is older than "Changes"
+function SecondItem({ sid, it }) {
   const body = useMemo(() => md(it.body || ""), [it.body]);
   const at = it.file && (it.line != null ? it.file + ":" + it.line + (it.end && it.end !== it.line ? "-" + it.end : "") : it.file);
+  const diff = () => emit("diff", { sid, p: it.file, line: it.line });
   return html`<li>${it.prio && html`<span class=${"prio p" + it.prio.slice(1)}>${it.prio}</span> `}<b>${it.title}</b>
     ${at && html`<div class="sec-at">${it.file.startsWith("/") ? html`<code>${at}</code>`
+      : conn.caps.includes("changes") ? html`<a class="flink" role="link" tabindex="0" onClick=${diff} onKeyDown=${(e) => { if (e.key === "Enter") diff(); }}>${at}</a>`
       : html`<a class="flink" role="link" tabindex="0" data-file=${it.file + (it.line != null ? "#L" + it.line : "")}>${at}</a>`}</div>`}
     ${it.body && html`<div class="md" dangerouslySetInnerHTML=${{ __html: body }}/>`}</li>`;
 }
@@ -356,7 +367,7 @@ function Second({ sid, job, now, onAgain, who }) {
   return html`<div class="card second">
     ${head([vendorModel(job.model), job.dur ? dur(job.dur) : ""].filter(Boolean).join(" · "))}
     <div class="o-l">${items.length ? html`<b>${items.length} ${plural(items.length, "finding")}</b>` : html`<b>${t("sec.none")}</b>`}${job.summary ? html` <span class="dim">${job.summary}</span>` : ""}</div>
-    ${items.length > 0 && html`<ol class="sec-list">${items.map((it, k) => html`<${SecondItem} key=${k} it=${it}/>`)}</ol>`}
+    ${items.length > 0 && html`<ol class="sec-list">${items.map((it, k) => html`<${SecondItem} key=${k} sid=${sid} it=${it}/>`)}</ol>`}
     ${l && l.mins && html`<div class="dim small">${t("sec.limit", { pct: Math.round(l.pct), h: Math.round(l.mins / 60) })}</div>`}
     ${items.length > 0 ? html`<div class="foot"><button class="link" disabled=${busy} onClick=${() => act("away")}>${t("mine.got")}</button><button class="btn" disabled=${busy} onClick=${() => act("send")}>${t("sec.send", { who })}</button></div>`
       : html`<div class="foot quiet"><span></span><button class="link" disabled=${busy} onClick=${() => act("away")}>${ic("check", 15)} ${t("mine.got")}</button></div>`}</div>`;
@@ -631,7 +642,7 @@ function Session({ sid }) {
     ${lv.state === "queue" && html`<div class="card queue"><div class="q-t">${ic("clock", 16)} ${t("queue.title")}</div>
       <div class="dim small">${t("queue.why", { n: lv.slots })}</div>
       <div class="foot"><span></span><button class="btn" onClick=${jump}>${t("queue.jump")}</button></div></div>`}
-    ${out && lv.state !== "work" && lv.state !== "queue" && !info.pending.length && (outState === "you" || outState === "fail" || out.need || (out.replies && out.replies.length) || out.resume || out.turn_files || canSecond)
+    ${out && lv.state !== "work" && lv.state !== "queue" && !info.pending.length && (outState === "you" || outState === "fail" || out.need || (out.replies && out.replies.length) || out.resume || out.turn_files || out.changes || canSecond)
       && html`<${Outcome} key=${out.ts} sid=${sid} out=${out} state=${outState} now=${now} second=${canSecond ? () => askSecond() : null} ro=${!!info.ro}/>`}
     ${sec && sec.job && html`<${Second} sid=${sid} job=${sec.job} now=${now} who=${vend ? vend.name : "Claude"} onAgain=${() => askSecond()}/>`}
     ${pending.map((r) => html`<${Req} key=${r.rid} r=${r} stt=${info.stt} showWhere=${false}/>`)}
@@ -659,4 +670,4 @@ function Session({ sid }) {
   </div>`;
 }
 
-export { FileHost, Session, TurnFilesScreen };
+export { FileHost, FileView, Session, TurnFilesScreen };

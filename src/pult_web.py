@@ -42,8 +42,9 @@ RECONNECT = (1, 2, 5, 10, 30)  # seconds between attempts to connect to the rela
 PAGE = 1536 * 1024             # transcript bytes read at once for a chat chunk
 # what the app may count on: "once" — a request with a key is done once (Web.done_once); "waiting" — what waits for
 # the owner's move can be asked for (api_waiting); "find" — tasks can be searched and a project's earlier ones asked
-# for in pages (api_find, api_project's `earlier`)
-CAPS = ("once", "waiting", "find")
+# for in pages (api_find, api_project's `earlier`); "changes" — what a task changed can be asked for, and one file's
+# change line by line (api_changes, api_diff)
+CAPS = ("once", "waiting", "find", "changes")
 ONCE_KEEP = 600                # s: how long a keyed request's answer is kept for its repeat
 ONCE_MAX = 300                 # keyed requests remembered at most
 # An older chunk (and the chat's first) is filled by what the chat shows, not by bytes: on real transcripts 1.5 MB of

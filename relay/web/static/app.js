@@ -11,6 +11,7 @@ import { NewProject, NewTask, Project, Projects } from "./screens/projects.js";
 import { ProjectSettings } from "./screens/projset.js";
 import { LocalModel, LocalPanel } from "./screens/local.js";
 import { Resources } from "./screens/resources.js";
+import { ChangesScreen, DiffHost } from "./screens/changes.js";
 import { FileHost, Session, TurnFilesScreen } from "./screens/session.js";
 import { Settings, ddmm } from "./screens/settings.js";
 import { Tags } from "./screens/tags.js";
@@ -54,6 +55,7 @@ function App() {
   }, [r.name, r.id]);
   const screen = r.name === "s" ? html`<${Session} sid=${r.id}/>`
     : r.name === "f" ? html`<${TurnFilesScreen} sid=${r.id} turn=${r.q.get("t")}/>`
+    : r.name === "c" ? html`<${ChangesScreen} key=${r.id} sid=${r.id}/>`
     : r.name === "p" ? html`<${Project} key=${r.id + "?" + (r.q.get("tag") || "") + "/" + (r.q.get("topic") || "")} pkey=${r.id} tag=${r.q.get("tag")} topic=${r.q.get("topic")}/>`
     : r.name === "tags" ? html`<${Tags} key=${r.id} pkey=${r.id} open=${r.q.get("open")}/>`
     : r.name === "ps" ? html`<${ProjectSettings} key=${r.id} pkey=${r.id}/>`
@@ -70,7 +72,7 @@ function App() {
   const tab = (name, h, label, icon) => html`<a class=${(r.name === name ? "on" : "") + (name === "new" ? " new" : "")} href=${h}><span class="ti">${ic(icon, 22)}${name === "home" ? html`<${WaitBadge}/>` : ""}</span><span class="tl">${label}</span></a>`;
   return html`<${Banner}/><${MemoryStatus}/><main class=${r.name === "s" ? "with-composer" : ""}>${screen}</main>
     ${r.name !== "s" && html`<nav class="tabs">${tab("home", "#/", t("tab.home"), "home")}${tab("projects", "#/projects", t("tab.projects"), "folder")}${tab("usage", "#/usage", t("tab.res"), "gauge")}${tab("new", ["p", "tags", "ps"].includes(r.name) && r.id ? "#/new?pkey=" + encodeURIComponent(r.id) : "#/new", t("tab.new"), "plus")}</nav>`}
-    <${EditHost}/><${ViewHost}/><${FileHost}/><${Toast}/>`;
+    <${EditHost}/><${ViewHost}/><${DiffHost}/><${FileHost}/><${Toast}/>`;
 }
 
 render(html`<${App}/>`, document.getElementById("app"));

@@ -99,7 +99,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.59"
+VERSION = "0.18.60"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -444,6 +444,9 @@ class Pult(Api, Parts):
         self.seconds = {}              # sid → its second opinion (stage M, step 1; pult_api.api_second): done ones in the store
         self.second_tasks = {}         # sid → the review running or waiting for its turn
         self.codex_lock = asyncio.Lock()   # one Codex at a time
+        self.changes_memo = {}         # sid → the line of its changes under its outcome, as last counted (pult_api.changes_brief)
+        self.changes_tasks = {}        # sid → that count going on
+        self.facts_memo = {}           # transcript → when its task began and the files its tools wrote, until it grows
         self._codex = (0.0, None)      # Codex on this computer, as last looked up (pult_api.codex_state)
 
     # ----- this computer's environment -----

@@ -40,6 +40,9 @@ STAND_CTX=1 (Q151): the tasks' contexts filled each its own way — the question
 STAND_SECOND=1 (stage M, step 1): the shop is a git repository whose search the task changed, and Codex is a stand-in
 (tests/fake_codex.py) that reads it for about five seconds and finds two things; the session that waits for you (SESS4)
 offers "Second opinion · Codex" under its outcome (tools/second_check.py). STAND_SECOND=allowed — the shop already allowed.
+STAND_CHANGES=1 with STAND_SECOND (review 2026-11-11, block 5): the task changed the shop every way git knows — four files
+of its own (two edited, one renamed, one new and not in git yet) and, beside them, a removed file, a binary one, one like
+keys and another task's notes; Codex finds a third thing, in a file the task didn't change (tools/changes_check.py).
 STAND_VENDORS=1 (stage M, step 2): DeepSeek has a made-up key (GLM and Kimi none), a key's check passes "sk-…" without any
 network, and a session ran on DeepSeek's model (SESSV) — its next turn runs now, from the app, on deepseek-v4-pro[1m];
 the session that waits for you (SESS4) ran on DeepSeek too, the weekly report on Fable — the cards and rows name the model;
@@ -582,9 +585,10 @@ SECOND_REVIEW = {
 }
 
 
-def shop_repo():
+def shop_repo(rich=False):
     """The shop as a git repository: its search before the task, committed three hours ago, and the task's change — in
-    the stand's own temporary folder, gone with it (the system's temporary folder is shared by every stand)."""
+    the stand's own temporary folder, gone with it (the system's temporary folder is shared by every stand). rich
+    (STAND_CHANGES=1) — every kind of change: see shop_changes."""
     import subprocess
     root = T.TMP / "acme-shop"
     (root / "search").mkdir(parents=True, exist_ok=True)
@@ -592,19 +596,54 @@ def shop_repo():
     env = dict(os.environ, GIT_AUTHOR_DATE="@%d" % when, GIT_COMMITTER_DATE="@%d" % when)
     (root / "search" / "index.py").write_text('"""The product index."""\n\nINDEX = {}\n')
     (root / "search" / "query.py").write_text('"""A search query."""\n')
+    table = ["# the trigram table, part %d\n" % i for i in range(1, 37)]
+    if rich:
+        for d in ("tests", "media", "docs"):
+            (root / d).mkdir(exist_ok=True)
+        (root / "search" / "index.py").write_text("".join(
+            ['"""The product index."""\n', "\n", "INDEX = {}\n", "\n"] + table
+            + ["def add(product):\n", "    INDEX.clear()\n", "    for p in catalogue():\n",
+               "        for g in trigrams(p.name):\n", "            INDEX.setdefault(g, set()).add(p.id)\n"]))
+        (root / "search" / "rank_old.py").write_text("".join(["def rank(found):\n"] + ["    # by price, step %d\n" % i for i in range(1, 9)]
+                                                             + ["    return sorted(found)\n"]))
+        (root / "search" / "legacy.py").write_text("def find(name):\n    return INDEX.get(name)\n")
+        (root / "search" / "consts.py").write_text("MIN_QUERY = 1\nMAX_FOUND = 50\n")
+        (root / "media" / "logo.bin").write_bytes(bytes(range(256)))
+        (root / "docs" / "notes.md").write_text("# Notes\n\n- prices in cents\n")
+        (root / ".env").write_text("TOKEN=made-up\n")
     for cmd in (["init", "-q"], ["config", "user.email", "stand@example.invalid"], ["config", "user.name", "stand"],
                 ["config", "commit.gpgsign", "false"], ["add", "-A"], ["commit", "-qm", "search: exact names"]):
         subprocess.run(["git", "-C", str(root), *cmd], check=True, env=env, capture_output=True)
     (root / "search" / "index.py").write_text("".join(
         ['"""The product index: trigrams of every name, for typo-tolerant search."""\n', "\n", "INDEX = {}\n", "\n"]
-        + ["# the trigram table, part %d\n" % i for i in range(1, 37)]
+        + table
         + ["def add(product):\n", "    INDEX.clear()\n", "    for p in catalogue():\n",
            "        for g in trigrams(p.name):\n", "            INDEX.setdefault(g, set()).add(p.id)\n"]
         + ["    # rebuilt whole, line %d\n" % i for i in range(1, 14)]))
     (root / "search" / "query.py").write_text("".join(
         ['"""A search query, with typos."""\n', "\n"] + ["# step %d\n" % i for i in range(1, 10)]
         + ["def q(text):\n", "    return fuzzy(text)\n"]))
+    if rich:
+        subprocess.run(["git", "-C", str(root), "mv", "search/rank_old.py", "search/ranking.py"], check=True, capture_output=True)
+        (root / "search" / "ranking.py").write_text((root / "search" / "ranking.py").read_text().replace(
+            "    return sorted(found)\n", "    return sorted(found, key=score, reverse=True)\n"))
+        (root / "search" / "legacy.py").unlink()
+        (root / "tests" / "test_fuzzy.py").write_text("".join(
+            ["from search.query import q\n", "\n", "\n"] + ["def test_typo_%d():\n    assert q(\"sofa%d\")\n\n\n" % (i, i) for i in (1, 2)]
+            + ["def test_short():\n", "    assert not q(\"ab\")\n"]))
+        (root / "media" / "logo.bin").write_bytes(bytes(reversed(range(256))))
+        (root / "docs" / "notes.md").write_text("# Notes\n\n- prices in cents\n- the weekly report is on Mondays\n")
+        (root / ".env").write_text("TOKEN=made-up-2\n")
     return root
+
+
+# STAND_CHANGES=1: what the stand's task counts as its own (the files its turn made or changed), and a third finding of
+# Codex's — in a file the task didn't change: its place opens the file as it is
+SHOP_OWN = ("search/index.py", "search/query.py", "search/ranking.py", "tests/test_fuzzy.py")
+SECOND_MORE = {
+    "en": "\n\n- [P3] The shortest query is one letter — {cwd}/search/consts.py:1-1\n  MIN_QUERY stays 1: raise it to 3 with the fix above.",
+    "ru": "\n\n- [P3] Самый короткий запрос — одна буква — {cwd}/search/consts.py:1-1\n  MIN_QUERY остался 1: поднимите до 3 вместе с правкой выше.",
+}
 
 
 async def main():
@@ -646,10 +685,11 @@ async def main():
         store.set_topic(T.PKEY, str(shop_files()), "acme-shop", 77)
     second = os.environ.get("STAND_SECOND")
     if second:                                               # stage M: the shop's search changed, and Codex reads it
-        store.set_topic(T.PKEY, str(shop_repo()), "acme-shop", 77)
+        rich = os.environ.get("STAND_CHANGES") == "1"
+        store.set_topic(T.PKEY, str(shop_repo(rich)), "acme-shop", 77)
         import fake_codex
         conf = T.TMP / "stand-codex.json"
-        conf.write_text(json.dumps({"wait": 5, "steps": 4, "review": SECOND_REVIEW[LANG]}))
+        conf.write_text(json.dumps({"wait": 5, "steps": 4, "review": SECOND_REVIEW[LANG] + (SECOND_MORE[LANG] if rich else "")}))
         if os.environ.get("STAND_SECOND_FAIL"):
             conf.write_text(json.dumps({"wait": 0.2, "steps": 0, "fail": os.environ["STAND_SECOND_FAIL"]}))
         codex = fake_codex.launcher(str(T.TMP), str(conf))
@@ -1060,6 +1100,8 @@ async def main():
                                    "replies": [D["s4_r1"], D["s4_r2"], D["s4_r3"]]}, True)
     # stage F4: an earlier turn made two files, the last one twelve (one deleted since); "To Telegram" is answered
     # here — the stand's projects are made-up paths, so the files are said to be there
+    if os.environ.get("STAND_CHANGES") == "1":                # block 5: the task's own files, for "Changes" under its outcome
+        store.add_turn(SID4, T.PKEY, r["ts"] - 7200, 300, [{"p": f, "size": 1200, "mt": r["ts"] - 7000} for f in SHOP_OWN], 4)
     store.add_turn(SID4, T.PKEY, r["ts"] - 3600 - 600, 600, [
         {"p": "reports/search-ranking.pdf", "size": 182000, "mt": r["ts"] - 3700},
         {"p": "search-options.pptx", "size": 2400000, "mt": r["ts"] - 3900}], 2)

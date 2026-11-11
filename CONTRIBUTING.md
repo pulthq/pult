@@ -59,6 +59,7 @@ How the parts fit together, with diagrams of each path: [ARCHITECTURE.md](ARCHIT
 | `src/pult_new.py` | a new project from the phone: the folder's name from any title, the name checks, the clone link; the daemon makes the folder |
 | `src/pult_files.py` | files to and from the phone: safe names, the project's inbox, what `pult send` may send, the files a turn made |
 | `src/pult_codex.py` | a second opinion from Codex (OpenAI's agent) on what a task changed: its `app-server` protocol, read-only; the tasks Codex does are `CodexDriven` in `pult_driven.py`; `tests/fake_codex.py` stands in for it in the tests and on the stand |
+| `src/pult_changes.py` | what a task changed, from git (read only): the list of changed files since the task began and one file's change line by line — the app's "Changes" under a task's outcome |
 | `src/pult_vendors.py` | DeepSeek, GLM, Kimi — and a model of your own through Ollama — inside Claude Code: profiles, a session's environment (never without a key — `tests/probe_vendor.py` shows why), what Ollama's server has and the Local model tab's calls |
 | `src/pult_os.py` | what differs between systems: paths, the service (launchd, systemd, a logon task), idle, the system language |
 | `deploy/relay/` | running the relay on a Linux server |

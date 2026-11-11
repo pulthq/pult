@@ -610,6 +610,7 @@ S = {
     "send.err.none": {"en": "no such file", "ru": "такого файла нет"},
     "send.err.secret": {"en": "looks like keys or settings — not sent", "ru": "похоже на ключи или настройки — не отправляю"},
     "show.err.secret": {"en": "looks like keys or settings — not shown", "ru": "похоже на ключи или настройки — не показываю"},
+    "chg.err.git": {"en": "git didn't answer — the change can't be read now", "ru": "git не ответил — правку сейчас не прочитать"},
     "send.err.empty": {"en": "the file is empty", "ru": "файл пустой"},
     "send.err.big": {"en": "over {mb} MB — Telegram takes no bigger files from bots; zip or split it",
                      "ru": "больше {mb} МБ — Telegram не берёт у ботов файлы крупнее; сожми или разбей"},

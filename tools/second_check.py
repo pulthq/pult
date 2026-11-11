@@ -2,7 +2,7 @@
 (STAND_SECOND=1): the outcome of the session that waits for you offers "Second opinion · Codex"; the first tap in a project
 asks whether its code may go to OpenAI — "no" leaves everything as it was, "yes" starts it; the card says Codex is
 reading, for how long and how many commands, and can stop it; then two findings, each with its place — a tap opens the
-file at that line; "Send to Claude" puts them into the session as your message and the card goes, the button comes back;
+file's change at that line; "Send to Claude" puts them into the session as your message and the card goes, the button comes back;
 "Got it" puts a second review away without a word; the project's settings say Codex may read its code, and
 "Disallow" takes that back. The stand's output shows what the computer's journal says.
   STAND_SECOND=1 STAND_LANG=ru STAND_PORT=18161 HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out &
@@ -87,9 +87,10 @@ async def main():
         await pg.shot(os.path.join(OUT, "findings-dark.png"))
         await pg.cmd("Emulation.setEmulatedMedia", features=[])
 
-        # a finding's place opens the file at that line
+        # a finding's place opens the file's change at that line (review 2026-11-11, block 5; tools/changes_check.py)
         await pg.tap(CARD + ".querySelector('.sec-at .flink')", wait=1.0)
-        verdict("the place opens the file at its line", await pg.until("!!document.querySelector('.fv .ln.hit#L41')", 50),
+        verdict("the place opens the file's change at its line", await pg.until(
+            "!!document.querySelector('.fv.df .dl.a.hit') && document.querySelector('.fv.df .dl.hit .n').textContent === '41'", 50),
                 await pg.js("document.querySelector('.fv') && document.querySelector('.fv').innerText.slice(0, 200)"))
         await pg.shot(os.path.join(OUT, "file.png"))
         await pg.tap("document.querySelector('.fv-b')", wait=0.6)

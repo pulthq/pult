@@ -4,6 +4,17 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.60 — 2026-11-11
+
+- **What a task changed, in the app.** Under a task's outcome — **Changes: 4 files +120 −30**, counted from git since
+  the commit the folder stood at when the task began: committed since or not, new files too. A tap lists the task's
+  own files, with whatever else changed in the folder meanwhile — by commands, by other tasks — folded under them. A
+  file opens its change line by line: removed and added lines with their signs, the unchanged stretch between two
+  pieces as a count, **Whole file** for all of it. A finding of Codex's second opinion opens the change at its line.
+  Files that look like keys or settings are counted and never shown. It is a view — nothing is committed from the
+  phone — and reading never holds git's index under a session that is committing. A project outside git has no such
+  line.
+
 ## 0.18.59 — 2026-11-11
 
 - **Tasks can be searched.** A field on top of Projects looks through every project, the same field on a project's
