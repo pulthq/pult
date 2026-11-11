@@ -142,7 +142,7 @@ async def flow(pg):
     look = await pg.js("[document.querySelector('.lp-look').innerText, document.querySelector('.lp-look .btn').disabled]")
     verdict("a model that leaves less than 60 GB: «сначала убери модель», the button off", "держим 60" + NB + "ГБ — сначала убери модель" in look[0] and look[1], look)
     # Settings' card: a line with the way in
-    await pg.js("location.hash = '#/settings'")
+    await pg.js("location.hash = '#/settings/models'")
     card = "[...document.querySelectorAll('.item.vend')].find((x) => x.querySelector('b').textContent === 'Своя модель')"
     verdict("Settings: «Своя модель — включена», «Основная — qwen9b-32k, ещё 1 в выборе задачи.», «Модели, диск и видеокарта»", await pg.until(
         "!!(%s) && (%s).querySelector('.vl-sum').textContent === 'Основная — qwen9b-32k, ещё 1 в выборе задачи.'"

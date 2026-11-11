@@ -82,7 +82,7 @@ async def main():
         verdict("... and the journal says so", "swipe on a project's row sprang back" in journal())
         await slide(pg, ROW % (0, 2), -200)
         rs = await rows(pg)
-        verdict("a long slide stays open on Pin, Hide and New task", rs[2]["x"] == -240 and await acts(pg, ROW % (0, 2)) == ["Закрепить", "Спрятать", "Новая задача"], rs[2], await acts(pg, ROW % (0, 2)))
+        verdict("a long slide stays open on Pin, Hide and New task", rs[2]["x"] == -240 and await acts(pg, ROW % (0, 2)) == ["Закрепить", "Скрыть", "Новая задача"], rs[2], await acts(pg, ROW % (0, 2)))
         verdict("... and the journal says so", "swipe on a project's row opened on its action" in journal())
         await pg.shot(os.path.join(OUT, "swipe.png"))
         # a tap on the open row closes it and opens nothing

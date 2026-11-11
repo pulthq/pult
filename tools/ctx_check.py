@@ -25,7 +25,7 @@ verdict = _cdp.Verdicts()
 CARDS = (("С каких заявок начать?", 33), ("Оформление заказа", 72), ("Отчёт поддержки за неделю", 13), ("Поиск: опечатки", 94))
 ROWS = (("Сделай тёмную тему для админки", 55), ("Переименуй CSS-переменные", 8))
 JOB = "python train.py"
-COLOURS = {"light": {"attn": "rgb(232, 137, 43)", "ok": "rgb(44, 138, 91)", "bad": "rgb(194, 59, 59)"},
+COLOURS = {"light": {"attn": "rgb(232, 137, 43)", "ok": "rgb(37, 122, 79)", "bad": "rgb(194, 59, 59)"},
            "dark": {"attn": "rgb(243, 166, 74)", "ok": "rgb(88, 192, 136)", "bad": "rgb(239, 106, 106)"}}
 
 # a card or a row by its words → its line: where, how long, which colour, what it says aloud

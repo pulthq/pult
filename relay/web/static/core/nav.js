@@ -176,7 +176,7 @@ function useRoute() {
 const start = tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param;
 if ((!location.hash || tgHash(location.hash)) && start) {
   const h = start.startsWith("s_") ? "#/s/" + start.slice(2) : start.startsWith("p_") ? "#/p/" + encodeURIComponent(start.slice(2))
-    : start === "new" ? "#/new" : start === "usage" ? "#/usage" : start === "settings" ? "#/settings" : start === "projects" ? "#/projects"
+    : start === "new" ? "#/new" : start === "usage" ? "#/usage" : start === "settings" ? "#/settings" : /^settings_[a-z]+$/.test(start) ? "#/settings/" + start.slice(9) : start === "projects" ? "#/projects"
     : start === "load" ? "#/load" : start === "newproject" ? "#/newproject"
     : /^f_[0-9a-f-]{36}_\d+$/.test(start) ? "#/f/" + start.slice(2, 38) + "?t=" + start.slice(39) : null;
   if (h) { history.replaceState(null, "", h); stack[0] = h; }

@@ -9,7 +9,7 @@ Screenshots go to out_dir (a temporary folder by default). Exit 1 on a failed ch
 import asyncio, base64, json, os, subprocess, sys, tempfile
 import aiohttp
 
-URLS = dict(line.split(" ", 1) for line in open(sys.argv[1]).read().split("\n") if line[:4] in ("SETT", "NEW ", "SESS"))
+URLS = dict(line.split(" ", 1) for line in open(sys.argv[1]).read().split("\n") if line[:4] in ("SETT", "SETM", "NEW ", "SESS"))
 OUT = sys.argv[2] if len(sys.argv) > 2 else tempfile.mkdtemp(prefix="pult-choice-")
 os.makedirs(OUT, exist_ok=True)
 import _cdp  # noqa: E402  (tools/_cdp.py: where Chrome is, free ports, a profile that goes — review 2026-10-27, Т9)
@@ -115,7 +115,7 @@ async def main():
                 return await until("!!document.querySelector('.card.pick .pick-col')")
 
             async def open_settings():
-                await goto(URLS["SETTINGS"])
+                await goto(URLS["SETM"])
                 return await until("%s !== null" % field, 150)
 
             await cmd("Page.enable")

@@ -78,7 +78,7 @@ function ProjectSettings({ pkey }) {
     <div class="list"><div class="item sw-row">
       <button class="sw-h" role="switch" aria-checked=${!!d.haiku} disabled=${busy} onClick=${haiku}><b>${t("ps.haiku.sw")}</b><span class=${"sw" + (d.haiku ? " on" : "")}></span></button>
       <div class="dim">${t(m.id === "claude" ? "ps.haiku.claude" : d.haiku ? "ps.haiku.on" : "ps.haiku.off")}</div>
-      ${!d.brief && html`<div class="dim small ps-note">${t("ps.haiku.brief")}</div>`}</div></div>
+      ${!d.brief && html`<a class="dim small ps-note set-go" href="#/settings/models">${t("ps.haiku.brief")}</a>`}</div></div>
     <h3>${t("ps.topic")}</h3>
     <div class="seg ps-topic">${["full", "done"].map((k) => html`<button key=${k} class=${d.topic === k ? "on" : ""} disabled=${busy} onClick=${() => d.topic !== k && call("project_prefs", { topic: k })}>${t("ps.topic." + k)}</button>`)}</div>
     <div class="dim small">${t("ps.topic." + d.topic + ".about")}</div>

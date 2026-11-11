@@ -14,6 +14,7 @@ task's row at the right end of its second line (Q109), on 320 px too; a project'
   ~/.local/share/pult/venv/bin/python tools/vendors_check.py /tmp/stand.out [out_dir]
 Screenshots go to out_dir (a temporary folder by default). Exit 1 on a failed check."""
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -109,7 +110,7 @@ async def main():
         verdict("the task starts with DeepSeek and its model", "vendor=deepseek model=deepseek-v4-pro[1m]" in journal(), journal()[-300:])
 
         # Settings → Other vendors (within the app, as a tap there: the stand's link would only change the hash)
-        await pg.js("location.hash = '#/settings'")
+        await pg.js("location.hash = '#/settings/models'")
         verdict("Settings has «Другие производители»", await pg.until("[...document.querySelectorAll('h3')].some((h) => h.textContent === 'Другие производители')", 150))
         await pg.js(SPY)
         # the model of new projects (Q147): Claude, Codex (here), or a vendor with its key
@@ -203,6 +204,36 @@ async def main():
         await pg.shot(os.path.join(OUT, "session-320.png"))
         await pg.cmd("Emulation.setDeviceMetricsOverride", width=412, height=860, deviceScaleFactor=2, mobile=True)
         await asyncio.sleep(0.4)
+        # what a finger catches (review 2026-11-11, UX14): the round buttons by the field and Stop reach 44 px, and the
+        # two lines under the field — the model, where the words go — share the row's 44 with no gap between them
+        reach = """((sel) => { const e = document.querySelector(sel); if (!e) return null; const b = e.getBoundingClientRect(), a = getComputedStyle(e, '::after');
+          const px = (v) => parseFloat(v) || 0; return a.content === 'none' ? [b.width, b.height] : [px(a.width), px(a.height)]; })"""
+        small = {}
+        for sel in (".ctl .clip", ".ctl .btn.send", ".ctl .btn.stop"):
+            got = await pg.js("%s(%s)" % (reach, json.dumps(sel)))
+            if not got or min(got) < 43.5:
+                small[sel] = got
+        verdict("the buttons by the field and Stop catch a finger on 44 px", not small, small)
+        lines = await pg.js("""(() => { const m = document.querySelector('.ctl .mchip'), w = document.querySelector('.ctl .status .where'); if (!m || !w) return null;
+          const mb = m.getBoundingClientRect(), wb = w.getBoundingClientRect(), x = mb.left + 12;
+          const at = (y) => { const e = document.elementFromPoint(x, y); return e && (e.closest('.mchip') ? 'model' : e.closest('.where') ? 'where' : e.className); };
+          return [at(mb.top + 1), at((mb.bottom + wb.top) / 2), at(wb.bottom - 1), wb.bottom - mb.top, wb.top - mb.bottom]; })()""")
+        verdict("the model's line and the line under it catch a finger on 44 px together, with no gap between",
+                bool(lines) and lines[0] == "model" and lines[1] in ("model", "where") and lines[2] == "where" and lines[3] >= 43.5 and abs(lines[4]) < 0.6, lines)
+        # Stop asks first (review 2026-11-11, UX4): it stands beside Send, and a stopped turn can't be taken back
+        stop = "document.querySelector('.ctl .btn.stop')"
+        await pg.js(SPY)
+        await pg.tap(stop, wait=0.3)
+        one = await pg.js("[%s.textContent, %s.classList.contains('arm'), window.__said.length, !!document.querySelector('.working')]" % (stop, stop))
+        verdict("one tap on Stop stops nothing: «Остановить ход?», the turn goes on", one == ["Остановить ход?", True, 0, True], one)
+        verdict("… the model's name still ends where it begins", await pg.js(apart))
+        await pg.shot(os.path.join(OUT, "stop-ask.png"))
+        verdict("… three seconds without a second tap — «Стоп» again", await pg.until("%s.textContent === 'Стоп' && !%s.classList.contains('arm')" % (stop, stop), 40)
+                and await pg.js("window.__said.length") == 0)
+        await pg.tap(stop, wait=0.3)
+        await pg.tap(stop, wait=0.3)
+        verdict("the second tap sends the stop to the computer", await pg.until("window.__said.length === 1 && %s.textContent === 'Стоп'" % stop, 50),
+                await pg.js("window.__said"))
         await pg.tap("document.querySelector('.mchip')", wait=0.6)
         opts = await pg.js("[...document.querySelectorAll('.composer .card.pick .opt')].map((b) => b.textContent.trim())")
         verdict("its picker lists only DeepSeek's models", opts == ["deepseek-flash[1m]", "deepseek-flash", "deepseek-v4-pro[1m]"], opts)

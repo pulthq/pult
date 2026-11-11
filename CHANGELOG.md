@@ -4,6 +4,32 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.61 — 2026-11-11
+
+- **Settings is a menu.** It was one scroll of nearly five phone screens — Pult's upkeep on top, the language in the
+  middle, the vendors' keys at the very bottom. Now five screens, each at an address of its own: **Notifications**,
+  **Models and keys**, **Voice and language**, **Pult and its parts**, **Security**; a row of the menu says what is
+  set there now, and when a part is behind. Home's line about an update, and every hint that used to say "in
+  Settings", lead to the screen meant.
+- **What a tap decides is said first and can be taken back.** **Always allow** says what it would allow and where —
+  the commands, the files, the mode; until the task ends, in this project, in every project — under its link in the
+  app and under the buttons in Telegram. An option of a question, **Allow** and **Deny** go three seconds later,
+  **Undo** beside them — the cards of "Your move" move under a finger when a new one comes. **Reviewed** can be
+  brought back for five seconds. **Stop** asks before it stops: it stands beside Send, and a stopped turn can't be
+  taken back. A vendor's key and the voice key ask before they are removed, and a local model's unsaved settings
+  outlive Back.
+- **One vocabulary in the app.** "Your move" and "Running now" on both screens; Hide / Show; a tag's levels are a
+  section and a subsection — "topic" is Telegram's word alone; **One-line result and tags** for the setting that had
+  three names; "task", not "session", in the words for a person.
+- **Small targets catch a finger**: the buttons by the field and Stop, a model's tick and a tag section's actions
+  reach 44 px; the two lines under the field share the row's 44 with no gap, and an attachment's cross grew as far
+  as its thumbnail lets it. The tab below stays lit on the screens under it, a line of
+  "While you were away" opens the task, an empty Home offers the first task, and three colours of small text in the
+  light theme read above 4.5:1.
+- **A voice message in Telegram shows what was heard** — a quiet line under it: its words used to go to Claude
+  unseen. And the **Computer** mode, which keeps Telegram silent, now ends by itself in the morning (the hour the
+  quiet hours end, 8:00 without them) and is Auto again: switched on and forgotten, it meant no calls at all.
+
 ## 0.18.60 — 2026-11-11
 
 - **What a task changed, in the app.** Under a task's outcome — **Changes: 4 files +120 −30**, counted from git since

@@ -14,7 +14,7 @@ import { avatar, ctxBar, dur, ic, keyTap, llmName, nb, pauseChip, plainField, ta
 
 // a card answered here keeps "✓ Answer sent" RCPT_MS, a bar running out under it, though the computer drops the
 // request at once (the owner didn't see the line at all, 2026-10-24)
-const RCPT_MS = 3000;
+const RCPT_MS = 3000, HOLD_MS = 3000;
 const answeredAt = new Map();        // rid → when it was answered here
 // what to show: the computer's list, and the requests answered here less than RCPT_MS ago in their old places;
 // key — a row's request id (other rows never linger)
@@ -55,7 +55,18 @@ function Req({ r, onDone, stt, showWhere = true, showProject = true }) {
   const [picks, setPicks] = useState(() => Object.fromEntries(Object.entries(r.picks || {}).map(([i, v]) => [i, [...v]])));
   const [touched, setTouched] = useState(false);   // ticks changed by hand: a reload would put the first ones back
   const [done, setDone] = useState(null);      // the answer went: "✓ Allowed" in place of the card, until the list drops it
-  useHold(touched && !done);
+  // an answer tapped — an option, Allow, Deny — goes HOLD_MS later, "Undo" beside it: it went with the touch, and
+  // the cards of "Your move" move under the finger when a new one comes; a ready reply under an outcome already
+  // waited so (review 2026-11-11, UX8; the owner's yes — Q181). Typed words and ticked answers go at once
+  const [wait, setWait] = useState(null);      // {args, text}
+  const pend = useRef(null), timer = useRef(0);
+  useHold((touched && !done) || !!wait);
+  useEffect(() => () => {
+    clearTimeout(timer.current);
+    const args = pend.current;
+    pend.current = null;                       // the owner saw "sending" and left the screen: it goes
+    if (args) api("answer", Object.assign({ rid: r.rid }, args)).catch(() => {});
+  }, []);
   const [mine, setMine] = useState({});        // questions answered here, shown as answered before the list brings them back
   const chosen = Object.assign({}, r.chosen, mine);
   const send = async (args) => {
@@ -77,6 +88,14 @@ function Req({ r, onDone, stt, showWhere = true, showProject = true }) {
     } catch (e) { alertBox(e.message); }
     setBusy(false);
   };
+  const hold = (args, text) => {
+    clearTimeout(timer.current);
+    pend.current = args;
+    setWait({ args, text });
+    haptic("success");
+    timer.current = setTimeout(() => { pend.current = null; setWait(null); send(args); }, HOLD_MS);
+  };
+  const undo = () => { clearTimeout(timer.current); pend.current = null; setWait(null); };
   // how long it waits, as a session's card says: "your move" puts them all in one line by time; which model asks —
   // before it, as "Running now" says it on top (Q108): a request has no tags there to push out. The two wrap from the
   // right: a line too short for both drops the model whole, and the project keeps its name
@@ -91,6 +110,11 @@ function Req({ r, onDone, stt, showWhere = true, showProject = true }) {
   const clock = titled ? pauseChip(r.work) : "";
   const where = showWhere && html`<div class=${"card-h" + (open ? " tap" : "")} role=${open ? "button" : undefined} tabindex=${open ? "0" : undefined}
     onClick=${open || undefined} onKeyDown=${open ? keyTap(open) : undefined}>${showProject && r.project || waits ? html`<div class="c-proj">${showProject && r.project ? html`${avatar(r.project, 18)}<span>${r.project}</span>` : ""}${waits}${titled ? "" : chev}</div>` : ""}${titled ? html`<b class="c-title">${r.title}${clock}${chev}</b>` : ""}</div>`;
+  if (wait) {
+    return html`<div class="card hold" role="status">${where}<div class="hold-l"><span>${wait.text}</span>
+      <button class="link" onClick=${undo}>${t("undo")}</button></div>
+      <div class="rcpt-bar hold" style=${{ animationDuration: HOLD_MS + "ms" }}></div></div>`;
+  }
   if (done) {
     const no = done === "rcpt.deny" || done === "rcpt.plan.n" ? " no" : "";
     return html`<div class="card rcpt" role="status">${where}<div class=${"rcpt-l" + no}>${t(done)}</div>
@@ -104,7 +128,7 @@ function Req({ r, onDone, stt, showWhere = true, showProject = true }) {
             const on_ = (picks[i] || []).includes(o.label);
             return html`<button class=${"opt" + (on_ ? " on" : "")} disabled=${busy} onClick=${() => {
               if (qn.multiSelect) { setTouched(true); setPicks(Object.assign({}, picks, { [i]: on_ ? picks[i].filter((x) => x !== o.label) : [...(picks[i] || []), o.label] })); }
-              else send({ answers: { [i]: [o.label] } });
+              else hold({ answers: { [i]: [o.label] } }, t("reply.will", { text: o.label }));
             }}><b>${qn.multiSelect ? html`${ic(on_ ? "boxon" : "box", 16)} ` : ""}${o.label}</b>${o.description ? html`<span class="dim">${o.description}</span>` : ""}</button>`;
           })}
           ${qn.multiSelect && html`<button class="btn" disabled=${busy || !(picks[i] || []).length} onClick=${() => send({ answers: { [i]: picks[i] } })}>${t("done")}</button>`}
@@ -119,11 +143,12 @@ function Req({ r, onDone, stt, showWhere = true, showProject = true }) {
     ${isPlan ? html`<details class="plan"><summary>${t("plan")}</summary><div class="md" data-sid=${r.sid} dangerouslySetInnerHTML=${{ __html: md(r.plan) }}/></details>`
       : html`<div class="perm-b" dangerouslySetInnerHTML=${{ __html: r.html }}/>`}
     <div class="row">
-      <button class="btn" disabled=${busy} onClick=${() => send({ act: "y" })}>${isPlan ? t("approve") : t("allow")}</button>
-      <button class="btn danger" disabled=${busy} onClick=${() => send({ act: "n" })}>${isPlan ? t("reject.plan") : t("deny")}</button>
+      <button class="btn" disabled=${busy} onClick=${() => hold({ act: "y" }, t(isPlan ? "hold.plan.y" : "hold.allow"))}>${isPlan ? t("approve") : t("allow")}</button>
+      <button class="btn danger" disabled=${busy} onClick=${() => hold({ act: "n" }, t(isPlan ? "hold.plan.n" : "hold.deny"))}>${isPlan ? t("reject.plan") : t("deny")}</button>
     </div>
-    <div class="foot quiet">${r.suggest ? html`<button class="link" disabled=${busy} onClick=${() => send({ act: "a" })}>${t(r.who === "codex" ? "always.task" : "always.short")}</button>` : html`<span></span>`}
+    <div class="foot quiet">${r.suggest ? html`<button class="link" disabled=${busy} onClick=${() => hold({ act: "a" }, t(r.who === "codex" ? "hold.always.task" : "hold.always"))}>${t(r.who === "codex" ? "always.task" : "always.short")}</button>` : html`<span></span>`}
     ${noting ? "" : html`<button class="link" onClick=${() => setNoting(true)}>${isPlan ? t("plan.notes") : t("deny.note.short")}</button>`}</div>
+    ${r.suggest && r.always ? html`<div class="always-w dim small" dangerouslySetInnerHTML=${{ __html: r.always }}/>` : ""}
     ${noting && html`<${Own} ph=${t("tell.claude")} label=${t("send")} busy=${busy} stt=${stt} draft=${"n:" + r.rid} onSend=${(w) => send({ act: "n", text: w })}/>`}
     ${ctxBar(r.ctx)}
   </div>`;

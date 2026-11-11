@@ -22,10 +22,10 @@ function UpdRow({ u }) {
   const st = u ? u.state : "ok", phone = phoneOld(), broken = (u && u.broken) || [];
   const mac = st === "ready" || st === "busy";
   if (st === "srv_run") {
-    return html`<button class="card upd-row" onClick=${() => go("#/settings")}><span class="upd-ic">${updSpin}</span>
+    return html`<button class="card upd-row" onClick=${() => go("#/settings/parts")}><span class="upd-ic">${updSpin}</span>
       <span class="upd-t"><b>${t("upd.srv.run", { v: u.next })}</b><span class="dim">${t("upd.row.srv.run")}</span></span>${ic("chev", 16)}</button>`;
   }
-  const row = (icon, title, sub, cls) => html`<button class=${"card upd-row " + cls} onClick=${() => go("#/settings")}>
+  const row = (icon, title, sub, cls) => html`<button class=${"card upd-row " + cls} onClick=${() => go("#/settings/parts")}>
     <span class="upd-ic">${icon}</span><span class="upd-t"><b>${title}</b><span class="dim">${sub}</span></span>${ic("chev", 16)}</button>`;
   if (st === "wait" || st === "run" || st === "fail" || mac && !phone && !broken.length) {
     const [icon, title, sub, cls] = {

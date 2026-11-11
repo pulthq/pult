@@ -4,7 +4,7 @@
 // weights once, so a family is one size — which ones take tasks (the tick and the star, as Settings had them), which one
 // is in the card's memory, and a download from ollama.com with its progress. The computer asks the server; this only draws.
 import { api, useLive } from "../core/conn.js";
-import { go, useOverlay } from "../core/nav.js";
+import { go, useKept, useOverlay } from "../core/nav.js";
 import { alertBox, confirmBox, haptic, tick } from "../core/tg.js";
 import { locale, t } from "../i18n.js";
 import { html, useState } from "../vendor/htm-preact-3.1.1.js";
@@ -135,7 +135,7 @@ function LocalPanel({ embedded }) {
   const [url, setUrl] = useState(null);             // null — as saved; a string — the address being changed
   if (!d) return html`<${Loading} err=${err}/>`;
   if (!d.on && !d.fams.length) return html`<div>${!embedded && html`<h2>${t("res.llm")}</h2>`}<div class="empty">${t("lp.off")}</div>
-    <a class="btn ghost wide" href="#/settings">${t("lp.off.go")}</a></div>`;
+    <a class="btn ghost wide" href="#/settings/models">${t("lp.off.go")}</a></div>`;
   const panel = (r) => { if (r && r.fams) set(r); };
   const act = async (k, fn) => { setBusy(k); try { const r = await fn(); panel(r); if (r && r.words) { haptic("success"); alertBox(r.words); } } catch (e) { alertBox(e.message); } setBusy(""); };
   const unload = (name) => act("unload", () => api("local_unload", { model: name }));
@@ -202,7 +202,9 @@ const OWN = ["system", "ctx", "tools", "after"];
 
 function LocalModel({ name }) {
   const [d, err, set] = useLive(() => api("local_model", { model: name }), [name]);
-  const [ed, setEd] = useState({});                 // the owner's changes, not saved yet
+  // the owner's changes, not saved yet — kept by the model for this window's life: Back, or a look at another screen,
+  // dropped them without a word (review 2026-11-11, UX25); the button still says how many wait to be saved
+  const [ed, setEd] = useKept("lm.ed:" + name, {});
   const [busy, setBusy] = useState("");
   const [fine, setFine] = useState(false);
   if (!d) return html`<${Loading} err=${err}/>`;

@@ -72,6 +72,7 @@ FOCUS_IDLE = 2 * 3600   # a topic forgets its current session after this long wi
 VEHI = (10 * 60, 30 * 60, 60 * 60)   # long-turn milestones; with sound if the owner is away (decision 2026-10-16)
 TICK = 60                # s; refresh "working N min" this often, even without events
 NOW_LEN = 300            # characters of Claude's reply in the "now" line
+HEARD_MAX = 900          # characters of a voice message's words said back under it
 YOU_LEN = 160            # characters of the owner's prompt in a result's head (one message per turn)
 STALE = 20 * 60          # s without events: check whether the session is alive (a tab may close without SessionEnd)
 SILENT = 15 * 60         # s: a turn with no step and no word for this long is "silent" in the app (review 2026-11-11, D6)
@@ -99,7 +100,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.60"
+VERSION = "0.18.61"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -116,7 +117,9 @@ PREFS = {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": No
          # for the owner (None — none), the quiet hours [from, to) when calls come without sound (None — none), minutes
          # after the app left the screen before a call about what ended while it was there (0 — at once), whether a
          # question or a permission left unanswered is called about again (REMIND_AT)
-         "digest": 9, "quiet": [23, 8], "page_delay": 5, "remind": True}   # owner prefs:
+         "digest": 9, "quiet": [23, 8], "page_delay": 5, "remind": True,
+         # until when "Computer" holds (mode_end) — not the owner's to set
+         "mode_until": None}   # owner prefs:
 # milestones, location (auto/mac/phone), language, a model's line for each result, Telegram as a pager (None — on where the
 # app is set up), the % at a limit's reset that is still "on pace" (stage R), the model and the effort for sessions Pult
 # starts when the session has no choice of its own (None — Claude Code's settings; VS Code tabs keep theirs), whether a
@@ -124,6 +127,10 @@ PREFS = {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": No
 # VS Code has downloaded, before a window reloads onto it (stage A, Q78: on), whether sessions from the app start on the
 # newest Claude Code that passed the check's app step here rather than the SDK's own (stage A2, Q158: on)
 MODES = ("auto", "mac", "phone")
+# "Computer" keeps Telegram silent, and nothing ended it: switched on and forgotten, it left the owner without a single
+# call until they remembered (review 2026-11-11, T23; the owner's yes — Q181). It holds until the morning — the hour
+# the quiet hours end, MORNING without them — but no less than MAC_MIN, and then it is "Auto" again
+MORNING, MAC_MIN = 8, 2 * 3600
 REPO_URL = os.environ.get("PULT_REPO_URL") or "https://github.com/pulthq/pult"   # where /feedback sends bugs and ideas
 
 
@@ -584,8 +591,34 @@ class Pult(Api, Parts):
         return dict(PREFS, **{k: v for k, v in stored.items() if k in PREFS})
 
     def mode(self):
-        m = self.prefs()["mode"]
+        p = self.prefs()
+        m = p["mode"]
+        if m == "mac" and p["mode_until"] and time.time() >= p["mode_until"]:
+            return "auto"                            # ran out; mode_over() writes it down within ten seconds
         return m if m in MODES else "auto"
+
+    def mode_end(self, now=None):
+        """When "Computer", picked now, runs out: the next morning hour at least MAC_MIN away."""
+        now = now or time.time()
+        q = self.prefs()["quiet"]
+        hour = q[1] if isinstance(q, (list, tuple)) and len(q) == 2 else MORNING
+        t = time.localtime(now)
+        for day in (0, 1, 2):
+            end = time.mktime((t.tm_year, t.tm_mon, t.tm_mday + day, hour, 0, 0, 0, 0, -1))
+            if end - now >= MAC_MIN:
+                break
+        return end
+
+    async def mode_over(self):
+        """"Computer" that has run out becomes "Auto"; one picked before it had an end gets its morning now."""
+        p = self.prefs()
+        if p["mode"] != "mac":
+            return
+        if not p["mode_until"]:
+            self.store.put("prefs", dict(p, mode_until=self.mode_end()))
+        elif time.time() >= p["mode_until"]:
+            log("notification mode: «computer» held until %s — auto again" % time.strftime("%H:%M", time.localtime(p["mode_until"])))
+            await self.set_mode("auto")
 
     def quiet_now(self, now=None):
         """The owner's quiet hours (Q176): what Pult sends then comes without sound — a task's call at night woke
@@ -1489,6 +1522,7 @@ class Pult(Api, Parts):
             await asyncio.sleep(10)
             n += 1
             try:
+                await self.mode_over()
                 await self.presence_check()
                 await self.resume_due()
                 if self.pager() and self.chat:
@@ -2067,6 +2101,9 @@ class Pult(Api, Parts):
             buttons = [row]
             if req.suggestions:
                 buttons.append([{"text": self.t("btn.always_task" if codex else "btn.always"), "callback_data": "p:%s:a" % rid}])
+                always = "" if codex else R.always_text(req.suggestions, lv.cwd)
+                if always:
+                    text += "\n<i>%s</i>" % always        # what that button would allow, and where (UX7)
         text += self.t("perm.reply_hint")
         buttons = self.with_app(buttons, lv.sid)
         m = await self.send(lv.pkey, text, buttons=buttons, notify=notify, prio=0, sid=lv.sid, kind="perm")
@@ -2383,6 +2420,9 @@ class Pult(Api, Parts):
             heard = await self.hear_message(spoken, mid, here)
             if heard is None:
                 return
+            # what was heard, under the voice message and without sound: its words went to Claude as typed ones and
+            # showed nowhere in the chat — "don't deploy" heard as "deploy" could not be seen (review 2026-11-11, T8)
+            await self.send(None, self.t("stt.heard", text=R.esc(R.short(R.attachments(heard)[0], HEARD_MAX))), reply_to=mid, here=here)
             if cmd == "/new":
                 rest = (rest + "\n\n" + heard) if rest else heard
             else:
@@ -3169,8 +3209,10 @@ class Pult(Api, Parts):
 
     def panel_text(self):
         m = self.mode()
-        return self.t("panel", mode=self.t("mode." + m), about=self.t("mode.%s.%s" % (m, "pager" if self.pager() else "about"))) + \
-            (self.t("panel.app") if self.app_url() else "")
+        till = self.prefs()["mode_until"] if m == "mac" else None
+        about = self.t("mode.%s.%s" % (m, "pager" if self.pager() else "about")) + \
+            (self.t("mode.mac.until", hm=time.strftime("%H:%M", time.localtime(till))) if till else "")
+        return self.t("panel", mode=self.t("mode." + m), about=about) + (self.t("panel.app") if self.app_url() else "")
 
     def panel_buttons(self):
         m = self.mode()
@@ -3209,9 +3251,9 @@ class Pult(Api, Parts):
 
     async def set_mode(self, mode):
         cur = self.prefs()
-        cur["mode"] = mode
+        cur["mode"], cur["mode_until"] = mode, self.mode_end() if mode == "mac" else None
         self.store.put("prefs", cur)
-        log("notification mode:", mode)
+        log("notification mode:", mode, time.strftime("until %H:%M", time.localtime(cur["mode_until"])) if cur["mode_until"] else "")
         panel = self.store.get("panel")
         if panel:
             self.edit(panel, self.panel_text(), self.panel_buttons(), prio=1)

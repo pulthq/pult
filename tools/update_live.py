@@ -45,7 +45,7 @@ def relay_main(port):
         secret = hmac.new(b"WebAppData", W.TOKEN.encode(), hashlib.sha256).digest()
         f["hash"] = hmac.new(secret, "\n".join("%s=%s" % (k, f[k]) for k in sorted(f)).encode(), hashlib.sha256).hexdigest()
         return urllib.parse.urlencode(f)
-    for name, start in (("HOME", "home"), ("SETTINGS", "settings")):
+    for name, start in (("HOME", "home"), ("SETTINGS", "settings_parts")):
         print("%s http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android"
               % (name, port, urllib.parse.quote(init(start))), flush=True)
     print("TOKEN", W.TOKEN, "OWNER", W.T.OWNER, flush=True)

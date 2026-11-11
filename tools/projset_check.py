@@ -99,7 +99,7 @@ async def main():
         rev = await pg.js("document.querySelector('.psets .ps-review').textContent")
         verdict("… the review: only by your tap, what the reviewer sees", "только по твоему касанию" in rev and "не переписку и память" in rev, rev)
         rows = await pg.js("[...document.querySelectorAll('.psets .ps-row')].map((r) => r.textContent.trim())")
-        verdict("… the project's tags, pin and hide", rows == ["Теги проекта", "Закрепить", "Спрятать"], rows)
+        verdict("… the project's tags, pin and hide", rows == ["Теги проекта", "Закрепить", "Скрыть"], rows)
         await both(pg, "settings-shop")
         verdict("… on 320 px nothing runs over the edge", await narrow(pg, "settings-shop"))
         # the change while something runs: the sheet says it, a tap too
@@ -143,12 +143,12 @@ async def main():
         await pg.tap(MODEL, wait=0.6)
         await pg.tap(OPT % "GLM", wait=0.6)
         s = await said(pg)
-        verdict("GLM without a key says where to add one", s[0] == "alert" and "ключа ещё нет" in s[1] and "Другие производители" in s[1], s)
+        verdict("GLM without a key says where to add one", s[0] == "alert" and "ключа ещё нет" in s[1] and "«Настройки → Модели и ключи»" in s[1], s)
         await pg.tap(OPT % "DeepSeek", wait=0.8)              # the sheet stays open after the word on GLM
         s = await said(pg)
         verdict("DeepSeek: asked first — the code goes to it, Claude's conversations stay, the helper turns off",
                 s[0] == "confirm" and "Сменить модель проекта на «DeepSeek»?" in s[1] and "его код уйдёт в DeepSeek" in s[1]
-                and "Переписка и память модели «Claude» останутся у неё" in s[1] and "Помощник Claude haiku выключится" in s[1], s)
+                and "Переписка и память модели «Claude» останутся у неё" in s[1] and "Claude haiku выключится" in s[1], s)
         verdict("… too long for Telegram's confirm (256): a popup with the question for its title", s[2:] == ["popup"], s)
         verdict("… «no» changes nothing", await pg.js(NOW) == "Claude" and "its model claude → deepseek" not in journal())
         await pg.js("window.__yes = true")

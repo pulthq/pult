@@ -48,7 +48,7 @@ FEATURES = [
     ("pace", "USAGE", 700, "document.querySelector('.spend-seg button').click()", "main", 1),
     ("files", "SESS4", 700, "document.querySelector('.tfline').click()", "main", 1),
     ("newproject", "NEWPROJ", 640, "", "main", 1),
-    ("parts", "SETTINGS", 700, "", "tags", 1),
+    ("parts", "SETP", 700, "", "tags", 1),
 ]
 # the plain stand; a third project full of tagged tasks and every part of Pult in Settings' table; a task on DeepSeek
 # running beside one on Opus, and other vendors in New task; Codex's second opinion on the shop's search; the local

@@ -14,6 +14,7 @@ import { Req, useRcpt } from "../ui/cards.js";
 import { Dots, Loading, ModelPick, Sheet, SwipeRow, avatar, bgChip, choiceDone, choiceName, copyRich, dayLabel, dot, dotted, dur, effortName, hhmm, home, ic, kilo, llmName, modelName, num, pauseChip, plainField, queueChip, sendKey, tagChips, toDate, useNow, workChip } from "../ui/kit.js";
 import { BgSheet, bgCount, bgLine } from "../ui/load.js";
 import { Attach, Pic, Thumbs, Viewer, useAttach, useNoFold } from "../ui/pics.js";
+import { putAway } from "../ui/undo.js";
 
 
 // consecutive steps — one "N steps" block that expands; Claude's own lines about its progress (what the VS Code
@@ -301,9 +302,7 @@ function Outcome({ sid, out, state, now, second, ro }) {
   const [resume, setResume] = useState(out.resume);
   const [got, setGot] = useState(false);
   const mine = state === "you" || state === "fail";
-  const gotIt = async () => {
-    try { await api("seen", { sid }); haptic("success"); setGot(true); } catch (err) { alertBox(err.message); }
-  };
+  const gotIt = async () => { if (await putAway(sid, () => setGot(false))) setGot(true); };       // taken back for a few seconds (ui/undo.js)
   const head = state === "fail" ? html`${ic("alert", 14)} ${out.line || t("out.failed")}` : state === "you" ? html`${dot("attn")}${t("out.waits", { dur: dur(now - out.ts) })}` : html`${ic("check", 14)} ${t("out.done")}`;
   return html`<div class=${"card outcome" + (mine ? " mine" : "") + (state === "fail" ? " fail" : "")}>
     <div class="k">${head}${out.work == null && out.dur ? " · " + t("home.took", { dur: dur(out.dur) }) : ""}</div>
@@ -361,7 +360,7 @@ function Second({ sid, job, now, onAgain, who }) {
     ${head("")}
     <div class="o-l">${ic("alert", 14)} ${t("sec.fail." + (job.why || "failed"))}</div>
     ${job.text && html`<div class="dim small sec-err">${job.text}</div>`}
-    <div class="foot"><button class="link" disabled=${busy} onClick=${() => act("away")}>${t("mine.got")}</button><button class="btn" disabled=${busy} onClick=${onAgain}>${t("sec.again")}</button></div></div>`;
+    <div class="foot"><button class="link" disabled=${busy} onClick=${() => act("away")}>${t("sec.fail.away")}</button><button class="btn" disabled=${busy} onClick=${onAgain}>${t("sec.again")}</button></div></div>`;
   const items = job.items || [];
   const l = (job.limits || [])[0];
   return html`<div class="card second">
@@ -373,6 +372,7 @@ function Second({ sid, job, now, onAgain, who }) {
       : html`<div class="foot quiet"><span></span><button class="link" disabled=${busy} onClick=${() => act("away")}>${ic("check", 15)} ${t("mine.got")}</button></div>`}</div>`;
 }
 
+const STOP_ASK = 3000;
 function Session({ sid }) {
   const now = useNow(1000);
   const [s, setS] = useState({ items: [], before: null, end: null, info: null, err: null });
@@ -548,6 +548,10 @@ function Session({ sid }) {
     const r = await api("stop", { sid }).catch((e) => ({ note: e.message }));
     r.ok ? haptic("success") : alertBox(r.note || t("failed"));
   };
+  // Stop stands 8 px from Send, where the finger goes to add a word mid-turn, and a stopped turn can't be taken back:
+  // the first tap asks — "Stop the turn?" for STOP_ASK — the second stops (review 2026-11-11, UX4)
+  const [arm, setArm] = useState(false);
+  useEffect(() => { if (!arm) return undefined; const id = setTimeout(() => setArm(false), STOP_ASK); return () => clearTimeout(id); }, [arm]);
   // "Start now": the turn waiting in the queue goes over the limit, once
   const jump = async () => {
     const r = await api("jump", { sid }).catch((e) => ({ note: e.message }));
@@ -607,7 +611,9 @@ function Session({ sid }) {
     effortNow ? t("ex.effort", { e: effortName(effortNow).toLowerCase() }) + (lv.tab && info.switch && !info.switch_effort ? " " + t("effort.reload") : "") : "",
     info.stats && info.stats.model ? t("ex.ctx", { n: kilo(info.stats.context), win: used !== null ? t("ex.ctx.win", { w: kilo(info.ctx.window), pct: used }) : "" }) : "",
     // the last turn's figures — once in the session's header, now here: the header keeps the title and the state
-    ts ? t("turn.stats", { n: ts.req, requests: plural(ts.req, "request"), out: kilo(ts.out) }) + (ts.think ? t("turn.think", { n: kilo(ts.think) }) : "") : ""
+    ts ? t("turn.stats", { n: ts.req, requests: plural(ts.req, "request"), out: kilo(ts.out) }) + (ts.think ? t("turn.think", { n: kilo(ts.think) }) : "") : "",
+    // a turn in a tab has no Stop here, and nothing said why (UX13)
+    !lv.driven && lv.state === "work" ? t("ex.stop.tab") : ""
   ].filter(Boolean)); openNote(); };
   const line1 = (modelText || canPick) && html`<button class=${"mchip" + (canPick ? " on" : "")} onClick=${canPick ? () => (pick ? closePick() : openPick()) : explain}>
     <span>${modelText || t("model")}</span>${effortNow && html`<${Dots} e=${effortNow}/>`}${canPick ? html`<span class="caret">${ic("down", 13)}</span>` : ""}</button>`;
@@ -638,7 +644,7 @@ function Session({ sid }) {
         : o.n ? html`<div class="out-n">${ic("clip", 13)} ${o.n}</div>` : ""}<${At} ts=${o.ts} st=${o.st}/></div>
       ${o.st === "sent" && (lv.state === "work" || lv.state === "ask") ? html`<div class="out-hint">${t("out.after_step")}</div>`
         : o.st === "gone" ? html`<div class="out-hint bad">${t("out.gone.why")}</div>` : ""}`)}
-    ${lv.state === "work" && html`<div class="working">${t("working")}${lv.bgk && lv.bgk.length > 0 ? html` · <button class="bg-n" onClick=${openBgs}>${ic("bg", 13)} ${t("bg.n", { list: bgCount(lv.bgk) })} ${ic("chev", 12)}</button>` : ""}</div>`}
+    ${lv.state === "work" && html`<div class="working"><span class="st st-work"></span>${t("working")}${lv.bgk && lv.bgk.length > 0 ? html` · <button class="bg-n" onClick=${openBgs}>${ic("bg", 13)} ${t("bg.n", { list: bgCount(lv.bgk) })} ${ic("chev", 12)}</button>` : ""}</div>`}
     ${lv.state === "queue" && html`<div class="card queue"><div class="q-t">${ic("clock", 16)} ${t("queue.title")}</div>
       <div class="dim small">${t("queue.why", { n: lv.slots })}</div>
       <div class="foot"><span></span><button class="btn" onClick=${jump}>${t("queue.jump")}</button></div></div>`}
@@ -664,7 +670,7 @@ function Session({ sid }) {
       <textarea ref=${taRef} rows="1" placeholder=${t("write")} value=${text} onPaste=${a.paste} onDragOver=${a.over} onDrop=${a.dropIn} onKeyDown=${sendKey(() => { if (!busy) sendText(false); }, setText)} onInput=${(e) => { setText(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}/>
       <div class="ctl"><${Attach} a=${a} disabled=${busy} keep=${{ k: "s:" + sid, text }}/>${info.stt ? html`<${Mic} v=${v} disabled=${busy}/>` : ""}
         <div class="status">${line1}${line2}</div>
-        ${lv.driven && (lv.state === "work" || lv.state === "queue") ? html`<button class="btn danger" onClick=${stop}>${t("stop")}</button>` : ""}
+        ${lv.driven && (lv.state === "work" || lv.state === "queue") ? html`<button class=${"btn danger stop" + (arm ? " arm" : "")} onClick=${() => { if (arm) { setArm(false); stop(); } else { setArm(true); haptic("warning"); } }}>${t(arm ? "stop.sure" : "stop")}</button>` : ""}
         <button class="btn send" aria-label=${t("send")} disabled=${busy || (!text.trim() && !a.files.length)} onClick=${() => sendText(false)}><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg></button></div>`}
     </div>
   </div>`;

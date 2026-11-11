@@ -146,7 +146,7 @@ async def main():
             # a project's screen: the same zones; today's and the earlier tasks are history with the tick
             await cmd("Page.navigate", url="about:blank")
             await cmd("Page.navigate", url=URLS["PROJT"])
-            verdict("project: «Ждёт тебя» is the warm zone, «Идёт» the green one",
+            verdict("project: «Твой ход» is the warm zone, «Идёт сейчас» the green one",
                     await until("!!document.querySelector('.project .zone-mine .card') && !!document.querySelector('.project .zone-run .list')", 150))
             verdict("project: its headings carry the dots", await js(
                 "!!document.querySelector('.project .zone-mine > h3 .dot.attn') && !!document.querySelector('.project .zone-run > h3 .dot.work')"))

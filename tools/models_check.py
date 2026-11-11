@@ -10,7 +10,7 @@ Screenshots go to out_dir (a temporary folder by default). Exit 1 on a failed ch
 import asyncio, base64, json, os, subprocess, sys, tempfile
 import aiohttp
 
-URLS = dict(line.split(" ", 1) for line in open(sys.argv[1]).read().split("\n") if line[:4] in ("SETT", "NEW ", "SESS"))
+URLS = dict(line.split(" ", 1) for line in open(sys.argv[1]).read().split("\n") if line[:4] in ("SETT", "SETM", "NEW ", "SESS"))
 NONE = len(sys.argv) > 2 and sys.argv[2] == "none"
 OUT = sys.argv[2] if len(sys.argv) > 2 and not NONE else tempfile.mkdtemp(prefix="pult-models-")
 os.makedirs(OUT, exist_ok=True)
@@ -195,7 +195,7 @@ async def main():
             await shot("4-new.png")
 
             # Settings → Model and effort: Pult's default, the same names
-            await goto(URLS["SETTINGS"])
+            await goto(URLS["SETM"])
             hdr = "[...document.querySelectorAll('h3')].findIndex((e) => /Модель и раздумья|Model and effort/.test(e.textContent))"
             await until("%s >= 0" % hdr, 150)
             await js("document.querySelectorAll('h3')[%s].scrollIntoView({block: 'start'})" % hdr)

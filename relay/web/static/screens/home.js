@@ -9,13 +9,14 @@ import { html, useEffect, useRef, useState } from "../vendor/htm-preact-3.1.1.js
 import { Req, TagPick, useRcpt } from "../ui/cards.js";
 import { GEAR, GLYPH, Loading, MODES, ModePick, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, ctxBar, dot, dur, durShort, hhmm, ic, keyTap, llmName, nb, pauseChip, pct, plainField, queueChip, quiet, tagChips, toDate, useNow, workChip } from "../ui/kit.js";
 import { BgSheet, bgCount, bgLine, memPct } from "../ui/load.js";
+import { isAway, putAway, useAway } from "../ui/undo.js";
 import { UpdRow } from "../ui/upd.js";
 import { PullRow } from "./local.js";
 
 function Top({ mac, load, usagePct, usageTop, pager, onSet }) {
   const [open, setOpen] = useState(false);
   const cur = MODES.includes(mac.mode) ? mac.mode : "auto";
-  const line = cur === "auto" ? (mac.away ? t("mac.away.short", { dur: durShort(mac.idle) }) : t("mac.here.short")) : t("mode." + cur + ".short");
+  const line = cur === "auto" ? (mac.away ? t("mac.away.short", { dur: durShort(mac.idle) }) : t("mac.here.short")) : cur === "mac" && mac.until ? t("mode.mac.till", { hm: hhmm(toDate(mac.until)) }) : t("mode." + cur + ".short");
   const m = load ? memPct(load) : null;
   // the limit: the one that runs out first (stage R), grey unless it does; an older Pult sends only the 5-hour window
   const lim = usageTop ? Math.round(usageTop.pct) : usagePct;
@@ -28,7 +29,7 @@ function Top({ mac, load, usagePct, usageTop, pager, onSet }) {
       ${(load || lim != null) && html`<button class="where-b top-load" onClick=${() => go("#/usage")}>${lim != null && stat("top.lim", limText, limCls, usageTop && t("sp.short." + usageTop.key))}${load && stat("top.cpu", pct(load.cpu), quiet(load.cpu, 90))}${m !== null && m >= 90 && stat("top.mem", m + "\u00a0%", "bad")}</button>`}
       <a class="gear" href="#/settings" aria-label=${t("settings")}>${GEAR}</a>
     </div>
-    ${open && html`<${ModePick} mode=${cur} onSet=${onSet} pager=${pager}/>`}
+    ${open && html`<${ModePick} mode=${cur} onSet=${onSet} pager=${pager} until=${mac.until}/>`}
   </div>`;
 }
 
@@ -124,15 +125,10 @@ const moveKey = (e) => e.key;
 // title — the task's clock, stopped while it waits for you, where "Running now" has it ticking (2026-10-30). Another
 // model's task than its project's (stage M, 7.2) is read only: no answer from here, "Reviewed" puts it away
 function Mine({ r, now, onGot, stt, showProject = true }) {
-  const [busy, setBusy] = useState(false);
   const [resume, setResume] = useState(r.resume);
   const llm = llmName(r.llm);                // a computer before 0.18.31 doesn't say: no mark
-  const got = async (e) => {
-    e && e.stopPropagation();
-    setBusy(true);
-    try { await api("seen", { sid: r.sid }); haptic("success"); onGot && onGot(r.sid); } catch (err) { alertBox(err.message); }
-    setBusy(false);
-  };
+  // the card goes, and can be brought back for a few seconds (ui/undo.js)
+  const got = async (e) => { e && e.stopPropagation(); if (await putAway(r.sid)) onGot && onGot(r.sid); };
   const open = () => go("#/s/" + r.sid);
   const sent = () => onGot && onGot(r.sid);
   // open on the computer without Pult's wrapper: an answer from here goes as a copy — said before it is typed, as
@@ -146,7 +142,7 @@ function Mine({ r, now, onGot, stt, showProject = true }) {
     ${r.ro ? html`<div class="dim small ro-l">${ic("lock", 13)} ${t("ro.short")}</div>`
       : r.fail === "rate_limit" ? html`<${ResumeAt} sid=${r.sid} resume=${resume} reset=${r.reset} onSet=${setResume}/>` : html`<${Replies} sid=${r.sid} replies=${r.replies} onSent=${sent}/>`}
     ${!r.ro && html`<${QuickReply} sid=${r.sid} stt=${stt} onSent=${sent}/>`}
-    <div class="foot quiet"><span class="foot-l">${llm && html`<span class="llm">${llm}</span>`}${copy && html`<button class="link copy" onClick=${aboutCopy}>${ic("copy", 15)} ${t("dest.copy")}</button>`}</span><button class="link" disabled=${busy} onClick=${got}>${ic("check", 15)} ${t("mine.got")}</button></div>
+    <div class="foot quiet"><span class="foot-l">${llm && html`<span class="llm">${llm}</span>`}${copy && html`<button class="link copy" onClick=${aboutCopy}>${ic("copy", 15)} ${t("dest.copy")}</button>`}</span><button class="link" onClick=${got}>${ic("check", 15)} ${t("mine.got")}</button></div>
     ${ctxBar(r.ctx)}
   </div></${SwipeRow}>`;
 }
@@ -157,7 +153,7 @@ function Catchup({ c, onClose }) {
   return html`<div class="card catch"><div class="item-h"><b>${t("catch.title")}</b><span class="dim nowrap">${t("catch.since", { hm: agoShort(c.from) })}
     <button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></span></div>
     <div class="dim cnts">${[t("catch.turns", { n: c.turns, turns: plural(c.turns, "turn"), p: c.projects }), c.done ? html`<span class="cnt ok">${ic("check", 14)}${c.done}</span>` : "", c.mine ? html`<span class="cnt">${dot("attn")}${c.mine}</span>` : ""].filter(Boolean).map((m, i) => html`${i ? html`<span class="sep">·</span>` : ""}${m}`)}</div>
-    ${c.lines.map((x) => html`<div class="ln tap" key=${x.pkey} onClick=${() => go("#/p/" + encodeURIComponent(x.pkey))}>${x.you ? dot("attn") : x.fail ? ic("alert", 14) : ic("check", 14)} <b>${x.name}</b> — ${x.line}</div>`)}</div>`;
+    ${c.lines.map((x) => html`<div class="ln tap" key=${x.pkey} onClick=${() => go(x.sid ? "#/s/" + x.sid : "#/p/" + encodeURIComponent(x.pkey))}>${x.you ? dot("attn") : x.fail ? ic("alert", 14) : ic("check", 14)} <b>${x.name}</b> — ${x.line}</div>`)}</div>`;
 }
 
 // a session's mark in front of its title: the beating dot while it works, its background task, the queue, a fresh
@@ -249,14 +245,15 @@ function Home() {
   const [tagFor, setTagFor] = useState(null);           // a task's tags from its row's slide (stage Zh, step 2): {sid, info}
   const [openTag, closeTag] = useOverlay(!!tagFor, (v) => { if (!v) setTagFor(null); });
   const seenN = useRef(-1);
-  const yours = useRcpt(d ? moves(d.pending, d.mine || []) : [], moveKey);
+  useAway();                                       // a card put away here is gone at once, before the computer hears
+  const yours = useRcpt(d ? moves(d.pending, (d.mine || []).filter((r) => !isAway(r.sid))) : [], moveKey);
   if (!d) return html`<${Loading} err=${err}/>`;
   if (seenN.current < 0) seenN.current = (d.pending || []).length + (d.mine || []).length;     // no buzz on opening
   useLang(d.lang);
   const onBg = (s) => { setBgFor(s.sid); openBg(); };
   const onTags = (sid) => api("taginfo", { sid }).then((info) => { setTagFor({ sid, info }); openTag(); }).catch((e) => alertBox(e.message));
   const reload = () => api("overview").then(set).catch(() => {});
-  const mine = d.mine || [], board = d.board || [];
+  const mine = (d.mine || []).filter((r) => !isAway(r.sid)), board = d.board || [];
   const n = d.pending.length + mine.length;
   if (n > seenN.current) haptic("warning");             // a new "your move" while you look at Home — a buzz
   seenN.current = n;
@@ -273,7 +270,7 @@ function Home() {
   const nRun = running.length + jobsOn.length;
   const rest = board.filter((p) => !p.hidden).map((p) => Object.assign({}, p, { rows: p.rows.filter((r) => !runs(r)) }));   // a hidden project's block stays off the board (Q101)
   return html`<div>
-    <${Top} mac=${d.mac} load=${d.load} usagePct=${d.usage_pct} usageTop=${d.usage_top} pager=${d.pager} onSet=${(m) => set(Object.assign({}, d, { mac: Object.assign({}, d.mac, { mode: m }) }))}/>
+    <${Top} mac=${d.mac} load=${d.load} usagePct=${d.usage_pct} usageTop=${d.usage_top} pager=${d.pager} onSet=${(m, till) => set(Object.assign({}, d, { mac: Object.assign({}, d.mac, { mode: m, until: till || null }) }))}/>
     <${UpdRow} u=${d.update}/>
     <${PullRow} p=${d.pull}/>
     ${nRun > 0 && html`<section class="zone-run"><h3>${dot("work")}${t("home.running", { n: nRun - nQueue })}${nQueue ? " · " + t("home.queued", { n: nQueue }) : ""}</h3><div class="list">
@@ -284,7 +281,8 @@ function Home() {
       ${yours.map((e) => e.req ? html`<${Req} key=${e.key} r=${e.req} stt=${d.stt}/>`
         : html`<${Mine} key=${e.key} r=${Object.assign({ reset: d.reset }, e.mine)} now=${now} onGot=${gone} stt=${d.stt}/>`)}</section>`}
     ${rest.length > 0 && html`<h3>${t("home.projects")}</h3>${rest.map((p) => html`<${ProjectBlock} key=${p.pkey} p=${p} now=${now} onBg=${onBg} onTags=${onTags}/>`)}`}
-    ${!n && !board.length && !nRun && html`<div class="empty">${t("home.quiet")}</div>`}
+    ${!n && !board.length && !nRun && html`<div class="empty">${t("home.quiet")}
+      <div class="empty-go"><a class="btn" href="#/new">${t("home.first")}</a><a class="btn ghost" href="#/newproject">${t("np.title")}</a></div></div>`}
     ${jobsDone.length > 0 && html`<h3>${t("home.jobs")}</h3><div class="list">${jobsDone.map((j) => html`<${Job} key=${j.id} j=${j} now=${now}/>`)}</div>`}
     ${bgFor && html`<${BgSheet} sid=${bgFor} fixed=${true} onClose=${closeBg}/>`}
     ${tagFor && html`<${TagPick} sid=${tagFor.sid} info=${tagFor.info} onDone=${reload} onClose=${closeTag}/>`}

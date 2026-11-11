@@ -13,6 +13,7 @@ import time
 
 KEEP = 3 * 86400        # s: outcomes put away are forgotten after this, and the log too
 KEEP_MINE = 30 * 86400  # s: one still waiting for the owner stays this long — only they put it away; this only bounds the store
+UNSEEN = 30             # s: "Bring back" works this long after "Got it" (the app offers it for five)
 LOG_MAX = 300           # outcomes kept for "While you were away"
 RECENT = 3 * 3600       # s: a resting session with an outcome this fresh is still shown in its project
 CTX_WARN = 85           # % of the context window: time to compact or start a new session
@@ -98,7 +99,19 @@ class Attn:
         """The owner put the outcome away: "Got it", an answer, a new turn in the session."""
         r = self.rec.get(sid)
         if r and not r["seen"]:
-            r["seen"] = True
+            r["seen"], r["seen_at"] = True, time.time()
+            self.save()
+            return True
+        return False
+
+    def unseen(self, sid, now=None):
+        """"Bring back", a moment after "Got it" (the app offers it for a few seconds — a tap in a card's corner put a
+        task away for good, review 2026-11-11): the outcome waits again. Only one put away within UNSEEN — never an
+        old one, and never one a new turn has replaced."""
+        r = self.rec.get(sid)
+        if r and r["seen"] and (now or time.time()) - (r.get("seen_at") or 0) <= UNSEEN:
+            r["seen"] = False
+            r.pop("seen_at", None)
             self.save()
             return True
         return False
