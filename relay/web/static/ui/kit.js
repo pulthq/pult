@@ -58,7 +58,9 @@ function TimeChip({ cls, text, onClick }) {
   return html`<span class=${"chip timer " + cls + (onClick ? " tap" : "")} role=${onClick ? "button" : undefined} tabindex=${onClick ? 0 : undefined}
     onClick=${onClick} onKeyDown=${onClick ? keyTap(onClick) : undefined}><span>${text}</span>${widest.map((w) => html`<span class="ghost" aria-hidden="true">${w}</span>`)}</span>`;
 }
-const workChip = (since, now) => html`<${TimeChip} cls="ok" text=${since ? t("st.work", { dur: durShort(now - since) }) : t("load.st.work")}/>`;
+// silent — since when the turn makes no step and says no word (the computer says so after 15 minutes of that): a grey
+// mark beside the clock; a task that hung used to look like one at work (review 2026-11-11, D6)
+const workChip = (since, now, silent) => html`${silent ? html`<span class="chip mute silent">${t("st.silent", { dur: durShort(Math.max(0, now - silent)) })}</span> ` : ""}<${TimeChip} cls="ok" text=${since ? t("st.work", { dur: durShort(now - since) }) : t("load.st.work")}/>`;
 // the same clock, stopped while the task waits for you (2026-10-30): grey, with the pause sign — all Claude's work on it
 // so far, without the waits; "working N" goes on from it once you answer. A computer before 0.18.34 doesn't say: none
 const pauseChip = (work) => (work >= 1 ? html`<span class="chip paused" role="img" aria-label=${t("work.total", { dur: dur(work) })}>${ic("pause", 11)}${dur(work)}</span>` : "");

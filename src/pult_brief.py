@@ -47,7 +47,11 @@ Answer with JSON only:
   {lang}, each at most {reply_len} characters. Each reply is itself the decision, one Claude can act on at once: the
   alternatives Claude named ("A — in memory"), the one Claude recommends first, "Yes, go ahead", "Explain the
   difference". Never invent an alternative Claude did not offer, and never a reply about how the developer is going
-  to answer ("I'll describe it", "I'll send screenshots", "I'll check"). When the answer has to come from the
+  to answer ("I'll describe it", "I'll send screenshots", "I'll check"). The developer taps one reply, and only
+  one: when Claude asks several separate things at once (two yes/no questions, a choice and an approval), every
+  reply answers all of them together — "Yes to both", "Deploy, keep the old table", "No to both" — the one that
+  agrees to everything Claude proposes first; never a reply that answers just one of the questions. If no short
+  reply can answer them all, an empty list. When the answer has to come from the
   developer — their own description or words, a file, a photo, what only they can see or do — an empty list: they
   will write it themselves. Otherwise an empty list."""
 

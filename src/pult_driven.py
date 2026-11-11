@@ -92,6 +92,9 @@ class Turn:
         self.changed = asyncio.Event()
         self.done = None          # (icon, time) when the turn ended
         self.now = None           # Claude's latest reply in this turn
+        self.heard = 0.0          # when that reply last changed: a word is a sign of life, as a step is
+        self.silent = None        # since when it makes no step and says no word (pultd.silence), None — it goes on
+        self.idle_asked = 0.0     # when Claude Code was last asked whether the session is idle
         self.muted = False        # 🔕 — no milestones until the turn ends
         self.vehi = None
         self.vehi_ids = []        # the milestones' messages: removed when the result comes (one message per turn)
@@ -142,6 +145,8 @@ class Req:
         self.picks = R.advised_picks(self.inp.get("questions")) if self.kind == "ask" else {}
         self.ts = time.time()     # since when it waits for the owner
         self.paged = False        # posted to Telegram (as a pager, only when the owner is neither in the app nor here)
+        self.reminded = 0         # how many of the reminders about it were made (pultd.REMIND_AT)
+        self.nags = []            # the reminders' messages: gone once it is decided
         self.bare = False         # posted without its words: the project's topic gets only "done" (stage M, 7.2)
 
 

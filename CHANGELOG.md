@@ -4,6 +4,35 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.58 — 2026-11-11
+
+- **Telegram calls when it makes sense to.** Four changes to when a "your move" rings:
+  a call about what ended while the app was on your screen waits five minutes after the app left it, and is made
+  only if the outcome still waits (every third call used to come within 15 s of closing the app, about just that);
+  **quiet hours** — 23:00 to 8:00 by default — take the sound off everything Pult sends but a security alert;
+  a question or a permission left unanswered is called about again after 30 minutes and after 2 hours, and the
+  reminders go once it is answered; and once a day, at 9:00, **the day's summary** in General says how many tasks
+  wait for you and in which projects, how long the oldest has waited, and how many reports aren't put away
+  (reports alone make no sound). The hour, the quiet hours, the delay and the reminders are settings.
+- **A new "your move" is seen from every screen.** Home's tab carries the count of tasks that wait for you —
+  questions, permissions, outcomes that need you; plain reports don't count — and a task says, in a line under its
+  header, that another one waits: which project and what, or how many. The line can be put away; it comes back with
+  the next new one.
+- **Settings → Notifications** has the four settings of when Telegram calls: the day's summary (its hour, or none),
+  quiet hours, the reminder of a question, the wait after the app.
+- **A task that makes no step is marked "silent".** After 15 minutes with no step and no word — and no command still
+  running, no background task, no question to you — a grey "silent N min" stands beside "working N". Pult stops
+  nothing by itself; but when Claude Code itself calls the session idle, the turn's end simply never reached Pult: the
+  turn is closed with the transcript's last words as its outcome.
+- **Ready replies answer the whole question.** When Claude asked two things at once — "install it? release it? yes
+  or no to each" — the replies under the outcome were one per question, and no single tap could say yes to both. Each
+  reply now answers everything asked ("Yes to both", "Deploy, keep the old table", "No to both"), the one that agrees
+  to all of it first; when no short reply can, there are none and you write your own.
+- **Several files of one `pult send` ring once**, not once each.
+- **An error in one of Pult's own loops no longer ends Pult.** The loop is started again and the journal says where
+  it broke; before, the whole daemon went down with every session it ran. The journal now has each turn's beginning
+  and end, and an error in a task nobody waited for — at once, with its place.
+
 ## 0.18.57 — 2026-11-11
 
 - **A long task's history can be read from the phone.** The chat's earlier part came in chunks of 1.5 MB of the

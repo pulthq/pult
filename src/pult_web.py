@@ -40,7 +40,9 @@ REFUSED = {"login expired": "expired", "resume key unknown or used up": "badkey"
            "signature mismatch": "forged", "no signature": "forged", "broken fields": "forged"}
 RECONNECT = (1, 2, 5, 10, 30)  # seconds between attempts to connect to the relay server
 PAGE = 1536 * 1024             # transcript bytes read at once for a chat chunk
-CAPS = ("once",)               # what the app may count on: "once" — a request with a key is done once (Web.done_once)
+# what the app may count on: "once" — a request with a key is done once (Web.done_once); "waiting" — what waits for
+# the owner's move can be asked for (api_waiting)
+CAPS = ("once", "waiting")
 ONCE_KEEP = 600                # s: how long a keyed request's answer is kept for its repeat
 ONCE_MAX = 300                 # keyed requests remembered at most
 # An older chunk (and the chat's first) is filled by what the chat shows, not by bytes: on real transcripts 1.5 MB of

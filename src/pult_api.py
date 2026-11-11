@@ -124,7 +124,8 @@ class Api:
                 "note": t.note if t else None, "now": R.plain(t.now, self.D.NOW_LEN) if t and t.now else None,
                 "bg": [R.short(b.get("description") or b.get("command") or self.t("task.default"), 80) for b in lv.bg],
                 "bgk": [b.get("type") or "shell" for b in lv.bg],
-                "bg_since": self.bg_since(lv), "tab": bool(self.tab_for(lv.sid)), "work": self.work_total(lv.sid)}
+                "bg_since": self.bg_since(lv), "tab": bool(self.tab_for(lv.sid)), "work": self.work_total(lv.sid),
+                "silent": t.silent if t else None}       # since when it makes no step and says no word
 
     def req_item(self, req):
         lv = self.live.get(req.sid) or self.stub(req.sid)
@@ -226,6 +227,27 @@ class Api:
                 "usage_pct": self.limit_pct(), "usage_top": await self.spend_top(), "catchup": self.catchup(),
                 "stt": self.stt_state()["on"],
                 "pager": self.pager()}
+
+    async def api_waiting(self, but=None):
+        """What waits for the owner's move, for the count on Home's tab and the line in a task about another one (review
+        2026-11-11, UX1): open questions, permissions and plans, and outcomes that need the owner or broke off — not
+        plain reports, and not a session that has gone on since. but — the task open now: `others` and `top` leave it
+        out. → {n, others, top: the newest of the others {sid, project, what, ts} or None}."""
+        rows = {}
+        for req in self.req_by_rid.values():
+            if not req.fut.done() and (req.sid not in rows or req.ts > rows[req.sid][0]):
+                rows[req.sid] = (req.ts, req.kind, (self.live.get(req.sid) or self.stub(req.sid)).pkey)   # ask, plan, perm
+        for sid, r in self.attn.rec.items():
+            lv = self.live.get(sid)
+            if sid in rows or r.get("seen") or not (r.get("you") or r.get("fail")) or lv and lv.turn:
+                continue
+            rows[sid] = (r["ts"], "fail" if r.get("fail") else "you", r["pkey"])
+        others = sorted(((ts, sid, what, pkey) for sid, (ts, what, pkey) in rows.items() if sid != but), reverse=True)
+        top = None
+        if others:
+            ts, sid, what, pkey = others[0]
+            top = {"sid": sid, "project": self.name_of(pkey), "what": what, "ts": ts}
+        return {"n": len(rows), "others": len(others), "top": top}
 
     def catchup(self):
         """"While you were away": the turns since the app was last on the screen, what is behind (put away by the owner
@@ -2933,6 +2955,15 @@ class Api:
         for k, v in kw.items():
             if k in ("vehi", "brief", "pager", "gh", "vcheck", "hashtags", "ccfresh") and isinstance(v, bool) or k == "mode" and v in self.D.MODES or k == "lang" and v in I.LANGS \
                     or k == "pace" and v in S.PACES:
+                cur[k] = v
+            elif k == "digest" and (v is None or isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 23):
+                cur[k] = v                                # the hour of the day's summary; None — none
+            elif k == "quiet" and (v is None or isinstance(v, list) and len(v) == 2 and v[0] != v[1]
+                                   and all(isinstance(x, int) and not isinstance(x, bool) and 0 <= x <= 23 for x in v)):
+                cur[k] = v                                # [from, to) hours; None — none
+            elif k == "page_delay" and isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 60:
+                cur[k] = v                                # minutes
+            elif k == "remind" and isinstance(v, bool):
                 cur[k] = v
             elif k in ("model", "effort") and (v is None or isinstance(v, str)):
                 m, e = self.check_choice(v if k == "model" else None, v if k == "effort" else None)

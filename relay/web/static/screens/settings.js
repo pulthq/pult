@@ -401,6 +401,22 @@ function Settings() {
   const sw = (k, label, hint, more) => html`<div class="item sw-row">
     <button class="sw-h" role="switch" aria-checked=${!!d.prefs[k]} onClick=${() => toggle(k)}><b>${label}</b><span class=${"sw" + (d.prefs[k] ? " on" : "")}></span></button>
     <div class="dim">${hint}</div>${more ? html`<${About} text=${more} label=${t("more")}/>` : ""}</div>`;
+  // a setting picked from a short list — the hour of the day's summary, the quiet hours, the wait after the app
+  // (review 2026-11-11, block 2): the phone's own picker, the value on the right; values travel as JSON
+  const valueRow = (k, label, hint, options) => {
+    const now = JSON.stringify(d.prefs[k]);
+    const opts = options.some(([v]) => JSON.stringify(v) === now) ? options : [...options, [d.prefs[k], String(d.prefs[k])]];
+    return html`<div class="item sw-row"><label class="sw-h pick-h2"><b>${label}</b>
+      <select class="pick-v" value=${now} onChange=${(e) => setChoice({ [k]: JSON.parse(e.target.value) })}>
+        ${opts.map(([v, text]) => html`<option key=${JSON.stringify(v)} value=${JSON.stringify(v)}>${text}</option>`)}</select></label>
+      <div class="dim">${hint}</div></div>`;
+  };
+  const hours = (a, b) => a + ":00–" + b + ":00";
+  const calls = "digest" in d.prefs ? html`<div class="list">
+    ${valueRow("digest", t("digest"), t("digest.short"), [[null, t("set.none")], ...[7, 8, 9, 10, 11, 12, 18, 19, 20, 21].map((h) => [h, t("digest.at", { h })])])}
+    ${valueRow("quiet", t("quiet"), t("quiet.short"), [[null, t("set.none")], ...[[22, 7], [22, 8], [23, 7], [23, 8], [0, 8], [0, 9]].map((q) => [q, hours(q[0], q[1])])])}
+    ${sw("remind", t("remind"), t("remind.short"))}
+    ${valueRow("page_delay", t("pagedelay"), t("pagedelay.short"), [[0, t("pagedelay.now")], ...[2, 5, 10, 15].map((n) => [n, t("pagedelay.min", { n })])])}</div>` : "";
   const setLangPref = async (k) => {
     try { await api("prefs", { lang: k }); set(Object.assign({}, d, { prefs: Object.assign({}, d.prefs, { lang: k }) })); useLang(k); haptic("success"); }
     catch (e) { alertBox(e.message); }
@@ -435,6 +451,7 @@ function Settings() {
     ${pick && html`<${ChoicePick} model=${d.prefs.model} effort=${d.prefs.effort} def=${d.cc} models=${d.cc_models} top=${t("pick.as.cc.short")}
       note=${t("def.cc.note")} onClose=${closePick} onPick=${setChoice}/>`}` : ""}
     <h3>${t("notifications")}</h3><div class="list">${sw("pager", t("pager"), t("pager.short"), t("pager.about"))}${d.prefs.pager ? "" : sw("vehi", t("vehi"), t("vehi.about"))}${sw("brief", t("brief"), t("brief.short"), t("brief.about"))}${"hashtags" in d.prefs ? sw("hashtags", t("hashtags"), t("hashtags.short"), t("hashtags.about")) : ""}</div>
+    ${calls}
     <h3>${t("where")}</h3>
     <${ModePick} mode=${d.prefs.mode} pager=${d.prefs.pager} onSet=${(m) => set(Object.assign({}, d, { prefs: Object.assign({}, d.prefs, { mode: m }) }))}/>
     ${d.prefs.pace ? html`<h3>${t("pace")}</h3>

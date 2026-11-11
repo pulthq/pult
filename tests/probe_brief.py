@@ -41,6 +41,11 @@ SAMPLES = [
      "стороны я пока ничего не нашёл: Пульт работает, в журнале демона ошибок нет.", [], True, "none"),
     ("проверь посадку датчика",
      "Сначала посадка. Сними стакан и пришли фото микросхемы через окно — по нему скажу, сдвигать ли плату.", [], True, "none"),
+    # several questions at once: one tap must answer them all (the owner, 2026-11-11: "Install", "Release", "Don't
+    # release" under "decide both, yes or no to each" — no tap could say yes to both)
+    ("сделай миграцию заказов",
+     "Миграция готова, проверки зелёные. Нужны два решения: запускать ли её на проде сейчас и удалять ли старую "
+     "таблицу после неё. Ответь да или нет по каждому.", [], True, "all"),
     ("что дальше?",                                         # Claude's advice goes first
      "Два пути. А — чинить сейчас, в этой сессии: контекст свежий, рекомендую. Б — записать передачу и начать "
      "новую сессию. Как делаем?", [], True, "first:А"),
@@ -83,7 +88,8 @@ async def main():
     for prompt, reply, bg, want, *rep in SAMPLES:
         res, secs, peak = await one(prompt, reply, bg)
         brief = B.parse(res)
-        rep = rep[0] if rep else None              # the ready replies wanted: "none", "some", "first:<its start>"
+        # the ready replies wanted: "none", "some", "first:<its start>", "all" — each answers every question asked
+        rep = rep[0] if rep else None
         u = res.usage or {}
         tin = (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0)
         tout = u.get("output_tokens") or 0
@@ -91,6 +97,8 @@ async def main():
         got = (brief or {}).get("replies") or []
         ok = brief is not None and (want is None or brief["you"] == want) and (
             rep is None or (rep == "none" and not got) or (rep == "some" and got)
+            or (rep == "all" and (not got or all(any(w in x.lower() for w in ("оба", "обе", "всё", "все ", " и ", ",", "both", "all", " and "))
+                                                 for x in got)))
             or (rep.startswith("first:") and got and got[0].startswith(rep[6:])))
         print("%s %.1f s · peak %d MB · in %d (cache read %d) · out %d · $%.4f" % (
             "OK  " if ok else "MISS", secs, peak // 2**20, tin, u.get("cache_read_input_tokens") or 0, tout,

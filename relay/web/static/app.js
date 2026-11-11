@@ -17,6 +17,7 @@ import { Tags } from "./screens/tags.js";
 import { hhmm, ic } from "./ui/kit.js";
 import { Load } from "./ui/load.js";
 import { MemoryStatus } from "./ui/memory.js";
+import { WaitBadge } from "./ui/wait.js";
 import { EditHost, ViewHost } from "./ui/pics.js";
 
 // a short note at the bottom of the screen for a moment — an answer went — outliving the card it came from
@@ -65,7 +66,8 @@ function App() {
     : r.name === "lm" ? html`<${LocalModel} key=${r.id} name=${r.id}/>`
     : r.name === "settings" ? html`<${Settings}/>`
     : html`<${Home}/>`;
-  const tab = (name, h, label, icon) => html`<a class=${(r.name === name ? "on" : "") + (name === "new" ? " new" : "")} href=${h}><span class="ti">${ic(icon, 22)}</span><span class="tl">${label}</span></a>`;
+  // Home's tab carries how many tasks wait for your move — seen from every screen with the tabs (UX1)
+  const tab = (name, h, label, icon) => html`<a class=${(r.name === name ? "on" : "") + (name === "new" ? " new" : "")} href=${h}><span class="ti">${ic(icon, 22)}${name === "home" ? html`<${WaitBadge}/>` : ""}</span><span class="tl">${label}</span></a>`;
   return html`<${Banner}/><${MemoryStatus}/><main class=${r.name === "s" ? "with-composer" : ""}>${screen}</main>
     ${r.name !== "s" && html`<nav class="tabs">${tab("home", "#/", t("tab.home"), "home")}${tab("projects", "#/projects", t("tab.projects"), "folder")}${tab("usage", "#/usage", t("tab.res"), "gauge")}${tab("new", "#/new", t("tab.new"), "plus")}</nav>`}
     <${EditHost}/><${ViewHost}/><${FileHost}/><${Toast}/>`;

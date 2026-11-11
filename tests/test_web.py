@@ -956,7 +956,8 @@ class OnceTest(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(web.once), 2)
         # what the computer can do goes with the answer to "lang" — and only there
         await web.answer("c1", req(30, "lang"))
-        self.assertEqual((sent[-1]["data"], sent[-1]["caps"]), ("ru", ["once"]))
+        self.assertEqual((sent[-1]["data"], sent[-1]["caps"]), ("ru", list(PW.CAPS)))
+        self.assertIn("once", PW.CAPS)
         self.assertNotIn("caps", sent[0])
 
 
