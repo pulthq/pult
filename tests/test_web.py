@@ -416,7 +416,8 @@ class TranscriptTest(unittest.TestCase):
             self.assertEqual(texts(PW.transcript_page(str(p), before=over["before"], page=2000, want=0)), texts(last))
         # the first record of the file longer than a chunk: read from the file's start, nothing older
         p.write_text(big + "\n" + tail[0] + "\n")
-        top = PW.transcript_page(str(p), before=len(big.encode()) + 1, page=2000, want=0)
+        # where the second record begins, as the file has it: written as text, Windows ends its lines with \r\n
+        top = PW.transcript_page(str(p), before=p.read_bytes().index(b"\n") + 1, page=2000, want=0)
         self.assertEqual(([i["k"] for i in top["items"]], top["before"]), (["result"], None))
 
 
