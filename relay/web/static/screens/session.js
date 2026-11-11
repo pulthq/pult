@@ -1,7 +1,7 @@
 // Pult app — a session: the chat, a turn's files, a project's file opened over the screen.
 // Moved from app.js as it was (review 2026-10-27, 6.4).
 import { api, apiOnce, conn, emit, on, pacer, useLive } from "../core/conn.js";
-import { drafts, openLayer, typed, useBackFor, useDraft, useOverlay } from "../core/nav.js";
+import { drafts, go, openLayer, typed, useBackFor, useDraft, useOverlay } from "../core/nav.js";
 import { WaitLine } from "../ui/wait.js";
 import { alertBox, confirmBox, haptic } from "../core/tg.js";
 import { Mic, useRecorder } from "../core/voice.js";
@@ -523,7 +523,8 @@ function Session({ sid }) {
       // a copy is a new session: its message is not this chat's; a computer before 0.15.2 keeps no outbox — the
       // message then leaves the chat until Claude reads it, as it did before the ticks
       setSending((m) => (r.out ? m.map((x) => (x.key === key ? Object.assign({}, x, { id: r.out, st: "sent" }) : x)) : m.filter((x) => x.key !== key)));
-      if (r.how === "fork") alertBox(t("fork.started"));
+      // a copy is another task: go to it — the message is there (a computer before this names none: the old word)
+      if (r.how === "fork") { if (r.sid) { emit("toast", t("fork.opened")); go("#/s/" + r.sid); } else alertBox(t("fork.started")); }
     } catch (e) { back(); alertBox(e.message); }
     setBusy(false);
   };

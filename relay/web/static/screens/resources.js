@@ -163,7 +163,7 @@ function Spent({ L }) {
 }
 
 function Spend() {
-  const [d, err, set] = useLive(() => api("spend"), [], () => false, 60000);
+  const [d, err, set] = useLive(() => api("spend"), [], () => false, 60000, "spend");
   const [key, setKey] = useState(null);
   const [table, setTable] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -236,7 +236,7 @@ function Resources() {
 }
 
 function Usage() {
-  const [d, err, set] = useLive(() => api("usage"), [], () => false);
+  const [d, err, set] = useLive(() => api("usage"), [], () => false, 30000, "usage");
   const [busy, setBusy] = useState(false);
   useNow(30000);
   const refresh = async () => {

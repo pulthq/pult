@@ -99,7 +99,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.58"
+VERSION = "0.18.59"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -2901,7 +2901,7 @@ class Pult(Api, Parts):
         return self.t("busy.driven", n=len(self.driven), sessions=I.plural(len(self.driven), "session"))
 
     async def drive(self, sid, path, text, origin, resume=None, fork=False, pkey=None, quote=True, here=None,
-                    model=None, effort=None, app=False, vendor=None):
+                    model=None, effort=None, app=False, vendor=None, copy=None):
         """quote=False — the owner's message is in another topic (General): the turn doesn't reply to it
         but shows the prompt itself. here — where the owner wrote (for a refusal); the project topic by default.
         model, effort — the owner's choice for a new session; a resumed one keeps what was chosen for it.
@@ -2911,8 +2911,8 @@ class Pult(Api, Parts):
         runs on (stage M, step 2): "claude", a vendor's id, None — the project's default; a continuation or a copy keeps
         the session's own, and never runs without its key."""
         pkey = pkey or sanitize(path)
-        if fork:
-            resume, sid = sid, str(uuid.uuid4())
+        if fork:                      # copy — the copy's own id, when the caller wants to know it (the app opens it)
+            resume, sid = sid, copy or str(uuid.uuid4())
         vid, msg = None, None
         if resume:                    # a continuation or a copy keeps its task's model: read only if not the project's
             vid, msg = self.store.vendor_of(resume), self.vendor_stop(resume, pkey)

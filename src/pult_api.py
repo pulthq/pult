@@ -551,7 +551,71 @@ class Api:
         own = self.store.session_tag(sid)
         return {"tags": self.tags_of(sid), "tagset": self.tag_list(lv.pkey), "tag_auto": not (own and own["own"])}
 
-    async def api_project(self, pkey):
+    FIND_MAX = 60            # tasks a search shows
+    EARLIER = 40             # earlier tasks a project's screen shows at first, and each "Show more" adds
+    EARLIER_MAX = 2000
+
+    async def task_index(self):
+        """Every task of every project, for the search: [{sid, pkey, title, first, last}], the newest first. From the
+        transcripts' own records (the SDK's list_sessions: title, summary, first prompt) and the other vendors' homes;
+        229 tasks of 18 projects are listed in 0.34 s on the owner's computer (2026-11-11) — kept for 30 s."""
+        at, rows = getattr(self, "_task_index", (0.0, None))
+        if rows is not None and time.monotonic() - at < 30:
+            return rows
+        from claude_agent_sdk import list_sessions
+        known = {r["pkey"]: r["path"] for r in self.store.db.execute("SELECT pkey, path FROM topics") if r["path"]}
+        rows, seen = [], set()
+        for _, pkey, path in await asyncio.to_thread(self.list_projects, known):
+            if not path or not os.path.isdir(path):
+                continue
+            try:
+                items = await asyncio.to_thread(list_sessions, path, self.EARLIER_MAX)
+            except Exception as e:
+                log("search: sessions of %s not listed — %r" % (pkey, e))
+                items = []
+            for x in items + await asyncio.to_thread(self.home_sessions, path, self.EARLIER_MAX):
+                if x.session_id in seen:
+                    continue
+                seen.add(x.session_id)
+                rows.append({"sid": x.session_id, "pkey": pkey, "title": str(x.custom_title or x.summary or ""),
+                             "first": str(getattr(x, "first_prompt", None) or ""), "last": (x.last_modified or 0) / 1000})
+        rows.sort(key=lambda r: -r["last"])
+        self._task_index = (time.monotonic(), rows)
+        return rows
+
+    async def api_find(self, q, pkey=None):
+        """A search of tasks (review 2026-11-11, UX4; Q180): every word of q in the task's title, or among its tags, or
+        in its first request — in that order of worth; in one project (pkey) or in all that aren't hidden. → {rows:
+        [{sid, pkey, project, title, last, tags, by: "title"|"tag"|"ask", ask, state}], more}."""
+        words = [w for w in str(q or "").lower().split() if len(w) > 1][:8]
+        if not words:
+            return {"rows": [], "more": False}
+        hides = {} if pkey else self.store.hides()
+        tagged, out, more = {}, [], False
+        for r in await self.task_index():
+            if pkey and r["pkey"] != pkey or hides.get(r["pkey"]):
+                continue
+            tags = [g["n"] for g in self.tags_of(r["sid"], tagged)]
+            title, tagline, first = r["title"].lower(), " ".join(tags).lower(), r["first"].lower()
+            by = "title" if all(w in title for w in words) else \
+                "tag" if all(w in title or w in tagline for w in words) else \
+                "ask" if all(w in title or w in tagline or w in first for w in words) else None
+            if not by:
+                continue
+            if len(out) >= self.FIND_MAX:
+                more = True
+                break
+            lv, rec = self.live.get(r["sid"]), self.attn.rec.get(r["sid"])
+            state = "ask" if lv and any(not x.fut.done() for x in lv.pending.values()) else "work" if lv and lv.turn else \
+                "you" if A.waiting(rec) else None
+            out.append({"sid": r["sid"], "pkey": r["pkey"], "project": self.name_of(r["pkey"]),
+                        "title": R.short(r["title"] or r["first"] or "—", 80), "last": r["last"], "tags": tags, "by": by,
+                        "ask": R.short(R.prompt_text(r["first"]), 140) if by == "ask" else "", "state": state})
+        out.sort(key=lambda r: ({"title": 0, "tag": 1, "ask": 2}[r["by"]], -r["last"]))
+        log("app: search — %d word(s), %d found%s" % (len(words), len(out), " in one project" if pkey else ""))
+        return {"rows": out, "more": more}
+
+    async def api_project(self, pkey, earlier=None):
         """A project's screen — its board, large: what waits for the owner (requests to answer here, sessions that
         need them), what runs, today's outcomes, then the earlier sessions."""
         rows = [r for r in self.session_rows(await self.agents()) if r["pkey"] == pkey]
@@ -572,16 +636,21 @@ class Api:
             r["ctx"], r["llm"] = await self.row_stats(r["sid"])      # show how full its context is (Q151)
             r["work"] = self.work_total(r["sid"])
         shown = {r["sid"] for r in mine + live + today} | {r["sid"] for r in pending}
-        earlier = []
+        earlier, further = [], False
         if path and os.path.isdir(path):
             from claude_agent_sdk import list_sessions
             try:
-                items = await asyncio.to_thread(list_sessions, path, 40)
+                # "Earlier" stopped at the fortieth task with no way on (review 2026-11-11, UX4): the app asks for more,
+                # forty at a time; one more than asked for is read — whether there is anything further
+                lim = min(self.EARLIER_MAX, max(self.EARLIER, int(earlier or self.EARLIER)))
+                items = await asyncio.to_thread(list_sessions, path, lim + len(shown) + 1)
             except Exception as e:
                 log("project sessions not listed:", repr(e))
-                items = []
-            items = sorted(items + await asyncio.to_thread(self.home_sessions, path, 40),
-                           key=lambda x: -(x.last_modified or 0))[:40]
+                items, lim = [], self.EARLIER
+            items = sorted(items + await asyncio.to_thread(self.home_sessions, path, lim + len(shown) + 1),
+                           key=lambda x: -(x.last_modified or 0))
+            rest = [x for x in items if x.session_id not in shown]
+            further, items = len(rest) > lim, rest[:lim]
             known, tagged = {r["sid"]: r for r in rows}, {}
             for x in items:
                 if x.session_id in shown:
@@ -595,7 +664,8 @@ class Api:
         # tag_job: Claude sorts its earlier tasks now — the first open of the project with the model on starts it (Q93)
         self.tags_sort_soon(pkey)
         return {"pkey": pkey, "name": self.name_of(pkey, rows), "path": path, "pending": pending, "mine": mine,
-                "live": live, "today": today, "earlier": earlier, "turns": turns, "secs": secs,
+                "live": live, "today": today, "earlier": earlier, "earlier_more": bool(earlier) and further,
+                "turns": turns, "secs": secs,
                 "reset": self.limit_reset(), "stt": self.stt_state()["on"],
                 "tagset": self.tag_list(pkey, list(shown) + [x["sid"] for x in earlier]),
                 "tags_n": len(self.store.tag_vocab(pkey)), "tag_job": self.tag_jobs.get(pkey),
@@ -1094,7 +1164,7 @@ class Api:
         if how in ("resume", "fork") and self.driven_full():
             raise ValueError(self.busy_driven())       # before the pictures are saved: nothing is left behind
         body = self.with_uploads(text, files, self.session_project(sid)[1])
-        oid = None
+        oid, copy = None, None
         if how == "session":
             oid = self.out_add(sid, body)          # before the hand-off: its hook may come before we are back
             try:
@@ -1111,12 +1181,15 @@ class Api:
                 raise
         else:
             # a resumed session (or a copy — a new session) gets its message into the outbox in drive()
+            # a copy is a new task: the app goes to it at once — before, the message left for a task the owner couldn't
+            # see, and the old one stayed on the screen with "it will show in the list" (review 2026-11-11, UX5)
+            copy = str(uuid.uuid4()) if how == "fork" else None
             await self.drive(sid, cwd, body, None, resume=sid if how == "resume" else None, fork=how == "fork", pkey=pkey,
-                             app=True)
+                             app=True, copy=copy)
             if how == "resume":
                 oid = next((o["id"] for o in reversed(self.outbox.get(sid) or []) if o["body"] == body), None)
         self.mark_seen(sid, body)                  # answered: the outcome is behind, and a call about it says with what
-        return {"ok": True, "how": how, "out": oid}
+        return {"ok": True, "how": how, "out": oid, "sid": copy}          # sid — the copy's, when one was made
 
     @staticmethod
     def check_choice(model, effort):

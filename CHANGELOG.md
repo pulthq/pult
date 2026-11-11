@@ -4,6 +4,20 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.59 — 2026-11-11
+
+- **Tasks can be searched.** A field on top of Projects looks through every project, the same field on a project's
+  screen — through that one: by the tasks' titles, their first requests and their tags (not by what was said in them).
+  What was asked and found is there again when you come back from a task. And a project's "Earlier" no longer ends at
+  the fortieth task: **Show 40 more** goes on.
+- **Back comes to where you were.** Every change of screen used to go to the top and begin with "Loading…": the
+  eighth task of a list opened, Back — and the list was at its first again, "Earlier" folded. A screen now opens at
+  once with what it showed last and catches up, Back returns to the place it was left at, and a project's opened
+  "Earlier" and picked section are as they were. A new screen still opens at its top; a task — at its end.
+- **The New tab knows the project you are in**: from a project's screen it opens the form with that project picked.
+- **A copy opens at once.** A message that had to go as a copy left for a task you couldn't see, with "it will show
+  in the list"; the app now goes to the copy, where the message is.
+
 ## 0.18.58 — 2026-11-11
 
 - **Telegram calls when it makes sense to.** Four changes to when a "your move" rings:

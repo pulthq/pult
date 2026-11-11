@@ -761,6 +761,20 @@ h3 .chev { vertical-align: -2px; }
 /* the tab bar: icons over words, New in the accent */
 .tabs a { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 4px 9px; font-size: var(--fs-cap); font-weight: 600; }
 .tabs a .ti { display: flex; height: 26px; align-items: center; position: relative; }
+/* the search of tasks: its field, what it found */
+.find { margin: 10px 0 12px; }
+.find-f { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px; border-radius: 12px; background: var(--card);
+  border: 1px solid var(--line); color: var(--muted); }
+.find-f input { flex: 1; min-width: 0; border: 0; background: none; font: inherit; color: var(--ink); outline: none; padding: 10px 0; }
+.find-f input::-webkit-search-cancel-button { display: none; }
+.find-x { flex: 0 0 36px; height: 44px; margin-right: -10px; border: 0; background: none; color: var(--muted); cursor: pointer; display: flex;
+  align-items: center; justify-content: center; }
+.found mark { background: var(--attn-soft); color: inherit; border-radius: 3px; padding: 0 2px; }
+.found .ln { display: flex; flex-wrap: wrap; gap: 4px 8px; color: var(--muted); }
+.found-p { font-weight: 600; }
+.found-s.ask, .found-s.you { color: var(--attn-ink); font-weight: 600; } .found-s.work { color: var(--ok); font-weight: 600; }
+.found-by { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.more-b { display: block; width: 100%; min-height: 44px; margin: 4px 0 8px; }
 /* how many tasks wait for your move, on Home's tab */
 .tbadge { position: absolute; top: -4px; left: 15px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--attn);
   color: #fff; font-size: 11.5px; font-weight: 700; line-height: 18px; text-align: center; }

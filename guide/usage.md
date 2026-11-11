@@ -158,6 +158,10 @@ and another check it — from the phone.
   shows only where Codex is installed (ChatGPT for Mac carries it, or the `codex` command); a Codex version Pult
   wasn't checked on is checked against its own protocol first.
 
+**Finding a task.** The field on top of Projects searches every project, the same field on a project's screen — that
+project: by the tasks' titles, their first requests and their tags. A project's Earlier list goes on with *Show 40 more*.
+Back returns to the place you left a screen at.
+
 ## In Telegram
 
 Every project gets a topic in your group; its sessions' turns, results, questions and permission requests go there.

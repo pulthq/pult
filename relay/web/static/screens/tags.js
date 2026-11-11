@@ -73,7 +73,7 @@ function MergeSheet({ d, sec, topic, busy, onPick, onClose }) {
 }
 
 function Tags({ pkey, open: open0 }) {
-  const [d, err, set] = useLive(() => api("tags", { pkey }), [pkey]);
+  const [d, err, set] = useLive(() => api("tags", { pkey }), [pkey], null, 30000, "tags:" + pkey);
   const [open, setOpen] = useState(open0 || null);        // the section whose actions show
   const [sheet, setSheet] = useState(null);               // {k: "topic" | "rename" | "color" | "merge", sec, topic}
   const [openSheet, closeSheet] = useOverlay(!!sheet, (v) => { if (!v) setSheet(null); });
