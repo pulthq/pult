@@ -5935,6 +5935,45 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await self.p.page_due()
         self.assertTrue(any(t.startswith("🟠") and "Нужен твой выбор." in t for t in self.texts()))
 
+    async def test_find_tasks(self):
+        """The search of tasks (review 2026-11-11, UX4; Q180): every word asked for — in the title, among the tags, or in
+        the first request, in that order of worth; one project or all that aren't hidden; what waits for the owner
+        says so."""
+        now = time.time()
+        self.store.set_topic(PKEY, "/Users/x/proj", "proj", 55)
+        self.store.set_topic("-Users-x-other", "/Users/x/other", "other", 56)
+        rows = [{"sid": "s-title", "pkey": PKEY, "title": "Сделай кэш для списка проектов", "first": "сделай кэш", "last": now - 100},
+                {"sid": "s-ask", "pkey": PKEY, "title": "Сравни два варианта хранения", "first": "нужен кэш в памяти или в базе?", "last": now - 50},
+                {"sid": "s-other", "pkey": "-Users-x-other", "title": "Почему кэш не сбрасывается", "first": "", "last": now - 10},
+                {"sid": "s-none", "pkey": PKEY, "title": "Обнови зависимости", "first": "обнови", "last": now - 5}]
+
+        async def index():
+            return rows
+        self.p.task_index = index
+        self.assertEqual(await self.p.api_find(""), {"rows": [], "more": False})
+        self.assertEqual(await self.p.api_find("к"), {"rows": [], "more": False})          # a letter is no word
+        got = (await self.p.api_find("КЭШ"))["rows"]
+        self.assertEqual([(r["sid"], r["by"]) for r in got], [("s-other", "title"), ("s-title", "title"), ("s-ask", "ask")])
+        self.assertEqual((got[0]["project"], got[2]["ask"]), ("other", "нужен кэш в памяти или в базе?"))
+        self.assertEqual([r["sid"] for r in (await self.p.api_find("кэш", pkey=PKEY))["rows"]], ["s-title", "s-ask"])
+        self.assertEqual([r["sid"] for r in (await self.p.api_find("кэш проектов"))["rows"]], ["s-title"])      # every word
+        self.assertEqual((await self.p.api_find("нетакого"))["rows"], [])
+        # a hidden project is out of the search of all, and in its own
+        self.store.set_hide("-Users-x-other", True)
+        self.assertNotIn("s-other", [r["sid"] for r in (await self.p.api_find("кэш"))["rows"]])
+        self.assertEqual(len((await self.p.api_find("кэш", pkey="-Users-x-other"))["rows"]), 1)
+        # what waits for the owner says so; a turn that runs — too
+        self.p.attn.finished("s-ask", PKEY, 5, "", "Выбери вариант", True, now=now)
+        self.p.start_turn(self.p.live_of("s-title", PKEY), "ещё")
+        st = {r["sid"]: r["state"] for r in (await self.p.api_find("кэш", pkey=PKEY))["rows"]}
+        self.assertEqual(st, {"s-title": "work", "s-ask": "you"})
+        self.p.finish_turn(self.p.live["s-title"], "⏹")
+        # no more than FIND_MAX, and it says there is more
+        rows[:] = [{"sid": "s%03d" % n, "pkey": PKEY, "title": "кэш %d" % n, "first": "", "last": now - n} for n in range(70)]
+        got = await self.p.api_find("кэш")
+        self.assertEqual((len(got["rows"]), got["more"]), (self.p.FIND_MAX, True))
+        self.assertIn("find", PW.CAPS)
+
     async def test_silent_turn(self):
         """A turn with no step and no word for 15 minutes is "silent" for the app — unless a tool is still out, a
         background task runs or the owner is asked; and when Claude Code itself calls the session idle, the turn's end

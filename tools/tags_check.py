@@ -328,6 +328,34 @@ async def main():
             verdict("the computer keeps it all after a reload", any(r[0] == new and r[3] == "190" for r in after)
                     and not any("Wi-Fi" in r[2] or two[2][0] in r[2] for r in after) and sum(r[1] for r in after) == 15, [(r[0], r[1], r[2]) for r in after])
             await shot("11-after.png")
+            # the search of tasks (review 2026-11-11, UX4): a field on the project's screen and on Projects; what was
+            # asked and found is there again after a look at a task; "Earlier" is as it was left
+            await goto(URLS["PROJT"])
+            await until("!!document.querySelector('.find-f input')", 150)
+            ask = ("(() => { const el = document.querySelector('.find-f input'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "
+                   "'value').set.call(el, %s); el.dispatchEvent(new Event('input', {bubbles: true})); })()")
+            await js(ask % json.dumps("датчик"))
+            verdict("the project's search finds its tasks by a word of the title",
+                    await until("document.querySelectorAll('.found .item').length >= 1", 80),
+                    await js("(document.querySelector('.project') || {}).innerText"))
+            verdict("... the word is marked", await js("(document.querySelector('.found mark') || {}).textContent || ''") == "датчик")
+            verdict("... and no project's name on its rows: it is this one's", await js("!document.querySelector('.found .found-p')"))
+            await shot("12-found.png")
+            await js("document.querySelector('.found .item').click()")
+            await until("!!document.querySelector('.session')", 100)
+            await js("history.back()")
+            verdict("back from the task: the same search, the same rows",
+                    await until("(document.querySelector('.find-f input') || {}).value === 'датчик' && document.querySelectorAll('.found .item').length >= 1", 80))
+            await js(ask % json.dumps("такогонет"))
+            verdict("nothing found says so, and what the search reads",
+                    await until("/Ничего не найдено/.test((document.querySelector('.project .empty') || {}).textContent || '')", 80))
+            await js("document.querySelector('.find-x').click()")
+            verdict("cleared: the project's own lists are back", await until("!document.querySelector('.found') && !!document.querySelector('.project h3')", 60))
+            await js("location.hash = '#/projects'")
+            await until("!!document.querySelector('.find-f input') && !document.querySelector('.project')", 100)
+            await js(ask % json.dumps("датчик"))
+            verdict("Projects' search looks in every project and names it",
+                    await until("!!(document.querySelector('.found .found-p') || {}).textContent", 80), await js("(document.querySelector('main') || {}).innerText"))
             verdict("no errors in the page", not errors, errors)
     finally:
         p.terminate()

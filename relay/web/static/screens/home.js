@@ -243,7 +243,7 @@ function ProjectBlock({ p, now, onBg, onTags }) {
 // zone of its colour (Q110): what runs green, what waits for you warm; the board, history, stays plain
 function Home() {
   const now = useNow(1000);            // "working 14 s" ticks every second: a turn in progress should look alive
-  const [d, err, set] = useLive(() => api("overview"), []);
+  const [d, err, set] = useLive(() => api("overview"), [], null, 30000, "overview");
   const [bgFor, setBgFor] = useState(null);
   const [openBg, closeBg] = useOverlay(!!bgFor, (v) => { if (!v) setBgFor(null); });
   const [tagFor, setTagFor] = useState(null);           // a task's tags from its row's slide (stage Zh, step 2): {sid, info}

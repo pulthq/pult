@@ -385,7 +385,7 @@ function Vendors({ list, all, codex, onChange, onAll }) {
 }
 
 function Settings() {
-  const [d, err, set] = useLive(() => api("settings"), [], () => false);
+  const [d, err, set] = useLive(() => api("settings"), [], () => false, 30000, "settings");
   const [key, setKey] = useState("");
   const [kbusy, setKbusy] = useState(false);
   const [words, setWords] = useState(null);        // null — as saved on the computer

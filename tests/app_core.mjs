@@ -393,6 +393,37 @@ await check("where: Back closes the layer on top first, then goes back a screen,
   assert.equal(location.hash, "#/");
   assert.equal(N.parse().name, "home");
 });
+await check("where: Back comes to the place the screen was left at; a new screen opens at its top; a session keeps its own", async () => {
+  N.go("#/projects"); await settle();
+  assert.equal(N.landed().y, 0);                                       // a new screen: its top
+  globalThis.scrollY = 640;                                            // scrolled down to the eighth project
+  N.go("#/p/-Users-x-shop"); await settle();
+  assert.deepEqual([N.moved.how, N.landed().y], ["go", 0]);
+  assert.equal(N.places.get("#/projects"), 640);
+  globalThis.scrollY = 1200;                                           // down the project's earlier tasks
+  N.go("#/s/abc"); await settle();
+  assert.equal(N.landed().y, 0);
+  globalThis.scrollY = 5000;                                           // the end of a long chat
+  N.back(); await settle();
+  assert.deepEqual([N.moved.how, N.landed().y], ["back", 1200]);       // the project, where it was left
+  globalThis.scrollY = 1200;
+  N.back(); await settle();
+  assert.equal(N.landed().y, 640);                                     // the list, at the eighth project
+  globalThis.scrollY = 640;
+  N.go("#/s/abc"); await settle(); N.landed();
+  N.go("#/settings"); await settle(); N.landed();
+  N.back(); await settle();
+  assert.deepEqual([N.parse().name, N.landed().y], ["s", 0]);          // a session opens at its end by itself
+  N.back(); await settle(); N.landed();
+  N.back(); await settle(); N.landed();
+  globalThis.scrollY = 0;
+});
+await check("where: what a screen chose about itself is as it was when you come back", async () => {
+  assert.equal(N.choices.has("p.more:-x"), false);
+  N.choices.set("p.more:-x", true);
+  assert.equal(N.choices.get("p.more:-x"), true);
+  N.choices.delete("p.more:-x");
+});
 await check("where: a screen left for good is replaced — Back skips it", async () => {
   N.go("#/new"); await settle();
   N.go("#/s/abc", true); await settle();

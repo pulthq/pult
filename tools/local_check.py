@@ -162,6 +162,8 @@ async def off_flow(pg):
     await pg.cmd("Emulation.setEmulatedMedia", features=[])
     await pg.js("location.hash = '#/settings'")
     await pg.until("!!(%s)" % CARD, 150)
+    # Settings opens at once with what it showed last and then catches up (review 2026-11-11, FE12): wait for the new
+    await pg.until("[...document.querySelectorAll('.vend-all button')].some((b) => b.textContent === 'Своя')", 60)
     seg = await pg.js("[...document.querySelectorAll('.vend-all button')].map((b) => b.textContent)")
     verdict("the model of new projects can be it now", "Своя" in seg, seg)
 

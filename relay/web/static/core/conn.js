@@ -153,19 +153,35 @@ function pacer(run, gap = 400) {
 
 // screen data: load when the connection is ready, on "something changed" events (at most every 0.4 s) and every
 // `every` ms. What an earlier screen asked for (its deps changed meanwhile) never lands on this one
-function useLive(load, deps, match, every = 30000) {
-  const [data, setData] = useState(null);
+// `as` — the screen's name for what it shows ("project:<key>"): its last answer is kept for this window's life, and the
+// screen opens with it at once when you come back, then catches up. Before, every way back began with "Loading…" and
+// an empty page — and the place you had scrolled to had nothing to come back to (review 2026-11-11, FE12, UX3)
+const shown = new Map();
+const SHOWN_MAX = 24;
+const keepShown = (as, d) => {
+  if (!as) return;
+  shown.delete(as);
+  shown.set(as, d);
+  if (shown.size > SHOWN_MAX) shown.delete(shown.keys().next().value);
+};
+function useLive(load, deps, match, every = 30000, as = null) {
+  const [data, setData] = useState(as && shown.has(as) ? shown.get(as) : null);
   const [err, setErr] = useState(null);
+  // what the screen itself changes in its data (a switch flipped, a project pinned) is kept too: coming back must not
+  // show the switch as it was before
+  const put = (d) => { keepShown(as, typeof d === "function" ? d(shown.get(as)) : d); setData(d); };
   useEffect(() => {
     let alive = true;
-    const kick = pacer(() => load().then((d) => { if (alive) { setData(d); setErr(null); } })
+    if (as && shown.has(as)) setData(shown.get(as));
+    const keep = (d) => keepShown(as, d);
+    const kick = pacer(() => load().then((d) => { if (alive) { keep(d); setData(d); setErr(null); } })
       .catch((e) => alive && setErr(e.message)));
     if (conn.ready) kick();
     const offs = [on("ready", kick), on("event", (m) => (!match || match(m)) && kick())];
     const tick = setInterval(() => conn.ready && kick(), every);
     return () => { alive = false; offs.forEach((f) => f()); clearInterval(tick); kick.stop(); };
   }, deps);
-  return [data, err, setData];
+  return [data, err, put];
 }
 
 // where you are, for Pult (stage V): the app says "on screen" while it is visible — every 20 s and at once on a change
@@ -203,4 +219,4 @@ function useConn() {
   return conn;
 }
 
-export { api, apiOnce, conn, emit, on, pacer, reconnect, useConn, useLang, useLive };
+export { api, apiOnce, conn, emit, on, pacer, reconnect, shown, useConn, useLang, useLive };

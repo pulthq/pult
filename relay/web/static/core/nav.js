@@ -41,10 +41,43 @@ function parse() {
 }
 // our own navigation stack: Telegram's "Back" after opening a session link leads home, not nowhere
 const stack = [location.hash];
+// how the last change of the address came about: "back" — a step back to the screen before; "go" — a new screen
+const moved = { how: "go", from: location.hash };
 addEventListener("hashchange", () => {
-  if (stack[stack.length - 1] === location.hash) return;      // replaced in place (go with replace, back to home)
-  if (stack.length > 1 && stack[stack.length - 2] === location.hash) stack.pop(); else stack.push(location.hash);
+  if (stack[stack.length - 1] === location.hash) { moved.how = "same"; return; }      // replaced in place (go with replace, back to home)
+  if (stack.length > 1 && stack[stack.length - 2] === location.hash) { stack.pop(); moved.how = "back"; } else { stack.push(location.hash); moved.how = "go"; }
 });
+// where each screen was scrolled to when it was left: Back comes to that place, a new screen opens at its top. Before,
+// every change of the address went to the top — the eighth task of a list opened, Back, and the list was at its first
+// again (review 2026-11-11, UX3). A session keeps its own place (it opens at its end)
+const places = new Map();
+function comeBack(hash, y) {
+  let tries = 0;
+  const step = () => {                       // the screen's rows may still be on their way: until the page is that long
+    if (location.hash !== hash) return;
+    window.scrollTo(0, y);
+    if (Math.abs(window.scrollY - y) > 2 && tries++ < 10) setTimeout(step, 100);
+  };
+  setTimeout(step, 0);
+}
+// the address has changed: the screen being left is still the one on the page — its place is kept; → the screen that
+// comes and where it opens: y — the place it was left at, when this is a step back to it; 0 — its top
+function landed() {
+  const here = location.hash;
+  if (moved.how === "same" && here === moved.from) return null;
+  places.set(moved.from, window.scrollY);
+  if (places.size > 40) places.delete(places.keys().next().value);
+  moved.from = here;
+  const r = parse();
+  return { r, y: moved.how === "back" && r.name !== "s" && places.get(here) > 0 ? places.get(here) : 0 };
+}
+// a choice a screen made about itself — a folded list opened, a filter picked — by its name, for this window's life: it
+// is as it was when you come back. useState with a memory
+const choices = new Map();
+function useKept(name, first) {
+  const [v, set] = useState(() => (choices.has(name) ? choices.get(name) : first));
+  return [v, (x) => { choices.set(name, x); set(x); }];
+}
 // what the page's own reload must not cut (the copy following the server, stage U3): a recording from the tap on (the
 // microphone's question included), a countdown to send a ready reply, answers ticked by hand — counted here (0.18.6;
 // before, the page could reload under Telegram's microphone question or a ticked question — review 2026-10-27)
@@ -128,7 +161,16 @@ function useOverlay(open, setOpen) {
 }
 function useRoute() {
   const [r, set] = useState(parse());
-  useEffect(() => { const f = () => { set(parse()); window.scrollTo(0, 0); }; addEventListener("hashchange", f); return () => removeEventListener("hashchange", f); }, []);
+  useEffect(() => {
+    const f = () => {
+      const to = landed();
+      if (!to) return;
+      set(to.r);
+      if (to.y) comeBack(location.hash, to.y); else window.scrollTo(0, 0);
+    };
+    addEventListener("hashchange", f);
+    return () => removeEventListener("hashchange", f);
+  }, []);
   return r;
 }
 const start = tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param;
@@ -152,4 +194,4 @@ try {
   }
 } catch (e) { /* no storage: the start screen as always */ }
 
-export { back, drafts, go, holdBy, holds, layers, openLayer, parse, stack, typed, useBackFor, useDraft, useHold, useOverlay, useRoute };
+export { back, choices, drafts, go, holdBy, holds, landed, layers, moved, openLayer, parse, places, stack, typed, useBackFor, useDraft, useHold, useKept, useOverlay, useRoute };

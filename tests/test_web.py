@@ -875,10 +875,11 @@ class ChainTest(ChainBase):
         Path(T.TP).write_text(line("user", "Привет") + "\n")
         self.store.touch_session(T.SID, T.PKEY, path="/Users/x/proj")
         self.p._agents = (time.monotonic() + 1e6, [{"sessionId": T.SID}])          # open in a tab
-        runs = []
+        runs, copies = [], []
 
         async def drive(sid, path, text, origin, **kw):
             runs.append((sid, text, origin, kw.get("fork"), kw.get("resume")))
+            copies.append(kw.get("copy"))
         self.p.drive = drive
         old, pultd.CLAUDE_PROJECTS = pultd.CLAUDE_PROJECTS, Path(T.TP).parent.parent
         try:
@@ -887,9 +888,13 @@ class ChainTest(ChainBase):
             res = await self.call(ws, "send", sid=T.SID, text="продолжи", fork=True)
             self.assertEqual(res["data"]["how"], "fork")
             self.assertEqual(runs[-1], (T.SID, "продолжи", None, True, None))
+            # the copy is a new task and the app goes to it at once: its id comes back (review 2026-11-11, UX5)
+            self.assertTrue(len(res["data"]["sid"]) == 36 and res["data"]["sid"] != T.SID)
+            self.assertEqual(copies[-1], res["data"]["sid"])
             self.p._agents = (time.monotonic() + 1e6, [])                             # the tab was closed
             res = await self.call(ws, "send", sid=T.SID, text="ещё")
             self.assertEqual(res["data"]["how"], "resume")
+            self.assertIsNone(res["data"]["sid"])                                     # the same task goes on: nowhere to go
             self.assertEqual(runs[-1][4], T.SID)
         finally:
             pultd.CLAUDE_PROJECTS = old

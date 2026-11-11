@@ -1,7 +1,8 @@
 // Pult app — projects and their tags, a new task, a new project.
 // Moved from app.js as it was (review 2026-10-27, 6.4).
 import { api, apiOnce, conn, on, useLive } from "../core/conn.js";
-import { drafts, go, useDraft, useOverlay } from "../core/nav.js";
+import { Find } from "../ui/find.js";
+import { drafts, go, useDraft, useKept, useOverlay } from "../core/nav.js";
 import { alertBox, confirmBox, haptic } from "../core/tg.js";
 import { Mic, useRecorder } from "../core/voice.js";
 import { plural, q, t } from "../i18n.js";
@@ -17,7 +18,7 @@ import { Attach, Thumbs, useAttach } from "../ui/pics.js";
 // the pinned on top (stage Zh) — a slide left on a row pins, hides or starts a task (Q101); the hidden wait in a fold
 // at the bottom, their rows slide to "Show"; the list takes the computer's order at once
 function Projects() {
-  const [d, err, set] = useLive(() => api("projects"), []);          // live: the counts change with every turn
+  const [d, err, set] = useLive(() => api("projects"), [], null, 30000, "projects");          // live: the counts change with every turn
   const [more, setMore] = useState(false);                          // the hidden ones unfolded
   if (!d) return html`<${Loading} err=${err}/>`;
   const add = d.create && html`<div class="stick"><button class="btn wide" onClick=${() => go("#/newproject")}>${t("np.create")}</button></div>`;
@@ -45,9 +46,9 @@ function Projects() {
         p.turns ? t("proj.turns", { n: p.turns, turns: plural(p.turns, "turn") }) : agoShort(p.last)])}</span>
         <span class="ln pline">${p.line || html`<span class="path">${p.path}</span>`}</span></span><span class="ptail">${p.pinned ? ic("pin", 15) : ""}${ic("chev", 16)}</span></span></button></${SwipeRow}>`;
   const vis = d.projects.filter((p) => !p.hidden), hid = d.projects.filter((p) => p.hidden);
-  return html`<div><h2>${t("projects")}</h2><div class="list">${vis.map(row)}</div>
+  return html`<div><h2>${t("projects")}</h2><${Find}><div class="list">${vis.map(row)}</div>
     ${hid.length > 0 && html`<h3 class="toggle" role="button" tabindex="0" aria-expanded=${more} onClick=${() => setMore(!more)} onKeyDown=${keyTap(() => setMore(!more))}>${t("projects.hidden", { n: hid.length })} <span class=${"chev" + (more ? " open" : "")}>${ic("chev", 14)}</span></h3>
-      ${more && html`<div class="list">${hid.map(row)}</div>`}`}${add}</div>`;
+      ${more && html`<div class="list">${hid.map(row)}</div>`}`}</${Find}>${add}</div>`;
 }
 
 // a project's screen — its board, large: what waits for you (answer right here), what runs, today's outcomes, then
@@ -73,10 +74,15 @@ function TagBar({ set, sel, top, all, onSel, onTop, pkey }) {
 // ones are history: plain, each with the grey tick of a task you put away (Q111)
 function Project({ pkey, tag, topic }) {
   const now = useNow(1000);
-  const [d, err, set] = useLive(() => api("project", { pkey }), [pkey]);
-  const [more, setMore] = useState(false);
-  const [sel, setSel0] = useState(tag || null);           // stage T: the section the lists are narrowed to, and its topic
-  const [top, setTop] = useState(topic || null);
+  // how many of the earlier tasks are asked for: forty, and forty more with each "Show more" (a computer that
+  // doesn't page them gets the old request)
+  const [lim, setLim] = useKept("p.lim:" + pkey, 40);
+  const [d, err, set] = useLive(() => api("project", conn.caps.includes("find") ? { pkey, earlier: lim } : { pkey }), [pkey, lim], null, 30000, "project:" + pkey);
+  // the folded "Earlier" opened and the section picked are as they were when you come back from a task (UX3); a link
+  // that names a section (a hashtag, a tag's row) comes first
+  const [more, setMore] = useKept("p.more:" + pkey, false);
+  const [sel, setSel0] = useKept("p.sel:" + pkey + "?" + (tag || ""), tag || null);           // stage T: the section the lists are narrowed to, and its topic
+  const [top, setTop] = useKept("p.top:" + pkey + "?" + (tag || "") + "/" + (topic || ""), topic || null);
   const setSel = (v) => { setSel0(v); setTop(null); };
   const [bgFor, setBgFor] = useState(null);
   const [openBg, closeBg] = useOverlay(!!bgFor, (v) => { if (!v) setBgFor(null); });
@@ -108,6 +114,7 @@ function Project({ pkey, tag, topic }) {
       ${pm && html`<button class="pinb gearb" aria-label=${t("ps.title")} title=${t("ps.title")} onClick=${() => go("#/ps/" + encodeURIComponent(pkey))}>${GEAR}</button>`}</div>
     ${d.tabwarn && html`<div class="vline warn">${ic("info", 14)}<span>${t("ps.tabwarn", { its: pm.name })}</span></div>`}
     ${d.tagset && (d.tagset.length > 0 || d.tags_n > 0) && html`<${TagBar} set=${d.tagset} sel=${sel} top=${top} all=${tagsOf.size} onSel=${setSel} onTop=${setTop} pkey=${d.tags_n != null ? pkey : null}/>`}
+    <${Find} pkey=${pkey}>
     ${d.tag_job && html`<div class="dim small tidy-run">${ic("auto", 14)} ${tagJob(d.tag_job)}</div>`}
     ${(waits > 0 || mineF.length > 0) && html`<section class="zone-mine"><h3>${dot("attn")}${t("proj.waits", { n: waits })}</h3>
       ${mineF.map((e) => e.req ? html`<${Req} key=${e.key} r=${e.req} stt=${d.stt} showProject=${false}/>`
@@ -115,10 +122,12 @@ function Project({ pkey, tag, topic }) {
     ${liveF.length > 0 && html`<section class="zone-run"><h3>${dot("work")}${t("proj.live", { n: liveF.length })}</h3><div class="list">${liveF.map((r) => html`<${RunRow} key=${r.sid} r=${r} now=${now} onBg=${onBg} onTags=${onTags} showProject=${false}/>`)}</div></section>`}
     ${todayF.length > 0 && html`<h3>${t("proj.today")}</h3><div class="list">${todayF.map((r) => html`<${BoardRow} key=${r.sid} r=${r} now=${now} onBg=${onBg} onTags=${onTags}/>`)}</div>`}
     ${!waits && !mineF.length && !liveF.length && !todayF.length && !(sel && earlierF.length) && html`<div class="empty small">${t("proj.nothing")}</div>`}
-    ${earlierF.length > 0 && html`<h3 class="toggle" role="button" tabindex="0" aria-expanded=${more} onClick=${() => setMore(!more)} onKeyDown=${keyTap(() => setMore(!more))}>${t("proj.earlier", { n: earlierF.length })} <span class=${"chev" + (more || sel ? " open" : "")}>${ic("chev", 14)}</span></h3>
+    ${earlierF.length > 0 && html`<h3 class="toggle" role="button" tabindex="0" aria-expanded=${more} onClick=${() => setMore(!more)} onKeyDown=${keyTap(() => setMore(!more))}>${t(d.earlier_more ? "proj.earlier.more" : "proj.earlier", { n: earlierF.length })} <span class=${"chev" + (more || sel ? " open" : "")}>${ic("chev", 14)}</span></h3>
       ${(more || sel) && html`<div class="list">${earlierF.map((x) => html`<${SwipeRow} key=${x.sid} what="task" acts=${[{ ic: "tag", label: t("row.tags"), on: () => onTags(x.sid) }]}><button class="item brow rest" onClick=${() => go("#/s/" + x.sid)}>
         <div class="item-h"><b><span class="st-ic chk">${ic("check", 14)}</span>${x.driven ? html`<span class="st-ic">${ic("phone", 14)}</span>` : ""}${x.title}</b><span class="meta"><span class="dim nowrap">${agoShort(x.last)}</span></span></div>
         ${x.line || x.open || (x.tags && x.tags.length > 0) ? html`<div class="ln">${tagChips(x.tags)}${x.line || (x.open ? t("open.mac") : "")}</div>` : ""}</button></${SwipeRow}>`)}</div>`}`}
+    ${(more || sel) && d.earlier_more && html`<button class="link center more-b" onClick=${() => setLim(lim + 40)}>${t("proj.more", { n: 40 })}</button>`}
+    </${Find}>
     <div class="stick"><button class="btn wide" onClick=${() => go("#/new?pkey=" + encodeURIComponent(pkey))}>${t("project.new")}</button></div>
     ${bgFor && html`<${BgSheet} sid=${bgFor} fixed=${true} onClose=${closeBg}/>`}
     ${tagFor && html`<${TagPick} sid=${tagFor.sid} info=${tagFor.info} onDone=${reload} onClose=${closeTag}/>`}

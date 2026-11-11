@@ -69,7 +69,7 @@ function App() {
   // Home's tab carries how many tasks wait for your move — seen from every screen with the tabs (UX1)
   const tab = (name, h, label, icon) => html`<a class=${(r.name === name ? "on" : "") + (name === "new" ? " new" : "")} href=${h}><span class="ti">${ic(icon, 22)}${name === "home" ? html`<${WaitBadge}/>` : ""}</span><span class="tl">${label}</span></a>`;
   return html`<${Banner}/><${MemoryStatus}/><main class=${r.name === "s" ? "with-composer" : ""}>${screen}</main>
-    ${r.name !== "s" && html`<nav class="tabs">${tab("home", "#/", t("tab.home"), "home")}${tab("projects", "#/projects", t("tab.projects"), "folder")}${tab("usage", "#/usage", t("tab.res"), "gauge")}${tab("new", "#/new", t("tab.new"), "plus")}</nav>`}
+    ${r.name !== "s" && html`<nav class="tabs">${tab("home", "#/", t("tab.home"), "home")}${tab("projects", "#/projects", t("tab.projects"), "folder")}${tab("usage", "#/usage", t("tab.res"), "gauge")}${tab("new", ["p", "tags", "ps"].includes(r.name) && r.id ? "#/new?pkey=" + encodeURIComponent(r.id) : "#/new", t("tab.new"), "plus")}</nav>`}
     <${EditHost}/><${ViewHost}/><${FileHost}/><${Toast}/>`;
 }
 
