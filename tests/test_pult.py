@@ -73,6 +73,7 @@ class FakeTg:
         self.calls = []
         self.next_id = 1000
         self.dead_threads = set()      # topics deleted in Telegram: sending there fails
+        self.lost = 0                  # this many next sendMessage get a proxy's error page instead of Telegram's answer
         self.file_bytes = b"OggS" + b"\0" * 40      # what getFile + download hand out (a voice message)
         self.menu_button = {"type": "default"}       # the app button in the owner's chat
 
@@ -92,6 +93,9 @@ class FakeTg:
                     data[m.group(1).decode()] = m.group(3).decode()
         self.calls.append((method, data))
         self.next_id += 1
+        if method == "sendMessage" and self.lost:
+            self.lost -= 1
+            return httpx.Response(502, text="<html>Bad Gateway</html>")
         if method == "sendMessage" and data.get("message_thread_id") in self.dead_threads:
             return httpx.Response(400, json={"ok": False, "error_code": 400,
                                              "description": "Bad Request: message thread not found"})
@@ -2086,6 +2090,44 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         # without the daemon the command runs as usual
         code, out = await self.run_cli(sys.executable, "-c", "print('сам')", sock=str(TMP / "нет.sock"))
         self.assertEqual((code, out.strip()), (0, "сам"))
+
+    def test_permission_mode_from_the_settings(self):
+        """PULT_PERMISSION_MODE in Pult's settings file takes effect (review 2026-11-11, S2): before, only the
+        process's environment was read, and the switch SECURITY.md names did nothing."""
+        PD = sys.modules[pultd.Driven.__module__]
+        was = PD.PERMISSION_MODE
+        try:
+            self.assertEqual(PD.permission_mode({}), was)
+            self.assertEqual(PD.permission_mode({"PULT_PERMISSION_MODE": " default "}), "default")
+            self.assertEqual(PD.PERMISSION_MODE, "default")              # what Driven.options reads
+            self.assertEqual(PD.permission_mode({"PULT_PERMISSION_MODE": "yolo"}), "default")   # not a mode: refused
+            self.assertEqual(PD.permission_mode({"PULT_PERMISSION_MODE": "acceptEdits"}), "acceptEdits")
+        finally:
+            PD.PERMISSION_MODE = was
+
+    async def test_run_job_through_a_restart(self):
+        """A command under `pult run` that outlived a restart of Pult: the new daemon never heard its start, and its
+        end didn't come (review 2026-11-11, D4). Its every word says what runs — the command is taken on from there."""
+        job = {"id": "afterboot", "cmd": "make deploy", "cwd": "/нигде", "pid": os.getpid(), "since": time.time() - 600}
+        await self.p.on_run(dict(job, op="tick", last="шаг 7 из 9"))
+        self.assertIn("afterboot", self.p.jobs)
+        self.assertLess(self.p.jobs["afterboot"].started, time.time() - 590)       # its own start, not this moment
+        began = self.fake.of("sendMessage")[-1]
+        self.assertTrue(began["text"].startswith("⚙️") and "make deploy" in began["text"], began["text"])
+        n = len(self.fake.of("sendMessage"))
+        await self.p.on_run(dict(job, op="tick", last="шаг 8 из 9"))
+        self.assertEqual(len(self.fake.of("sendMessage")), n)                      # known now: one message
+        await self.p.on_run(dict(job, op="end", code=0, tail=["готово"]))
+        await until(lambda: any(t.startswith("✅") and "make deploy" in t for t in self.texts()))
+        self.assertNotIn("afterboot", self.p.jobs)
+        # the end alone, of a command nothing was heard of since the restart
+        await self.p.on_run({"op": "end", "id": "endonly1", "cmd": "pytest", "cwd": "/нигде", "pid": os.getpid(),
+                             "since": time.time() - 60, "code": 2, "tail": ["1 failed"]})
+        await until(lambda: any(t.startswith("⚠️") and "pytest" in t and "1 failed" in t for t in self.texts()))
+        # a `pult run` from before this version says only the id: nothing to take on, as before
+        n = len(self.fake.of("sendMessage"))
+        await self.p.on_run({"op": "end", "id": "old00001", "code": 0, "tail": []})
+        self.assertEqual(len(self.fake.of("sendMessage")), n)
 
     async def test_run_job_killed(self):
         old = pultd.TICK
@@ -5830,6 +5872,31 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await self.p.api_presence(False)
         await self.p.page_due()
         self.assertEqual(len(self.fake.of("sendMessage")), n + 1)                     # away now — paged
+        # a call Telegram didn't take is still owed (review 2026-11-11, T1): made again when its time comes — before,
+        # it counted as made, and the owner was never called
+        self.p.attn.rec[SID].update(paged=False)
+        self.p.attn.rec[SID].pop("page", None)
+        self.fake.lost = 1
+        with mock.patch.object(pultd, "log", wraps=pultd.log) as lg:
+            await self.p.page_due()
+        owed = self.p.attn.rec[SID]
+        self.assertFalse(owed.get("paged"))
+        self.assertEqual(owed["page_tries"], 1)
+        self.assertTrue(any(c.args and str(c.args[0]).startswith("page %s: not sent, try 1" % SID[:8]) for c in lg.call_args_list))
+        m = len(self.fake.of("sendMessage"))
+        await self.p.page_due()
+        self.assertEqual(len(self.fake.of("sendMessage")), m)                         # not every ten seconds
+        p3 = pultd.Pult(self.p.env, self.p.tg, self.store)
+        self.assertFalse(p3.attn.rec[SID].get("paged"))                               # a restart doesn't forgive it
+        self.assertNotIn("page_at", p3.attn.rec[SID])
+        owed["page_at"] = time.time() - 1
+        await self.p.page_due()
+        self.assertEqual(len(self.fake.of("sendMessage")), m + 1)
+        self.assertTrue(self.fake.of("sendMessage")[-1]["text"].startswith("🟠 <b>Сделай кэш</b>\nГотово, жду решения."))
+        self.assertTrue(owed["paged"] and owed["page"])
+        self.assertNotIn("page_tries", owed)
+        await self.p.page_due()
+        self.assertEqual(len(self.fake.of("sendMessage")), m + 1)                     # once it got through — once
         await self.p.api_seen(SID)
         await until(lambda: any(t.startswith("✔️ <b>Сделай кэш</b> · Готово, жду решения.") for t in self.texts("editMessageText")))
         # a restart: outcomes from before it are not paged again in a burst
@@ -5853,6 +5920,64 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.fake.of("deleteMessage")[-1]["message_id"], str(intro_id(self.fake, replies_555()[0])))
         await self.p.page_due()
         self.assertFalse(any("Всё хорошо" in t and t.startswith("🟠") for t in self.texts()))   # the answer was the call
+        # ... unless nothing of the answer reached Telegram: then it is paged like any other "your move" (T1)
+        self.p.expect[SID] = 556
+        await run_hook(ev("UserPromptSubmit", prompt="А теперь?"))
+        await until(lambda: [d for d in self.fake.of("sendMessage") if '"message_id": 556' in d.get("reply_parameters", "")])
+        self.fake.lost = 1
+        await run_hook(ev("Stop", last_assistant_message="Нужен твой выбор.", background_tasks=[]))
+        await until(lambda: self.p.attn.rec[SID]["line"] == "Нужен твой выбор." and not self.fake.lost)
+        await until(lambda: not self.p.attn.rec[SID].get("paged"))
+        self.p.attn.rec[SID]["model"] = True
+        await self.p.page_due()
+        self.assertTrue(any(t.startswith("🟠") and "Нужен твой выбор." in t for t in self.texts()))
+
+    async def test_turn_cut_short(self):
+        """A session Pult runs is gone with its turn open — the process died, or Pult was restarted under it: the turn
+        gets an outcome, it is the owner's move with "Go on" ready, and Telegram calls (review 2026-11-11, D5, D2).
+        Before: "working" for 20 minutes more and a silent end; after a restart — nothing at all."""
+        self.p.env.update(PULT_APP_LINK="https://t.me/b/pult", PULT_RELAY_URL="wss://h.example/pult/agent")
+        self.p._procs = (time.monotonic() + 1e6, None)
+        lv = self.p.live_of(SID, PKEY)
+        lv.driven = True
+        self.p.start_turn(lv, "сделай отчёт")
+        self.assertEqual(list(self.store.get("turns_open")), [SID])
+        self.p.driven[SID] = object()                     # its process still runs: nothing is lost
+        self.assertFalse(self.p.turn_lost(SID, "process"))
+        self.assertIsNotNone(lv.turn)
+        del self.p.driven[SID]
+        self.assertTrue(self.p.turn_lost(SID, "process"))
+        await until(lambda: self.p.attn.rec.get(SID, {}).get("fail") == "process")
+        r = self.p.attn.rec[SID]
+        self.assertEqual((r["line"], r["replies"], r["you"], lv.turn), ("процесс агента остановился посреди хода", ["Продолжай"], True, None))
+        self.assertEqual(self.store.get("turns_open"), {})
+        self.assertFalse(self.p.turn_lost(SID, "process"))          # once
+        await self.p.page_due()
+        page = self.fake.of("sendMessage")[-1]
+        self.assertTrue(page["text"].startswith("⚠️ "), page["text"])
+        self.assertIn("процесс агента остановился посреди хода", page["text"])
+        self.assertIn("r:%s:0" % SID, page["reply_markup"])
+        # a turn that ended by itself leaves nothing behind
+        self.p.start_turn(lv, "ещё")
+        self.p.finish_turn(lv, "✔️")
+        self.assertEqual(self.store.get("turns_open"), {})
+        # a tab's turn is not Pult's to lose: its process lives without the daemon
+        lv.driven = False
+        self.p.start_turn(lv, "во вкладке")
+        self.assertEqual(self.store.get("turns_open"), {})
+        self.p.finish_turn(lv, "✔️")
+        # Pult restarted under a running turn: the new daemon says so
+        lv.driven = True
+        self.p.start_turn(lv, "долгая задача")
+        p2 = pultd.Pult(self.p.env, self.p.tg, self.store)
+        p2._procs = (time.monotonic() + 1e6, None)
+        self.assertEqual(list(p2.open_turns), [SID])
+        await p2.after_restart()
+        await until(lambda: p2.attn.rec.get(SID, {}).get("fail") == "restart")
+        self.assertEqual(p2.attn.rec[SID]["line"], "оборвано перезапуском Пульта")
+        self.assertFalse(p2.attn.rec[SID].get("paged"))
+        self.assertEqual(self.store.get("turns_open"), {})
+        self.p.finish_turn(lv, "⏹")
 
     async def test_pager_requests_and_limit(self):
         # as a pager, a permission request waits in the app while the owner is at the computer and is posted once

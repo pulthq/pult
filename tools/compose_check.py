@@ -277,6 +277,34 @@ async def main():
             verdict("the new task form: one tap — no word", await js("window.__popups.length") == 0)
             await tap(".attach-row label.clip", 0)
             verdict("... a second tap while the first never came back — the same word", await until("window.__popups.length === 1", 20))
+            # what is typed and not sent stays with its place (review 2026-11-11, FE4): a tab below, a new window —
+            # Android unloading Telegram — and it is there again; sent, it is gone from the phone too
+            task = "a task typed on the way"
+            put = ("(() => { const ta = document.querySelector('.form textarea'); Object.getOwnPropertyDescriptor("
+                   "HTMLTextAreaElement.prototype, 'value').set.call(ta, %s); ta.dispatchEvent(new Event('input', {bubbles: true})); })()")
+            await js(put % json.dumps(task))
+            await js("location.hash = '#/'")
+            await until("!document.querySelector('.form textarea')")
+            await js("location.hash = '#/new'")
+            verdict("the new task: the words are there after a look at Home",
+                    await until("(document.querySelector('.form textarea') || {}).value === %s" % json.dumps(task), 60))
+            await cmd("Page.navigate", url="about:blank")
+            await cmd("Page.navigate", url=URLS["SESS"])
+            verdict("the session's field in a new window: the words typed before, once",
+                    await until("(document.querySelector('.composer textarea') || {}).value === %s" % json.dumps(DRAFT), 150),
+                    await js("(document.querySelector('.composer textarea') || {}).value"))
+            sess = await js("location.hash")
+            await js(TYPE % json.dumps(""))                 # the field emptied, as a sent message empties it
+            verdict("the field emptied: the phone keeps the words no more",
+                    await until("Object.keys(localStorage).filter((k) => k.startsWith('pult.typed.s:')).length === 0", 40),
+                    await js("JSON.stringify(Object.keys(localStorage))"))
+            await js("location.hash = '#/'")
+            await until("!document.querySelector('.composer textarea')")
+            await js("location.hash = %s" % json.dumps(sess))
+            await until("!!document.querySelector('.composer textarea')", 100)
+            await asyncio.sleep(0.5)
+            verdict("... back on the screen the field is empty",
+                    await js("(document.querySelector('.composer textarea') || {}).value") == "")
             verdict("no script errors", not errors, errors)
     finally:
         p.kill()

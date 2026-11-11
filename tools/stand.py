@@ -960,7 +960,7 @@ async def main():
                                             aline("#%d %s" % (k, D["read"]), "old%d" % k, 300, ago=199900 - k * 600))] \
         if os.environ.get("STAND_LONG") else []
     if long:
-        PW.transcript_page.__defaults__ = (None, None, None, 6000)
+        PW.transcript_page.__defaults__ = (None, None, None, 6000, PW.PAGE_MSGS)      # before, after, cwd, page, want
     (d / (T.SID + ".jsonl")).write_text("\n".join(long + [
         line("user", D["ask"], ago=86400),
         line("user", D["look"] + "\n\n[Attachment from the Pult app: %s]\n\n[Attachment from the Pult app: %s]" % (pic, pic), ago=86300),

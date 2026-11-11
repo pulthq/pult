@@ -1,7 +1,7 @@
 // Pult app — the cards that wait for you: a question, a permission request, a plan; the receipt of an answer.
 // Moved from app.js as it was (review 2026-10-27, 6.4).
 import { api } from "../core/conn.js";
-import { drafts, go, useHold } from "../core/nav.js";
+import { drafts, go, useDraft, useHold } from "../core/nav.js";
 import { alertBox, haptic } from "../core/tg.js";
 import { Mic, useRecorder } from "../core/voice.js";
 import { t } from "../i18n.js";
@@ -37,10 +37,10 @@ function useRcpt(list, key = (r) => r.rid) {
 // sends, as on a session's card in "Your move" (the owner, 2026-11-04: Return did nothing here, and no voice). Words
 // dictated after the card went come back from the draft when it shows again
 function Own({ ph, label, busy, stt, draft, onSend }) {
-  const [text, setText] = useState("");
+  const [text, setText, forget] = useDraft(draft);
   const v = useRecorder((w) => setText((c) => (c ? c.replace(/\s+$/, "") + " " : "") + w), draft);
   useEffect(() => { const d = drafts.take(draft); if (d) setText((c) => (c ? c + " " : "") + d); }, [draft]);
-  const submit = () => { if (text.trim() && !busy) onSend(text.trim()); };
+  const submit = () => { if (text.trim() && !busy) { forget(); onSend(text.trim()); } };
   return html`<div class="own"><input ref=${plainField} placeholder=${ph} value=${text} enterkeyhint="send" onInput=${(e) => setText(e.target.value)}
       onKeyDown=${(e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); submit(); } }}/>
     ${stt ? html`<${Mic} v=${v} disabled=${busy}/>` : ""}

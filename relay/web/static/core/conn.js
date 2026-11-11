@@ -21,7 +21,8 @@ const keyStore = {
 };
 const conn = { ws: null, state: "connecting", ready: false, mac: null, seq: 0, wait: new Map(), retry: 0,
   key: keyStore.get(), why: null, fresh: 0, updating: 0, gone: 0,   // gone: since when the computer is away (ms, this phone's clock)
-  pong: false, heard: 0 };   // pong: the relay answers a ping itself (0.18.40); heard: the socket's last word (ms)
+  pong: false, heard: 0,     // pong: the relay answers a ping itself (0.18.40); heard: the socket's last word (ms)
+  caps: [] };                // what this computer says it can do: "once" — a request with a key is done once
 // the relay says how many seconds ago the computer went away (0.18.5): a computer silent for hours is one whose Pult
 // doesn't start, and the banner says since when
 const noteGone = (m) => { conn.gone = typeof m.away === "number" ? Date.now() - m.away * 1000 : conn.gone; };   // updating: since when Pult installs an update (stage U)       // fresh: when the Mac last answered — what's on screen is from then
@@ -74,6 +75,7 @@ function connect() {
     else if (m.t === "mac") { conn.mac = m.on; if (!m.on) { noteGone(m); conn.ready = false; dropWaits(); setState("nomac"); } else { conn.gone = 0; if (!conn.ready) setState("auth"); } }
     else if (m.t === "res") {
       const w = conn.wait.get(m.id);
+      if (Array.isArray(m.caps)) conn.caps = m.caps;
       if (w) { conn.wait.delete(m.id); clearTimeout(w.timer); if (!m.error) conn.fresh = Date.now(); m.error ? w.reject(new Error(m.error)) : w.resolve(m.data); }
     } else if (m.t === "event") emit("event", m);
   };
@@ -95,14 +97,39 @@ function connect() {
 document.addEventListener("visibilitychange", () => { if (!document.hidden) connect(); });
 connect();
 
-function api(op, args = {}) {
+// `once` — the request's own key: the computer does a request with a key once, however many times it is asked.
+// An error says how it failed: unsent — it never left; lost, late — it may have reached the computer
+function api(op, args = {}, once) {
   return new Promise((resolve, reject) => {
-    if (!conn.ready) return reject(new Error(t("conn.nomac")));
+    if (!conn.ready) return reject(Object.assign(new Error(t("conn.nomac")), { unsent: true }));
     const id = ++conn.seq;
-    const timer = setTimeout(() => { conn.wait.delete(id); reject(new Error(t("conn.timeout"))); }, 30000);
+    const timer = setTimeout(() => { conn.wait.delete(id); reject(Object.assign(new Error(t("conn.timeout")), { late: true })); }, 30000);
     conn.wait.set(id, { resolve, reject, timer });
-    conn.ws.send(JSON.stringify({ t: "req", id, op, args }));
+    conn.ws.send(JSON.stringify(once ? { t: "req", id, op, args, once } : { t: "req", id, op, args }));
   });
+}
+// What must be done once and must not be lost — a message, a new task: sent with a key, and when no answer came (the
+// link dropped, the computer was slow or away) sent again with the same key once the link is back, for ONCE_WAIT at
+// most. Before, a blink of the network said "connection lost" and gave the words back while the message had gone —
+// sent again, it went twice (review 2026-11-11, FE3). A computer that doesn't know keys gets no second send: only
+// what never left is tried again. The computer's own refusal comes back at once, as before
+const ONCE_WAIT = 120000;
+const readyBy = (until) => new Promise((ok) => {
+  if (conn.ready) return ok();
+  const done = () => { clearTimeout(timer); off(); ok(); };
+  const off = on("ready", done), timer = setTimeout(done, Math.max(0, until - Date.now()));
+});
+async function apiOnce(op, args = {}) {
+  const key = op + "-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 12);
+  const until = Date.now() + ONCE_WAIT;
+  for (;;) {
+    try { return await api(op, args, key); }
+    catch (e) {
+      const again = e.unsent || ((e.lost || e.late) && conn.caps.includes("once"));
+      if (!again || Date.now() >= until) throw e;
+      await readyBy(until);
+    }
+  }
 }
 
 // a load that runs at most every `gap` ms, one at a time — the next right after it when asked meanwhile. While events
@@ -176,4 +203,4 @@ function useConn() {
   return conn;
 }
 
-export { api, conn, emit, on, pacer, reconnect, useConn, useLang, useLive };
+export { api, apiOnce, conn, emit, on, pacer, reconnect, useConn, useLang, useLive };

@@ -39,7 +39,18 @@ APP_PATH = "/pult/"            # where the relay serves the app (relay.py)
 REFUSED = {"login expired": "expired", "resume key unknown or used up": "badkey", "not the owner": "stranger",
            "signature mismatch": "forged", "no signature": "forged", "broken fields": "forged"}
 RECONNECT = (1, 2, 5, 10, 30)  # seconds between attempts to connect to the relay server
-PAGE = 1536 * 1024             # transcript bytes per chat chunk
+PAGE = 1536 * 1024             # transcript bytes read at once for a chat chunk
+CAPS = ("once",)               # what the app may count on: "once" — a request with a key is done once (Web.done_once)
+ONCE_KEEP = 600                # s: how long a keyed request's answer is kept for its repeat
+ONCE_MAX = 300                 # keyed requests remembered at most
+# An older chunk (and the chat's first) is filled by what the chat shows, not by bytes: on real transcripts 1.5 MB of
+# the file is a dozen steps and their results, and "Earlier" brought one message in the median, every third time none
+# (review 2026-11-11, FE1). The window doubles back through the file until the chunk has PAGE_MSGS messages or
+# PAGE_ITEMS items, PAGE_GROW times at most (12 MB read for one chunk, ~0.1 s)
+PAGE_MSGS = 20
+PAGE_ITEMS = 200
+PAGE_GROW = 8
+LINE_MAX = 16 * 1024 * 1024    # a longer record of the file is passed over, not read whole for the chat
 TEXT_MAX = 20000               # characters of one message in the app
 IO_MAX = 1500                  # characters of tool input and output
 
@@ -287,13 +298,64 @@ def _chunk(path, before, after, page):
     if start > 0 and after is None:
         cut = data.find(b"\n")
         start, data = start + cut + 1, data[cut + 1:]
+        if not data.strip() and start > 0:
+            # the window fell inside one record longer than it (a screenshot Claude read: its line holds the picture
+            # twice): nothing whole in it, and "older" came back empty with the same `before` for good — the history
+            # above that record couldn't be read from the phone, and with such a record last the chat was empty
+            # (review 2026-11-11, FE2 and A1). The record's own beginning is looked for further back
+            return _long_line(path, start, end)
     return data, start, end
 
 
-def transcript_page(path, before=None, after=None, cwd=None, page=PAGE):
+def _long_line(path, at, end):
+    """The record that ends at byte `at` and is longer than a chunk: its beginning found back through the file →
+    (data, start, end) with that record whole — or without it when it is longer than LINE_MAX, so the chat goes on
+    above it either way."""
+    step, begin = 1024 * 1024, 0
+    try:
+        with open(path, "rb") as f:
+            pos = at - 1                                   # the record's own newline is the byte before `at`
+            while pos > 0:
+                lo = max(0, pos - step)
+                f.seek(lo)
+                cut = f.read(pos - lo).rfind(b"\n")
+                if cut >= 0:
+                    begin = lo + cut + 1
+                    break
+                pos = lo
+            if at - begin > LINE_MAX:
+                return b"", begin, end
+            f.seek(begin)
+            return f.read(end - begin), begin, end
+    except (OSError, ValueError):
+        return {"items": [], "before": None, "end": None}
+
+
+def _said(items):
+    """Messages in a chunk — the owner's, the agent's words, notes: what a person reads the chat by."""
+    return sum(1 for i in items if i.get("k") in ("user", "text", "note"))
+
+
+def _filled(read, path, before, after, cwd, page, want):
+    """A chunk read by `read`, an older one (or the first) with enough in it to read: see PAGE_MSGS."""
+    got = read(path, before, after, cwd, page)
+    top = page * PAGE_GROW
+    while after is None and want and got.get("before") is not None and page < top \
+            and _said(got["items"]) < want and len(got["items"]) < PAGE_ITEMS:
+        page = min(page * 2, top)
+        got = read(path, before, None, cwd, page)
+    return got
+
+
+def transcript_page(path, before=None, after=None, cwd=None, page=PAGE, want=PAGE_MSGS):
     """A chunk of the chat: from the end of the file, up to byte `before` (older) or from byte `after` (newer).
     → {"items": [...], "before": where to read older from, or None, "end": where to read newer from}.
-    The last unfinished line is skipped: it will be completed and come with the next `after`."""
+    The last unfinished line is skipped: it will be completed and come with the next `after`. An older chunk goes
+    back until it has `want` messages (0 — `page` bytes and no more)."""
+    return _filled(_transcript_chunk, path, before, after, cwd, page, want)
+
+
+def _transcript_chunk(path, before, after, cwd, page):
     got = _chunk(path, before, after, page)
     if isinstance(got, dict):
         return got
@@ -448,10 +510,14 @@ def codex_step(inp):
     return "exec", {"script": s}
 
 
-def codex_page(path, before=None, after=None, cwd=None, page=PAGE):
+def codex_page(path, before=None, after=None, cwd=None, page=PAGE, want=PAGE_MSGS):
     """A chunk of a Codex task's chat from its history file, as transcript_page gives Claude's: the owner's words (a
     message in the middle of a turn too), Codex's own, its steps — commands and patches — with what they printed, and a
     stop. Codex keeps the same turn in several records: only the ones the chat needs are read."""
+    return _filled(_codex_chunk, path, before, after, cwd, page, want)
+
+
+def _codex_chunk(path, before, after, cwd, page):
     got = _chunk(path, before, after, page)
     if isinstance(got, dict):
         return got
@@ -733,6 +799,7 @@ class Web:
         self.manifest = manifest       # Path of what the last deploy put on the server (None — no file check)
         self.ws = None
         self.clients = set()
+        self.once = {}                 # (op, the app's key) → (when, the request's task): see done_once
         self.how = None                # which signature variant matched — a fact for the project doc
         self.keys = Keys(pult.store)
         self.logins = Logins(pult.store)
@@ -984,11 +1051,36 @@ class Web:
     async def answer(self, cid, msg):
         rid, op = msg.get("id"), msg.get("op")
         fn = getattr(self.p, "api_" + str(op), None)
+        once = msg.get("once")
+        reply = {"t": "res", "cid": cid, "id": rid}
+        if op == "lang":                 # asked at every login: what this computer can do that an older one can't
+            reply["caps"] = list(CAPS)
         try:
             if fn is None:
                 raise ValueError(T("err.no_request", op=op))
-            data = await fn(**(msg.get("args") or {}))
-            await self.send({"t": "res", "cid": cid, "id": rid, "data": data})
+            args = msg.get("args") or {}
+            if isinstance(once, str) and 8 <= len(once) <= 80:
+                reply["data"] = await self.done_once(str(op), once, fn, args)
+            else:
+                reply["data"] = await fn(**args)
         except Exception as e:
             log("request %s: %r" % (op, e))
-            await self.send({"t": "res", "cid": cid, "id": rid, "error": str(e)[:300]})
+            reply["error"] = str(e)[:300]
+        await self.send(reply)
+
+    async def done_once(self, op, key, fn, args):
+        """A request the app marked with a key of its own is done once: asked again with that key — the link dropped
+        before the answer, or the answer took longer than the app waits — it gets what the first one got (or will
+        get), and nothing runs twice. Before, a message sent as the network blinked came back into the field while it
+        had gone; sent again, Claude got it twice, and a new task started two (review 2026-11-11, FE3)."""
+        now = time.time()
+        for k in [k for k, (ts, _) in self.once.items() if now - ts > ONCE_KEEP]:
+            del self.once[k]
+        got = self.once.get((op, key))
+        if got is None:
+            while len(self.once) >= ONCE_MAX:
+                del self.once[next(iter(self.once))]
+            got = self.once[(op, key)] = (now, asyncio.ensure_future(fn(**args)))
+        else:
+            log("request %s: asked again with its key — answered as the first time" % op)
+        return await asyncio.shield(got[1])
