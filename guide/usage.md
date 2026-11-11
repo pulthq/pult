@@ -159,15 +159,24 @@ and another check it — from the phone.
   on Windows and Linux) with a picture on the clipboard attaches it the way Picture does — take one straight to the
   clipboard with ⌃⇧⌘4 on a Mac. A file dragged onto the field comes in too; words on the clipboard stay words, even
   beside a picture (as Word, Excel and Numbers copy).
+- **What a vendor's task has cost** stands beside its clock in the task's header — "≈ $0.04" — for DeepSeek and Kimi:
+  the task's tokens at the model's list price; a tap says how many went in and out. It is an estimate from above: a
+  cache read is counted as plain input, and a rush-hour price isn't known. GLM runs on a subscription and a model of
+  your own costs nothing — no figure there.
 - **A second opinion from Codex**: under a session's outcome, **Second opinion · Codex** asks Codex — OpenAI's coding
   agent, with the ChatGPT sign-in on your computer — to read what the task changed since it began (in git: everything
   since the commit the folder was on, new files too; without git: the files Claude's edits wrote), together with your
   request and Claude's report, so what was done on purpose isn't taken for a bug. It reads in a read-only sandbox and
   asks nothing; one at a time, usually a minute or two, and **Stop** ends it. The findings come as a card at the end
   of the session, each with its place in the project — a tap opens the file's change at that line (the file as it is,
-  when the task didn't change it); **Send to Claude** puts
-  them into the session as your message — the button names whoever did the task: **Send to DeepSeek** on DeepSeek's
-  model — and **Reviewed** puts the card away. The first time in a project you're asked
+  when the task didn't change it). Each finding has a tick: take it off, and that one stays here — the button says how
+  many go, and the task's next review is told not to repeat it. **Send to Claude** puts the ticked ones
+  into the session as your message — the button names whoever did the task: **Send to DeepSeek** on DeepSeek's
+  model — and **Reviewed** puts the card away. Once they went and the task has answered, the button under the outcome
+  becomes **Check the fixes · Codex**: Codex goes through the findings it gave and says of each one — **Fixed**,
+  **Left** with what is still wrong, or **Deliberate** when the doer explained and Codex agrees — and names what the
+  fixes broke, if anything; what is left goes back with one tap. Every round starts with your tap: Pult never sets
+  one model on another by itself. The first time in a project you're asked
   whether its code may go to OpenAI; the project's screen then says so, and **Disallow** takes it back. The button
   shows only where Codex is installed (ChatGPT for Mac carries it, or the `codex` command); a Codex version Pult
   wasn't checked on is checked against its own protocol first.

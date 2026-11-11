@@ -8,6 +8,10 @@ SHOT_CLEAR=1 — a transparent background where the page has none (pictures comp
 SHOT_READY="!document.querySelector('[data-wait]')" — true before anything else is done: asked for up to 30 s after the
 wait, and no picture at all if it never is (exit 3). A README picture was once a screen still loading (f-who.ru.png,
 v0.18.54 — review 2026-11-11): the fixed wait was not enough that time, and nothing looked.
+SHOT_DONE="!!document.querySelector('.card.pick')" — true before the picture is taken: asked for up to 30 s after
+SHOT_JS and SHOT_AFTER, and no picture if it never is (exit 3). SHOT_READY looks before SHOT_JS only — a script that
+goes to another screen and taps there after a fixed wait left the same picture a screen still loading (f-who.ru.png
+again, 2026-11-11, caught by eye before the release).
 Not --screenshot with --virtual-time-budget: the app holds a WebSocket open, the page never "settles", and Chrome
 hangs. Only a type=page tab is used: the first one in the list is sometimes an internal one (Omnibox Popup)."""
 import asyncio, base64, json, os, subprocess, sys
@@ -23,6 +27,7 @@ JS = os.environ.get("SHOT_JS")
 AFTER = float(os.environ.get("SHOT_AFTER") or 1)
 CLEAR = os.environ.get("SHOT_CLEAR") == "1"
 READY = os.environ.get("SHOT_READY")
+DONE = os.environ.get("SHOT_DONE")
 import _cdp  # noqa: E402  (tools/_cdp.py: where Chrome is, free ports, a profile that goes — review 2026-10-27, Т9)
 CHROME = _cdp.CHROME
 PORT = _cdp.free_port()
@@ -62,16 +67,18 @@ async def main():
             await cmd("Page.enable")
             await cmd("Page.navigate", url=URL)
             await asyncio.sleep(WAIT)
-            if READY:
+            async def wait_for(what):
                 for _ in range(60):
-                    got = await cmd("Runtime.evaluate", expression="!!(%s)" % READY, returnByValue=True)
+                    got = await cmd("Runtime.evaluate", expression="!!(%s)" % what, returnByValue=True)
                     if got.get("result", {}).get("value") is True:
                         break
                     await asyncio.sleep(0.5)
                 else:
-                    print("not ready, no picture:", OUT, "·", READY, file=sys.stderr)
+                    print("not ready, no picture:", OUT, "·", what, file=sys.stderr)
                     sys.exit(3)
                 await asyncio.sleep(0.5)                 # the screen that has just come draws itself
+            if READY:
+                await wait_for(READY)
             expr = ("Math.ceil(document.querySelector(%s).getBoundingClientRect().bottom + window.scrollY)" % json.dumps(FIT)
                     if FIT else "document.documentElement.scrollHeight")
             h = (await cmd("Runtime.evaluate", expression=expr, returnByValue=True))["result"]["value"]
@@ -81,6 +88,8 @@ async def main():
             if JS:                       # after the window got its final size: a scroll or a click stays put
                 await cmd("Runtime.evaluate", expression=JS)
                 await asyncio.sleep(AFTER)
+            if DONE:
+                await wait_for(DONE)
             shot = await cmd("Page.captureScreenshot", format="png")
             open(OUT, "wb").write(base64.b64decode(shot["data"]))
             log = (await cmd("Runtime.evaluate", expression="document.querySelector('.banner') ? document.querySelector('.banner').textContent : 'ok'", returnByValue=True))

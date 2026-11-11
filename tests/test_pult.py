@@ -2355,6 +2355,17 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(got[claude], {"model": "claude-fable-5-1"})
         self.assertEqual(got[vend], {"vendor": "DeepSeek", "model": "deepseek-v4-pro"})          # as it answered
         self.assertIsNone(got[new])
+        # what a vendor's task has cost so far, by its list price (review 2026-11-11, block 6): the session's tokens by
+        # the model each request ran on; Claude's task runs on a subscription — no price
+        self.assertEqual((await self.p.api_session(vend))["cost"], {"usd": 0.0, "in": 10, "out": 5, "models": ["deepseek-v4-pro"]})
+        self.assertIsNone((await self.p.api_session(claude))["cost"])
+        price = V.PRESETS["deepseek"]["price"]
+        by = {"deepseek-v4-pro[1m]": {"in": 1_000_000, "out": 100_000}, "deepseek-flash": {"in": 200_000, "out": 10_000},
+              "unknown-model": {"in": 5, "out": 5}, "deepseek-v4-pro": {"in": 0, "out": 0}}
+        self.assertEqual(V.cost(price, by), {"usd": round(0.66 + 0.198 + 0.03 + 0.006, 4), "in": 1_200_000, "out": 110_000,
+                                             "models": ["deepseek-v4-pro", "deepseek-flash"]})
+        self.assertIsNone(V.cost({}, by))                      # a subscription (GLM), one's own model: no price list
+        self.assertIsNone(V.cost(price, {"unknown-model": {"in": 5, "out": 5}}))
         self.p.set_choice(vend, "deepseek-flash[1m]")
         self.assertEqual((await llm())[vend], {"vendor": "DeepSeek", "model": "deepseek-flash[1m]"})   # as picked
         self.p.set_choice(new, "sonnet")
@@ -4388,6 +4399,122 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.p._codex = (0.0, None)
         sec = (await view())["second"]
         self.assertEqual((sec["can"], sec["why"]), (False, None))
+
+    async def test_second_opinion_ticks_and_the_check_of_fixes(self):
+        # review 2026-11-11, block 6. "Send" used to hand over every finding at once; now a finding has a tick: the
+        # one taken off stays here, is remembered, and the task's next review is told not to repeat it. And once the
+        # findings went, the button asks Codex to check the fixes — one line for each: fixed, left, deliberate — where
+        # a second review used to start from nothing
+        proj, base, conf, log = self.second_project()
+        view = lambda: self.p.api_session(SID)                                      # noqa: E731
+        asked = lambda meth: [json.loads(x) for x in log.read_text().splitlines() if '"%s"' % meth in x]     # noqa: E731
+        rec = self.p.attn.finished(SID, PKEY, 60, "Добавил median.", "Добавил median.", waits=True, watched=True)
+        self.store.add_turn(SID, PKEY, rec["ts"] - 60, 60, [{"p": "stats.py", "size": 50, "mt": rec["ts"]}], 1)
+        self.store.put("vendors.ok", {PKEY: time.time()})
+        done = lambda: (self.p.seconds.get(SID) or {}).get("st") == "done"         # noqa: E731
+        self.assertEqual(await self.p.api_second(SID, "check"), {"ok": False, "note": I.T("note.decided")})   # nothing went yet
+        await self.p.api_second(SID, "start")
+        await until(done)
+        sec = (await view())["second"]
+        self.assertEqual((sec["fix"], sec["job"]["kind"], len(sec["job"]["items"])), (False, None, 2))
+        said = []
+
+        async def fake_send(sid, text, fork=False, files=None):
+            said.append(text)
+            return {"ok": True, "how": "session", "out": "o1"}
+        with mock.patch.object(self.p, "api_send", fake_send):
+            # every tick off: nothing goes, the card stays
+            self.assertEqual(await self.p.api_second(SID, "send", off=[0, 1]), {"ok": False, "note": I.T("second.err.none")})
+            self.assertEqual((said, self.p.second_left(SID)), ([], []))
+            # the second one's off (what isn't a place in the list is not heard): the first goes alone
+            self.assertTrue((await self.p.api_second(SID, "send", off=[1, 7, -1, "0", True]))["ok"])
+        self.assertIn("1. [P1] Rebuild only the new item's trigrams — search/index.py:41-58", said[0])
+        self.assertNotIn("Skip fuzzy", said[0])
+        left = [{"title": "Skip fuzzy search for one or two letters", "where": "search/query.py:12"}]
+        self.assertEqual(self.p.second_left(SID), left)
+        sec = (await view())["second"]
+        self.assertEqual((sec["can"], sec["fix"], sec["job"]), (True, True, None))       # the button: "Check the fixes"
+        # a check stopped by the owner: the offer stays — the review it follows is still kept
+        conf.write_text(json.dumps({"log": str(log), "hang": 30, "steps": 0}))
+        self.assertEqual(await self.p.api_second(SID, "check"), {"ok": True})
+        await until(lambda: (self.p.seconds.get(SID) or {}).get("st") == "run")
+        self.assertEqual((await view())["second"]["job"]["kind"], "check")
+        await self.p.api_second(SID, "cancel")
+        await until(lambda: SID not in self.p.second_tasks, 15)
+        sec = (await view())["second"]
+        self.assertEqual((sec["fix"], sec["job"]), (True, None))
+        # the check: an ordinary turn in a read-only thread, told the finding that went and the doer's report — not
+        # the one the owner left; its answer — what is left, and what the fixes broke
+        conf.write_text(json.dumps({"log": str(log), "wait": 0.3, "check": "1. LEFT — Индекс всё ещё пересобирается целиком.\n\n"
+                                    "Review comments:\n\n- [P2] The median of an empty list — {cwd}/stats.py:2-2\n  It raises."}))
+        log.write_text("")
+        told_before = len(self.texts())
+        self.assertEqual(await self.p.api_second(SID, "check"), {"ok": True})
+        await until(done)
+        self.assertEqual(asked("review/start"), [])
+        start = asked("thread/start")[0]["params"]
+        self.assertEqual((start["sandbox"], start["approvalPolicy"]), ("read-only", "never"))
+        told = asked("turn/start")[0]["params"]["input"][0]["text"]
+        for part in ("Добавь медиану", "1. [P1] Rebuild only the new item's trigrams — search/index.py:41-58", "Добавил median.",
+                     "`git diff %s -- .`" % base, "N. FIXED — one sentence", "write the sentences in Russian."):
+            self.assertIn(part, told)
+        self.assertNotIn("Skip fuzzy", told)
+        sec = (await view())["second"]
+        job = sec["job"]
+        self.assertEqual((sec["fix"], job["kind"], [(i.get("st"), i.get("note"), i["file"]) for i in job["items"]]),
+                         (False, "check", [("left", "Индекс всё ещё пересобирается целиком.", "search/index.py"), (None, None, "stats.py")]))
+        await until(lambda: len(self.texts()) > told_before)         # the topic: how many of each, what is left by name
+        self.assertEqual(self.texts()[-1], "👁 <b>Медиана</b> · Codex проверил исправления: осталось 1, новых 1\n"
+                                           "1. Rebuild only the new item's trigrams\n2. The median of an empty list")
+        # what is left goes back with what the check said of it; the new finding's tick is off — remembered as left
+        with mock.patch.object(self.p, "api_send", fake_send):
+            self.assertTrue((await self.p.api_second(SID, "send", off=[1]))["ok"])
+        self.assertTrue(said[1].startswith("Codex (gpt-5.6-sol) has checked the fixes of its earlier findings on this task."))
+        self.assertIn("1. [P1] Rebuild only the new item's trigrams — search/index.py:41-58\n   Still wrong: Индекс всё ещё пересобирается целиком.", said[1])
+        self.assertNotIn("median of an empty", said[1])
+        left.append({"title": "The median of an empty list", "where": "stats.py:2"})
+        self.assertEqual(self.p.second_left(SID), left)
+        # the next round: only what went; every one fixed — nothing to send, "Got it" puts the card away, and the
+        # button offers a review again
+        conf.write_text(json.dumps({"log": str(log), "wait": 0.3, "check": "1. **FIXED** - Теперь дописывает."}))
+        log.write_text("")
+        self.assertTrue((await view())["second"]["fix"])
+        await self.p.api_second(SID, "check")
+        await until(done)
+        self.assertNotIn("median of an empty", asked("turn/start")[0]["params"]["input"][0]["text"])
+        job = (await view())["second"]["job"]
+        self.assertEqual([(i["st"], i["note"]) for i in job["items"]], [("fixed", "Теперь дописывает.")])
+        with mock.patch.object(self.p, "api_send", fake_send):
+            self.assertEqual(await self.p.api_second(SID, "send"), {"ok": False, "note": I.T("second.err.none")})
+        await self.p.api_second(SID, "away")
+        sec = (await view())["second"]
+        self.assertEqual((sec["can"], sec["fix"], sec["job"]), (True, False, None))
+        # a review anew is told what the owner left — and "Got it" with a tick off remembers that one too
+        conf.write_text(json.dumps({"log": str(log), "wait": 0.3}))
+        log.write_text("")
+        await self.p.api_second(SID, "start")
+        await until(done)
+        told = asked("review/start")[0]["params"]["target"]["instructions"]
+        self.assertIn("chose to leave them as they are", told)
+        self.assertIn("- Skip fuzzy search for one or two letters — search/query.py:12\n- The median of an empty list — stats.py:2", told)
+        await self.p.api_second(SID, "away", off=[0])
+        self.assertEqual(self.p.second_left(SID)[-1], {"title": "Rebuild only the new item's trigrams", "where": "search/index.py:41-58"})
+        # a check that failed can be asked again, of the same findings
+        await self.p.api_second(SID, "start")
+        await until(done)
+        with mock.patch.object(self.p, "api_send", fake_send):
+            await self.p.api_second(SID, "send")
+        conf.write_text(json.dumps({"log": str(log), "fail": "serverOverloaded"}))
+        await self.p.api_second(SID, "check")
+        await until(lambda: (self.p.seconds.get(SID) or {}).get("st") == "fail")
+        sec = (await view())["second"]
+        self.assertEqual((sec["fix"], sec["job"]["kind"], sec["job"]["why"]), (True, "check", "overloaded"))
+        conf.write_text(json.dumps({"log": str(log), "wait": 0.3}))
+        log.write_text("")
+        await self.p.api_second(SID, "check")
+        await until(done)
+        self.assertEqual(len((await view())["second"]["job"]["items"]), 2)
+        self.assertIn("2. [P2] Skip fuzzy search", asked("turn/start")[0]["params"]["input"][0]["text"])
 
     async def test_second_opinion_races(self):
         # Codex's own second opinion on stage M, step 1 (2026-10-30): "Send to Claude" from two windows at once sent the

@@ -4,6 +4,19 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.62 — 2026-11-11
+
+- **A second opinion's findings have ticks.** "Send" used to hand over every finding at once, the smallest too. Now
+  each has a tick, on at first: take one off and it stays — the button says how many go ("Send to Claude · 2 of
+  3"), and the task's next review is told the owner has seen that finding and left it, so it isn't repeated.
+- **Check the fixes.** Once the findings went and the task has answered, the button under the outcome asks Codex to
+  check the fixes instead of reading everything anew: of each finding it gave — **Fixed**, **Left** with what is
+  still wrong, or **Deliberate** when the doer explained and Codex agrees — and what the fixes themselves broke.
+  What is left goes back with one tap. A round runs only by a tap; a check that failed can be asked again.
+- **What a vendor's task has cost so far** stands beside its clock — "≈ $0.04" for DeepSeek and Kimi, whose list
+  prices Pult knows: the session's tokens by the model each request ran on; a tap says what the figure is made of.
+  An estimate from above — a cache read counts as plain input. A subscription (GLM) and a model of your own have none.
+
 ## 0.18.61 — 2026-11-11
 
 - **Settings is a menu.** It was one scroll of nearly five phone screens — Pult's upkeep on top, the language in the

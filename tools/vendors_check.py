@@ -204,6 +204,17 @@ async def main():
         await pg.shot(os.path.join(OUT, "session-320.png"))
         await pg.cmd("Emulation.setDeviceMetricsOverride", width=412, height=860, deviceScaleFactor=2, mobile=True)
         await asyncio.sleep(0.4)
+        # what the task has cost so far, beside its clock (review 2026-11-11, block 6): its tokens at DeepSeek's list
+        # price — 120 thousand read and 420 written on deepseek-flash; a tap says what the figure is made of
+        chip = "document.querySelector('.sess-h .chip.cost')"
+        verdict("the task's price stands beside its clock", await pg.until("!!" + chip, 30) and await pg.js(chip + ".textContent") == "≈ $0,02",
+                await pg.js(chip + " && " + chip + ".textContent"))
+        await pg.tap(chip, wait=0.6)
+        made = await pg.js("(document.querySelector('.card.pick') || {}).innerText || ''")
+        verdict("… a tap says what it is made of", "Задача на сейчас: ≈ $0,02 — 120 тыс. токенов на вход и 420 на выход по прайсу deepseek-flash" in made
+                and "Это оценка" in made, made[-500:])
+        await pg.shot(os.path.join(OUT, "cost.png"))
+        await pg.tap("document.querySelector('.card.pick .x')", wait=0.5)
         # what a finger catches (review 2026-11-11, UX14): the round buttons by the field and Stop reach 44 px, and the
         # two lines under the field — the model, where the words go — share the row's 44 with no gap between them
         reach = """((sel) => { const e = document.querySelector(sel); if (!e) return null; const b = e.getBoundingClientRect(), a = getComputedStyle(e, '::after');

@@ -2,8 +2,10 @@
 (STAND_SECOND=1): the outcome of the session that waits for you offers "Second opinion · Codex"; the first tap in a project
 asks whether its code may go to OpenAI — "no" leaves everything as it was, "yes" starts it; the card says Codex is
 reading, for how long and how many commands, and can stop it; then two findings, each with its place — a tap opens the
-file's change at that line; "Send to Claude" puts them into the session as your message and the card goes, the button comes back;
-"Got it" puts a second review away without a word; the project's settings say Codex may read its code, and
+file's change at that line; each finding has a tick — taken off, the button says how many go; "Send to Claude" puts
+them into the session as your message and the card goes; the button comes back as "Check the fixes": Codex says of
+each finding that went — fixed, or left with what is still wrong — and only what is left can go again (review
+2026-11-11, block 6); "Got it" puts a second review away without a word; the project's settings say Codex may read its code, and
 "Disallow" takes that back. The stand's output shows what the computer's journal says.
   STAND_SECOND=1 STAND_LANG=ru STAND_PORT=18161 HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out &
   ~/.local/share/pult/venv/bin/python tools/second_check.py /tmp/stand.out [out_dir]
@@ -98,13 +100,62 @@ async def main():
 
         # "Send to Claude": into the session as your message; the card goes, the button is back. It names the doer (Q116):
         # the shop's task is Claude's here — on DeepSeek's model it says "Отправить DeepSeek" (tools/hero.py checks that)
-        verdict("the button names the doer", await pg.js(CARD + ".querySelector('.foot .btn').textContent.trim()") == "Отправить Claude",
-                await pg.js(CARD + ".querySelector('.foot .btn').textContent"))
-        await pg.tap(CARD + ".querySelector('.foot .btn')", wait=1.0)
+        SEND = CARD + ".querySelector('.foot .btn')"
+        verdict("the button names the doer", await pg.js(SEND + ".textContent.trim()") == "Отправить Claude",
+                await pg.js(SEND + ".textContent"))
+        # each finding has a tick (block 6): both on; one taken off — struck through, the button says how many go
+        picks = await pg.js("[...document.querySelectorAll('.card.second .sec-pick')].map((b) => b.getAttribute('aria-checked'))")
+        verdict("each finding has a tick, on at first", picks == ["true", "true"], picks)
+        area = await pg.js("(() => { const b = document.querySelector('.card.second .sec-pick'); const r = b.getBoundingClientRect(), a = getComputedStyle(b, '::after');"
+                           " return [r.width + 2 * -parseFloat(a.left) - 2 * parseFloat(getComputedStyle(b).borderLeftWidth), a.content]; })()")
+        verdict("... 44 px under the finger", area[0] >= 43.5 and area[1] != "none", area)
+        await pg.tap("document.querySelectorAll('.card.second .sec-pick')[1]", wait=0.4)
+        verdict("a tick taken off: the finding is struck through", await pg.js("document.querySelectorAll('.card.second .sec-list li')[1].classList.contains('off')"))
+        verdict("... the button says how many go", await pg.js(SEND + ".textContent.trim()") == "Отправить Claude · 1 из 2",
+                await pg.js(SEND + ".textContent"))
+        verdict("... and what that means", "Снятые Claude не получит, а Codex не повторит" in await pg.js(CARD + ".innerText"))
+        await pg.shot(os.path.join(OUT, "ticks.png"))
+        await pg.tap("document.querySelectorAll('.card.second .sec-pick')[0]", wait=0.4)
+        verdict("no tick left: nothing to send", await pg.js(SEND + ".disabled"))
+        await pg.tap("document.querySelectorAll('.card.second .sec-pick')[0]", wait=0.3)
+        await pg.tap("document.querySelectorAll('.card.second .sec-pick')[1]", wait=0.4)
+        verdict("both ticks back: the button as it was", await pg.js(SEND + ".textContent.trim()") == "Отправить Claude"
+                and not await pg.js("!!document.querySelector('.card.second .sec-off')"))
+        await pg.tap(SEND, wait=1.0)
         verdict("«Send to Claude» sends the findings into the session",
                 "DRIVE" in journal() and "A second opinion from Codex (gpt-5.6-sol)" in journal(), journal()[-600:])
         verdict("... the card goes and the button is back", await pg.until("!" + CARD + " && !!" + ASK, 50))
-        verdict("... and the journal says so", "sent to Claude (2 findings)" in journal())
+        verdict("... and the journal says so", "sent to Claude (2 findings of 2)" in journal())
+
+        # the findings went: the button asks Codex to check the fixes — of each one, fixed or left (block 6)
+        verdict("the button now asks to check the fixes", await pg.js(ASK + ".textContent.trim()") == "Проверить исправления · Codex",
+                await pg.js(ASK + ".textContent"))
+        await pg.shot(os.path.join(OUT, "fix-button.png"))
+        await pg.tap(ASK, wait=0.3)
+        verdict("a tap: Codex checks the fixes against its findings", await pg.until(
+            CARD + " && " + CARD + ".classList.contains('run') && " + CARD + ".textContent.includes('Codex сверяет исправления')", 50),
+                await pg.js(CARD + " && " + CARD + ".innerText"))
+        verdict("... asked nothing more", len(await pg.js("window.__said")) == 2)
+        verdict("its answer comes", await pg.until(ITEMS + " === 2 && !!document.querySelector('.card.second .sec-st')", 120),
+                await pg.js(CARD + " && " + CARD + ".innerText"))
+        head = await pg.js(CARD + ".querySelector('.k').textContent")
+        verdict("... the head: a check of the fixes", "Проверка исправлений · Codex" in head and "GPT-5.6-Sol" in head, head)
+        verdict("... how many of each", await pg.js(CARD + ".querySelector('.o-l b').textContent") == "1 осталось · 1 исправлено",
+                await pg.js(CARD + ".querySelector('.o-l').textContent"))
+        rows = await pg.js("[...document.querySelectorAll('.card.second .sec-list li')].map((li) => [li.querySelector('.sec-st').textContent.trim(),"
+                           " !!li.querySelector('.sec-pick'), li.innerText])")
+        verdict("... the first is fixed: no tick, Codex's sentence", rows[0][0] == "Исправлено" and not rows[0][1]
+                and "дописывает триграммы одного товара" in rows[0][2] and "40 тыс." not in rows[0][2], rows[0])
+        verdict("... the second is left: a tick, what is still wrong", rows[1][0] == "Осталось" and rows[1][1]
+                and "всё ещё идёт в поиск с опечатками" in rows[1][2], rows[1])
+        verdict("... only what is left can go", await pg.js(SEND + ".textContent.trim()") == "Отправить Claude · 1",
+                await pg.js(SEND + ".textContent"))
+        verdict("... and the journal says so", "the fixes checked — 1 fixed, 1 left" in journal())
+        await pg.shot(os.path.join(OUT, "check.png"))
+        await pg.tap(CARD + ".querySelector('.foot .link')", wait=0.8)
+        verdict("«Got it» puts the check away; the button offers a review again", await pg.until(
+            "!" + CARD + " && !!" + ASK + " && " + ASK + ".textContent.trim() === 'Второе мнение · Codex'", 50),
+                await pg.js(ASK + " && " + ASK + ".textContent"))
 
         # a second review asks no more; "Got it" puts it away without a word to Claude
         await pg.tap(ASK, wait=0.3)

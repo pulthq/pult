@@ -45,6 +45,7 @@ LATER_MAX = 600         # …of each later one, the last LATER_N of them
 LATER_N = 12
 REPORT_MAX = 4000       # …of Claude's last report
 FILES_MAX = 60          # files named, at most
+LEFT_TITLE = 200        # characters of a finding the owner left, as the next review is told of it
 REPOS_MAX = 8           # nested repositories Codex gets the history of; the ones past it — by name
 DIRS_MAX = 400          # folders of the task's files looked at for a nested repository, at most
 ANSWER = 30             # s for an answer before the review itself starts
@@ -304,12 +305,14 @@ def _cut(s, n):
     return s if len(s) <= n else s[:n - 1].rstrip() + "…"
 
 
-def instructions(facts, base, lang="en", rules=False, repos=()):
+def instructions(facts, base, lang="en", rules=False, repos=(), left=()):
     """What Codex is told: the task in the owner's words, Claude's report, what changed and how to see it, what to
     report and in which language. Without the request and the report a second opinion argues with the task's own
     decisions — the probe's one finding did (2026-10-30) — so both go, and what they call deliberate isn't a finding.
     base — git_base's answer; rules — the folder has a CLAUDE.md (Codex itself reads only AGENTS.md); repos —
-    nested_repos': the parts of the folder that are repositories of their own, each with its own history."""
+    nested_repos': the parts of the folder that are repositories of their own, each with its own history; left — the
+    findings of this task's earlier reviews the owner took the tick off: seen and left as they are, not to be
+    reported again (review 2026-11-11, block 6)."""
     asks = facts.get("asks") or []
     parts = ["You are giving a second opinion on a task another coding agent (Claude Code) has just done in this folder. "
              "Read what it changed and report real problems only. Change nothing."]
@@ -360,11 +363,61 @@ def instructions(facts, base, lang="en", rules=False, repos=()):
     if rules:
         parts.append("The project's rules for agents are in CLAUDE.md: what it and the documents it points to record as "
                      "decided is deliberate.")
+    if left:
+        parts.append("An earlier review of this task reported the findings below. The owner has seen them and chose to "
+                     "leave them as they are: they are decided — don't report them again, in other words either.\n%s"
+                     % "\n".join("- %s%s" % (_cut(x.get("title"), LEFT_TITLE), " — " + x["where"] if x.get("where") else "")
+                                 for x in left))
     parts.append("Report bugs, broken cases, regressions, security holes, and what the request asked for but the change "
                  "misses. Not style, not taste. What the owner's words or Claude's report call deliberate is not a "
                  "finding. For each finding: the file and lines, what breaks, how to fix it. Write in %s."
                  % LANG_NAMES.get(lang, "English"))
     return "\n\n".join(parts)
+
+
+def check_instructions(facts, items, base=None, lang="en"):
+    """What Codex is told to check the fixes (review 2026-11-11, block 6): its own earlier findings the owner sent on
+    — as they were written — the doer's report after working on them, and the one line to answer for each. A new
+    thread each time, everything in these words: nothing has to be kept between the rounds, and a finding the owner
+    left isn't named (probe_codex_recheck.py, Codex 0.167: a resumed thread remembers its findings and answers the
+    same, 26 s against 24 s — the one that depends on nothing was taken)."""
+    asks = facts.get("asks") or []
+    parts = ["You gave a second opinion on a task another coding agent (Claude Code) did in this folder and reported the "
+             "findings below. The owner sent them to the doer, and the doer has worked on them. Check each finding "
+             "against the files as they are now. Change nothing."]
+    if asks:
+        parts.append('The task, in the owner\'s words:\n"""\n%s\n"""' % _cut(asks[0], ASK_MAX))
+    parts.append("Your findings:\n\n" + "\n".join(_numbered(items)))
+    if facts.get("report"):
+        parts.append('The doer\'s report after working on them:\n"""\n%s\n"""' % _cut(facts["report"], REPORT_MAX))
+    if base:
+        parts.append("Everything the task changed since it began: `git diff %s -- .` (committed and not yet), and new "
+                     "files not in git yet (`git status --short -- .`)." % base)
+    parts.append("For each finding, in their order, answer one line and nothing before the first one:\n"
+                 "N. FIXED — one sentence\nN. LEFT — one sentence: what is still wrong\nN. DELIBERATE — one sentence\n"
+                 "FIXED: the change is in the files now and is right. DELIBERATE: the doer says it is on purpose and you "
+                 "accept the reason. LEFT: anything else. Keep the three words in English; write the sentences in %s.\n"
+                 "After those lines, only if the fixes themselves broke something new, add the line \"Review comments:\" "
+                 "and each new problem as \"- [P1] title — path/to/file:12-14\", with what breaks and how to fix it on "
+                 "the next lines, two spaces in." % LANG_NAMES.get(lang, "English"))
+    return "\n\n".join(parts)
+
+
+_VERDICT = re.compile(r"^[ \t]*(\d+)[.)][ \t]*\**(FIXED|LEFT|DELIBERATE)\**[ \t]*(?:[—–:-]+[ \t]*(.*))?$", re.I | re.M)
+VERDICTS = {"fixed": "fixed", "left": "left", "deliberate": "meant"}
+
+
+def parse_check(text, n, cwd=None):
+    """Codex's answer to check_instructions → ({place in the list: ("fixed" | "left" | "meant", its sentence)},
+    [new findings, as parse reads them]). A finding it gave no line for isn't in the answer: the caller counts it left."""
+    text = str(text or "")
+    m = _HEAD.search(text)
+    said = {}
+    for g in _VERDICT.finditer(text[:m.start()] if m else text):
+        k = int(g.group(1)) - 1
+        if 0 <= k < n and k not in said:
+            said[k] = (VERDICTS[g.group(2).lower()], (g.group(3) or "").strip())
+    return said, parse(text, cwd)["items"] if m else []
 
 
 # ---------- Codex's answer ----------
@@ -412,17 +465,30 @@ def where(it):
     return "%s:%d" % (it["file"], it["line"]) + ("-%d" % end if end and end != it["line"] else "")
 
 
-def message(items, model=None):
-    """What "Send to Claude" says in the session: what to do with the findings, then each as Codex wrote it — in
-    English like Pult's other words to Claude; the findings stay in the language they came in."""
-    lines = ["A second opinion from Codex%s on this task's changes. Check each point: fix what is real, and say which "
-             "ones are deliberate and why." % (" (%s)" % model if model else ""), ""]
+def _numbered(items):
+    """The findings as a numbered list, each as Codex wrote it; one that a check of the fixes left — with what the
+    check said is still wrong, first."""
+    lines = []
     for n, it in enumerate(items, 1):
         loc = where(it)
         lines.append("%d. %s%s%s" % (n, "[%s] " % it["prio"] if it.get("prio") else "", it.get("title") or "",
                                      " — " + loc if loc else ""))
+        if it.get("st") == "left" and it.get("note"):
+            lines.append("   Still wrong: " + it["note"])
         lines += ["   " + b if b.strip() else "" for b in (it.get("body") or "").split("\n")]
-    return "\n".join(lines).rstrip()
+    return lines
+
+
+def message(items, model=None, check=False):
+    """What "Send to Claude" says in the session: what to do with the findings, then each as Codex wrote it — in
+    English like Pult's other words to Claude; the findings stay in the language they came in. check — they come from
+    a check of the fixes: what is left of the earlier findings, and what the fixes broke."""
+    who = " (%s)" % model if model else ""
+    head = ("Codex%s has checked the fixes of its earlier findings on this task. These are left — fix what is real, and "
+            "say which ones are deliberate and why." % who) if check else \
+        ("A second opinion from Codex%s on this task's changes. Check each point: fix what is real, and say which "
+         "ones are deliberate and why." % who)
+    return "\n".join([head, ""] + _numbered(items)).rstrip()
 
 
 def window(limits):
@@ -698,9 +764,11 @@ async def models(path, env=None, client="0"):
         await s.close()
 
 
-async def review(path, cwd, instructions_text, env=None, on_step=None, timeout=TIMEOUT, client="0"):
+async def review(path, cwd, instructions_text, env=None, on_step=None, timeout=TIMEOUT, client="0", plain=False):
     """One second opinion: Codex in `cwd`, a read-only sandbox, no approvals asked; on_step(n) after each command it
-    ran. → {"text", "model", "effort", "limits", "asked"}. Raises CodexError; cancelled — Codex is stopped."""
+    ran. → {"text", "model", "effort", "limits", "asked"}. Raises CodexError; cancelled — Codex is stopped. plain — an
+    ordinary turn with these words instead of Codex's own review: a check of the fixes, whose answer has its own shape
+    (check_instructions)."""
     s = await AppServer.start(path, cwd, env)
     loop = asyncio.get_running_loop()
     try:
@@ -713,8 +781,11 @@ async def review(path, cwd, instructions_text, env=None, on_step=None, timeout=T
         tid = (th.get("thread") or {}).get("id")
         if not tid:
             raise CodexError("failed", "thread/start gave no thread")
-        await s.request("review/start", {"threadId": tid, "delivery": "inline",
-                                         "target": {"type": "custom", "instructions": instructions_text}})
+        if plain:
+            await s.request("turn/start", {"threadId": tid, "input": [{"type": "text", "text": instructions_text}]})
+        else:
+            await s.request("review/start", {"threadId": tid, "delivery": "inline",
+                                             "target": {"type": "custom", "instructions": instructions_text}})
         text, said, err, steps = None, None, None, 0
         end = loop.time() + timeout
         while True:

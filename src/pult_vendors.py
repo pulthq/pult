@@ -398,6 +398,25 @@ async def check_key(p, key, proxy=None, transport=None):
     raise VendorError("net", type(last).__name__ if last else "")
 
 
+def cost(prices, by):
+    """What a vendor's task has cost so far, by its list price (review 2026-11-11, block 6): prices — the profile's
+    {model: [$ per million tokens in, out]}, by — the session's tokens by model (pult_web.Stats). → {"usd", "in", "out",
+    "models"} over the models that have a price, or None — none of them has (a subscription, one's own model, a model
+    Pult has no price for). An estimate from above: a cache read is counted as plain input, and a vendor's rush-hour
+    price isn't known here. A model's name goes without its "[1m]"."""
+    usd, tin, tout, models = 0.0, 0, 0, []
+    for model, n in (by or {}).items():
+        name = re.sub(r"\[[^\]]*\]$", "", str(model))
+        p = (prices or {}).get(name)
+        if not p or not (n.get("in") or n.get("out")):
+            continue
+        usd += (n.get("in", 0) * p[0] + n.get("out", 0) * p[1]) / 1e6
+        tin, tout = tin + n.get("in", 0), tout + n.get("out", 0)
+        if name not in models:
+            models.append(name)
+    return {"usd": round(usd, 4), "in": tin, "out": tout, "models": models} if models else None
+
+
 def vendor_of_model(model):
     """A reply's model → whose: None for Claude's own (and Claude Code's synthetic lines), else a word for the other."""
     m = (model or "").lower()

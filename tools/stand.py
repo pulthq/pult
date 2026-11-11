@@ -585,6 +585,17 @@ SECOND_REVIEW = {
 }
 
 
+# what Codex says when asked to check the fixes (review 2026-11-11, block 6): one line for each finding that went
+SECOND_CHECK = {
+    "en": ("1. FIXED — The index now adds the new product's trigrams only.\n"
+           "2. LEFT — The test for `q(\"ab\")` is there, but a query of two letters still goes to the typo search.\n"
+           "3. DELIBERATE — The shortest query stays one letter until the catalogue moves: the task says so."),
+    "ru": ("1. FIXED — Индекс теперь дописывает триграммы одного товара.\n"
+           "2. LEFT — Тест на `q(\"ab\")` добавлен, но запрос из двух букв всё ещё идёт в поиск с опечатками.\n"
+           "3. DELIBERATE — Порог останется одной буквой до переезда каталога: так решено в задаче."),
+}
+
+
 def shop_repo(rich=False):
     """The shop as a git repository: its search before the task, committed three hours ago, and the task's change — in
     the stand's own temporary folder, gone with it (the system's temporary folder is shared by every stand). rich
@@ -689,7 +700,8 @@ async def main():
         store.set_topic(T.PKEY, str(shop_repo(rich)), "acme-shop", 77)
         import fake_codex
         conf = T.TMP / "stand-codex.json"
-        conf.write_text(json.dumps({"wait": 5, "steps": 4, "review": SECOND_REVIEW[LANG] + (SECOND_MORE[LANG] if rich else "")}))
+        conf.write_text(json.dumps({"wait": 5, "steps": 4, "review": SECOND_REVIEW[LANG] + (SECOND_MORE[LANG] if rich else ""),
+                                    "check": SECOND_CHECK[LANG]}))
         if os.environ.get("STAND_SECOND_FAIL"):
             conf.write_text(json.dumps({"wait": 0.2, "steps": 0, "fail": os.environ["STAND_SECOND_FAIL"]}))
         codex = fake_codex.launcher(str(T.TMP), str(conf))

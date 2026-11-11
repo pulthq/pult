@@ -32,7 +32,11 @@ FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
 # stand it comes from, and how long to wait after that (a second opinion takes the stand's Codex about five seconds)
 TO_BOTTOM = "window.scrollTo(0, document.documentElement.scrollHeight)"
 # a project's settings — the blog's: Claude's, nothing running there, so its model can be changed — and the model sheet open (7.2)
-WHO = "location.hash = '#/ps/-Users-x-blog'; setTimeout(() => document.querySelector('.psets .ps-model').click(), 900)"
+# (the tap waits for the screen, not for a fixed time: a slow load left the picture "Loading…" — 2026-11-11)
+WHO = ("location.hash = '#/ps/-Users-x-blog'; (function go() { const b = document.querySelector('.psets .ps-model');"
+       " if (b) b.click(); else setTimeout(go, 100); })()")
+# what has to be on the screen when the picture is taken, by the picture's name: nothing still loading — and the model sheet
+DONE = {"who": "!!document.querySelector('.card.pick')"}
 # the third tab of Resources — the local model's server: its disk, its card and the models by their weights
 LOCAL = ("[...document.querySelectorAll('.subtabs button')].find((b) => /^(Local model|Своя модель)$/.test(b.textContent.trim())).click()")
 # the first picture asks Codex; the second (the dark one) finds its card already there, kept till Reviewed
@@ -167,7 +171,7 @@ def screens(lang):
             for dark in (False, True):
                 png = TMP / ("%s.%s%s.png" % (name, lang, ".dark" if dark else ""))
                 shot(urls[which][key], png, dark=dark, SHOT_HEIGHT=str(height), SHOT_AFTER=str(after), SHOT_READY=READY,
-                     **({"SHOT_JS": js} if js else {}))
+                     SHOT_DONE="(%s) && (%s)" % (READY, DONE.get(name, "true")), **({"SHOT_JS": js} if js else {}))
                 out[(name, dark)] = png
         return out
     finally:

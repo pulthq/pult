@@ -44,7 +44,7 @@ PAGE = 1536 * 1024             # transcript bytes read at once for a chat chunk
 # the owner's move can be asked for (api_waiting); "find" — tasks can be searched and a project's earlier ones asked
 # for in pages (api_find, api_project's `earlier`); "changes" — what a task changed can be asked for, and one file's
 # change line by line (api_changes, api_diff)
-CAPS = ("once", "waiting", "find", "changes", "unseen")
+CAPS = ("once", "waiting", "find", "changes", "unseen", "picks")
 ONCE_KEEP = 600                # s: how long a keyed request's answer is kept for its repeat
 ONCE_MAX = 300                 # keyed requests remembered at most
 # An older chunk (and the chat's first) is filled by what the chat shows, not by bytes: on real transcripts 1.5 MB of
@@ -648,7 +648,8 @@ AUTO_DECIDED = ("config", "user_permanent")
 
 class Stats:
     """Session model, effort, context and tokens from the transcript — reading only new data (the files are big) — and
-    an estimate of how long Claude worked in each turn there, for the turns Pult didn't count itself (worked)."""
+    an estimate of how long Claude worked in each turn there, for the turns Pult didn't count itself (worked). by — the
+    session's tokens by model: {model: {"in", "out"}}."""
 
     def __init__(self):
         self.files = {}
@@ -702,7 +703,7 @@ class Stats:
         if st is None or size < st["off"]:
             st = self.files[path] = {"off": 0, "model": None, "effort": None, "context": 0, "last_id": None,
                                      "turn": {"req": 0, "out": 0, "think": 0}, "sess": {"req": 0, "out": 0},
-                                     "wk": {"segs": [], "cur": None}}
+                                     "by": {}, "wk": {"segs": [], "cur": None}}
         if size > st["off"]:
             with open(path, "rb") as f:
                 f.seek(st["off"])
@@ -712,7 +713,7 @@ class Stats:
                 st["off"] += last + 1
                 for line in data[:last].split(b"\n"):
                     self.feed(st, line)
-        return {k: st[k] for k in ("model", "effort", "context", "turn", "sess")}
+        return {k: st[k] for k in ("model", "effort", "context", "turn", "sess", "by")}
 
     @staticmethod
     def feed(st, line):
@@ -749,6 +750,11 @@ class Stats:
             st[k]["req"] += 1
             st[k]["out"] += out
         st["turn"]["think"] += think
+        # the session's tokens by the model each request ran on — what a vendor's task has cost so far (review
+        # 2026-11-11, block 6): "in" is everything the model read, cache reads and writes among it
+        by = st["by"].setdefault(m.get("model") or "", {"in": 0, "out": 0})
+        by["in"] += (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0)
+        by["out"] += out
 
     @staticmethod
     def feed_work(wk, e, m):
