@@ -298,7 +298,7 @@ function FileView({ job }) {
 
 // the session's last outcome at the end of the chat; how long Claude worked — the task's clock at the top, stopped
 // (2026-10-30); a computer before 0.18.34 says here how long the last turn took
-function Outcome({ sid, out, state, now, second, fix, ro }) {
+function Outcome({ sid, out, state, now, second, fix, by, ro }) {
   const [resume, setResume] = useState(out.resume);
   const [got, setGot] = useState(false);
   const mine = state === "you" || state === "fail";
@@ -311,7 +311,7 @@ function Outcome({ sid, out, state, now, second, fix, ro }) {
     ${ro ? "" : out.fail === "rate_limit" ? html`<${ResumeAt} sid=${sid} resume=${resume} reset=${out.reset} onSet=${setResume}/>` : html`<${Replies} sid=${sid} replies=${out.replies}/>`}
     ${out.changes && html`<${ChangesLine} sid=${sid} c=${out.changes}/>`}
     ${out.turn_files && html`<${TurnLine} sid=${sid} tf=${out.turn_files}/>`}
-    ${(mine || second) && html`<div class="foot quiet">${second ? html`<button class="link sec-ask" onClick=${second}>${ic("eye", 15)} ${t(fix ? "sec.fix.ask" : "sec.ask")}</button>` : html`<span></span>`}
+    ${(mine || second) && html`<div class="foot quiet">${second ? html`<button class="link sec-ask" onClick=${second}>${ic("eye", 15)} ${t(fix ? "sec.fix.ask" : "sec.ask", { by: reviewer(by) })}</button>` : html`<span></span>`}
       ${!mine ? "" : got ? html`<span class="dim">${ic("check", 14)} ${t("mine.got")}</span>` : html`<button class="link" onClick=${gotIt}>${ic("check", 15)} ${t("mine.got")}</button>`}</div>`}
   </div>`;
 }
@@ -323,6 +323,8 @@ function Outcome({ sid, out, state, now, second, fix, ro }) {
 // goes to another vendor only once you allowed it, asked once (Q105)
 // what a vendor's task has cost so far (block 6): "$0,04"; less than a cent — "< $0,01"
 const money = (usd) => (usd < 0.005 ? "< $0" + t("num.dec") + "01" : "$" + (usd >= 100 ? String(Math.round(usd)) : usd.toFixed(2).replace(".", t("num.dec"))));
+// who gives a second opinion (stage M, M4.2): Codex — or Claude, on a task Codex did
+const reviewer = (by) => (by === "claude" ? "Claude" : "Codex");
 const vendorModel = (m) => String(m || "").replace(/^gpt/i, "GPT").replace(/-([a-z])/g, (x, c) => "-" + c.toUpperCase());
 // a finding's place opens the file's change at that line (block 5) — the file as it is when it didn't change, or when
 // the computer is older than "Changes". A finding has a tick (review 2026-11-11, block 6): taken off, it doesn't go
@@ -364,15 +366,17 @@ function Second({ sid, job, now, onAgain, who }) {
     setBusy(false);
   };
   const check = job.kind === "check";             // a check of the fixes, not a review
-  const head = (more) => html`<div class="k">${ic("eye", 14)} ${t(check ? "sec.title.check" : "sec.title")}${more ? " · " + more : ""}</div>`;
+  const cl = job.by === "claude";                 // Claude read a task Codex did (M4.2)
+  const by = reviewer(job.by);
+  const head = (more) => html`<div class="k">${ic("eye", 14)} ${t(check ? "sec.title.check" : "sec.title", { by })}${more ? " · " + more : ""}</div>`;
   if (job.st === "wait" || job.st === "run") return html`<div class="card second run">
     ${head("")}
-    <div class="o-l"><span class="sec-dot"></span>${job.st === "wait" ? t("sec.wait") : t(check ? "sec.run.check" : "sec.run", { dur: dur(now - job.t0) })}${job.steps ? " · " + job.steps + " " + plural(job.steps, "command") : ""}</div>
-    <div class="dim small">${t("sec.run.about")}</div>
+    <div class="o-l"><span class="sec-dot"></span>${job.st === "wait" ? t("sec.wait") : t(check ? "sec.run.check" : "sec.run", { by, dur: dur(now - job.t0) })}${job.steps ? " · " + job.steps + " " + plural(job.steps, cl ? "look" : "command") : ""}</div>
+    <div class="dim small">${t(cl ? "sec.run.about.claude" : "sec.run.about")}</div>
     <div class="foot quiet"><span></span><button class="link" disabled=${busy} onClick=${() => act("cancel")}>${t("sec.cancel")}</button></div></div>`;
   if (job.st === "fail") return html`<div class="card second fail">
     ${head("")}
-    <div class="o-l">${ic("alert", 14)} ${t("sec.fail." + (job.why || "failed"))}</div>
+    <div class="o-l">${ic("alert", 14)} ${t(cl ? "sec.fail.cl." + (["limit", "login", "overloaded", "timeout", "start"].includes(job.why) ? job.why : "failed") : "sec.fail." + (job.why || "failed"))}</div>
     ${job.text && html`<div class="dim small sec-err">${job.text}</div>`}
     <div class="foot"><button class="link" disabled=${busy} onClick=${() => act("away")}>${t("sec.fail.away")}</button><button class="btn" disabled=${busy} onClick=${onAgain}>${t("sec.again")}</button></div></div>`;
   const items = job.items || [];
@@ -382,10 +386,10 @@ function Second({ sid, job, now, onAgain, who }) {
   const cnt = (s) => items.filter((it) => (it.st || "new") === s).length;
   const sum = ["left", "fixed", "meant", "new"].filter(cnt).map((s) => t("sec.n." + s, { n: cnt(s) })).join(" · ");
   return html`<div class="card second">
-    ${head([vendorModel(job.model), job.dur ? dur(job.dur) : ""].filter(Boolean).join(" · "))}
+    ${head([cl ? modelName(job.model) : vendorModel(job.model), job.dur ? dur(job.dur) : ""].filter(Boolean).join(" · "))}
     <div class="o-l">${check ? html`<b>${sum}</b>` : items.length ? html`<b>${items.length} ${plural(items.length, "finding")}</b>` : html`<b>${t("sec.none")}</b>`}${job.summary ? html` <span class="dim">${job.summary}</span>` : ""}</div>
     ${items.length > 0 && html`<ol class=${"sec-list" + (picks ? " picks" : "")}>${items.map((it, k) => html`<${SecondItem} key=${k} sid=${sid} it=${it} on=${!off.includes(k)} toggle=${picks && open.includes(k) ? () => flip(k) : null}/>`)}</ol>`}
-    ${off.length > 0 && html`<div class="dim small sec-off">${t("sec.off.note", { who })}</div>`}
+    ${off.length > 0 && html`<div class="dim small sec-off">${t("sec.off.note", { who, by })}</div>`}
     ${l && l.mins && html`<div class="dim small">${t("sec.limit", { pct: Math.round(l.pct), h: Math.round(l.mins / 60) })}</div>`}
     ${open.length > 0 ? html`<div class="foot"><button class="link" disabled=${busy} onClick=${() => act("away")}>${t("mine.got")}</button><button class="btn sec-send" disabled=${busy || !go.length} onClick=${() => act("send")}>${go.length < open.length ? t("sec.send.n", { who, n: go.length, all: open.length }) : check ? t("sec.send.left", { who, n: go.length }) : t("sec.send", { who })}</button></div>`
       : html`<div class="foot quiet"><span></span><button class="link" disabled=${busy} onClick=${() => act("away")}>${ic("check", 15)} ${t("mine.got")}</button></div>`}</div>`;
@@ -583,9 +587,9 @@ function Session({ sid }) {
     const sec = ref.current.info && ref.current.info.second;
     if (sec && sec.why) return alertBox(t("sec.why." + sec.why, { v: sec.v || "?" }));
     try {
-      const r = await api("second", { sid, act: act || "start" });
+      const r = await api("second", { sid, act: act || "start", by: sec && sec.by });
       if (r.need === "allow") {
-        if (!(await confirmBox(t("sec.allow", { p: q(r.project) })))) return;
+        if (!(await confirmBox(t(r.by === "claude" ? "sec.allow.claude" : "sec.allow", { p: q(r.project) })))) return;
         if (act !== "check") return askSecond("allow");
         await api("vendors_ok", { pkey: ref.current.info.pkey, on: true });
         return askSecond("check");
@@ -675,7 +679,7 @@ function Session({ sid }) {
       <div class="dim small">${t("queue.why", { n: lv.slots })}</div>
       <div class="foot"><span></span><button class="btn" onClick=${jump}>${t("queue.jump")}</button></div></div>`}
     ${out && lv.state !== "work" && lv.state !== "queue" && !info.pending.length && (outState === "you" || outState === "fail" || out.need || (out.replies && out.replies.length) || out.resume || out.turn_files || out.changes || canSecond)
-      && html`<${Outcome} key=${out.ts} sid=${sid} out=${out} state=${outState} now=${now} second=${canSecond ? () => askSecond(sec.fix ? "check" : "") : null} fix=${!!sec.fix} ro=${!!info.ro}/>`}
+      && html`<${Outcome} key=${out.ts} sid=${sid} out=${out} state=${outState} now=${now} second=${canSecond ? () => askSecond(sec.fix ? "check" : "") : null} fix=${!!sec.fix} by=${sec.by} ro=${!!info.ro}/>`}
     ${sec && sec.job && html`<${Second} sid=${sid} job=${sec.job} now=${now} who=${vend ? vend.name : "Claude"} onAgain=${() => askSecond(sec.job.kind === "check" ? "check" : "")}/>`}
     ${pending.map((r) => html`<${Req} key=${r.rid} r=${r} stt=${info.stt} showWhere=${false}/>`)}
     <div ref=${bottom}></div>

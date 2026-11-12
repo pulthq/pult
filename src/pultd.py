@@ -44,6 +44,7 @@ import pult_new as N
 import pult_os
 from pult_parts import Parts   # parts and updates: Settings → Pult and its parts (review 2026-10-27, 6.2)
 import pult_render as R
+import pult_review as RV
 import pult_spend as S
 import pult_stt as STT
 import pult_tags as G
@@ -100,7 +101,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.62"
+VERSION = "0.18.63"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -3888,7 +3889,9 @@ class Pult(Api, Parts):
                             "project": self.name_of(lv.pkey) if lv else "", "turn": turn, "bg": bg, "n": n})
         for sid in list(self.second_tasks):           # a second opinion: Codex is the daemon's child too (stage M)
             lv = self.live.get(sid) or self.stub(sid)
-            out.append({"sid": sid, "title": self.t("second.busy", title=lv.title or self.title(lv)), "project": self.name_of(lv.pkey),
+            out.append({"sid": sid, "title": self.t("second.busy", title=lv.title or self.title(lv),
+                                                   who=RV.REVIEWERS[(self.seconds.get(sid) or {}).get("by") or "codex"]["name"]),
+                        "project": self.name_of(lv.pkey),
                         "turn": True, "bg": [], "n": 0})
         pl = self.local_pull_view()                   # a model downloading onto one's own server: its stream is the
         if pl and pl["run"]:                          # daemon's, and Ollama stops when it closes (stage M, step 6.4)

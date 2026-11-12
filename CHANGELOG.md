@@ -4,6 +4,15 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.63 — 2026-11-12
+
+- **Claude gives a second opinion on a task Codex did.** Under such a task's outcome the button is **Second opinion ·
+  Claude**: Claude (Sonnet) reads what the task changed, on your Claude subscription, in a session that has nothing
+  but reading tools — no command, no write, no MCP server, no settings, and nothing kept as a session — so it changes
+  nothing by what it is given, not by a promise; the changes come to it in words, read from git by Pult. The findings,
+  their ticks and the check of the fixes are the same, and they go to Codex. The project is asked for once — its code
+  goes to Anthropic then, a permission of its own beside Codex's — and its screen says so, with **Disallow**.
+
 ## 0.18.62 — 2026-11-11
 
 - **A second opinion's findings have ticks.** "Send" used to hand over every finding at once, the smallest too. Now

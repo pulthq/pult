@@ -6,7 +6,7 @@ the button that puts a task away says "Проверено". Light and dark, a 32
   STAND_TAGS=1 STAND_ASK2=1 STAND_LANG=ru HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out &
   ~/.local/share/pult/venv/bin/python tools/states_check.py /tmp/stand.out [out_dir]
 Screenshots go to out_dir (a temporary folder by default). Exit 1 on a failed check."""
-import asyncio, base64, json, os, subprocess, sys, tempfile
+import asyncio, base64, json, os, subprocess, sys, tempfile, time
 import aiohttp
 
 URLS = dict(line.split(" ", 1) for line in open(sys.argv[1]).read().split("\n") if line[:5] in ("HOME ", "PROJT"))
@@ -151,7 +151,10 @@ async def main():
             verdict("project: its headings carry the dots", await js(
                 "!!document.querySelector('.project .zone-mine > h3 .dot.attn') && !!document.querySelector('.project .zone-run > h3 .dot.work')"))
             today = await js("[...document.querySelectorAll('.project .brow.rest')].map((r) => !!r.querySelector('.st-ic.chk'))")
-            verdict("project: today's tasks carry the tick", len(today) >= 1 and all(today), today)
+            # in the first hours after midnight the stand's tasks — finished some hours "ago" — are all yesterday's: none
+            # is today's then, and the earlier ones below carry the tick (the check failed at 00:20, 2026-11-12)
+            night = time.localtime().tm_hour < 6
+            verdict("project: today's tasks carry the tick", (len(today) >= 1 or night) and all(today), today)
             await shot("5-project.png")
             if await js("!!document.querySelector('.project h3.toggle')"):
                 await js("(document.querySelector('.project h3.toggle').click(), 1)")

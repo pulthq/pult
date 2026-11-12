@@ -35,6 +35,7 @@ import pult_load as L
 import pult_new as N
 import pult_os
 import pult_render as R
+import pult_review as RV
 import pult_spend as S
 import pult_stt as STT
 import pult_tags as G
@@ -1500,7 +1501,9 @@ class Api:
                 "models": [self.model_view(v) for v in ("claude", "codex") + tuple(V.ORDER)],
                 "busy": await self.project_busy(pkey), "haiku": self.haiku_on(pkey), "haiku_own": isinstance(own, bool),
                 "brief": bool(self.prefs()["brief"]), "topic": "full" if self.topic_full(pkey) else "done",
-                "review": {"ok": self.vendors_ok(pkey), "codex": bool(info.get("path")), "mine": vid == "codex"},
+                # who gives a second opinion on its tasks ("by"), whether the owner let it read the code, whether it is here
+                "review": {"ok": self.review_ok(pkey, RV.reviewer_of(vid)), "by": RV.reviewer_of(vid),
+                           "codex": vid == "codex" or bool(info.get("path")), "mine": vid == "codex"},
                 "pinned": bool(self.store.pins().get(pkey)), "hidden": bool(self.store.hides().get(pkey)),
                 "tags_n": len(self.store.tag_vocab(pkey))}
 
@@ -2344,6 +2347,19 @@ class Api:
         """Whether the owner let this project go to other vendors (Q105 b): its code reaches OpenAI with a second opinion."""
         return bool((self.store.get("vendors.ok") or {}).get(pkey))
 
+    def review_ok(self, pkey, by):
+        """Whether the owner let `by` — "codex" or "claude" — read this project's code for a second opinion: asked once
+        for each, at the first tap; Claude's is for a project whose tasks Codex does (stage M, M4.2)."""
+        return bool((self.store.get(RV.REVIEWERS[by]["ok"]) or {}).get(pkey))
+
+    def review_allow(self, pkey, by, on=True):
+        ok = self.store.get(RV.REVIEWERS[by]["ok"]) or {}
+        if on:
+            ok[pkey] = time.time()
+        else:
+            ok.pop(pkey, None)
+        self.store.put(RV.REVIEWERS[by]["ok"], ok)
+
     @staticmethod
     def second_fix(job):
         """Whether the fixes can be checked (review 2026-11-11, block 6): the last review's findings went to the doer,
@@ -2353,26 +2369,29 @@ class Api:
     async def second_view(self, sid, rec, lv):
         """For the session's screen: can — the button under the outcome (Codex is here, the task changed files, its
         turn has ended); why — what a tap says instead ("version": a Codex Pult can't use), v — its version; job — the
-        review while it runs and once done, until the owner puts it away, else None; fix — the button asks to check
+        review while it runs and once done, until the owner puts it away, else None; by — who gives it, "codex" or "claude"
+        (pult_review.reviewer_of), and the job's own "by" — who gave that one; fix — the button asks to check
         the fixes of the findings that went to the doer (act "check"), not for a review anew. A job's kind is "check"
         for such a check: each of its items has st — "fixed", "left", "meant" — and note, what Codex said of it; an
         item without st is new."""
         info = await self.codex_state()
         job = self.second_job(sid)
-        mine = self.store.vendor_of(sid) == "codex"            # Codex did it: Claude's second opinion is step 4.2 (Q122)
-        mine = mine or bool(self.read_only(sid, lv.pkey))      # another model's task: its findings would go nowhere (7.2)
-        return {"can": bool(info["path"] and rec and lv.turn is None and self.store.turn(sid)) and not mine,
-                "why": info["why"] if info["path"] else None, "v": info["v"],
+        by = RV.reviewer_of(self.store.vendor_of(sid))         # Codex did it: Claude reads it (M4.2); else Codex does
+        ro = bool(self.read_only(sid, lv.pkey))                # another model's task: its findings would go nowhere (7.2)
+        here = True if by == "claude" else bool(info["path"])  # Claude Code is here whenever Pult runs tasks
+        return {"can": bool(here and rec and lv.turn is None and self.store.turn(sid)) and not ro, "by": by,
+                "why": info["why"] if by == "codex" and info["path"] else None, "v": info["v"] if by == "codex" else None,
                 "fix": self.second_fix(job),
                 "job": {k: job.get(k) for k in ("st", "ts", "t0", "dur", "steps", "model", "summary", "items", "why",
-                                                "text", "limits", "kind")} if job and not job.get("away") else None}
+                                                "text", "limits", "kind", "by")} if job and not job.get("away") else None}
 
-    async def api_second(self, sid, act="start", fork=False, off=None):
+    async def api_second(self, sid, act="start", fork=False, off=None, by=None):
         """act: start — ask Codex (→ {"need": "allow", "project"} when the project isn't allowed yet); allow — allow
         the project and start; cancel — stop it; away — "Got it"; send — the findings into the session (api_send: a
         session open on the computer without the wrapper answers {"need": "fork"} the same way). off — the findings
         the owner took the tick off, by their place in the list: they don't go with "send", and with "send" or "away"
-        they are remembered as left — the task's next review doesn't repeat them (second_left)."""
+        they are remembered as left — the task's next review doesn't repeat them (second_left). by — who the app
+        expects to give it: Claude's review of a task Codex did starts only for an app that names Claude."""
         path, lv = self.transcript_of(sid)
         pkey, project = self.session_project(sid)
         if act == "away":
@@ -2401,7 +2420,8 @@ class Api:
                 return {"ok": False, "note": self.t("second.err.none")}
             job["sending"] = True
             try:
-                res = await self.api_send(sid, CX.message(go, job.get("model"), check=job.get("kind") == "check"), fork=fork)
+                res = await self.api_send(sid, CX.message(go, job.get("model"), check=job.get("kind") == "check",
+                                                          by=RV.REVIEWERS[job.get("by") or "codex"]["name"]), fork=fork)
             finally:
                 job.pop("sending", None)
             if res.get("ok"):
@@ -2409,25 +2429,29 @@ class Api:
                 job["went"] = go                     # what a check of the fixes will be asked about
                 self.second_leave(sid, [job["items"][k] for k in out])
                 self.second_keep(sid, job)
-                log("second opinion %s: sent to Claude (%d findings of %d)" % (sid[:8], len(go), len(job["items"])))
+                log("second opinion %s: sent to %s (%d findings of %d)" % (
+                    sid[:8], "Codex" if job.get("by") == "claude" else "Claude", len(go), len(job["items"])))
                 self.changed(sid)
             return res
         if act not in ("start", "allow", "check"):
             raise ValueError("bad act")
         if not project:
             raise ValueError(self.t("err.no_folder_short"))
+        want, by = by, RV.reviewer_of(self.store.vendor_of(sid))
+        if by == "claude" and want != "claude":
+            # an app from before M4.2 names Codex and OpenAI in its question — the owner's yes must be to what happens
+            raise ValueError(self.t("second.err.app"))
         info = await self.codex_state()
-        if not info["ok"]:
+        if by == "codex" and not info["ok"]:
             raise ValueError(self.t("second.err." + (info["why"] or "missing"), v=info["v"] or "?"))
         if lv and lv.turn is not None:
-            raise ValueError(self.t("second.err.turn"))
+            raise ValueError(self.t("second.err.turn", who="Codex" if by == "claude" else "Claude"))
         if act == "allow":
-            ok = self.store.get("vendors.ok") or {}
-            ok[pkey] = time.time()
-            self.store.put("vendors.ok", ok)
-            log("app: project %s may go to other vendors (a second opinion asked there)" % pkey)
-        elif not self.vendors_ok(pkey):
-            return {"ok": False, "need": "allow", "project": self.name_of(pkey)}
+            self.review_allow(pkey, by)
+            log("app: project %s may go to other vendors (a second opinion asked there)" % pkey if by == "codex" else
+                "app: project %s may be read by Claude for a second opinion (asked there)" % pkey)
+        elif not self.review_ok(pkey, by):
+            return {"ok": False, "need": "allow", "project": self.name_of(pkey), "by": by}
         job = self.second_job(sid)
         if job and job.get("st") in ("wait", "run"):
             return {"ok": True}
@@ -2437,11 +2461,11 @@ class Api:
             if not self.second_fix(job):
                 return {"ok": False, "note": self.t("note.decided")}
             was = job["was"] if job.get("kind") == "check" and job.get("st") == "fail" else job.get("went") or job.get("items") or []
-            job = {"st": "wait", "ts": time.time(), "pkey": pkey, "kind": "check",
+            job = {"st": "wait", "ts": time.time(), "pkey": pkey, "kind": "check", "by": by,
                    "was": [{k: v for k, v in it.items() if k not in ("st", "note")} for it in was]}
             self.seconds[sid] = job
         else:
-            job = {"st": "wait", "ts": time.time(), "pkey": pkey}
+            job = {"st": "wait", "ts": time.time(), "pkey": pkey, "by": by}
             self.second_keep(sid, job)
             self.store.put("second." + sid, None)        # the one before is replaced: a new review, the old one gone
         self.second_tasks[sid] = asyncio.create_task(self.second_run(sid, job, path, project, info))
@@ -2451,16 +2475,16 @@ class Api:
     async def api_vendors_ok(self, pkey, on=False):
         """Whether another vendor may review a project (stage M, Q105 b; since 7.2 a review's alone — the project's
         model gets its code by the owner's choice of it): given by the second opinion's first tap, taken back by
-        "Disallow" on the project's settings page — then its review stops, now and from the queue. → {"on"}."""
+        "Disallow" on the project's settings page — then its review stops, now and from the queue. → {"on"}. The
+        permission is the one of whoever reviews the project's tasks: Codex, or Claude where Codex does them (M4.2)."""
         if on and not await self.known_project(pkey):
             raise ValueError(self.t("err.no_project"))
-        ok = self.store.get("vendors.ok") or {}
-        if on:
-            ok[pkey] = time.time()
+        by = RV.reviewer_of(self.project_model(pkey))
+        self.review_allow(pkey, by, on)
+        if by == "codex":
+            log("app: project %s %s" % (pkey, "may be reviewed by other vendors" if on else "is reviewed by no other vendor"))
         else:
-            ok.pop(pkey, None)
-        self.store.put("vendors.ok", ok)
-        log("app: project %s %s" % (pkey, "may be reviewed by other vendors" if on else "is reviewed by no other vendor"))
+            log("app: project %s %s" % (pkey, "may be read by Claude for a second opinion" if on else "is read by Claude no more"))
         if not on:                           # taken back: no review of it goes on, nor starts later from the queue
             for sid, task in list(self.second_tasks.items()):
                 if (self.seconds.get(sid) or {}).get("pkey") == pkey:
@@ -2469,34 +2493,47 @@ class Api:
         return {"on": bool(on)}
 
     async def second_run(self, sid, job, path, project, info):
-        """One review, after any other one ends (a single Codex at a time): the task's facts, the commit it began on,
-        Codex's answer read into findings; the topic hears when it's ready if the owner isn't looking (page_now)."""
+        """One review, after any other one ends (one at a time): the task's facts, the commit it began on, the
+        reviewer's answer read into findings; the topic hears when it's ready if the owner isn't looking (page_now).
+        The reviewer is the job's "by": Codex in its read-only sandbox, or Claude with nothing but reading tools
+        (pult_review) on a task Codex did."""
         cut = False
+        by = job.get("by") or "codex"
+        name = RV.REVIEWERS[by]["name"]
         try:
             async with self.codex_lock:
-                if not self.vendors_ok(job["pkey"]):     # taken back while it waited (Codex's second opinion, 2026-10-30)
+                if not self.review_ok(job["pkey"], by):  # taken back while it waited (Codex's second opinion, 2026-10-30)
                     cut = True
                     self.seconds.pop(sid, None)
-                    log("second opinion %s: not run — the project stays with Claude only" % sid[:8])
+                    log("second opinion %s: not run — the project stays with %s only" % (sid[:8], "Claude" if by == "codex" else "Codex"))
                     return
                 job.update(st="run", t0=time.time(), steps=0)
                 self.changed(sid)
-                facts = await asyncio.to_thread(CX.task_facts, path, project)
+                facts = await asyncio.to_thread(RV.codex_facts if by == "claude" else CX.task_facts, path, project)
                 base = await asyncio.to_thread(CX.git_base, project, facts["t0"])
                 # the parts of the folder that are repositories of their own: found by the files the task's edit tools
                 # wrote and its turns made or changed (commands too) — 2026-10-31
                 repos = await asyncio.to_thread(CX.nested_repos, project, facts["files"] + self.store.task_files(sid),
                                                 facts["t0"])
                 check = job.get("kind") == "check"
-                text = CX.check_instructions(facts, job["was"], base, self.lang()) if check else \
-                    CX.instructions(facts, base, self.lang(), rules=os.path.isfile(os.path.join(project, "CLAUDE.md")),
-                                    repos=repos, left=self.second_left(sid))
-                env = {k: v for k, v in os.environ.items() if not k.startswith("PULT_")}
 
                 def step(n):
                     job["steps"] = n
                     self.changed(sid)
-                got = await CX.review(info["path"], project, text, env=env, on_step=step, client=self.D.VERSION, plain=check)
+                if by == "claude":
+                    # Claude has no command to run: the changes themselves go in its words, read from git here
+                    diff = await asyncio.to_thread(RV.git_diff, project, base, repos)
+                    rules = next((f for f in ("AGENTS.md", "CLAUDE.md") if os.path.isfile(os.path.join(project, f))), False)
+                    text = CX.check_instructions(facts, job["was"], base, self.lang(), doer="Codex", diff=diff) if check else \
+                        CX.instructions(facts, base, self.lang(), rules=rules, repos=repos, left=self.second_left(sid),
+                                        doer="Codex", diff=diff, shape=RV.SHAPE)
+                    got = await RV.claude(self.app_cli(), project, text, on_step=step)
+                else:
+                    text = CX.check_instructions(facts, job["was"], base, self.lang()) if check else \
+                        CX.instructions(facts, base, self.lang(), rules=os.path.isfile(os.path.join(project, "CLAUDE.md")),
+                                        repos=repos, left=self.second_left(sid))
+                    env = {k: v for k, v in os.environ.items() if not k.startswith("PULT_")}
+                    got = await CX.review(info["path"], project, text, env=env, on_step=step, client=self.D.VERSION, plain=check)
                 if check:                 # each earlier finding with what Codex says of it now; no line for one — left
                     said, new = CX.parse_check(got["text"], len(job["was"]), project)
                     read = {"summary": "", "items": [dict(it, st=said.get(k, ("left", ""))[0], note=said.get(k, ("left", ""))[1])
@@ -2505,8 +2542,8 @@ class Api:
                     read = CX.parse(got["text"], project)
                 job.update(st="done", dur=time.time() - job["t0"], model=got["model"], summary=read["summary"],
                            items=read["items"], limits=got["limits"])
-                log("second opinion %s: Codex %s (%s), %s, %d commands, %.0f s%s%s" % (
-                    sid[:8], info["v"], got["model"],
+                log("second opinion %s: %s (%s), %s, %d commands, %.0f s%s%s" % (
+                    sid[:8], "Codex %s" % info["v"] if by == "codex" else "Claude", got["model"],
                     "the fixes checked — " + ", ".join("%d %s" % (sum(it.get("st") == s for it in read["items"]), s)
                                                        for s in ("fixed", "left", "meant", None)) if check
                     else "%d findings" % len(read["items"]), job["steps"], job["dur"],
@@ -2515,11 +2552,11 @@ class Api:
         except asyncio.CancelledError:
             cut = True
             self.seconds.pop(sid, None)
-            log("second opinion %s: %s" % (sid[:8], "stopped by the owner" if self.vendors_ok(job["pkey"])
-                                            else "stopped — the project stays with Claude only"))
+            log("second opinion %s: %s" % (sid[:8], "stopped by the owner" if self.review_ok(job["pkey"], by)
+                                            else "stopped — the project stays with %s only" % ("Claude" if by == "codex" else "Codex")))
         except CX.CodexError as e:
             job.update(st="fail", why=e.kind, text=R.short(e.text, 300), dur=time.time() - job.get("t0", job["ts"]))
-            log("second opinion %s: Codex didn't — %s: %s" % (sid[:8], e.kind, e.text[:300]))
+            log("second opinion %s: %s didn't — %s: %s" % (sid[:8], name, e.kind, e.text[:300]))
         except Exception as e:
             job.update(st="fail", why="failed", text=R.short(repr(e), 300), dur=time.time() - job.get("t0", job["ts"]))
             log("second opinion %s: failed — %r" % (sid[:8], e))
@@ -2538,16 +2575,19 @@ class Api:
             if not self.chat or not await self.page_now():
                 return
             lv = self.live.get(sid) or self.stub(sid, job.get("pkey"))
+            by = job.get("by") or "codex"
+            who = RV.REVIEWERS[by]["name"]
+            cause = "second.why." + ("cl." if by == "claude" else "") + job.get("why", "failed")
             head = "👁 <b>%s</b> · " % R.esc(lv.title or self.title(lv))         # as the session's screen names it
             items = job.get("items") or []
             if not self.topic_full(lv.pkey):       # only "done" in the topic (stage M, 7.2): no title, no findings
                 head, items = "👁 %s · " % self.head(lv), [] if job["st"] == "fail" else [None] * len(items)
             if job["st"] == "fail":
-                text = head + self.t("second.tg.fail", why=R.esc(self.t("second.why." + job.get("why", "failed"))))
+                text = head + self.t("second.tg.fail", who=who, why=R.esc(self.t(cause if cause in I.S else "second.why.cl.failed")))
             elif job.get("kind") == "check":       # a check of the fixes: how many of each, and what is left by name
                 was = job.get("items") or []
                 n = {s: sum(it.get("st") == s for it in was) for s in ("left", "fixed", "meant", None)}
-                text = head + self.t("second.tg.check", sum=", ".join(
+                text = head + self.t("second.tg.check", who=who, sum=", ".join(
                     self.t("second.n." + (s or "new"), n=n[s]) for s in ("left", "fixed", "meant", None) if n[s]))
                 open_ = [it for it in was if it.get("st") in ("left", None)]
                 if open_ and None not in items:
@@ -2555,11 +2595,11 @@ class Api:
                                               for k, it in enumerate(open_[:SECOND_LINES], 1)) + \
                         ("\n…" if len(open_) > SECOND_LINES else "")
             elif not items:
-                text = head + self.t("second.tg.none")
+                text = head + self.t("second.tg.none", who=who)
             elif None in items:
-                text = head + self.t("second.tg.done", n=len(items), findings=I.plural(len(items), "finding"))
+                text = head + self.t("second.tg.done", who=who, n=len(items), findings=I.plural(len(items), "finding"))
             else:
-                text = head + self.t("second.tg.done", n=len(items), findings=I.plural(len(items), "finding")) + "\n" + \
+                text = head + self.t("second.tg.done", who=who, n=len(items), findings=I.plural(len(items), "finding")) + "\n" + \
                     "\n".join("%d. %s" % (n, R.esc(R.short(it["title"], 140))) for n, it in enumerate(items[:SECOND_LINES], 1)) + \
                     ("\n…" if len(items) > SECOND_LINES else "")
             row = self.app_row(sid, self.t("btn.details"))

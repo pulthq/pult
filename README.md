@@ -107,6 +107,7 @@ Under an outcome, **Second opinion · Codex**: OpenAI's agent, on your ChatGPT s
 changed — with your request and the report, so what was done on purpose isn't taken for a bug. A finding opens the
 change at its line and has a tick; **Send to Claude** — or to DeepSeek, whoever did the task — hands the ticked ones
 back to it. Then **Check the fixes · Codex** says of each finding: fixed, left, or deliberate.
+A task Codex did is read by Claude the same way — with nothing but reading tools.
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="media/f-second.en.dark.png"><img src="media/f-second.en.png" width="330" alt="A second opinion in the app: under the outcome of a task done on Opus 5.5, Codex on GPT-5.6-Sol found two things in five seconds, each with its priority, its place in the project and what to do; the buttons Reviewed and Send to Claude"></picture></p>
 

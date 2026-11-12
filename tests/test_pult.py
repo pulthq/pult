@@ -49,6 +49,7 @@ import pult_files as F  # noqa: E402
 import pult_os  # noqa: E402
 import pult_parts  # noqa: E402
 import pult_render as R  # noqa: E402
+import pult_review as RV  # noqa: E402
 import pult_stt as STT  # noqa: E402
 import pult_tags as G  # noqa: E402
 import pult_tg  # noqa: E402
@@ -2265,7 +2266,9 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         # where the system can't tell keyboard and mouse idle (servers, remote sessions), "away" comes from the
         # owner's own actions in sessions here: a prompt typed, a permission answered
         self.p.env.pop("PULT_FORCE_AWAY", None)
-        with mock.patch.object(pult_os, "input_idle", lambda: None):
+        # the lock isn't told there either — and this computer's own must not decide: with its screen locked (the
+        # owner away at night, 2026-11-11) the test read the real lock and failed
+        with mock.patch.object(pult_os, "input_idle", lambda: None), mock.patch.object(pult_os, "screen_locked", lambda: None):
             self.assertFalse(await self.p.away())                                   # just started: assume here
             self.p.here_seen -= pultd.AWAY_IDLE + 1
             self.assertTrue(await self.p.away())
@@ -4292,7 +4295,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((sec["can"], sec["why"], sec["v"], sec["job"]), (True, None, "0.148.0-alpha.9", None))
         # the project isn't allowed yet: the app asks once; "allow" lets it and starts
         self.assertFalse((await self.p.api_project(PKEY))["vendors_ok"])
-        self.assertEqual(await self.p.api_second(SID, "start"), {"ok": False, "need": "allow", "project": "proj"})
+        self.assertEqual(await self.p.api_second(SID, "start"), {"ok": False, "need": "allow", "project": "proj", "by": "codex"})
         self.assertIsNone((await view())["second"]["job"])
         self.assertEqual(await self.p.api_second(SID, "allow"), {"ok": True})
         self.assertTrue((await self.p.api_project(PKEY))["vendors_ok"])
@@ -4639,7 +4642,73 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("user", "Создай hello.txt"), steps)
         self.assertIn(("tool", "✏️ hello.txt"), steps)
         self.assertEqual((s["vendor"]["id"], s["vendor"]["models"][0]), ("codex", "gpt-5.6-sol"))
-        self.assertFalse(s["second"]["can"])                 # Codex doesn't review its own work (Claude's — step 4.2)
+        # Claude reads what Codex did (M4.2; review 2026-11-11, block 6): the button names it; the project is asked for
+        # once — its code goes to Anthropic now, a permission of its own; Claude is told the task from Codex's own
+        # history, and what it answers is read as Codex's findings are. A stand-in for the session that only reads
+        sec = s["second"]
+        self.assertEqual((sec["can"], sec["by"], sec["why"], sec["fix"], sec["job"]), (True, "claude", None, False, None))
+        with self.assertRaises(ValueError) as e:              # an app that doesn't name Claude would ask about OpenAI
+            await self.p.api_second(sid, "start")
+        self.assertEqual(str(e.exception), I.T("second.err.app"))
+        self.assertEqual(await self.p.api_second(sid, "start", by="claude"), {"ok": False, "need": "allow", "project": "proj", "by": "claude"})
+        told = []
+
+        async def reads(cli, cwd, text, on_step=None, timeout=0, model=None):
+            told.append((os.path.realpath(cwd), text))
+            if on_step:
+                on_step(1)
+            words = "1. LEFT — В файле всё ещё одна строка." if "Your findings:" in text else \
+                "Одно место.\n\nReview comments:\n\n- [P2] В файле одна строка — hello.txt:1-1\n  Просили две."
+            return {"text": words, "model": "claude-sonnet-5-5", "effort": None, "limits": [], "asked": []}
+        cl_done = lambda: (self.p.seconds.get(sid) or {}).get("st") == "done"      # noqa: E731
+        with mock.patch.object(RV, "claude", reads):
+            self.assertEqual(await self.p.api_second(sid, "allow", by="claude"), {"ok": True})
+            self.assertEqual([b["title"] for b in self.p.busy_report()], ["Второе мнение · Claude — " + (s["title"])])
+            await until(cl_done)
+        self.assertTrue(self.p.review_ok(PKEY, "claude"))
+        self.assertFalse(self.p.vendors_ok(PKEY))                     # Codex's permission is another one
+        job = (await self.p.api_session(sid))["second"]["job"]
+        self.assertEqual((job["by"], job["model"], job["steps"], job["summary"], [(i["prio"], i["file"], i["line"]) for i in job["items"]]),
+                         ("claude", "claude-sonnet-5-5", 1, "Одно место.", [("P2", "hello.txt", 1)]))
+        self.assertEqual(told[0][0], os.path.realpath(str(proj)))
+        for part in ("another coding agent (Codex)", "Создай hello.txt", "Codex's report at the end", "Готово", "hello.txt",
+                     "the rules for agents are in CLAUDE.md" if False else "are in CLAUDE.md", '"Review comments:"', "in Russian"):
+            self.assertIn(part, told[0][1])
+        self.assertNotIn("`git ", told[0][1])                         # it has no command to run, and none is named
+        review = (await self.p.api_projset(PKEY))["review"]
+        self.assertEqual((review["by"], review["ok"], review["mine"]), ("claude", True, True))
+        went = []
+
+        async def to_codex(sid_, text, fork=False, files=None):
+            went.append(text)
+            return {"ok": True, "how": "session", "out": "o1"}
+        with mock.patch.object(self.p, "api_send", to_codex):
+            self.assertTrue((await self.p.api_second(sid, "send"))["ok"])
+        self.assertTrue(went[0].startswith("A second opinion from Claude (claude-sonnet-5-5) on this task's changes."))
+        self.assertTrue((await self.p.api_session(sid))["second"]["fix"])
+        with mock.patch.object(RV, "claude", reads):                  # the fixes are checked by the same reviewer
+            self.assertEqual(await self.p.api_second(sid, "check", by="claude"), {"ok": True})
+            await until(cl_done)
+        job = (await self.p.api_session(sid))["second"]["job"]
+        self.assertEqual((job["by"], job["kind"], [(i["st"], i["note"]) for i in job["items"]]),
+                         ("claude", "check", [("left", "В файле всё ещё одна строка.")]))
+        self.assertIn("another coding agent (Codex) did in this folder", told[1][1])
+        self.assertIn("1. [P2] В файле одна строка — hello.txt:1", told[1][1])
+
+        async def fails(cli, cwd, text, on_step=None, timeout=0, model=None):
+            raise CX.CodexError("limit", "usage limit reached")
+        await self.p.api_second(sid, "away")
+        failed = sum("не получилось" in t for t in self.texts())
+        with mock.patch.object(RV, "claude", fails):                  # Claude's own causes, in its own words
+            await self.p.api_second(sid, "start", by="claude")
+            await until(lambda: (self.p.seconds.get(sid) or {}).get("st") == "fail")
+        self.assertEqual((await self.p.api_session(sid))["second"]["job"]["why"], "limit")
+        await until(lambda: sum("не получилось" in t for t in self.texts()) > failed)
+        self.assertIn("второе мнение Claude не получилось: " + I.T("second.why.cl.limit"), [t for t in self.texts() if "не получилось" in t][-1])
+        await self.p.api_second(sid, "away")
+        self.assertEqual(await self.p.api_vendors_ok(PKEY, False), {"on": False})       # "Disallow" on the project's screen
+        self.assertFalse(self.p.review_ok(PKEY, "claude"))
+        self.assertEqual((await self.p.api_second(sid, "start", by="claude"))["need"], "allow")
         self.assertEqual(self.p.llm_view(sid, None), {"vendor": "Codex", "model": "gpt-5.6-sol"})
         self.assertEqual((s["vendor"]["efforts"]["gpt-5.6-sol"][-1], s["vendor"]["effort"]["gpt-5.6-mini"]), ("ultra", "medium"))
         # its model and effort from the session's screen: its own lists, with the next turn; a level the new model
@@ -9500,6 +9569,65 @@ class CodexTest(unittest.TestCase):
         self.assertEqual(CX.kind_of({"codex_error_info": {"http_connection_failed": {"http_status_code": 429}}}), "rate")
         for details in (None, [], "oops", {"httpStatusCode": "oops"}):
             self.assertEqual(CX.kind_of({"codexErrorInfo": {"httpConnectionFailed": details}}), "network")
+
+    def test_claude_as_the_reviewer(self):
+        # Claude gives a second opinion on a task Codex did (M4.2; review 2026-11-11, block 6). It only reads by what
+        # the session is given (tests/probe_claude_review.py): three tools, no MCP server, no settings, nothing kept;
+        # the changes come in its words — git read here, a file that looks like keys named and not shown — and the
+        # task's facts from Codex's own history
+        self.assertEqual((RV.reviewer_of("codex"), RV.reviewer_of(None), RV.reviewer_of("deepseek"), RV.reviewer_of("local")),
+                         ("claude", "codex", "codex", "codex"))
+        o = RV.options("/x/claude", "/tmp/p")
+        self.assertEqual((o.tools, o.setting_sources, o.mcp_servers, o.permission_mode, o.model, str(o.cli_path)),
+                         (["Read", "Grep", "Glob"], [], {}, "default", "claude-sonnet-5-5", "/x/claude"))
+        self.assertEqual((o.extra_args, o.env), ({"no-session-persistence": None, "strict-mcp-config": None}, {"PULT_OFF": "1"}))
+        proj = TMP / "claude-reviews"
+        base = git_repo(proj, time.time() - 3600, {"cart.py": "def total(xs):\n    return sum(xs)\n", ".env": "KEY=old\n",
+                                                  "lib/in.py": "a = 1\n"})
+        (proj / "cart.py").write_text("def total(xs, off=0):\n    return sum(xs) - off\n")
+        (proj / ".env").write_text("KEY=made-up-new\n")
+        (proj / "new.py").write_text("x = 1\n")
+        d = RV.git_diff(str(proj), base)
+        self.assertIn("diff --git a/cart.py b/cart.py", d)
+        self.assertIn("+def total(xs, off=0):", d)
+        self.assertIn("diff --git a/.env b/.env\n(this file looks like keys or settings: it changed, and is not shown)", d)
+        self.assertNotIn("made-up-new", d)
+        self.assertNotIn("KEY=old", d)
+        self.assertIn("New files, not in git yet — read them as they are: new.py", d)
+        cut = RV.git_diff(str(proj), base, limit=60)
+        self.assertIn("(the changes are longer than this — cut here: read the files themselves)", cut)
+        self.assertLess(len(cut), 400)
+        self.assertEqual(RV.git_diff(str(proj), None), "")                     # not in git: nothing to show
+        told = CX.instructions({"asks": ["Скидка"], "report": "Сделал.", "files": ["cart.py"]}, base, "ru", rules="AGENTS.md",
+                               doer="Codex", diff=d, shape=RV.SHAPE, left=[{"title": "Старое", "where": "cart.py:1"}])
+        for part in ("another coding agent (Codex)", "Codex's report at the end", "```diff\ndiff --git a/.env", "diff --git a/cart.py", "are in AGENTS.md",
+                     "- Старое — cart.py:1", '"Review comments:"', "the titles and the texts in Russian"):
+            self.assertIn(part, told)
+        self.assertNotIn("`git diff", told)
+        self.assertIn("```diff\ndiff --git", CX.check_instructions({"asks": ["Скидка"], "report": "Поправил."}, [{"title": "T", "body": "b"}],
+                                                                  base, "ru", doer="Codex", diff=d))
+        # the task as Codex's history has it
+        h = TMP / "cx-facts"
+        h.mkdir(exist_ok=True)
+        cwd = os.path.realpath(str(h))
+
+        def row(kind, what, ts=0, **p):
+            return json.dumps({"timestamp": "2026-10-31T17:28:%02d.000Z" % ts, "type": kind, "payload": dict(p, type=what)})
+        f = h / "rollout-2026-10-31T20-28-30-th.jsonl"
+        f.write_text("\n".join([
+            row("session_meta", None, id="th"), row("event_msg", "user_message", 2, message="Создай hello.txt"),
+            row("event_msg", "user_message", 2, message="Создай hello.txt"), row("event_msg", "agent_message", 3, message="Делаю."),
+            row("response_item", "custom_tool_call", 4, call_id="c2", name="exec",
+                input='const patch = "*** Begin Patch\\n*** Add File: %s/hello.txt\\n+hi\\n*** End Patch";\ntext(await tools.apply_patch(patch));' % cwd),
+            row("event_msg", "user_message", 6, message="и bye в конце"), row("event_msg", "agent_message", 7, message="Готово: записал."),
+            "{broken"]) + "\n")
+        facts = RV.codex_facts(str(f), str(h))
+        self.assertEqual((facts["asks"], facts["report"], facts["files"]), (["Создай hello.txt", "и bye в конце"], "Готово: записал.", ["hello.txt"]))
+        self.assertEqual(int(facts["t0"]) % 60, 0)
+        self.assertEqual(RV.codex_facts(str(h / "none.jsonl")), {"t0": None, "asks": [], "report": "", "files": []})
+        self.assertEqual([RV.kind_of(x) for x in ("Claude AI usage limit reached", "Please log in", "Overloaded", "boom")],
+                         ["limit", "login", "overloaded", "failed"])
+        self.assertTrue(CX.message([{"title": "T"}], "m", by="Claude").startswith("A second opinion from Claude (m) on"))
 
     def test_codex_history_and_helpers(self):
         # a task Codex does (stage M, M4.1): its own history file read as a chat — the owner's words (one mid-turn), its
