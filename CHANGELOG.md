@@ -4,6 +4,22 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.65 — 2026-11-12
+
+- **The app server's updater fetches the relay's files without negotiation.** With the release's commit already in its
+  cache, it told GitHub so, and GitHub sent none of the files that commit reaches: "did not send all necessary objects"
+  on every try, the release never taken. Since 2026-11-12 GitHub answers so for any release, an empty cache too: an
+  updater from before this release takes none. The files by their ids now go as git's own fetch of a missing object
+  does (`fetch.negotiationAlgorithm=noop`). The updater changes only with `sudo bash deploy/relay/install.sh` on the
+  server — run it once from this release (it also puts this release in); Settings → Pult and its parts says when the
+  updater is older than the release.
+- **The documents say what the install and the relay really are.** Ten minutes is the chat; the app needs a Linux
+  server of yours with a domain and HTTPS — about an hour more if you already run one (README). The relay keeps nothing
+  on disk, but whoever controls its server can act in Pult as you: README, the guide, the relay's page and SECURITY.md
+  now say so, and SECURITY.md adds that without the server's updater the computer doesn't check the app files the
+  server hands to the phone. New: "Behind a proxy" in the install guide — `HTTPS_PROXY` for the installer,
+  `PULT_PROXY` for Pult (an HTTP proxy) — and a row for it in Troubleshooting.
+
 ## 0.18.64 — 2026-11-12
 
 - **Home's top: the limit apart from the machine.** The tile of where you are (Auto / Computer / Phone) is gone from

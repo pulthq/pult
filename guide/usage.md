@@ -243,8 +243,10 @@ code to Telegram the same way as Claude's turns.
 - **What goes to Telegram:** your prompts, Claude's replies, step names, commands and file names in permission
   requests, questions, and the files you or Claude send. Telegram keeps it like any chat; bot chats aren't
   end-to-end encrypted.
-- **The relay** stores nothing and stops strangers by Telegram's signature and your ID; the computer checks every
+- **The relay** keeps nothing on disk and stops strangers by Telegram's signature and your ID; the computer checks every
   login again with the bot token, which never leaves it. The page runs scripts only from your server and Telegram.
+  Whoever controls that server, though, could act in Pult as you: keep the relay on a server you trust as much as your
+  computer.
 - **Alerts** with sound on an app login from a new network and on signs that someone else holds the bot token;
   Settings → Security in the app logs every window out. A link whose words hide its address shows its domain.
 - **Other vendors:** a project's code reaches OpenAI only in a project whose model you made Codex — its tasks run in a

@@ -5,6 +5,7 @@
 | | |
 |---|---|
 | Бот молчит | `pult status` покажет службу и связь с Telegram; `pult restart`. Журнал — `~/Library/Logs/pult.log` (macOS), `~/.local/state/pult/pult.log` (Linux, Windows). |
+| За прокси: мастер пишет «Нет связи с Telegram» или `pip` не достаёт PyPI | [За прокси](install.ru.md#за-прокси): `HTTPS_PROXY` — установщику, `PULT_PROXY` — Пульту. |
 | Linux: Пульт останавливается, когда выходишь | `sudo loginctl enable-linger $USER`. |
 | VS Code: «Claude Code native binary not found at …» | Строка обёртки в настройках VS Code сломана или указывает на несуществующий файл: `pult status` напечатает правильную; потом Reload Window. |
 | Нет сессий из VS Code | Хуки выключены: `pult hooks on`, затем Reload Window. |

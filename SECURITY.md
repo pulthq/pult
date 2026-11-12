@@ -37,6 +37,11 @@ For example:
 Things that are by design and not vulnerabilities:
 
 - whoever controls the owner's Telegram account controls Pult;
+- whoever controls the web app relay's server — root there, or the relay's own process — can read what the app shows
+  and send the computer requests as the owner, a new task included: the relay is trusted like the computer, so it
+  belongs on a server the owner trusts that much, not on shared hosting;
+- without the server's updater (`deploy/relay/install.sh --auto`), the computer doesn't check the app files that
+  server hands to the phone;
 - messages in Telegram are stored in Telegram's cloud;
 - sessions started from Telegram use the permission mode set in `PULT_PERMISSION_MODE` (`auto` by default);
 - in a project the owner allowed, a second opinion sends Codex what the task changed; a task on the project's model sends
