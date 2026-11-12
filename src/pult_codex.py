@@ -305,17 +305,20 @@ def _cut(s, n):
     return s if len(s) <= n else s[:n - 1].rstrip() + "…"
 
 
-def instructions(facts, base, lang="en", rules=False, repos=(), left=()):
+def instructions(facts, base, lang="en", rules=False, repos=(), left=(), doer="Claude Code", diff=None, shape=""):
     """What Codex is told: the task in the owner's words, Claude's report, what changed and how to see it, what to
     report and in which language. Without the request and the report a second opinion argues with the task's own
     decisions — the probe's one finding did (2026-10-30) — so both go, and what they call deliberate isn't a finding.
     base — git_base's answer; rules — the folder has a CLAUDE.md (Codex itself reads only AGENTS.md); repos —
     nested_repos': the parts of the folder that are repositories of their own, each with its own history; left — the
     findings of this task's earlier reviews the owner took the tick off: seen and left as they are, not to be
-    reported again (review 2026-11-11, block 6)."""
+    reported again (review 2026-11-11, block 6). For another reviewer than Codex (pult_review): doer — whose task it
+    is; diff — the changes themselves, for one that has no command to run (the commands are then not named); shape —
+    how to write the answer, for one that has no review format of its own; rules — may be the rules file's name."""
     asks = facts.get("asks") or []
-    parts = ["You are giving a second opinion on a task another coding agent (Claude Code) has just done in this folder. "
-             "Read what it changed and report real problems only. Change nothing."]
+    who = doer.split()[0]
+    parts = ["You are giving a second opinion on a task another coding agent (%s) has just done in this folder. "
+             "Read what it changed and report real problems only. Change nothing." % doer]
     if asks:
         parts.append('The task, in the owner\'s words:\n"""\n%s\n"""' % _cut(asks[0], ASK_MAX))
         later = asks[1:][-LATER_N:]
@@ -323,28 +326,35 @@ def instructions(facts, base, lang="en", rules=False, repos=(), left=()):
             parts.append("The owner's later messages in the same task, oldest first:\n" +
                          "\n".join("- " + _cut(a, LATER_MAX).replace("\n", " ") for a in later))
     if facts.get("report"):
-        parts.append('Claude\'s report at the end:\n"""\n%s\n"""' % _cut(facts["report"], REPORT_MAX))
+        parts.append('%s\'s report at the end:\n"""\n%s\n"""' % (who, _cut(facts["report"], REPORT_MAX)))
     files = facts.get("files") or []
     named = ", ".join(files[:FILES_MAX]) + (" and %d more" % (len(files) - FILES_MAX) if len(files) > FILES_MAX else "")
-    if base:
+    if diff:
+        what = ("What changed since the task began, as git shows it (committed and not yet):\n```diff\n%s```\n"
+                "Read the files themselves where the change alone doesn't tell." % diff)
+        if files:
+            what += (" The task's own edits wrote these files: %s; its commands may have changed more. Other sessions may "
+                     "work in this folder at the same time: a change that touches none of the task's files is likely "
+                     "theirs — leave it out." % named)
+    elif base:
         since = "the folder's first commit" if base == EMPTY_TREE else "commit %s" % base[:12]
         what = ("What changed: everything since %s, when the task began — `git diff %s -- .` (committed and not yet), "
                 "and new files not in git yet (`git status --short -- .`)." % (since, base))
         if files:
-            what += (" Claude's edit tools wrote these files: %s; commands may have changed more. Other sessions may "
+            what += (" %s's edit tools wrote these files: %s; commands may have changed more. Other sessions may "
                      "work in this folder at the same time: a change that touches none of the task's files is likely "
-                     "theirs — leave it out." % named)
+                     "theirs — leave it out." % (who, named))
     elif repos:
         what = "This folder itself is not in git; the parts of it named below are."
         if files:
-            what += " Claude's edit tools wrote these files: %s; commands may have changed more." % named
+            what += " %s's edit tools wrote these files: %s; commands may have changed more." % (who, named)
     elif files:
         what = ("This folder is not in git, so there is no history: the task wrote these files — read them as they are "
                 "now: %s." % named)
     else:
         what = "This folder is not in git, and the task's own files are unknown: judge by the request and the report."
     parts.append(what)
-    if repos:
+    if repos and not diff:
         lines = []
         for r in repos:
             if not r.get("base"):
@@ -361,36 +371,41 @@ def instructions(facts, base, lang="en", rules=False, repos=(), left=()):
                      "(committed and not yet, and new files):\n%s\nIn them too, a change that touches none of the "
                      "task's files is likely another session's — leave it out." % "\n".join(lines))
     if rules:
-        parts.append("The project's rules for agents are in CLAUDE.md: what it and the documents it points to record as "
-                     "decided is deliberate.")
+        parts.append("The project's rules for agents are in %s: what it and the documents it points to record as "
+                     "decided is deliberate." % (rules if isinstance(rules, str) else "CLAUDE.md"))
     if left:
         parts.append("An earlier review of this task reported the findings below. The owner has seen them and chose to "
                      "leave them as they are: they are decided — don't report them again, in other words either.\n%s"
                      % "\n".join("- %s%s" % (_cut(x.get("title"), LEFT_TITLE), " — " + x["where"] if x.get("where") else "")
                                  for x in left))
     parts.append("Report bugs, broken cases, regressions, security holes, and what the request asked for but the change "
-                 "misses. Not style, not taste. What the owner's words or Claude's report call deliberate is not a "
+                 "misses. Not style, not taste. What the owner's words or %s's report call deliberate is not a "
                  "finding. For each finding: the file and lines, what breaks, how to fix it. Write in %s."
-                 % LANG_NAMES.get(lang, "English"))
+                 % (who, LANG_NAMES.get(lang, "English")))
+    if shape:
+        parts.append('%s\n\nWrite your overall words, the titles and the texts in %s; the line "Review comments:" and the '
+                     "marks stay as they are." % (shape, LANG_NAMES.get(lang, "English")))
     return "\n\n".join(parts)
 
 
-def check_instructions(facts, items, base=None, lang="en"):
+def check_instructions(facts, items, base=None, lang="en", doer="Claude Code", diff=None):
     """What Codex is told to check the fixes (review 2026-11-11, block 6): its own earlier findings the owner sent on
     — as they were written — the doer's report after working on them, and the one line to answer for each. A new
     thread each time, everything in these words: nothing has to be kept between the rounds, and a finding the owner
     left isn't named (probe_codex_recheck.py, Codex 0.167: a resumed thread remembers its findings and answers the
     same, 26 s against 24 s — the one that depends on nothing was taken)."""
     asks = facts.get("asks") or []
-    parts = ["You gave a second opinion on a task another coding agent (Claude Code) did in this folder and reported the "
+    parts = ["You gave a second opinion on a task another coding agent (%s) did in this folder and reported the "
              "findings below. The owner sent them to the doer, and the doer has worked on them. Check each finding "
-             "against the files as they are now. Change nothing."]
+             "against the files as they are now. Change nothing." % doer]
     if asks:
         parts.append('The task, in the owner\'s words:\n"""\n%s\n"""' % _cut(asks[0], ASK_MAX))
     parts.append("Your findings:\n\n" + "\n".join(_numbered(items)))
     if facts.get("report"):
         parts.append('The doer\'s report after working on them:\n"""\n%s\n"""' % _cut(facts["report"], REPORT_MAX))
-    if base:
+    if diff:                                   # a reviewer with no command to run (pult_review): the changes themselves
+        parts.append("Everything the task changed since it began, as git shows it now:\n```diff\n%s```" % diff)
+    elif base:
         parts.append("Everything the task changed since it began: `git diff %s -- .` (committed and not yet), and new "
                      "files not in git yet (`git status --short -- .`)." % base)
     parts.append("For each finding, in their order, answer one line and nothing before the first one:\n"
@@ -479,14 +494,14 @@ def _numbered(items):
     return lines
 
 
-def message(items, model=None, check=False):
+def message(items, model=None, check=False, by="Codex"):
     """What "Send to Claude" says in the session: what to do with the findings, then each as Codex wrote it — in
     English like Pult's other words to Claude; the findings stay in the language they came in. check — they come from
     a check of the fixes: what is left of the earlier findings, and what the fixes broke."""
-    who = " (%s)" % model if model else ""
-    head = ("Codex%s has checked the fixes of its earlier findings on this task. These are left — fix what is real, and "
+    who = by + (" (%s)" % model if model else "")
+    head = ("%s has checked the fixes of its earlier findings on this task. These are left — fix what is real, and "
             "say which ones are deliberate and why." % who) if check else \
-        ("A second opinion from Codex%s on this task's changes. Check each point: fix what is real, and say which "
+        ("A second opinion from %s on this task's changes. Check each point: fix what is real, and say which "
          "ones are deliberate and why." % who)
     return "\n".join([head, ""] + _numbered(items)).rstrip()
 

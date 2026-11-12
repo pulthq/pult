@@ -176,7 +176,10 @@ and another check it — from the phone.
   becomes **Check the fixes · Codex**: Codex goes through the findings it gave and says of each one — **Fixed**,
   **Left** with what is still wrong, or **Deliberate** when the doer explained and Codex agrees — and names what the
   fixes broke, if anything; what is left goes back with one tap. Every round starts with your tap: Pult never sets
-  one model on another by itself. The first time in a project you're asked
+  one model on another by itself. **A task Codex did is read by Claude** the same way — **Second opinion · Claude**
+  under its outcome: Claude (Sonnet) on your Claude subscription, in a session that has nothing but reading tools, so
+  it can change nothing; its findings go to Codex, and it checks the fixes. That project is asked for once too — its
+  code goes to Anthropic then. The first time in a project you're asked
   whether its code may go to OpenAI; the project's screen then says so, and **Disallow** takes it back. The button
   shows only where Codex is installed (ChatGPT for Mac carries it, or the `codex` command); a Codex version Pult
   wasn't checked on is checked against its own protocol first.

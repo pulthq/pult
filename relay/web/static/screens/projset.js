@@ -63,6 +63,7 @@ function ProjectSettings({ pkey }) {
     try { await api(op, { pkey, on, via: "button" }); haptic("success"); set(Object.assign({}, d, op === "pin" ? { pinned: on, hidden: on ? false : d.hidden } : { hidden: on, pinned: on ? false : d.pinned })); }
     catch (e) { alertBox(e.message); }
   };
+  const rby = d.review.by === "claude" ? "Claude" : "Codex";       // who gives a second opinion on this project's tasks (M4.2)
   const deny = async () => {
     try { await api("vendors_ok", { pkey, on: false }); haptic("success"); set(Object.assign({}, d, { review: Object.assign({}, d.review, { ok: false }) })); }
     catch (e) { alertBox(e.message); }
@@ -84,8 +85,8 @@ function ProjectSettings({ pkey }) {
     <div class="dim small">${t("ps.topic." + d.topic + ".about")}</div>
     <h3>${t("ps.review")}</h3>
     <div class="dim small ps-review">${t(d.review.mine ? "ps.review.codex" : "ps.review.about")}</div>
-    ${d.review.ok ? html`<div class="vline">${ic("eye", 14)}<span>${t("ps.review.ok")}</span><button class="link" onClick=${deny}>${t("vend.deny")}</button></div>`
-      : d.review.codex && !d.review.mine && html`<div class="dim small">${t("ps.review.ask")}</div>`}
+    ${d.review.ok ? html`<div class="vline">${ic("eye", 14)}<span>${t("ps.review.ok", { by: rby })}</span><button class="link" onClick=${deny}>${t("vend.deny")}</button></div>`
+      : d.review.codex && (!d.review.mine || d.review.by === "claude") && html`<div class="dim small">${t("ps.review.ask", { by: rby })}</div>`}
     <h3>${t("ps.more")}</h3>
     <div class="list">
       <button class="item ps-row" onClick=${() => go("#/tags/" + encodeURIComponent(pkey))}><span>${ic("tag", 18)} ${t("ps.tags")}</span>${ic("chev", 16)}</button>

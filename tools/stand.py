@@ -37,6 +37,9 @@ says "goes as a copy" before you type, and sending says why (tools/copy_check.py
 STAND_CTX=1 (Q151): the tasks' contexts filled each its own way — the question 33 %, the permission 72 %, the weekly report
 13 %, the search 94 %, the dark theme at work 55 %, the task on DeepSeek 8 % — for the line along a card's bottom edge
 (tools/ctx_check.py); without it every reply reads 120 000 tokens.
+STAND_CLREVIEW=1 with STAND_VENDORS=1 (stage M, M4.2): the support desk is Codex's project, in git; Codex has done a
+task there (SESSC), and Claude — a stand-in for its read-only session — gives a second opinion on it and checks the fixes
+(tools/claude_second_check.py).
 STAND_SECOND=1 (stage M, step 1): the shop is a git repository whose search the task changed, and Codex is a stand-in
 (tests/fake_codex.py) that reads it for about five seconds and finds two things; the session that waits for you (SESS4)
 offers "Second opinion · Codex" under its outcome (tools/second_check.py). STAND_SECOND=allowed — the shop already allowed.
@@ -100,6 +103,7 @@ LANG = os.environ.get("STAND_LANG", "en")
 SID2 = "22222222-2222-4222-8222-222222222222"
 SID3 = "33333333-3333-4333-8333-333333333333"
 SID4, SID5, SID6, SID7 = ("%s-4444-4444-8444-444444444444" % (c * 8) for c in "4567")
+SIDC = "cccccccc-4444-4444-8444-444444444444"      # STAND_CLREVIEW=1: a task Codex did, which Claude can read (M4.2)
 SIDV = "99999999-4444-4444-8444-444444444444"      # STAND_VENDORS=1: a session on DeepSeek's model
 SHOP, DESK = "/Users/x/acme-shop", "/Users/x/support-desk"
 PKEY2 = "-Users-x-support-desk"
@@ -594,6 +598,85 @@ SECOND_CHECK = {
            "2. LEFT — Тест на `q(\"ab\")` добавлен, но запрос из двух букв всё ещё идёт в поиск с опечатками.\n"
            "3. DELIBERATE — Порог останется одной буквой до переезда каталога: так решено в задаче."),
 }
+
+
+# STAND_CLREVIEW=1 (stage M, M4.2; review 2026-11-11, block 6): the support desk is Codex's project, a git repository;
+# Codex has done a task there, and Claude gives a second opinion on it — a stand-in for the session that only reads
+# (pult_review.claude), its made-up answers in the stand's language
+CL_TASK = {"en": ("Reply templates: greet by name", "Done: the templates greet the customer by name."),
+           "ru": ("Шаблоны ответов: обращение по имени", "Готово: шаблоны обращаются к клиенту по имени.")}
+CL_REVIEW = {
+    "en": ("The greeting works; one case breaks it.\n\nReview comments:\n\n"
+           "- [P1] A customer without a name gets \"Hello, None\" — replies/templates.py:6-7\n"
+           "  `name` is None for tickets from the form: greet with \"Hello\" alone then.\n\n"
+           "- [P3] The greeting ignores the ticket's language — replies/templates.py:6-6\n"
+           "  Every reply starts in English; the ticket has `lang`."),
+    "ru": ("Обращение работает; один случай его ломает.\n\nReview comments:\n\n"
+           "- [P1] Клиент без имени получит «Здравствуйте, None» — replies/templates.py:6-7\n"
+           "  У заявок из формы `name` — None: тогда здороваться без имени.\n\n"
+           "- [P3] Обращение не смотрит на язык заявки — replies/templates.py:6-6\n"
+           "  Каждый ответ начинается по-русски; у заявки есть `lang`."),
+}
+CL_CHECK = {"en": "1. FIXED — A ticket without a name is greeted with \"Hello\" alone.\n2. LEFT — The greeting is still in one language.",
+            "ru": "1. FIXED — Заявка без имени получает «Здравствуйте» без имени.\n2. LEFT — Обращение по-прежнему на одном языке."}
+
+
+def desk_repo():
+    """The support desk as a git repository: its reply templates before the task (a commit three hours old) and as
+    Codex left them — in the stand's own temporary folder."""
+    import subprocess
+    root = T.TMP / "support-desk"
+    (root / "replies").mkdir(parents=True, exist_ok=True)
+    when = int(time.time() - 3 * 3600)
+    env = dict(os.environ, GIT_AUTHOR_DATE="@%d" % when, GIT_COMMITTER_DATE="@%d" % when)
+    (root / "replies" / "templates.py").write_text('"""Reply templates."""\n\n\ndef greeting(ticket):\n    return "Hello"\n')
+    for cmd in (["init", "-q"], ["config", "user.email", "stand@example.invalid"], ["config", "user.name", "stand"],
+                ["config", "commit.gpgsign", "false"], ["add", "-A"], ["commit", "-qm", "replies: a plain greeting"]):
+        subprocess.run(["git", "-C", str(root), *cmd], check=True, env=env, capture_output=True)
+    (root / "replies" / "templates.py").write_text(
+        '"""Reply templates."""\n\n\ndef greeting(ticket):\n    name = ticket.get("name")\n'
+        '    return "Hello, %s" % name\n')
+    return root
+
+
+def codex_task(p, store):
+    """A task Codex did in the support desk, as Pult keeps one: its own history file, the session, its outcome and the
+    turn's file; and the stand-in reviewer in place of Claude's read-only session."""
+    import pult_review as RV
+    root = desk_repo()
+    store.set_topic(PKEY2, str(root), "support-desk", 78)
+    ask, done = CL_TASK[LANG]
+    hist = T.TMP / "codex-sessions" / "rollout-2026-11-11T20-00-00-th-stand.jsonl"
+    hist.parent.mkdir(parents=True, exist_ok=True)
+
+    def row(kind, what, ago, **payload):
+        return json.dumps({"timestamp": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - ago)), "type": kind,
+                           "payload": dict(payload, type=what)}, ensure_ascii=False)
+    patch = ('const patch = "*** Begin Patch\\n*** Update File: replies/templates.py\\n+    name = ticket.get(\\"name\\")\\n'
+             '*** End Patch";\ntext(await tools.apply_patch(patch));')
+    hist.write_text("\n".join([
+        row("session_meta", None, 1500, id="th-stand", cwd=str(root)), row("event_msg", "task_started", 1500, turn_id="tu-1"),
+        row("event_msg", "user_message", 1500, message=ask),
+        row("response_item", "custom_tool_call", 1300, call_id="c1", name="exec", input=patch),
+        row("event_msg", "agent_message", 1200, message=done),
+        row("event_msg", "task_complete", 1200, turn_id="tu-1", last_agent_message=done)]) + "\n")
+    store.touch_session(SIDC, PKEY2, path=str(root), title=ask)
+    store.set_vendor(SIDC, "codex")
+    store.put("codex." + SIDC, {"thread": "th-stand", "path": str(hist)})
+    r = p.attn.finished(SIDC, PKEY2, 300, done, done, waits=True, now=time.time() - 1200)
+    store.add_turn(SIDC, PKEY2, r["ts"] - 300, 300, [{"p": "replies/templates.py", "size": 180, "mt": r["ts"] - 60}], 1)
+
+    async def reads(cli, cwd, text, on_step=None, timeout=0, model=None):     # never Claude here: its made-up words
+        print("CLREVIEW asked in", os.path.basename(cwd), "·", len(text), "characters ·",
+              "check" if "Your findings:" in text else "review", "· has the diff:", "```diff" in text, flush=True)
+        for n in (1, 2, 3):
+            await asyncio.sleep(1.3)
+            if on_step:
+                on_step(n)
+        await asyncio.sleep(1)
+        return {"text": CL_CHECK[LANG] if "Your findings:" in text else CL_REVIEW[LANG], "model": RV.MODEL,
+                "effort": None, "limits": [], "asked": []}
+    RV.claude = reads
 
 
 def shop_repo(rich=False):
@@ -1433,6 +1516,9 @@ async def main():
         print("TAGPK", tag_pk, flush=True)
         if os.environ.get("STAND_TAGJOB"):
             print("TAGJOB 1", flush=True)
+    if os.environ.get("STAND_CLREVIEW") == "1":            # stage M, M4.2: Codex's project and task, Claude reads it
+        store.put("proj.model", dict(store.get("proj.model") or {}, **{PKEY2: "codex"}))
+        codex_task(p, store)
     print("LOAD http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
           (PORT, urllib.parse.quote(init("load"))), flush=True)
     print("SETTINGS http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
@@ -1459,6 +1545,9 @@ async def main():
           (PORT, urllib.parse.quote(init("p_" + T.PKEY))), flush=True)       # a project topic's pinned card
     print("SESS4 http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
           (PORT, urllib.parse.quote(init("s_" + SID4))), flush=True)       # a session that waits for you: its outcome card
+    if os.environ.get("STAND_CLREVIEW") == "1":
+        print("SESSC http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
+              (PORT, urllib.parse.quote(init("s_" + SIDC))), flush=True)   # a task Codex did: Claude's second opinion
     if os.environ.get("STAND_VENDORS") == "1":
         print("SESSV http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
               (PORT, urllib.parse.quote(init("s_" + SIDV))), flush=True)   # a session on DeepSeek's model
