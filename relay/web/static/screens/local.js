@@ -161,20 +161,22 @@ function LocalPanel({ embedded }) {
   const onStar = (n) => saveTicks([n].concat(d.models.filter((m) => m !== n)));
   const inMem = new Set(d.mem.map((m) => m.name));
   const canCopy = (n) => { const r = d.rows[n], k = d.kin[n] || {}; return r && !r.fit && r.tools && !k.copy && (!r.max || r.max >= d.min); };
+  // the machine with the model by its name; without one (no reader beside Ollama) Ollama itself — not "the server",
+  // the word of the app's own server only (2026-11-12)
   const where = d.name || t("lp.server"), on = d.name ? t("lp.on", { name: d.name }) : t("lp.on0");
   return html`<div class="lp">${!embedded && html`<h2>${t("res.llm")}</h2>`}
     ${url != null ? html`<div class="dim vend-m">${t("vend.local.url")}</div>
       <div class="keyrow wrap"><input ref=${plainField} inputmode="url" value=${url} data-saved=${d.url} onInput=${(e) => setUrl(e.target.value)}/>
         <button class="btn" disabled=${!url.trim() || !!busy} onClick=${() => act("re", async () => { const r = await api("vendor_local", { url: url.trim() }); setUrl(null);
           return Object.assign(await api("local_panel"), { words: r.words }); })}>${t("vend.local.again")}</button></div>`
-    : html`<div class="vl-srv lp-srv"><button class="vl-at" onClick=${() => setUrl(d.url)}>${[html`<b>${where}</b>`, d.version && "Ollama " + d.version,
+    : html`<div class="vl-srv lp-srv"><button class="vl-at" onClick=${() => setUrl(d.url)}>${[html`<b>${where}</b>`, d.version && (d.name ? "Ollama " : "") + d.version,
       d.at && t("vend.list.at", { hm: hhmm(toDate(d.at)) })].filter(Boolean).reduce((a, x, i) => (i ? a.concat([" · ", x]) : [x]), [])}</button>
       <button class=${"vl-re" + (busy === "re" ? " spin" : "")} aria-label=${t("vend.local.again")} disabled=${!!busy}
         onClick=${() => act("re", async () => { await api("vendor_local", {}); return api("local_panel"); })}>${ic("auto", 17)}</button></div>`}
     ${!d.on && html`<div class="vl-down">${ic("info", 15)}<span>${t("lp.offnote")}</span></div>`}
     ${d.down && html`<div class="vl-down">${ic("alert", 15)}<span>${d.down}</span></div>`}
     ${d.info ? html`<div class="list lp-cards">${d.disk && html`<${Disk} d=${d}/>`}${d.gpu && html`<${Card} d=${d} busy=${!!busy} onUnload=${unload}/>`}</div>`
-      : !d.down && html`<div class="lp-noinfo">${ic("info", 15)}<span>${t("lp.noinfo", { on })}</span></div>`}
+      : !d.down && html`<div class="lp-noinfo">${ic("info", 15)}<span>${d.name ? t("lp.noinfo", { on }) : t("lp.noinfo0")}</span></div>`}
     <h3 class="lp-mh">${t("lp.list", { on })}<span>${gb(d.total)}</span></h3>
     <div class="dim small lp-legend">${t("lp.legend")}</div>
     <div class="lp-fams">${d.fams.map((f) => html`<div class="lp-fam" key=${f.head}>

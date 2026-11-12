@@ -1198,6 +1198,68 @@ class LoadTest(unittest.TestCase):
             self.assertIsNone(pult_os.memory())
         with mock.patch.object(pult_os, "KIND", "mac"), mock.patch.object(pult_os, "run", return_value="8589934592\n25\n"):
             self.assertEqual(pult_os.memory()["mem_used"], 6 << 30)
+
+    def test_power_mac_linux_windows(self):
+        # the battery (2026-11-12): pmset's states, a laptop's sysfs (a mouse's battery is not the machine's), Windows'
+        # status; a machine without a battery — a Mac mini, a server, a desktop — says nothing
+        mp = pult_os.mac_power
+        batt = "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=36372579)\t%s present: true"
+        ac = "Now drawing from 'AC Power'\n -InternalBattery-0 (id=36372579)\t%s present: true"
+        self.assertEqual(mp(batt % "72%; discharging; 3:20 remaining"), {"src": "batt", "pct": 72, "charging": False, "left": 12000})
+        self.assertEqual(mp(batt % "72%; discharging; (no estimate)"), {"src": "batt", "pct": 72, "charging": False, "left": None})
+        self.assertEqual(mp(ac % "85%; charging; 1:05 remaining"), {"src": "ac", "pct": 85, "charging": True, "left": 3900})
+        self.assertEqual(mp(ac % "98%; finishing charge; 0:12 remaining"), {"src": "ac", "pct": 98, "charging": True, "left": 720})
+        self.assertEqual(mp(ac % "100%; charged; 0:00 remaining"), {"src": "ac", "pct": 100, "charging": False, "left": None})
+        self.assertEqual(mp(ac % "80%; AC attached; not charging"), {"src": "ac", "pct": 80, "charging": False, "left": None})
+        self.assertIsNone(mp("Now drawing from 'AC Power'\n"))
+        self.assertIsNone(mp(None))
+        with mock.patch.object(pult_os, "KIND", "mac"), mock.patch.object(pult_os, "run", return_value=None):
+            self.assertIsNone(pult_os.power())
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def dev(name, **files):
+                (root / name).mkdir()
+                for k, v in files.items():
+                    (root / name / k).write_text("%s\n" % v)
+            self.assertIsNone(pult_os.linux_power(root))
+            dev("hid-mouse-battery", type="Battery", scope="Device", capacity=5, status="Discharging")
+            self.assertIsNone(pult_os.linux_power(root))
+            self.assertIsNone(pult_os.linux_health(root))
+            dev("AC", type="Mains", online=0)
+            dev("BAT0", type="Battery", capacity=47, status="Discharging", energy_now=23500000, energy_full=50000000,
+                energy_full_design=57000000, power_now=9400000, cycle_count=310)
+            self.assertEqual(pult_os.linux_power(root), {"src": "batt", "pct": 47, "charging": False, "left": 9000})
+            (root / "AC" / "online").write_text("1\n")
+            (root / "BAT0" / "status").write_text("Charging\n")
+            self.assertEqual(pult_os.linux_power(root), {"src": "ac", "pct": 47, "charging": True, "left": 10148})
+            self.assertEqual(pult_os.linux_health(root), {"cycles": 310, "health": 88})
+            (root / "BAT0" / "status").write_text("Full\n")
+            self.assertEqual(pult_os.linux_power(root), {"src": "ac", "pct": 47, "charging": False, "left": None})
+        self.assertEqual(pult_os.win_power(0, 1, 40, 5400), {"src": "batt", "pct": 40, "charging": False, "left": 5400})
+        self.assertEqual(pult_os.win_power(1, 8, 64, 0xFFFFFFFF), {"src": "ac", "pct": 64, "charging": True, "left": None})
+        self.assertIsNone(pult_os.win_power(1, 128, 255, 0xFFFFFFFF))      # no system battery
+        self.assertIsNone(pult_os.win_power(1, 255, 255, 0xFFFFFFFF))      # the system can't tell
+        js = {"SPPowerDataType": [{"sppower_battery_charge_info": {"sppower_battery_state_of_charge": 71},
+                                   "sppower_battery_health_info": {"sppower_battery_cycle_count": 221, "sppower_battery_health": "Good",
+                                                                   "sppower_battery_health_maximum_capacity": "87 %"}}]}
+        self.assertEqual(pult_os.mac_health(json.dumps(js)), {"cycles": 221, "health": 87})
+        self.assertIsNone(pult_os.mac_health(json.dumps({"SPPowerDataType": [{"sppower_ac_charger_watts": "30"}]})))
+        self.assertIsNone(pult_os.mac_health("not json"))
+
+    def test_machine_name(self):
+        # the machine by its name (2026-11-12): a Mac's without whose it is, a server's host name, Windows' own
+        self.assertEqual(pult_os.short_name("Anna’s MacBook Air"), "MacBook Air")
+        self.assertEqual(pult_os.short_name("Anna's  Mac mini "), "Mac mini")
+        self.assertEqual(pult_os.short_name("homelab"), "homelab")
+        self.assertEqual(pult_os.short_name("Студия (офис)"), "Студия (офис)")
+        self.assertEqual(len(pult_os.short_name("x" * 90)), 40)
+        with mock.patch.object(pult_os, "KIND", "mac"), mock.patch.object(pult_os, "run", return_value="Anna’s MacBook Pro\n"):
+            self.assertEqual(pult_os.machine_name(), "MacBook Pro")
+        with mock.patch.object(pult_os, "KIND", "linux"), mock.patch.object(pult_os.platform, "node", return_value="homelab.lan"):
+            self.assertEqual(pult_os.machine_name(), "homelab")
+        with mock.patch.object(pult_os, "KIND", "windows"), mock.patch.dict(os.environ, {"COMPUTERNAME": "DESKTOP-7F3K"}):
+            self.assertEqual(pult_os.machine_name(), "DESKTOP-7F3K")
         with mock.patch.object(pult_os, "KIND", "mac"), mock.patch.object(pult_os, "run", return_value="8589934592\n"):
             self.assertIsNone(pult_os.memory())
 
@@ -1792,6 +1854,8 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
                             tg, self.store)
         self.p.out = pultd.Outbox(rate=60000, burst=1000)
         self.p._agents = (time.monotonic() + 1e6, [])
+        # the machine's name and battery are made up here: this computer's own are never read (2026-11-12)
+        self.p._power, self.p._machine_sys = (time.monotonic() + 1e6, None), "Test machine"
         fast = mock.patch.object(pultd, "EDIT_EVERY", 0.05)       # undone after each test: a test after this class
         fast.start()                                               # sees the real one (review 2026-10-27, Т8)
         self.addCleanup(fast.stop)
@@ -2182,7 +2246,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.p.prefs(), {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": None, "pace": 90,
                                           "model": None, "effort": None, "gh": True, "vcheck": True, "hashtags": True,
                                           "ccfresh": True, "digest": None, "quiet": None, "page_delay": 5, "remind": True,
-                                          "mode_until": None})
+                                          "machine": None, "mode_until": None})
         self.p.env["PULT_FORCE_AWAY"] = "0"                                           # you are at the Mac
         self.assertFalse(await self.p.loud())
         self.assertTrue(await self.p.loud(driven=True))                     # auto: a session from Telegram — with sound
@@ -2192,7 +2256,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res, {"vehi": True, "mode": "phone", "lang": None, "brief": False, "pager": None, "pace": 90,
                                "model": None, "effort": None, "gh": True, "vcheck": True, "hashtags": True,
                                "ccfresh": True, "digest": None, "quiet": None, "page_delay": 5, "remind": True,
-                               "mode_until": None})
+                               "machine": None, "mode_until": None})
         self.assertFalse((await self.p.api_prefs(ccfresh=False))["ccfresh"])        # stage A2: the app on the SDK's own
         await self.p.api_prefs(ccfresh=True)
         self.assertFalse((await self.p.api_prefs(hashtags=False))["hashtags"])      # stage T, T3: no hashtags under results
@@ -3640,7 +3704,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             for bad in ("c", "nope", ""):                                # only the server's own that fit, at least one
                 with self.assertRaises(ValueError) as e:
                     await self.p.api_vendor_models("local", bad)
-                self.assertIn("Только подходящие модели сервера", str(e.exception))
+                self.assertIn("Только подходящие модели Ollama", str(e.exception))
             # the quiet look: nothing new — nothing changes, no words
             n = check.await_count
             r = await self.p.api_vendor_local(quiet=True)
@@ -3741,7 +3805,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((unload.await_args.args, r["words"]), (("http://127.0.0.1:11434", "gemma4-32k"), "gemma4-32k выгружена из видеопамяти."))
                 with self.assertRaises(ValueError) as e:                 # only the server's own models
                     await self.p.api_local_delete("nope")
-                self.assertIn("на сервере уже нет", str(e.exception))
+                self.assertIn("в Ollama уже нет", str(e.exception))
                 gone = found["models"].pop()                             # the server without it, as the check will find
                 r = await self.p.api_local_delete("qwen3.5:4b")
                 self.assertEqual(delete.await_args.args, ("http://127.0.0.1:11434", "qwen3.5:4b"))
@@ -3879,7 +3943,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((d["tools"], d["after"], d["was"], d["busy"], d["all_ctx"]), ("five", "keep", False, False, 65536))
             with self.assertRaises(ValueError) as e:
                 await self.p.api_local_model("nope")
-            self.assertIn("на сервере уже нет", str(e.exception))
+            self.assertIn("в Ollama уже нет", str(e.exception))
             # values not offered: nothing written
             for kw in ({"params": {"temperature": 5}}, {"params": {"seed": 1}}, {"params": {"top_k": True}}, {"ctx": 12345},
                        {"ctx": 524288}, {"ctx": 8192}):
@@ -6757,6 +6821,71 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(pult_os, "memory", return_value=None):
             self.assertIsNone(await self.p.api_memory())
 
+    async def test_power_messages(self):
+        # the machine on its battery (2026-11-12): General hears it at 20 % by the notification mode and at 10 % with
+        # sound whatever the mode, each once a discharge; the charger back after a warning — a quiet line; a machine
+        # without a battery, or plugged in and never warned, says nothing
+        self.p._machine_sys = "MacBook Air"
+
+        def power(src, pct, left=None):
+            self.p._power = (time.monotonic() + 1e6, {"src": src, "pct": pct, "charging": False, "left": left})
+        self.p._power = (time.monotonic() + 1e6, None)
+        self.assertIsNone(await self.p.power_due())
+        power("batt", 64)
+        self.assertIsNone(await self.p.power_due())
+        power("ac", 100)
+        self.assertIsNone(await self.p.power_due())
+        power("batt", 19, 2400)
+        self.assertEqual(await self.p.power_due(), "low")
+        self.assertIsNone(await self.p.power_due())
+        power("batt", 15)
+        self.assertIsNone(await self.p.power_due())
+        power("batt", 9, 900)
+        with mock.patch.object(self.p, "mode", return_value="mac"):     # at the computer — and still with sound
+            self.assertEqual(await self.p.power_due(), "crit")
+        self.assertIsNone(await self.p.power_due())
+        power("ac", 9)
+        self.assertEqual(await self.p.power_due(), "back")
+        self.assertIsNone(await self.p.power_due())
+        msgs = self.fake.of("sendMessage")
+        self.assertEqual(len(msgs), 3, msgs)
+        low, crit, back = msgs
+        self.assertIn("Заряд 19 %", low["text"])
+        self.assertIn("40 мин", low["text"])
+        self.assertIn("MacBook Air работает от батареи", low["text"])
+        self.assertIn("Заряд 9 %", crit["text"])
+        self.assertIn("усыпит MacBook Air", crit["text"])
+        self.assertEqual(crit["disable_notification"], "false")              # with sound
+        self.assertEqual(back["disable_notification"], "true")
+        self.assertIn("зарядка подключена — 9 %", back["text"])
+        self.assertTrue(all("message_thread_id" not in m for m in msgs))          # General
+        power("batt", 8)                                    # straight under 10 %: only the last warning
+        self.assertEqual(await self.p.power_due(), "crit")
+        self.assertEqual(len(self.fake.of("sendMessage")), 4)
+
+    async def test_machine_name_and_power_in_views(self):
+        # Home gets the machine's name and where its power comes from; its tab — the estimate, cycles and capacity;
+        # the owner's own name wins, "" gives the system's back; no battery — no power at all
+        self.p._machine_sys = "MacBook Air"
+        self.p._power = (time.monotonic() + 1e6, {"src": "batt", "pct": 71, "charging": False, "left": 72000})
+        self.p._health = (time.monotonic() + 1e6, {"cycles": 221, "health": 87})
+        d = await self.p.api_overview()
+        self.assertEqual(d["machine"], "MacBook Air")
+        self.assertEqual(d["power"], {"src": "batt", "pct": 71, "charging": False})
+        ld = await self.p.api_load()
+        self.assertEqual(ld["machine"], "MacBook Air")
+        self.assertEqual(ld["power"], {"src": "batt", "pct": 71, "charging": False, "left": 72000, "cycles": 221, "health": 87})
+        self.assertEqual((await self.p.api_prefs(machine="  Рабочий   ноутбук "))["machine"], "Рабочий ноутбук")
+        self.assertEqual((await self.p.api_overview())["machine"], "Рабочий ноутбук")
+        self.assertEqual((await self.p.api_settings())["machine"], {"name": "Рабочий ноутбук", "sys": "MacBook Air"})
+        await self.p.api_prefs(machine="")
+        self.assertEqual((await self.p.api_overview())["machine"], "MacBook Air")
+        await self.p.api_prefs(machine=5)
+        self.assertEqual((await self.p.api_overview())["machine"], "MacBook Air")
+        self.p._power = (time.monotonic() + 1e6, None)
+        self.assertIsNone((await self.p.api_overview())["power"])
+        self.assertIsNone((await self.p.api_load())["power"])
+
     async def test_load_view(self):
         # the load view: the computer and each session with a claude process; a background task is found among the
         # processes by its command; `claude agents` first, then the hook's parent, then Pult's own children
@@ -6791,7 +6920,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             self.p.driven.pop(three)
         self.assertEqual({r["sid"]: r["pid"] for r in d["sessions"]}, {SID: os.getpid(), three: 300})
         self.p._procs = (time.monotonic() + 1e6, None)                   # a system Pult can't read
-        self.assertEqual(await self.p.api_load(), {"ok": False})
+        self.assertEqual(await self.p.api_load(), {"ok": False, "machine": "Test machine", "power": None})
         self.assertIsNone((await self.p.api_overview())["load"])
 
     async def test_tab(self):

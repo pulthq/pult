@@ -7,30 +7,30 @@ import { Mic, useRecorder } from "../core/voice.js";
 import { plural, t } from "../i18n.js";
 import { html, useEffect, useRef, useState } from "../vendor/htm-preact-3.1.1.js";
 import { Req, TagPick, useRcpt } from "../ui/cards.js";
-import { GEAR, GLYPH, Loading, MODES, ModePick, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, ctxBar, dot, dur, durShort, hhmm, ic, keyTap, llmName, nb, pauseChip, pct, plainField, queueChip, quiet, tagChips, toDate, useNow, workChip } from "../ui/kit.js";
+import { GEAR, GLYPH, Loading, SwipeRow, TimeChip, ago, agoShort, avatar, battery, bgChip, ctxBar, dot, dur, durShort, hhmm, ic, keyTap, llmName, lowBatt, machine, nb, pauseChip, pct, plainField, queueChip, quiet, tagChips, toDate, useNow, workChip } from "../ui/kit.js";
 import { BgSheet, bgCount, bgLine, memPct } from "../ui/load.js";
 import { isAway, putAway, useAway } from "../ui/undo.js";
 import { UpdRow } from "../ui/upd.js";
 import { PullRow } from "./local.js";
+import { openRes } from "./resources.js";
 
-function Top({ mac, load, usagePct, usageTop, pager, onSet }) {
-  const [open, setOpen] = useState(false);
-  const cur = MODES.includes(mac.mode) ? mac.mode : "auto";
-  const line = cur === "auto" ? (mac.away ? t("mac.away.short", { dur: durShort(mac.idle) }) : t("mac.here.short")) : cur === "mac" && mac.until ? t("mode.mac.till", { hm: hhmm(toDate(mac.until)) }) : t("mode." + cur + ".short");
+// The top of Home (2026-11-12, the owner's answers to the slides): the plan's limit apart from the machine — the limit
+// that runs out first in one tile, the machine's processor, memory and power in the other, each leading to its tab in
+// Resources; the notification mode lives in Settings → Notifications. The power column only where there is a battery
+function Top({ load, power, usagePct, usageTop }) {
   const m = load ? memPct(load) : null;
   // the limit: the one that runs out first (stage R), grey unless it does; an older Pult sends only the 5-hour window
   const lim = usageTop ? Math.round(usageTop.pct) : usagePct;
   const limCls = !usageTop || usageTop.state === "none" ? quiet(lim, 80) : usageTop.state === "over" ? "bad" : "dim";
   const limText = lim + "\u00a0%" + (usageTop && GLYPH[usageTop.state] ? "\u00a0" + GLYPH[usageTop.state] : "");
-  const stat = (k, v, cls, label) => html`<span class="tl-c"><span class="tl-l">${label || t(k)}</span><span class=${"tl-v " + cls}>${v}</span></span>`;
-  return html`<div class="where">
-    <div class="where-h">
-      <button class="where-b" aria-expanded=${open} onClick=${() => setOpen(!open)}><span class="tl-l">${ic({ auto: "auto", mac: "monitor", phone: "phone" }[cur], 14)} ${t("mode." + cur + ".btn")}</span><span class="tl-v">${line}</span></button>
-      ${(load || lim != null) && html`<button class="where-b top-load" onClick=${() => go("#/usage")}>${lim != null && stat("top.lim", limText, limCls, usageTop && t("sp.short." + usageTop.key))}${load && stat("top.cpu", pct(load.cpu), quiet(load.cpu, 90))}${m !== null && m >= 90 && stat("top.mem", m + "\u00a0%", "bad")}</button>`}
-      <a class="gear" href="#/settings" aria-label=${t("settings")}>${GEAR}</a>
-    </div>
-    ${open && html`<${ModePick} mode=${cur} onSet=${onSet} pager=${pager} until=${mac.until}/>`}
-  </div>`;
+  const stat = (k, v, cls, label) => html`<span class=${"tl-c tl-" + k}><span class="tl-l">${label || t("top." + k)}</span><span class=${"tl-v " + cls}>${v}</span></span>`;
+  const pw = power && (power.src === "batt" ? stat("power", html`${battery(power.pct, 18)}${power.pct}\u00a0%`, lowBatt(power.pct) || "dim")
+    : stat("power", html`${ic("plug", 14)}${t("top.ac")}`, "dim"));
+  return html`<div class="where"><div class="where-h">
+    ${lim != null && html`<button class="where-b top-lim" onClick=${() => openRes("lim")}>${stat("lim", limText, limCls, usageTop && t("sp.short." + usageTop.key))}</button>`}
+    ${(load || pw) && html`<button class="where-b top-load" onClick=${() => openRes("pc")}>${load && stat("cpu", pct(load.cpu), quiet(load.cpu, 90))}${m !== null && stat("mem", m + "\u00a0%", quiet(m, 90))}${pw}</button>`}
+    <a class="gear" href="#/settings" aria-label=${t("settings")}>${GEAR}</a>
+  </div></div>`;
 }
 
 // why a session open on the computer takes no message from here — a Claude Code Pult isn't checked on, a tab started
@@ -250,6 +250,7 @@ function Home() {
   if (!d) return html`<${Loading} err=${err}/>`;
   if (seenN.current < 0) seenN.current = (d.pending || []).length + (d.mine || []).length;     // no buzz on opening
   useLang(d.lang);
+  machine.set(d.machine);                          // the banner calls the machine by it while the computer is away
   const onBg = (s) => { setBgFor(s.sid); openBg(); };
   const onTags = (sid) => api("taginfo", { sid }).then((info) => { setTagFor({ sid, info }); openTag(); }).catch((e) => alertBox(e.message));
   const reload = () => api("overview").then(set).catch(() => {});
@@ -270,7 +271,7 @@ function Home() {
   const nRun = running.length + jobsOn.length;
   const rest = board.filter((p) => !p.hidden).map((p) => Object.assign({}, p, { rows: p.rows.filter((r) => !runs(r)) }));   // a hidden project's block stays off the board (Q101)
   return html`<div>
-    <${Top} mac=${d.mac} load=${d.load} usagePct=${d.usage_pct} usageTop=${d.usage_top} pager=${d.pager} onSet=${(m, till) => set(Object.assign({}, d, { mac: Object.assign({}, d.mac, { mode: m, until: till || null }) }))}/>
+    <${Top} load=${d.load} power=${d.power} usagePct=${d.usage_pct} usageTop=${d.usage_top}/>
     <${UpdRow} u=${d.update}/>
     <${PullRow} p=${d.pull}/>
     ${nRun > 0 && html`<section class="zone-run"><h3>${dot("work")}${t("home.running", { n: nRun - nQueue })}${nQueue ? " · " + t("home.queued", { n: nQueue }) : ""}</h3><div class="list">

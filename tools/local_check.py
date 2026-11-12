@@ -119,11 +119,12 @@ async def off_flow(pg):
     verdict("… the way in opens the panel", await pg.until("location.hash === '#/local' && !!document.querySelector('.lp .lp-fam')", 60))
     await pg.js(SPY)
     line = await pg.js("document.querySelector('.lp-srv .vl-at').textContent")
-    verdict("the panel's line: «сервер · Ollama 0.40.14 · проверено …», no address field", line.startswith("сервер · Ollama 0.40.14 · проверено ")
+    # no reader beside Ollama, so no name: Ollama itself — «сервер» is the app's server's word only (2026-11-12)
+    verdict("the panel's line: «Ollama · 0.40.14 · проверено …», no address field", line.startswith("Ollama · 0.40.14 · проверено ")
             and not await pg.js("!!document.querySelector('.lp .keyrow input[inputmode=url]')"), line)
     noinfo = await pg.js("(document.querySelector('.lp-noinfo') || {}).textContent || ''")
-    verdict("no reader beside this Ollama: «Сколько места на сервере и что в видеокарте, Ollama не говорит…»",
-            noinfo.startswith("Сколько места на сервере и что в видеокарте, Ollama не говорит"), noinfo)
+    verdict("no reader beside this Ollama: «Сколько места на диске и что в видеокарте, Ollama не говорит…»",
+            noinfo.startswith("Сколько места на диске и что в видеокарте, Ollama не говорит"), noinfo)
     verdict("the list by weights: gemma4-32k — ticked, the main one, under gemma4:12b; qwen3.5:4b alone", await pg.until(
         "JSON.stringify(%s) === %r" % (FAMS, json.dumps([[["gemma4:12b", "8\u00a0ГБ", False, False], ["gemma4-32k", "+0 ГБ", True, True]],
                                                        [["qwen3.5:4b", "3,3\u00a0ГБ", False, False]]], ensure_ascii=False, separators=(",", ":"))), 30),

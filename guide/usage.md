@@ -54,9 +54,14 @@ phone — on Claude's models or another vendor's, and another model can check wh
   tags, and sorts every task you didn't tag yourself into it — about a minute. Every tag you pick yourself — in a task's
   sheet, by a `#tag`, by a merge — is an example for Claude: it sees your latest six in the project and tags tasks like
   them the same way; **Claude picks them** in the sheet takes the example back.
+- **Home's top**: the limit that runs out first, in a tile of its own, and the machine Pult runs on — its processor,
+  memory and, on a laptop, power: a plug, or the battery with its charge, yellow from 20 % and red from 10 %. On its
+  battery Pult writes to General at 20 % and, with sound whatever the mode, at 10 % — the machine would sleep at the
+  last per cent and every turn on it would break; the charger back after a warning — a quiet line.
 - **Resources**: Limits — the curve of each limit against the even pace, the forecast (on pace, under: how many hours
-  of a session's work would go unused, over: when it runs out), who spent it; Computer — the processor, the memory
-  and each Claude session's commands.
+  of a session's work would go unused, over: when it runs out), who spent it; the machine's tab, by its name ("MacBook
+  Air", "homelab" — a laptop or a server; Settings → Pult and its parts renames it) — the processor, the memory, the power
+  on a laptop (charge, the system's estimate, cycles and the capacity left) and each Claude session's commands.
   From 85 % of the computer's memory a line at the top of every screen says so, red from 95 %; a tap opens Resources.
 - **Files of the turn**: what Claude made or changed in the project — tick the ones you need and send them to the
   topic, one by one or as one archive; earlier turns' files stay a swipe away.
@@ -116,15 +121,15 @@ and another check it — from the phone.
   through a tunnel you keep open (Pult reaches only this computer's own address). Settings → Models and keys → Local model →
   **Check and turn on** asks the server what it has: a model fits when it can use tools and its context is set to 16K
   or more (`PARAMETER num_ctx` in its Modelfile) — Ollama cuts a longer request silently, so a model without it isn't
-  taken. Once on, it has a tab of its own — **Resources → Local model** (Settings' card opens it): the server's models
+  taken. Once on, it has a tab of its own — **Resources → Local model** (Settings' card opens it): Ollama's models
   by their weights — a base with its size and, under it, the copies made from it with a context, which hold the same
   weights (+0 GB); a tick puts a model in a task's menu, the star makes it the main one; one without a context set gets
   **Make a copy with 32k** — Ollama makes it from the same weights. A tap on a model: **Unload** it from the card's
   memory, **Remove** it — with how much that gives back (nothing while another model holds its weights). **Download a
   model** by its name on ollama.com: Pult first says its size, the room left after it and whether it fits the card with
   a 32k context, and refuses one that would leave the disk under its reserve (60 GB, or a tenth of a smaller disk); the
-  server downloads it itself, its progress shows in the tab and on Home, and **Stop** keeps what came for the next
-  time. The tab looks at the server as it opens, so a model made there since shows at once. Ollama doesn't say how much
+  Ollama downloads it itself, its progress shows in the tab and on Home, and **Stop** keeps what came for the next
+  time. The tab asks Ollama as it opens, so a model made there since shows at once. Ollama doesn't say how much
   room its disk has or what its card holds: for that, put the small reader in `deploy/ollama-info/` beside it
   (`sudo bash deploy/ollama-info/install.sh`, a systemd socket on 127.0.0.1:11436 — one JSON per request, nothing
   kept in memory) and forward its port the way Ollama's goes. In WSL the disk shown is Windows's C:, which the Linux
@@ -198,7 +203,7 @@ comes only if it still waits; a question or a permission you haven't answered is
 and after 2 hours; from 23:00 to 8:00 everything comes without sound, except security alerts; and once a day, at 9:00,
 one message in General sums up what waits for you, by project. All four are in the app: Settings → Notifications.
 The **Computer** mode, which keeps Telegram silent, ends by itself in the morning — at the hour the quiet hours end,
-8:00 without them — and is Auto again; Home says until when.
+8:00 without them — and is Auto again; Settings → Notifications says until when.
 
 | | |
 |---|---|

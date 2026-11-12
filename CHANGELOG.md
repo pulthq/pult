@@ -4,6 +4,27 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.64 — 2026-11-12
+
+- **Home's top: the limit apart from the machine.** The tile of where you are (Auto / Computer / Phone) is gone from
+  Home — the notification mode stays in Settings → Notifications and works as before. The strip now has the limit
+  that runs out first in a tile of its own, and the machine Pult runs on in another: processor, memory (always, not
+  only from 90 %) and, on a laptop, its power — a plug when plugged in, the battery with its charge when not, yellow
+  from 20 % and red from 10 %. Each tile opens its own tab in Resources. Under 360 px the machine's tile takes a line
+  of its own, so nothing is cut.
+- **Pult says when the battery runs out.** On its battery the machine would sleep at the last per cent and every turn
+  on it would break. General hears it at 20 % (by the notification mode) and at 10 % with sound whatever the mode —
+  each once a discharge, with how long it should last; the charger back after a warning — a quiet line. A desktop or
+  a server says nothing: no battery, no power column, no messages. macOS (pmset), Linux (sysfs) and Windows
+  (GetSystemPowerStatus), no new dependency.
+- **The machine has a name.** Pult may live on a laptop, a desktop or a server, so the app calls it by its name — a
+  Mac's computer name without whose it is ("Anna’s MacBook Air" → "MacBook Air"), a Linux host name, a Windows
+  computer name — and you may give another in Settings → Pult and its parts. It names the machine's tab in Resources
+  (with a Power card: charge, the system's estimate, cycles and capacity left), the banner when it is offline and the
+  battery's messages.
+- **"Server" means the app's server only.** Where the app said "the server" it now says "the app's server"; the
+  machine with your own model is called by its name, or Ollama when it has none ("Models in Ollama").
+
 ## 0.18.63 — 2026-11-12
 
 - **Claude gives a second opinion on a task Codex did.** Under such a task's outcome the button is **Second opinion ·

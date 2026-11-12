@@ -1,10 +1,11 @@
 // Pult app — Resources: the plan's limits and how they are spent; usage; today.
 // Moved from app.js as it was (review 2026-10-27, 6.4).
 import { api, useLive } from "../core/conn.js";
+import { go } from "../core/nav.js";
 import { alertBox, haptic } from "../core/tg.js";
 import { plural, t } from "../i18n.js";
 import { html, useEffect, useRef, useState } from "../vendor/htm-preact-3.1.1.js";
-import { About, Loading, ago, dur, hhmm, hue, kilo, level, nb, num, pct, resetText, toDate, useNow } from "../ui/kit.js";
+import { About, Loading, ago, dur, hhmm, hue, kilo, level, machine, nb, num, pct, resetText, toDate, useNow } from "../ui/kit.js";
 import { Load } from "../ui/load.js";
 import { LocalPanel } from "./local.js";
 
@@ -222,6 +223,10 @@ const resStore = {
   get() { try { const k = sessionStorage.getItem("pult.res"); return RES.includes(k) ? k : "lim"; } catch (e) { return "lim"; } },
   set(k) { try { sessionStorage.setItem("pult.res", k); } catch (e) {} },
 };
+// Home's tiles lead each to its own tab: the limit to Limits, the machine to its tab (2026-11-12)
+const openRes = (k) => { resStore.set(k); go("#/usage"); };
+// the machine's tab is named after the machine (a laptop, a server — 2026-11-12); "Computer" until its name is known
+const resName = (k) => (k === "pc" && machine.get()) || t("res." + k);
 function Resources() {
   const [sec, setSec] = useState(resStore.get);
   const [pk] = useLive(() => api("local_panel", { peek: true }), [], () => false, 600000);
@@ -230,7 +235,7 @@ function Resources() {
   const cur = tabs.includes(sec) ? sec : "lim";
   return html`<div><h2>${t("res.title")}</h2>
     <div class="subtabs" role="tablist">${tabs.map((k) => html`<button key=${k} role="tab" aria-selected=${cur === k} class=${cur === k ? "on" : ""}
-      onClick=${() => pick(k)}>${t("res." + k)}</button>`)}</div>
+      onClick=${() => pick(k)}>${resName(k)}</button>`)}</div>
     ${cur === "pc" ? html`<${Load} embedded=${true}/>` : cur === "llm" ? html`<${LocalPanel} embedded=${true}/>` : html`<${Spend}/>`}
   </div>`;
 }
@@ -272,4 +277,4 @@ function Today() {
     <div class="dim small">${t("today.about")}</div>`;
 }
 
-export { Resources };
+export { Resources, openRes };
