@@ -772,6 +772,58 @@ class UpdaterTest(unittest.TestCase):
         self.updater().run()
         self.assertEqual((self.status()["state"], self.status()["why"]), ("fail", "network"))
         self.assertFalse((M.HOME / "failed.json").exists())
+        # the report keeps what git said — its command, its exit code and its last lines, not the last alone
+        detail = self.status()["detail"]
+        self.assertTrue(detail.startswith("git ls-remote, exit 128: "), detail)
+        self.assertIn("Could not read from remote repository. · ", detail)
+        self.assertTrue(detail.endswith("and the repository exists."), detail)
+
+    def test_github_sends_it_incomplete(self):
+        # GitHub answered without the files asked for (every release for ~11 hours, 2026-11-12): "incomplete", not
+        # "GitHub didn't answer"; tried again on the computer's next word, and the line before git's last one — the
+        # file that didn't come — is in the report
+        M, u = self.M, self.updater()
+        real = subprocess.run
+        said = (b"fatal: bad revision '32569ea0d7e0c1f3975148acfed4eb2eab74ace3'\n"
+                b"error: https://github.com/pulthq/pult.git did not send all necessary objects\n")
+
+        def run(argv, **kw):
+            if "fetch.negotiationAlgorithm=noop" in argv:
+                return subprocess.CompletedProcess(argv, 1, b"", said)
+            return real(argv, **kw)
+        self.want("v0.18.1")
+        with mock.patch.object(M.subprocess, "run", run):
+            u.run()
+        st = self.status()
+        self.assertEqual((st["state"], st["why"], st["back"]), ("fail", "incomplete", False))
+        self.assertEqual(st["detail"], "git fetch, exit 1: fatal: bad revision '32569ea0d7e0c1f3975148acfed4eb2eab74ace3'"
+                                       " · error: https://github.com/pulthq/pult.git did not send all necessary objects")
+        self.assertEqual((M.APP / "current").resolve(), self.first.resolve())
+        self.assertFalse((M.HOME / "failed.json").exists())
+        # GitHub sends it all again: the next word takes the release
+        self.M.WANT.write_text(json.dumps({"tag": "v0.18.1", "commit": self.shas["v0.18.1"], "ts": 2}))
+        u.run()
+        self.assertEqual((self.status()["state"], self.status()["have"]), ("done", "v0.18.1"))
+
+    def test_what_git_said_without_a_password(self):
+        # a proxy's address with a password, in git's words: masked; a long error keeps its end within what the relay
+        # passes on
+        M, u = self.M, self.updater()
+        said = b"fatal: unable to access 'https://github.com/pulthq/pult.git/': CONNECT via http://bob:hunter2@10.0.0.1:3128\n"
+        with mock.patch.object(M.subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(argv, 128, b"", said)):
+            with self.assertRaises(M.Fail) as c:
+                u.net("ls-remote", "origin")
+        self.assertEqual(c.exception.args[0], "network")
+        self.assertNotIn("hunter2", c.exception.args[1])
+        self.assertIn("http://***@10.0.0.1:3128", c.exception.args[1])
+        long = b"\n".join(b"line %d " % i + b"x" * 80 for i in range(9)) + b"\nerror: the last word\n"
+        with mock.patch.object(M.subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(argv, 1, b"", long)):
+            with self.assertRaises(M.Fail) as c:
+                u.git("cat-file", "-e", "0" * 40)
+        detail = c.exception.args[1]
+        self.assertEqual(len(detail), M.DETAIL_MAX)
+        self.assertTrue(detail.startswith("git cat-file, exit 1: …"), detail)
+        self.assertTrue(detail.endswith("error: the last word"), detail)
 
     def test_its_report_follows_its_own_files(self):
         # install.sh put in another updater or services, and the report still named the old ones: Settings kept asking

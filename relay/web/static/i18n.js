@@ -251,6 +251,7 @@ const S = {
   "pt.srv.why.broken": { en: "the release lacks the relay's files", ru: "в выпуске нет файлов посредника" },
   "pt.srv.why.error": { en: "the updater failed", ru: "сбой обновлятеля" },
   "pt.srv.why.network": { en: "GitHub didn't answer", ru: "GitHub не ответил" },
+  "pt.srv.why.incomplete": { en: "GitHub sent the release incomplete", ru: "GitHub прислал выпуск не целиком" },
   "pt.srv.why.pip": { en: "the dependencies didn't install", ru: "не поставились зависимости" },
   "pt.srv.why.no_mac_before": { en: "the computer wasn't connected", ru: "компьютер не был на связи" },
   "pt.srv.why.git": { en: "git failed", ru: "сбой git" },

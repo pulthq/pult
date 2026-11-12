@@ -1193,6 +1193,9 @@ def report_lines():
     env = read_env()
     lbl = label()
     st, _ = service(lbl)
+    # from a shell without the user's service manager (an agent's, su, ssh without a login session) systemctl --user
+    # can't be asked: the state is unknown, not "not running" — the socket says whether the daemon answers
+    unknown = None if st else SVC.problem()
     have = lambda k: "set" if env.get(k) else "—"
     conf = tab_conf()
     linger = SVC.linger()
@@ -1202,7 +1205,7 @@ def report_lines():
                                      or "— (no environment)"),
         "Claude Code: %s" % claude_versions(),
         "service: %s (%s%s) · socket %s" % (
-            st or "not running", "default label" if lbl == DEFAULT_LABEL else "own label",
+            st or ("unknown — " + unknown if unknown else "not running"), "default label" if lbl == DEFAULT_LABEL else "own label",
             "" if linger is None else ", linger " + ("on" if linger else "off"), "answers" if sock_ok() else "no"),
         "settings: token %s · owner %s · group %s · language %s · proxy %s · app %s · voice %s" % (
             have("PULT_BOT_TOKEN"), have("PULT_ALLOWED_USER_IDS"), "set" if sget("chat") else "—", cli_lang(),

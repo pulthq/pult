@@ -30,7 +30,9 @@ def cmd_status():
     lbl = S.label()
     row = lambda key, val: print("%-11s %s" % (T(key), val))
     state, pid = S.service(lbl)
-    row("cli.st.daemon", T("cli.st.running", state=state, pid=pid) if state else T("cli.st.not_loaded", label=lbl))
+    unknown = None if state else S.SVC.problem()        # no service manager to ask here: not "not running"
+    row("cli.st.daemon", T("cli.st.running", state=state, pid=pid) if state
+        else T("cli.st.unknown", why=unknown) if unknown else T("cli.st.not_loaded", label=lbl))
     row("cli.st.sock", T("cli.st.answers") if S.sock_ok() else T("cli.st.no"))
     why = S.venv_problem()
     row("cli.st.env", T("cli.st.env_bad", why=why, cmd="install.ps1" if S.WIN else "./install.sh") if why

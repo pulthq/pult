@@ -60,6 +60,12 @@ LOCK_WAIT = 900       # s this run waits for the lock — another run, or instal
 # failures that belong to the release itself: it isn't tried again until the computer names another one, or the owner
 # asks for it again (the relay stamps that word with this server's clock: "retry" in want.json)
 FINAL = ("not_official", "broken", "no_restart", "no_start", "no_mac")
+# GitHub answered, but without all that was asked for: git's check after the fetch names what is missing ("fatal: bad
+# revision '<blob>'", then "... did not send all necessary objects" — every release for ~11 hours on 2026-11-12). Tried
+# again later like the network's failures, but it isn't "GitHub didn't answer"
+INCOMPLETE = re.compile(r"did not send all necessary objects|bad revision|bad object|missing (?:blob|tree|commit) object")
+TAIL = 5              # the last lines of git's error the report keeps: the last alone hid which file GitHub didn't send
+DETAIL_MAX = 300      # what the relay passes on of a report's string (relay.py, updater_status)
 # the computer didn't come back after the switch: it may only have been asleep or off the network for that minute and a
 # half, so the release is tried again on the computer's next word (~10 min later), this many times in all (0.18.5;
 # before, once was final, and a server stayed behind its computer until the next release)
@@ -103,6 +109,21 @@ class UnixHTTP(http.client.HTTPConnection):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.settimeout(self.timeout)
         self.sock.connect(self.path)
+
+
+def git_command(args):
+    """The git command a call runs: its first word past "-c key=value"."""
+    return next((a for a in args if not a.startswith("-") and "=" not in a), args[0])
+
+
+def git_said(args, code, stderr):
+    """A failed git command for the report: its name, its exit code and the last lines of what it said, not the last
+    alone — a password in a proxy's address masked, and no longer than the relay passes on (the end kept)."""
+    lines = [ln.strip() for ln in stderr.decode("utf-8", "replace").splitlines() if ln.strip()]
+    said = re.sub(r"://[^/@\s]+@", "://***@", " · ".join(lines[-TAIL:]) or "?")
+    head = "git %s, exit %d: " % (git_command(args), code)
+    room = DETAIL_MAX - len(head)
+    return head + (said if len(said) <= room else "…" + said[-(room - 1):])
 
 
 def own_files():
@@ -176,20 +197,21 @@ class Updater:
             p = subprocess.run(["git", "--git-dir", str(self.cache), *args], capture_output=True, timeout=timeout,
                                env=env, stdin=subprocess.DEVNULL)
         except subprocess.TimeoutExpired:
-            what = next((a for a in args if not a.startswith("-") and "=" not in a), args[0])      # past "-c k=v"
-            raise Fail("network", "git %s: no answer in %d s" % (what, timeout))
+            raise Fail("network", "git %s: no answer in %d s" % (git_command(args), timeout))
         except OSError as e:
-            raise Fail("no_git", repr(e)[:300])
+            raise Fail("no_git", repr(e)[:DETAIL_MAX])
         if p.returncode:
-            raise Fail("git", (p.stderr.decode("utf-8", "replace").strip().splitlines() or ["?"])[-1][:300])
+            raise Fail("git", git_said(args, p.returncode, p.stderr))
         return p.stdout if raw else p.stdout.decode("utf-8", "replace").strip()
 
     def net(self, *args, timeout=180):
-        """A git command that goes to GitHub: any failure of it is the network's (tried again later)."""
+        """A git command that goes to GitHub: any failure of it is tried again later — "incomplete" when GitHub answered
+        without all that was asked for, else the network's."""
         try:
             return self.git(*args, timeout=timeout)
         except Fail as e:
-            raise Fail("network", e.args[1] if len(e.args) > 1 else None)
+            detail = e.args[1] if len(e.args) > 1 else None
+            raise Fail("incomplete" if detail and INCOMPLETE.search(detail) else "network", detail)
 
     def fetch(self, tag, commit):
         """The release's commit and main's history (no file contents yet) from GitHub; checks that it is official."""

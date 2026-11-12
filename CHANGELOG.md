@@ -4,15 +4,27 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.66 — 2026-11-12
+
+- **The app server's updater says what git said.** A failed git command there is reported with its name, its exit
+  code and its last lines (up to five, within what the relay passes on), not the last line alone: "did not send all
+  necessary objects" alone hid which file GitHub didn't send. A password in a proxy's address is masked. When GitHub
+  answers without all that was asked for, Settings → Pult and its parts says "GitHub sent the release incomplete"
+  instead of "GitHub didn't answer"; it is tried again as before. Like any change of the updater, this reaches a
+  server with `sudo bash deploy/relay/install.sh` there.
+- **`pult status` and `pult report` don't say "not running" when they can't ask.** From a shell without the user's
+  service manager (an agent's, `su`, ssh without a login session) they said the daemon wasn't running while it
+  answered on its socket; now they say "unknown" and why.
+
 ## 0.18.65 — 2026-11-12
 
 - **The app server's updater fetches the relay's files without negotiation.** With the release's commit already in its
   cache, it told GitHub so, and GitHub sent none of the files that commit reaches: "did not send all necessary objects"
-  on every try, the release never taken. Since 2026-11-12 GitHub answers so for any release, an empty cache too: an
-  updater from before this release takes none. The files by their ids now go as git's own fetch of a missing object
-  does (`fetch.negotiationAlgorithm=noop`). The updater changes only with `sudo bash deploy/relay/install.sh` on the
-  server — run it once from this release (it also puts this release in); Settings → Pult and its parts says when the
-  updater is older than the release.
+  on every try, the release never taken. On 2026-11-12 GitHub answered so for about eleven hours, for any release and
+  an empty cache too: an updater from before this release took none meanwhile. The files by their ids now go as git's
+  own fetch of a missing object does (`fetch.negotiationAlgorithm=noop`). The updater changes only with
+  `sudo bash deploy/relay/install.sh` on the server — run it once from this release (it also puts this release in);
+  Settings → Pult and its parts says when the updater is older than the release.
 - **The documents say what the install and the relay really are.** Ten minutes is the chat; the app needs a Linux
   server of yours with a domain and HTTPS — about an hour more if you already run one (README). The relay keeps nothing
   on disk, but whoever controls its server can act in Pult as you: README, the guide, the relay's page and SECURITY.md

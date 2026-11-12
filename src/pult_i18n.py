@@ -958,6 +958,7 @@ S = {
     "cli.st.daemon": {"en": "daemon:", "ru": "демон:"},
     "cli.st.running": {"en": "{state}, pid {pid}", "ru": "{state}, pid {pid}"},
     "cli.st.not_loaded": {"en": "not running ({label})", "ru": "не запущен ({label})"},
+    "cli.st.unknown": {"en": "unknown — {why}", "ru": "не знаю — {why}"},
     "cli.st.sock": {"en": "socket:", "ru": "сокет:"},
     "cli.st.env": {"en": "python:", "ru": "python:"},
     "cli.st.env_ok": {"en": "Pult's environment is whole", "ru": "среда Пульта цела"},
