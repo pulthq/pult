@@ -7,7 +7,7 @@ import { alertBox, confirmBox, haptic, tick } from "../core/tg.js";
 import { OWN_V, checkServed, noteUpd, phoneOld, served, useServed } from "../core/update.js";
 import { locale, plural, t } from "../i18n.js";
 import { html, useEffect, useState } from "../vendor/htm-preact-3.1.1.js";
-import { About, ChoicePick, Loading, MODES, ModePick, ago, choiceText, dur, hhmm, ic, num, plainField, toDate } from "../ui/kit.js";
+import { About, ChoicePick, Loading, MODES, ModePick, ago, choiceText, dur, hhmm, ic, machine, num, plainField, toDate } from "../ui/kit.js";
 import { UpdBody, UpdCard, tOr } from "../ui/upd.js";
 
 
@@ -187,7 +187,7 @@ function Parts() {
       ${rows.map((r) => html`<div class=${"part st-" + r.st + (shown === r.k ? " open" : "")} key=${r.k} data-k=${r.k}>
         <button class="part-r" aria-expanded=${shown === r.k} onClick=${() => setOpen(shown === r.k ? null : r.k)}>
           <span class="part-ic">${ic(PART_IC[r.k], 18)}</span>
-          <span class="part-n"><b>${t("pt." + r.k)}</b><span class="dim">${t("pt." + r.k + ".sub")}</span></span>
+          <span class="part-n"><b>${t("pt." + r.k)}</b><span class="dim">${r.k === "mac" && machine.get() ? t("pt.mac.sub.name", { name: machine.get() }) : t("pt." + r.k + ".sub")}</span></span>
           <span class="part-v mono">${partHave(r)}</span>
           <span class=${"pchip " + r.st}>${r.st === "ok" ? ic("check", 13) : ""}${partChip(r, b)}</span>
         </button>
@@ -196,6 +196,30 @@ function Parts() {
     </div>
     ${d.head ? html`<div class="dim parts-f">${t("pt.foot", { b, head: d.head, hm: hhmm(toDate(d.at)) })}</div>` : ""}
   </div>`;
+}
+
+// What the app calls this machine (2026-11-12): the system's name by default — a Mac's without whose it is ("Anna’s
+// MacBook Air" → "MacBook Air"), a server's host name; the owner may give another. Empty — the system's again
+function MachineName({ m, onSaved }) {
+  const [v, setV] = useState(null);                  // null — not editing
+  const [busy, setBusy] = useState(false);
+  if (!m || !m.sys) return "";
+  const own = m.name !== m.sys ? m.name : "";
+  const save = async () => {
+    setBusy(true);
+    try {
+      const p = await api("prefs", { machine: v.trim() });
+      const name = p.machine || m.sys;
+      machine.set(name); onSaved(name); setV(null); haptic("success");
+    } catch (e) { alertBox(e.message); }
+    setBusy(false);
+  };
+  return html`<h3>${t("machine.h")}</h3><div class="list"><div class="item static mname">${v == null
+    ? html`<div class="item-h"><b>${m.name}</b><button class="link" onClick=${() => setV(own)}>${t("machine.edit")}</button></div>
+      <div class="dim">${own ? t("machine.own", { sys: m.sys }) : t("machine.sys")}</div>`
+    : html`<div class="keyrow"><input ref=${plainField} value=${v} placeholder=${m.sys} maxlength="40" onInput=${(e) => setV(e.target.value)}/>
+        <button class="btn" disabled=${busy} onClick=${save}>${t("machine.save")}</button></div>
+      <div class="dim">${t("machine.about")}</div>`}</div></div>`;
 }
 
 // a vendor's models as a list (2026-11-08, the owner: "the models through commas are awkward and unclear — a list with
@@ -457,6 +481,7 @@ function Settings({ at }) {
   };
   const p = d.prefs, vs = d.vendors || [];
   const partsS = html`<${Parts}/>
+    <${MachineName} m=${d.machine} onSaved=${(name) => set(Object.assign({}, d, { machine: Object.assign({}, d.machine, { name }) }))}/>
     ${d.gh && d.gh.release ? html`<div class="list">${sw("gh", t("gh"), d.gh.at && d.prefs.gh ? t(d.gh.ok ? "gh.at" : "gh.fail", { hm: hhmm(toDate(d.gh.at)) }) : t("gh.short"), t("gh.about"))}</div>` : ""}
     ${"vcheck" in d.prefs ? html`<div class="list">${sw("vcheck", t("vcheck"), t("vcheck.short"), t("vcheck.about"))}${"ccfresh" in d.prefs ? sw("ccfresh", t("ccfresh"), t("ccfresh.short"), t("ccfresh.about")) : ""}</div>` : ""}
     <h3>${t("status")}</h3><div class="list"><div class="item static">

@@ -301,6 +301,7 @@ const IC = {
   bg: '<circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M2.5 12h3M18.5 12h3M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>',
   phone: '<rect x="6" y="2" width="12" height="20" rx="2.6"/><path d="M11 18h2"/>',
   monitor: '<rect x="2.5" y="3.5" width="19" height="13" rx="2"/><path d="M8 21h8M12 16.5V21"/>',
+  plug: '<path d="M9 2.5v5M15 2.5v5"/><path d="M6 7.5h12v3.5a6 6 0 0 1-12 0z"/><path d="M12 17v4.5"/>',
   auto: '<path d="M20.5 12a8.5 8.5 0 0 1-14.6 5.9L3.5 15.5"/><path d="M3.5 12a8.5 8.5 0 0 1 14.6-5.9l2.4 2.4"/><path d="M20.5 3.5v5h-5M3.5 20.5v-5h5"/>',
   msg: '<path d="M20.5 14.5a2 2 0 0 1-2 2H8l-4.5 4v-15a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z"/>',
   term: '<path d="m4.5 17 5.5-5-5.5-5M12.5 18.5h7"/>',
@@ -458,12 +459,22 @@ const tagJob = (j) => (j.list ? t("tags.job.list") : !j.total ? t("tags.job.star
 const home = (size) => html`<a class="home-l" href="#/" aria-label=${t("tab.home")}>${ic("home", size)}</a>`;
 const avatar = (name, size = 28) => html`<span class="av" aria-hidden="true" style=${"background:" + hue(name) + ";width:" + size + "px;height:" + size + "px;font-size:" + Math.round(size * .5) + "px"}>${String(name).replace(/[^\p{L}\p{N}]/gu, "").charAt(0).toUpperCase()}</span>`;
 
-// the Home strip: two small tiles and the way to the settings — where you are (tap — the mode picker) and the limit
-// with the load (tap — Resources). A label over a value, so nothing is cut on a narrow phone. The strip is a setting,
-// not the news: what waits for an answer comes right under it
+// the Home strip (2026-11-12): two small tiles and the way to the settings — the plan's limit apart from the machine
+// Pult runs on: its processor, memory and power (each tile — its tab in Resources). A label over a value, so nothing is
+// cut on a narrow phone. The strip is a setting, not the news: what waits for an answer comes right under it
 const GEAR = html`<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`;
 // the top line stays grey while all is well: a colour means look here
 const quiet = (v, bad) => (v >= bad ? "bad" : v >= bad - 10 ? "warn" : "dim");
+// the battery the other way round: yellow from 20 %, red from 10 % — when the computer warns in Telegram (POWER_LOW)
+const lowBatt = (p) => (p <= 10 ? "bad" : p <= 20 ? "warn" : "");
+// the battery as it is: the outline and the charge as a bar inside — Home's strip, the machine's tab
+const battery = (p, s = 20) => html`<svg class="ic ic-battery" viewBox="0 0 26 14" width=${s} height=${Math.round(s * 14 / 26)} aria-hidden="true"><rect x="1" y="1" width="21" height="12" rx="3" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="23" y="4.5" width="2" height="5" rx="1" fill="currentColor"/><rect x="3" y="3" width=${Math.max(1, Math.round(17 * Math.min(100, Math.max(0, p))) / 100)} height="8" rx="1.5" fill="currentColor"/></svg>`;
+// the machine Pult runs on, by its name (2026-11-12: a laptop now, a server later, a friend's already one): the last
+// name the computer told, kept on the phone — the banner says it while the computer is away
+const machine = {
+  get() { try { return localStorage.getItem("pult.machine") || ""; } catch (e) { return ""; } },
+  set(n) { try { if (n && n !== localStorage.getItem("pult.machine")) localStorage.setItem("pult.machine", n); } catch (e) {} },
+};
 const GLYPH = { pace: "●", under: "▼", over: "▲" };
 
 // the "Default" line says in grey what it stands for now (def); Settings names it "As in Claude Code" (top)
@@ -510,4 +521,4 @@ function Loading({ err }) {
     : ["offline", "connecting", "busy"].includes(c.state) ? t("loading.connection") : t("loading"))}</div>`;
 }
 
-export { About, ChoicePick, CodexCols, Dots, GEAR, GLYPH, Loading, MODES, ModePick, ModelPick, Sheet, SwipeRow, TimeChip, ago, agoShort, avatar, bgChip, bytes, choiceDone, choiceName, choiceText, codexModel, copyRich, ctxBar, dayLabel, dot, dotted, dur, durShort, effortName, hhmm, home, hue, ic, keyTap, kilo, level, llmName, modelName, nb, num, pauseChip, pct, plainField, queueChip, quiet, resetText, sendKey, TAG_H, tagChips, tagJob, tagSt, toDate, useNow, workChip };
+export { About, ChoicePick, CodexCols, Dots, GEAR, GLYPH, Loading, MODES, ModePick, ModelPick, Sheet, SwipeRow, TimeChip, ago, agoShort, avatar, battery, bgChip, bytes, choiceDone, choiceName, choiceText, codexModel, copyRich, ctxBar, dayLabel, dot, dotted, dur, durShort, effortName, hhmm, home, hue, ic, keyTap, kilo, level, llmName, lowBatt, machine, modelName, nb, num, pauseChip, pct, plainField, queueChip, quiet, resetText, sendKey, TAG_H, tagChips, tagJob, tagSt, toDate, useNow, workChip };

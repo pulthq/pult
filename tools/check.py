@@ -23,6 +23,7 @@ PY = sys.executable
 # its own arguments after that. None: the check raises the stands it needs itself
 CHECKS = {
     "memory": ({"STAND_LANG": "ru", "STAND_MEMORY": "96"}, "out", []),
+    "power": ({"STAND_LANG": "ru"}, "out", []),   # 2026-11-12: Home's limit and machine, the battery, the machine's name
     "fileview": ({"STAND_FILES": "1"}, "SESS", []),
     "compose": ({"STAND_LANG": "ru"}, "out", []),
     "newproject": ({"STAND_LANG": "ru"}, "NEWPROJ", []),

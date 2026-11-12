@@ -223,6 +223,17 @@ S = {
     "digest.oldest": {"en": "The oldest has waited {dur}", "ru": "Самое старое ждёт {dur}"},
     "digest.reports": {"en": "Reports not put away: {n}", "ru": "Отчётов без «Понятно»: {n}"},
     "digest.open": {"en": "Open Pult", "ru": "Открыть Пульт"},
+    # the machine on its battery (2026-11-12): pultd.power_due
+    "power.low": {"en": "🔋 <b>Battery {pct}%</b>{left}\n{name} runs on its battery{tasks}. Plug the charger in.",
+                  "ru": "🔋 <b>Заряд {pct} %</b>{left}\n{name} работает от батареи{tasks}. Подключи зарядку."},
+    "power.crit": {"en": "🪫 <b>Battery {pct}%</b>{left}\nThen the system puts {name} to sleep, and the tasks on it break. "
+                         "Plug the charger in.",
+                   "ru": "🪫 <b>Заряд {pct} %</b>{left}\nПотом система усыпит {name}, и задачи на нём оборвутся. "
+                         "Подключи зарядку."},
+    "power.left": {"en": " — about {dur} left", "ru": " — хватит примерно на {dur}"},
+    "power.tasks": {"en": ", tasks running: {n}", "ru": ", задач в работе: {n}"},
+    "power.back": {"en": "🔌 {name}: the charger is in — {pct}%.", "ru": "🔌 {name}: зарядка подключена — {pct} %."},
+    "power.machine": {"en": "The computer", "ru": "Компьютер"},
     "remind.req": {"en": "still waits for your answer — {dur}", "ru": "всё ещё ждёт твоего ответа — {dur}"},
     "reset.at": {"en": "at {hm} ({left})", "ru": "в {hm} ({left})"},
     "reset.in": {"en": "in {left}", "ru": "через {left}"},
@@ -521,11 +532,11 @@ S = {
     "btn.logout_all": {"en": "Log out everywhere", "ru": "Выйти везде"},
     "note.logged_out": {"en": "logged out everywhere: app windows closed", "ru": "вышел везде: окна приложения закрыты"},
     "mark.logged_out": {"en": "logged out everywhere at {hm}", "ru": "вышел везде в {hm}"},
-    "files.differ": {"en": "⚠️ <b>The app is closed.</b> The server hands out other files than you deployed: {files}. "
+    "files.differ": {"en": "⚠️ <b>The app is closed.</b> The app's server hands out other files than you deployed: {files}. "
                            "That's what it looks like when someone changes the app on the server. Until the files "
                            "match, the computer doesn't answer the app.\nJust updated the server yourself? Deploy "
                            "again. Otherwise check the server.",
-                     "ru": "⚠️ <b>Приложение закрыто.</b> Сервер отдаёт не те файлы, что ты выкладывал: {files}. Так "
+                     "ru": "⚠️ <b>Приложение закрыто.</b> Сервер приложения отдаёт не те файлы, что ты выкладывал: {files}. Так "
                            "бывает, если приложение на сервере подменили. Пока файлы не совпадут, компьютер не "
                            "отвечает приложению.\nСам только что обновлял сервер — выложи ещё раз. Иначе проверь сервер."},
     "files.match": {"en": "✅ The app files on the server match your deploy again — the app is open.",
@@ -574,19 +585,19 @@ S = {
     "srv.why.no_restart": {"en": "systemd didn't restart the relay", "ru": "systemd не перезапустил посредника"},
     "srv.why.broken": {"en": "the release lacks the relay's files", "ru": "в выпуске нет файлов посредника"},
     "srv.why.error": {"en": "the updater failed", "ru": "сбой обновлятеля"},
-    "files.differ.release": {"en": "⚠️ <b>The app is closed.</b> The server hands out the app not as release {tag} has it: "
+    "files.differ.release": {"en": "⚠️ <b>The app is closed.</b> The app's server hands it out not as release {tag} has it: "
                                    "{files}. That's what it looks like when someone changes the app on the server. Until "
                                    "the files match, the computer doesn't answer the app.\nA CDN or a proxy in front of the "
                                    "server that changes files? <code>PULT_GUARD=warn</code> in Pult's settings on the "
                                    "computer — then it only warns. Otherwise check the server.",
-                             "ru": "⚠️ <b>Приложение закрыто.</b> Сервер отдаёт приложение не таким, как в выпуске {tag}: "
+                             "ru": "⚠️ <b>Приложение закрыто.</b> Сервер приложения отдаёт его не таким, как в выпуске {tag}: "
                                    "{files}. Так бывает, если приложение на сервере подменили. Пока файлы не совпадут, "
                                    "компьютер не отвечает приложению.\nПеред сервером стоит CDN или прокси, который меняет "
                                    "файлы? <code>PULT_GUARD=warn</code> в настройках Пульта на компьютере — тогда только "
                                    "предупреждение. Иначе проверь сервер."},
-    "files.differ.warn": {"en": "⚠️ The server hands out the app not as release {tag} has it: {files}. A CDN or a proxy in "
+    "files.differ.warn": {"en": "⚠️ The app's server hands it out not as release {tag} has it: {files}. A CDN or a proxy in "
                                 "front of the server may change files — otherwise check the server. The app stays open.",
-                          "ru": "⚠️ Сервер отдаёт приложение не таким, как в выпуске {tag}: {files}. Так бывает, если перед "
+                          "ru": "⚠️ Сервер приложения отдаёт его не таким, как в выпуске {tag}: {files}. Так бывает, если перед "
                                 "сервером стоит CDN или прокси, который меняет файлы, — иначе проверь сервер. Приложение открыто."},
     "tg.conflict": {"en": "⚠️ Someone else receives this bot's messages (Telegram answers 409). If no second Pult runs "
                           "with this bot, the bot token has leaked: @BotFather → /revoke, then <code>pult setup</code> "
@@ -1236,8 +1247,8 @@ S = {
                           "ru": "Раздумья — настройка Claude; у сессии другого производителя — его собственные."},
     "vendor.err.models": {"en": "A model's name is Latin letters, digits and . : - / [ ]; up to 8 models.",
                           "ru": "Имя модели — латиница, цифры и . : - / [ ]; моделей — до 8."},
-    "vendor.err.local.models": {"en": "Only the server's own models that fit, at least one — check the server again.",
-                                "ru": "Только подходящие модели сервера, хотя бы одна — проверь сервер снова."},
+    "vendor.err.local.models": {"en": "Only Ollama's own models that fit, at least one — check Ollama again.",
+                                "ru": "Только подходящие модели Ollama, хотя бы одна — проверь Ollama снова."},
     "vendor.err.local.copy": {"en": "{name}: a copy with a context won't make it fit.",
                               "ru": "{name}: копия с контекстом её не исправит."},
     "vendor.key.key": {"en": "{name} didn't take the key: {why}", "ru": "{name} не принял ключ: {why}"},
@@ -1270,14 +1281,14 @@ S = {
     "vendor.local.offed": {"en": "Your local model is off: the tasks of its projects won't start until you turn it on again.",
                            "ru": "Своя модель выключена: задачи её проектов не начнутся, пока не включишь её снова."},
     # its models as a list (2026-11-08): a copy with a context, made on the owner's tap
-    "local.err.gone": {"en": "{name} isn't on the server any more — the list is fresh now.", "ru": "{name} на сервере уже нет — список обновлён."},
+    "local.err.gone": {"en": "{name} isn't in Ollama any more — the list is fresh now.", "ru": "{name} в Ollama уже нет — список обновлён."},
     "local.err.running": {"en": "A task is running on your own model right now — this would cut it. Try when it ends.",
                           "ru": "На своей модели сейчас идёт задача — это её оборвёт. Попробуй, когда она закончит."},
-    "local.err.server": {"en": "The server said no: {why}", "ru": "Сервер отказал: {why}"},
+    "local.err.server": {"en": "Ollama said no: {why}", "ru": "Ollama отказала: {why}"},
     "local.err.pulling": {"en": "{name} is downloading — one download at a time.", "ru": "Сейчас скачивается {name} — по одной за раз."},
     "local.err.name": {"en": "A model's name as ollama.com writes it — like qwen3.5:14b. Cloud models and other sites aren't taken.",
                        "ru": "Имя модели, как его пишет ollama.com, — например qwen3.5:14b. Облачные модели и другие сайты не берутся."},
-    "local.err.have": {"en": "{name} is on the server already.", "ru": "{name} уже есть на сервере."},
+    "local.err.have": {"en": "{name} is in Ollama already.", "ru": "{name} уже есть в Ollama."},
     "local.err.registry": {"en": "ollama.com didn't answer ({why}) — try again in a minute.", "ru": "ollama.com не ответил ({why}) — попробуй через минуту."},
     "local.err.nosuch": {"en": "ollama.com has no {name} — check its name and tag on the model's page.",
                          "ru": "На ollama.com нет {name} — сверь имя и метку на странице модели."},

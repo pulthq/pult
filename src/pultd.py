@@ -89,6 +89,8 @@ PAGE_WAIT = 20           # s: a "your move" waits this long for the model's line
 PAGE_OLD = 12 * 3600     # s: older outcomes are never paged (say, after a restart)
 REMIND_AT = (30 * 60, 2 * 3600)   # s: a question or a permission still unanswered is called about again (Q176)
 DIGEST_LATE = 6 * 3600   # s: the day's summary goes out this long after its hour at most (the computer was off at it)
+POWER_LOW = 20           # %: the machine on its battery — a message in General, by the notification mode (2026-11-12)
+POWER_CRIT = 10          # %: and one with sound whatever the mode; each once a discharge
 PAGE_RETRY = 20          # s: a call Telegram didn't take is made again after this long, then twice as long each time
 PAGE_RETRY_MAX = 300     # s: ... up to this long between the tries (and no longer than PAGE_OLD in all)
 CONTINUE = "Continue where you stopped: the usage limit has reset."   # said for the owner when the limit resets
@@ -101,7 +103,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.63"
+VERSION = "0.18.64"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -119,6 +121,8 @@ PREFS = {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": No
          # after the app left the screen before a call about what ended while it was there (0 — at once), whether a
          # question or a permission left unanswered is called about again (REMIND_AT)
          "digest": 9, "quiet": [23, 8], "page_delay": 5, "remind": True,
+         # what the app calls this machine (2026-11-12); None — the system's own name (pult_os.machine_name)
+         "machine": None,
          # until when "Computer" holds (mode_end) — not the owner's to set
          "mode_until": None}   # owner prefs:
 # milestones, location (auto/mac/phone), language, a model's line for each result, Telegram as a pager (None — on where the
@@ -1532,6 +1536,8 @@ class Pult(Api, Parts):
                         await self.cards_status()
                 if self.chat and n % 3 == 0:
                     await self.digest_due()
+                if self.chat and n % 6 == 0:
+                    await self.power_due()
             except Exception as e:
                 log("attention:", repr(e))
 
@@ -1641,6 +1647,38 @@ class Pult(Api, Parts):
         m = await self.send(None, text, here=0, notify=loud and await self.page_now(), prio=4, buttons=[row] if row else None)
         log("the day's summary: %s" % ("sent" if m else "not sent"))
         return bool(m)
+
+    async def power_due(self):
+        """Every minute (2026-11-12): the machine runs on its battery and the battery runs out — at the last per cent
+        the system puts it to sleep, and every turn on it breaks. So General hears it: at POWER_LOW by the notification
+        mode, at POWER_CRIT with sound whatever the mode; each once a discharge. The charger back after a warning — a
+        quiet line. A machine without a battery says nothing at all. → what went: "low", "crit", "back" or None."""
+        p = await self.power_now()
+        if not p:
+            return None
+        warned = self.store.get("power_warned")
+        name = R.esc(self.machine_name() or self.t("power.machine"))
+        if p["src"] != "batt":
+            if not warned:
+                return None
+            self.store.put("power_warned", None)
+            await self.send(None, self.t("power.back", name=name, pct=p["pct"]), here=0, prio=4)
+            log("power: the charger is back at %s%%" % p["pct"])
+            return "back"
+        level = POWER_CRIT if p["pct"] <= POWER_CRIT else POWER_LOW if p["pct"] <= POWER_LOW else None
+        if level is None or warned and warned <= level:
+            return None
+        self.store.put("power_warned", level)
+        crit = level == POWER_CRIT
+        n = sum(1 for lv in self.live.values() if lv.turn or lv.bg)
+        text = self.t("power.crit" if crit else "power.low", pct=p["pct"], name=name,
+                      left=self.t("power.left", dur=R.human_dur(p["left"])) if p.get("left") else "",
+                      tasks=self.t("power.tasks", n=n) if n else "")
+        row = self.app_row(None, self.t("digest.open"))
+        await self.send(None, text, here=0, notify=crit or await self.page_now(), urgent=crit, prio=2,
+                        buttons=[row] if row else None)
+        log("power: %s%% on the battery — %s" % (p["pct"], "the last warning" if crit else "a warning"))
+        return "crit" if crit else "low"
 
     async def page(self, sid, r):
         """One call in the project's topic: what came out, what is needed, ready replies (or "continue after the

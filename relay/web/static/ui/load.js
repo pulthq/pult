@@ -4,7 +4,7 @@ import { api, useLive } from "../core/conn.js";
 import { go } from "../core/nav.js";
 import { plural, q, t } from "../i18n.js";
 import { html, useState } from "../vendor/htm-preact-3.1.1.js";
-import { About, Loading, ago, bytes, dur, hhmm, ic, keyTap, kilo, level, modelName, nb, num, pct, toDate, useNow } from "./kit.js";
+import { About, Loading, ago, bytes, dur, hhmm, ic, keyTap, kilo, level, lowBatt, machine, modelName, nb, num, pct, toDate, useNow } from "./kit.js";
 
 
 // ---------- screens ----------
@@ -39,13 +39,28 @@ function LoadRow({ s, now }) {
   </button>`;
 }
 
-// the computer: processor and memory now, then every Claude session on it, the busiest first; resting ones folded
+// the battery (2026-11-12): the charge, where the power comes from and the system's estimate — to empty on the
+// battery, to full while charging — and how worn it is; only a machine with a battery has the card
+function Power({ p }) {
+  const cls = lowBatt(p.pct);
+  const how = p.src === "batt" ? t("pw.batt") + (p.left ? " · " + t("pw.left", { dur: dur(p.left) }) : "")
+    : p.charging ? t("pw.charging") + (p.left ? " — " + t("pw.tofull", { dur: dur(p.left) }) : "") : t("pw.ac");
+  const wear = [p.cycles != null && p.cycles + "\u00a0" + plural(p.cycles, "cycle"), p.health != null && t("pw.health", { pct: p.health })].filter(Boolean);
+  return html`<div class="lim pw"><div class="item-h"><b>${t("pw.title")}</b><b class=${"pct " + cls}>${p.pct}\u00a0%</b></div>
+    <div class="meter"><i class=${cls} style=${"width:" + Math.min(100, p.pct) + "%"}></i></div>
+    <div class="dim">${how}</div>${wear.length > 0 && html`<div class="dim">${t("pw.wear", { what: wear.join(" · ") })}</div>`}</div>`;
+}
+
+// the machine: processor, memory and power now, then every Claude session on it, the busiest first; resting ones folded
 function Load({ embedded }) {
   const now = useNow(5000);
   const [d, err] = useLive(() => api("load"), [], () => false, 5000);
   const [rest, setRest] = useState(false);
   if (!d) return html`<${Loading} err=${err}/>`;
-  if (!d.ok) return embedded ? "" : html`<div><h2>${t("load.title")}</h2><div class="empty">${t("load.none")}</div></div>`;
+  machine.set(d.machine);
+  // a system whose processes Pult can't read (Windows) may still tell its battery
+  if (!d.ok) return d.power ? html`<div class="list"><${Power} p=${d.power}/></div>`
+    : embedded ? "" : html`<div><h2>${t("load.title")}</h2><div class="empty">${t("load.none")}</div></div>`;
   const l = d.mac, m = memPct(l);
   const busy = d.sessions.filter((s) => !s.idle), idle = d.sessions.filter((s) => s.idle);
   return html`<div>${embedded ? "" : html`<h2>${t("load.title")}</h2>`}
@@ -56,6 +71,7 @@ function Load({ embedded }) {
       ${m !== null && html`<div class="lim"><div class="item-h"><b>${t("load.mem")}</b><b class=${"pct " + level(m)}>${m} %</b></div>
         <div class="meter"><i class=${level(m)} style=${"width:" + Math.min(100, m) + "%"}></i></div>
         <div class="dim">${t("load.mem.about", { used: bytes(l.mem_used), total: bytes(l.mem_total), free: bytes(l.mem_total - l.mem_used) })}</div></div>`}
+      ${d.power && html`<${Power} p=${d.power}/>`}
       ${l.mem_scope === "limit" && html`<div class="dim small">${t("memory.limit")}</div>`}
     </div>
     <h3>${t("load.sessions", { n: l.claude.n, sessions: plural(l.claude.n, "session"), cpu: pct(l.claude.cpu), mem: bytes(l.claude.mem) })}</h3>

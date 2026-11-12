@@ -15,7 +15,7 @@ import { ChangesScreen, DiffHost } from "./screens/changes.js";
 import { FileHost, Session, TurnFilesScreen } from "./screens/session.js";
 import { Settings, ddmm } from "./screens/settings.js";
 import { Tags } from "./screens/tags.js";
-import { hhmm, ic } from "./ui/kit.js";
+import { hhmm, ic, machine } from "./ui/kit.js";
 import { Load } from "./ui/load.js";
 import { MemoryStatus } from "./ui/memory.js";
 import { WaitBadge } from "./ui/wait.js";
@@ -36,6 +36,8 @@ function Banner() {
   const upd = c.updating && Date.now() - c.updating < UPD_RUN_MAX && ["connecting", "offline", "auth", "nomac"].includes(c.state);
   const text = c.state === "denied" ? t(["expired", "out", "locked"].includes(c.why) ? "banner.denied." + c.why : "banner.denied")
     : upd ? t(c.updSrv ? "banner.srv" : "banner.updating")
+    // the machine away is called by its name (2026-11-12) — a laptop or a server; "The computer" until one is known
+    : c.state === "nomac" && machine.get() ? t("banner.nomac.name", { name: machine.get() })
     : ["connecting", "offline", "auth", "nomac", "busy"].includes(c.state) ? t("banner." + c.state) : "";
   const stale = c.fresh && ["connecting", "offline", "nomac", "busy"].includes(c.state) ? " " + t("banner.stale", { hm: hhmm(new Date(c.fresh)) }) : "";
   const g = c.gone && c.state === "nomac" && !upd ? new Date(c.gone) : null;

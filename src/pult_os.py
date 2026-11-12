@@ -739,6 +739,178 @@ def memory():
     return None
 
 
+# ---------- the battery and the machine's name ----------
+# Pult may live on a laptop, a desktop or a home server (2026-11-12, the owner: the workspace is on a MacBook now, may
+# move to a server; a friend's already is on one). Only a battery has anything to say here; a machine without one has
+# no power line at all. All of it is cheap: pmset answers in milliseconds, system_profiler in a fifth of a second.
+
+def power():
+    """Where the power comes from: {"src": "ac" | "batt", "pct": 0–100, "charging": bool, "left": s or None — the
+    system's estimate, to empty on the battery, to full while charging}, or None: no battery (a desktop, a server) or
+    the system can't tell."""
+    try:
+        if KIND == "mac":
+            return mac_power(run("pmset", "-g", "batt"))
+        if KIND == "linux":
+            return linux_power()
+        if KIND == "windows":
+            return _win_power()
+    except (OSError, ValueError, AttributeError):
+        pass
+    return None
+
+
+def mac_power(out):
+    """`pmset -g batt` → power(). Its lines: "Now drawing from 'Battery Power'", then
+    " -InternalBattery-0 (id=…)\\t72%; discharging; 3:20 remaining present: true" — or "charging; 1:05 remaining",
+    "charged; 0:00 remaining", "AC attached; not charging", "(no estimate)". A Mac without a battery has no such line."""
+    line = next((x for x in (out or "").splitlines() if "InternalBattery" in x), None)
+    m = line and re.search(r"(\d+)%", line)
+    if not m:
+        return None
+    low = line.lower()
+    ac = "'ac power'" in (out or "").lower()
+    charging = ac and ("finishing charge" in low or re.search(r"(?<![a-z])charging", low) is not None
+                       and "not charging" not in low)
+    t = re.search(r"(\d+):(\d\d) remaining", line)
+    left = int(t.group(1)) * 3600 + int(t.group(2)) * 60 if t else None
+    return {"src": "ac" if ac else "batt", "pct": min(100, int(m.group(1))), "charging": bool(charging),
+            "left": left if left and (charging or not ac) else None}
+
+
+def _sys_read(d, name):
+    try:
+        return (d / name).read_text().strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _sys_int(d, name):
+    v = _sys_read(d, name)
+    return int(v) if v and v.lstrip("-").isdigit() else None
+
+
+def linux_power(root=Path("/sys/class/power_supply")):
+    """The machine's own battery in sysfs → power(); a mouse's or a keyboard's (scope "Device") is not it."""
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return None
+    bat, mains = None, None
+    for n in names:
+        d = root / n
+        kind = (_sys_read(d, "type") or "").lower()
+        if kind == "battery" and bat is None and _sys_read(d, "scope") != "Device" and _sys_int(d, "capacity") is not None:
+            bat = d
+        elif kind != "battery" and _sys_read(d, "online") is not None:
+            mains = bool(mains) or _sys_read(d, "online") == "1"
+    if bat is None:
+        return None
+    status = (_sys_read(bat, "status") or "").lower()           # Charging, Discharging, Full, Not charging, Unknown
+    ac = mains if mains is not None else status != "discharging"
+    charging = ac and status == "charging"
+    left = None
+    for now_f, full_f, rate_f in (("energy_now", "energy_full", "power_now"), ("charge_now", "charge_full", "current_now")):
+        now, full, rate = _sys_int(bat, now_f), _sys_int(bat, full_f), _sys_int(bat, rate_f)
+        if now is not None and rate:
+            rate = abs(rate)
+            left = int(now / rate * 3600) if not ac else int(max(0, (full or now) - now) / rate * 3600) if charging else None
+            break
+    return {"src": "ac" if ac else "batt", "pct": max(0, min(100, _sys_int(bat, "capacity"))), "charging": charging,
+            "left": left or None}
+
+
+def win_power(ac_line, flag, pct, life):
+    """GetSystemPowerStatus's fields → power(): flag 128 — no system battery, 255 — unknown; life is seconds,
+    0xFFFFFFFF — unknown."""
+    if flag == 255 or flag & 128 or pct > 100:
+        return None
+    ac = ac_line == 1
+    return {"src": "ac" if ac else "batt", "pct": pct, "charging": ac and bool(flag & 8),
+            "left": life if not ac and 0 < life < 0xFFFFFFFF else None}
+
+
+def _win_power():
+    import ctypes
+
+    class Status(ctypes.Structure):
+        _fields_ = [("ac", ctypes.c_ubyte), ("flag", ctypes.c_ubyte), ("pct", ctypes.c_ubyte), ("saver", ctypes.c_ubyte),
+                    ("life", ctypes.c_ulong), ("full", ctypes.c_ulong)]
+    s = Status()
+    if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(s)):
+        return None
+    return win_power(s.ac, s.flag, s.pct, s.life)
+
+
+def battery_health():
+    """{"cycles": n or None, "health": % of the capacity it had new, or None}, or None — no battery or nothing known.
+    It changes over months: read it seldom."""
+    try:
+        if KIND == "mac":
+            return mac_health(run("system_profiler", "SPPowerDataType", "-json", timeout=15))
+        if KIND == "linux":
+            return linux_health()
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def mac_health(out):
+    """`system_profiler SPPowerDataType -json` → battery_health(): "Maximum Capacity" is what System Settings shows."""
+    import json
+    try:
+        items = json.loads(out or "").get("SPPowerDataType") or []
+    except ValueError:
+        return None
+    for it in items:
+        h = it.get("sppower_battery_health_info") if isinstance(it, dict) else None
+        if isinstance(h, dict):
+            cyc = h.get("sppower_battery_cycle_count")
+            m = re.search(r"\d+", str(h.get("sppower_battery_health_maximum_capacity") or ""))
+            got = {"cycles": cyc if isinstance(cyc, int) else None, "health": min(100, int(m.group())) if m else None}
+            return got if got["cycles"] is not None or got["health"] is not None else None
+    return None
+
+
+def linux_health(root=Path("/sys/class/power_supply")):
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return None
+    for n in names:
+        d = root / n
+        if (_sys_read(d, "type") or "").lower() != "battery" or _sys_read(d, "scope") == "Device":
+            continue
+        cyc = _sys_int(d, "cycle_count")
+        health = None
+        for full_f, design_f in (("energy_full", "energy_full_design"), ("charge_full", "charge_full_design")):
+            full, design = _sys_int(d, full_f), _sys_int(d, design_f)
+            if full and design:
+                health = min(100, round(full * 100 / design))
+                break
+        got = {"cycles": cyc if cyc and cyc > 0 else None, "health": health}
+        return got if got["cycles"] is not None or got["health"] is not None else None
+    return None
+
+
+def machine_name():
+    """This machine's name as its owner knows it: macOS's computer name ("Anna’s MacBook Air" → short_name), Linux's
+    host name ("homelab"), Windows' computer name; "" — the system can't tell."""
+    name = ""
+    if KIND == "mac":
+        name = (run("scutil", "--get", "ComputerName") or "").strip()
+    elif KIND == "windows":
+        name = os.environ.get("COMPUTERNAME", "").strip()
+    return short_name(name or platform.node().split(".")[0])
+
+
+def short_name(name):
+    """Without whose it is — macOS names a new Mac "Anna’s MacBook Air" — and at most 40 characters."""
+    name = " ".join(str(name or "").split())
+    m = re.match(r"^\S[^’']*[’']s\s+(\S.*)$", name)
+    return (m.group(1) if m else name)[:40]
+
+
 def _linux_read():
     rows = {}
     for name in os.listdir("/proc"):

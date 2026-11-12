@@ -15,7 +15,8 @@ makes it a question of several answers with Claude's advice among them (tools/ad
 wait|run|fail shows Settings → Pult and Home's line in that state (no installer ever runs) — with STAND_UPD=ready,
 STAND_RESTART=answered|lost makes Install stop the stand's daemon as the real installer stops Pult: nothing answered
 from the tap on, the link to the relay down for a second (lost: before the tap's own answer goes out), back, checking
-itself for 4 s, then nothing newer (tools/update_check.py); STAND_PORT=<port> runs a second stand beside one already up. STAND_TICKS=<s> opens the first session in a tab that reads each message <s> s
+itself for 4 s, then nothing newer (tools/update_check.py); STAND_PORT=<port> runs a second stand beside one already up. STAND_POWER=batt:<pct>|ac:<pct>|charge:<pct>|none — the
+machine's made-up battery (a laptop on it at 76 % unless set; none — a desktop or a server) and its name, "MacBook Pro". STAND_TICKS=<s> opens the first session in a tab that reads each message <s> s
 later, as Claude Code does at its turn's next step — a message with "#gone" is dropped instead (tools/ticks_check.py).
 STAND_FILES=1 gives the shop a real folder with made-up files and ends the chat with links to them (tools/fileview_check.py).
 Settings' table of Pult's parts and Home's line always run on made-up facts — all fresh; STAND_PARTS=now|lag|bad|public:
@@ -1499,6 +1500,25 @@ async def main():
         machine["mem_used"] = int(machine["mem_total"] * float(pct) / 100)
         return {"ok": True}
     p.api_stand_memory = stand_memory
+
+    # the machine's name and battery (2026-11-12) — made up too, never the development computer's own:
+    # STAND_POWER=batt:<pct>|ac:<pct>|charge:<pct>|none (a desktop, a server — no battery); a laptop on its battery else
+    p._machine_sys = "MacBook Pro"
+    def power_of(spec):
+        kind, _, n = (spec or "").partition(":")
+        if kind not in ("batt", "ac", "charge"):
+            return None
+        pct = int(n or 76)
+        return {"src": "batt" if kind == "batt" else "ac", "pct": pct, "charging": kind == "charge",
+                "left": (int(pct * 3.4) * 60 if kind == "batt" else (100 - pct) * 90 if kind == "charge" else None) or None}
+    p._power = (time.monotonic() + 1e6, power_of(os.environ.get("STAND_POWER", "batt:76")))
+    p._health = (time.monotonic() + 1e6, {"cycles": 143, "health": 94})
+
+    async def stand_power(spec):
+        # tools/power_check.py moves the made-up battery: "batt:9", "ac:100", "none"
+        p._power = (time.monotonic() + 1e6, power_of(spec))
+        return {"ok": True, "power": p._power[1]}
+    p.api_stand_power = stand_power
     agents = [{"sessionId": SID3, "cwd": "/Users/x/blog", "pid": 3001}]
     if os.environ.get("STAND_COPY") == "1":     # the session waiting for you, open in a tab on an unchecked Claude Code
         procs[4001] = proc(1, claude.replace("2.1.301", "2.1.311"), 0.3, 240, 5400, 40)

@@ -75,9 +75,19 @@ button:focus-visible, a:focus-visible, label:focus-visible, [role="button"]:focu
 .gear { flex: none; width: 44px; min-height: 44px; display: flex; align-items: center; justify-content: center;
   border-radius: 12px; background: var(--card); color: var(--muted); text-decoration: none; }
 .where .modes { margin: 8px 0 0; }
-/* the limit and the load: short columns side by side, never cut — the "where" tile gives way instead */
-.where-b.top-load { flex: none; flex-direction: row; align-items: center; gap: 14px; }
+/* the limit apart from the machine (2026-11-12): the limit's tile as wide as its words, the machine's takes the rest —
+   its short columns spread over it, never cut */
+.where-b.top-lim { flex: none; }
+.where-b.top-load { flex-direction: row; align-items: center; justify-content: space-between; gap: 10px; }
+/* under 360 px the three columns don't fit beside the limit: the machine's tile takes a line of its own under it */
+@media (max-width: 359px) {
+  .where-h { flex-wrap: wrap; }
+  .where-b.top-lim { flex: 1; }
+  .where-b.top-load { order: 2; flex-basis: 100%; }
+}
 .tl-c { display: flex; flex-direction: column; }
+.tl-v .ic { vertical-align: -2px; margin-right: 3px; }
+.tl-v .ic-plug { vertical-align: -2px; }
 .top-load .tl-v.dim { color: inherit; }
 .top-load .warn { color: var(--warn); font-weight: 600; } .top-load .bad { color: var(--danger); font-weight: 600; }
 

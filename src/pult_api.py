@@ -60,6 +60,8 @@ MERGE_EXAMPLES = 2         # the latest tasks of a tag the owner merged into ano
 LEFT_MAX = 40              # findings the owner left, remembered for a task's next reviews
 CODEX_TTL = 600            # s: Codex on this computer is looked up again after this (ChatGPT.app updates it by itself)
 SECOND_LINES = 5           # findings named in the topic when a second opinion is ready; the rest — in the app
+POWER_EVERY = 30           # s: the battery is read again after this (Home asks every 30 s, the check every minute)
+HEALTH_EVERY = 3600        # s: the battery's cycles and capacity — they change over months
 
 
 def log(*a):
@@ -103,6 +105,7 @@ class Api:
             x["work"] = self.work_total(x["sid"])     # and the task's clock, stopped while it waits
         return {"mac": {"idle": idle, "away": await self.away(), "mode": self.mode(), "until": self.prefs()["mode_until"]}, "now": time.time(),
                 "lang": self.lang(), "load": self.load_sum(load[2], load[3]) if load else None,
+                "machine": self.machine_name(), "power": await self.power_view(),
                 # a session may end while this waited for the process snapshot (SessionEnd drops it): it is just gone
                 # from the list — before, Home failed with KeyError until the next event (review 2026-10-27, A1)
                 "live": [self.live_item(self.live[s]) for s in shown if s in self.live],
@@ -410,6 +413,39 @@ class Api:
         rows.sort(key=lambda r: (-r["cpu"], -r["mem"]))
         return procs, kids, mac, rows
 
+    # ----- the machine Pult runs on: its name and its power (2026-11-12) -----
+    # A laptop, a desktop or a home server: the app calls it by its name and shows a power column only where there is
+    # a battery. The battery is read at most every POWER_EVERY s — the app's 30 s and the minute's check share it.
+
+    def machine_name(self):
+        """The name the app calls this machine by: the owner's own (Settings → Pult and its parts) or the system's."""
+        return self.prefs().get("machine") or self.machine_sys()
+
+    def machine_sys(self):
+        if getattr(self, "_machine_sys", None) is None:
+            self._machine_sys = pult_os.machine_name()
+        return self._machine_sys
+
+    async def power_now(self):
+        """pult_os.power(), fresh within POWER_EVERY s; None — no battery or the system can't tell."""
+        c = getattr(self, "_power", None)
+        if c and time.monotonic() < c[0]:
+            return c[1]
+        got = await asyncio.to_thread(pult_os.power)
+        self._power = (time.monotonic() + POWER_EVERY, got)
+        return got
+
+    async def power_view(self, full=False):
+        """The battery for Home (where the power comes from, the charge) or, full, for the machine's tab: with the
+        system's estimate, cycles and the capacity left (read once in HEALTH_EVERY s)."""
+        p = await self.power_now()
+        if not p or not full:
+            return p and {"src": p["src"], "pct": p["pct"], "charging": p["charging"]}
+        h = getattr(self, "_health", None)
+        if not h or time.monotonic() >= h[0]:
+            h = self._health = (time.monotonic() + HEALTH_EVERY, await asyncio.to_thread(pult_os.battery_health))
+        return dict(p, **(h[1] or {}))
+
     @staticmethod
     def load_sum(mac, rows):
         return {"cpu": round(mac["cpu"], 1), "cores": mac["cores"], "load": round(mac["load"], 1),
@@ -425,9 +461,10 @@ class Api:
         """The load view: the computer and every session on it; with sid — that session and its background tasks."""
         st = await self.load_state()
         if not st:
-            return {"ok": False}
+            return {"ok": False, "machine": self.machine_name(), "power": await self.power_view(full=True)}
         procs, kids, mac, rows = st
-        out = {"ok": True, "mac": self.load_sum(mac, rows), "now": time.time()}
+        out = {"ok": True, "mac": self.load_sum(mac, rows), "now": time.time(), "machine": self.machine_name(),
+               "power": await self.power_view(full=True)}
         if not sid:
             return dict(out, sessions=rows)
         row = next((r for r in rows if r["sid"] == sid), None)
@@ -3269,6 +3306,7 @@ class Api:
                 "gh": {"release": release, "at": self.gh["at"], "ok": self.gh["ok"]},
                 "hooks_missing": [e for e in pult_hook.EVENTS if e not in hooks] if hooks else [],
                 "mac": {"idle": idle, "away": await self.away(), "mode": self.mode(), "until": self.prefs()["mode_until"]},
+                "machine": {"name": self.machine_name(), "sys": self.machine_sys()},
                 "telegram": "proxy" if len(self.tg.clients) > 1 and self.tg.cur == 0 else "direct",
                 "stt": self.stt_state(), "cc": self.cc_choice(), "vendors": self.vendors_list(), "vendor_all": self.vendor_all(),
                 "codex": self.codex_view(), "cc_models": self.cc_models_view(self.app_cc_version()),
@@ -3289,6 +3327,8 @@ class Api:
                 cur[k] = v                                # minutes
             elif k == "remind" and isinstance(v, bool):
                 cur[k] = v
+            elif k == "machine" and (v is None or isinstance(v, str)):
+                cur[k] = " ".join((v or "").split())[:40] or None   # what the app calls this machine; "" — the system's name
             elif k in ("model", "effort") and (v is None or isinstance(v, str)):
                 m, e = self.check_choice(v if k == "model" else None, v if k == "effort" else None)
                 cur[k] = m if k == "model" else e         # "" — back to Claude Code's settings
