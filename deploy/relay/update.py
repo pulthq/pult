@@ -176,7 +176,8 @@ class Updater:
             p = subprocess.run(["git", "--git-dir", str(self.cache), *args], capture_output=True, timeout=timeout,
                                env=env, stdin=subprocess.DEVNULL)
         except subprocess.TimeoutExpired:
-            raise Fail("network", "git %s: no answer in %d s" % (args[0], timeout))
+            what = next((a for a in args if not a.startswith("-") and "=" not in a), args[0])      # past "-c k=v"
+            raise Fail("network", "git %s: no answer in %d s" % (what, timeout))
         except OSError as e:
             raise Fail("no_git", repr(e)[:300])
         if p.returncode:
@@ -233,7 +234,11 @@ class Updater:
             except Fail:
                 missing.append(oid)
         if missing:
-            self.net("fetch", "-q", "--no-tags", "--filter=blob:none", "origin", *missing)
+            # without negotiation, as git's own fetch of a missing object goes: the cache has the release's commit by
+            # now, and GitHub, told so, sent none of the files that commit reaches — "did not send all necessary
+            # objects", every try (v0.18.64, 2026-11-12: the first of ~30 releases; by hand, with noop, all nine came)
+            self.net("-c", "fetch.negotiationAlgorithm=noop", "fetch", "-q", "--no-tags", "--filter=blob:none", "origin",
+                     *missing)
         name = "%s-%s" % (tag, commit[:7])
         dest, tmp = APP / "releases" / name, APP / "releases" / (name + ".new")
         shutil.rmtree(tmp, ignore_errors=True)

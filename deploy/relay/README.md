@@ -8,9 +8,14 @@ usage. Telegram opens Mini Apps only from a public HTTPS address, so the app nee
 phone: Telegram → Mini App ──wss /pult/ws──► relay (your server) ◄──wss /pult/agent── Pult on your computer
 ```
 
-The relay stores nothing: everything the app shows comes from your computer at request time. Strangers are cut off at
+The relay keeps nothing on disk: everything the app shows comes from your computer at request time. Strangers are cut off at
 the relay by Telegram's signature and your Telegram ID; the computer checks every login again with the bot token, which
 never leaves it. The computer connects to the relay by itself, with a shared secret — no ports open on it.
+
+**Trust this server as you trust your computer.** Whoever controls it — root on it, or the relay's own process — sees
+what the app shows and could send your computer requests as you, a new task included. Put it on a server only you run,
+not on shared hosting, and install it with `--auto`: then the computer also checks every app file the server hands to
+your phone ([Updates](#updates)).
 
 ## What you need
 

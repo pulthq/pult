@@ -535,11 +535,23 @@ class UpdaterTest(unittest.TestCase):
         p = subprocess.run(["git", "--git-dir", str(M.HOME / "cache.git"), "cat-file", "-e", blob],
                            capture_output=True, env=dict(os.environ, GIT_NO_LAZY_FETCH="1"))
         self.assertNotEqual(p.returncode, 0)
+        # the relay's files are fetched by their ids without negotiation: GitHub, told the cache has the release's
+        # commit, sent none of the files it reaches (v0.18.64, 2026-11-12)
+        calls = []
+        real = u.git
+
+        def spy(*args, **kw):
+            calls.append(args)
+            return real(*args, **kw)
+        u.git = spy
         # the next release asks for other requirements: pip with them; the release before the last goes away
         self.want("v0.18.2")
         u.run()
         self.assertEqual(self.status()["state"], "done")
         self.assertIn("requirements.txt", self.pip_log.read_text())
+        by_id = [a for a in calls if "fetch" in a and not any(x.startswith("+refs/") for x in a)]
+        self.assertTrue(by_id, calls)
+        self.assertTrue(all(a[:2] == ("-c", "fetch.negotiationAlgorithm=noop") for a in by_id), by_id)
         self.assertEqual(len(list((M.APP / "releases").iterdir())), 2)
         self.assertNotIn(self.first.name, [p.name for p in (M.APP / "releases").iterdir()])
 

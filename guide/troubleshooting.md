@@ -5,6 +5,7 @@
 | | |
 |---|---|
 | The bot is silent | `pult status` shows the service and the connection to Telegram; `pult restart`. The log: `~/Library/Logs/pult.log` (macOS), `~/.local/state/pult/pult.log` (Linux, Windows). |
+| Behind a proxy: the setup says "No connection to Telegram", or `pip` can't reach PyPI | [Behind a proxy](install.md#behind-a-proxy): `HTTPS_PROXY` for the installer, `PULT_PROXY` for Pult. |
 | Linux: Pult stops when you log out | `sudo loginctl enable-linger $USER`. |
 | VS Code: "Claude Code native binary not found at …" | The wrapper line in the VS Code settings is broken or names a missing file: `pult status` prints the right one; then Reload Window. |
 | No sessions from VS Code | The hooks are off: `pult hooks on`, then Reload Window. |

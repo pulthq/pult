@@ -45,9 +45,11 @@ Each with its screen: [what you get](#what-you-get). The rest, from ticks on you
 git clone https://github.com/pulthq/pult.git && cd pult && ./install.sh
 ```
 
-About ten minutes with a Telegram bot of your own; on Windows the installer is `install.ps1`. Codex and the other
-vendors are optional: Pult finds Codex where ChatGPT for Mac or the `codex` command is installed, and a vendor's key
-goes into the app's Settings. macOS, Linux and Windows: **[the details](guide/install.md)**.
+About ten minutes for the chat — the calls, your answers and new tasks — with a Telegram bot of your own; on Windows
+the installer is `install.ps1`. The app needs a small Linux server of yours with a domain and HTTPS: about an hour
+more if you already run one ([deploy/relay](deploy/relay/README.md)). Codex and the other vendors are optional: Pult
+finds Codex where ChatGPT for Mac or the `codex` command is installed, and a vendor's key goes into the app's Settings.
+macOS, Linux and Windows: **[the details](guide/install.md)**.
 
 ## How it works
 
@@ -189,7 +191,9 @@ Anthropic has its own ways to reach Claude Code away from the keyboard. If they 
 
 ## Safe by default
 
-Only your Telegram account, only in your group. No port opened; the optional relay stores nothing. No telemetry.
+Only your Telegram account, only in your group. No port opened on your computer. The optional relay keeps nothing on
+disk, but whoever controls its server can act in Pult as you: put it on a server you trust as much as your computer.
+No telemetry.
 A project's code goes to another vendor only as that project's model, which you pick, or for a review you tap and
 allow; a vendor's session never starts without your key. Pult drives the agents already signed in on your computer, with your plans — read their terms and
 decide for yourself. **[Security, privacy and your plans](guide/usage.md#security-and-privacy)** · [SECURITY.md](SECURITY.md)

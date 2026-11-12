@@ -43,11 +43,20 @@ Then **Developer: Reload Window** in VS Code, so open tabs pick up the hooks. Op
 - in the app, Settings → Models and keys — a vendor's key, checked with one tiny request; Codex needs nothing there;
   Local model — Ollama's address on this computer, **Check and turn on**.
 
+## Behind a proxy
+
+The installer's `pip` and `git` take the usual `HTTPS_PROXY`: `export HTTPS_PROXY=http://host:port` (PowerShell:
+`$env:HTTPS_PROXY = "http://host:port"`), then the installer. Pult itself goes to Telegram, the app's server and Groq
+through the line `PULT_PROXY=http://host:port` in `~/.config/pult/env` — an HTTP proxy, not SOCKS; put it there before
+the setup, or run `pult restart` after. Pult tries the proxy first and goes direct when it fails. Claude Code and
+Codex keep their own proxy settings.
+
 ## The web app (optional)
 
 A Telegram Mini App on a small server of yours, one tap from any topic — the comfortable way to work from the
 phone. It needs a Linux server with a domain and HTTPS: [deploy/relay/README.md](../deploy/relay/README.md). The
-server only relays: it stores nothing. Without it, the chat still carries the calls, your answers and new tasks.
+server only relays and keeps nothing on disk, but whoever controls it can act in Pult as you: use one you trust as
+much as your computer. Without it, the chat still carries the calls, your answers and new tasks.
 
 ## On Linux
 
