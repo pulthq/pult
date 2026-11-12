@@ -33,7 +33,7 @@ CC_LATEST_EVERY = 6 * 3600   # s; what Claude Code version is out (stage A2) —
 NPM_LATEST = "https://registry.npmjs.org/@anthropic-ai/claude-code/latest"   # ~3.5 KB
 ANNOUNCE_EVERY = 600     # s; the relay's server is reminded of the release this computer runs while it runs another (U3)
 # the server's updater failed for a reason of the moment: it tries again on the next reminder, nobody is told
-SRV_TRANSIENT = ("network", "pip", "no_mac_before", "git", "no_git", "no_mac_retry")
+SRV_TRANSIENT = ("network", "incomplete", "pip", "no_mac_before", "git", "no_git", "no_mac_retry")
 SRV_KEYS = ("state", "tag", "commit", "have", "from", "step", "why", "detail", "back", "back_ok", "ts")   # relay.STATUS_KEYS
 # the models each Claude Code version names (Q173): its menu's rows from the answer to initialize
 CC_MODELS_KEEP = 6           # versions whose list is kept

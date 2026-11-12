@@ -347,6 +347,28 @@ class SettingsTest(Base):
         self.assertEqual(json.loads(S.SETTINGS.read_text()), {"model": "x", "hooks": mine})
         self.assertTrue(list(S.SETTINGS.parent.glob("settings.json.bak-pult-*")))
 
+    def test_service_unknown_without_its_manager(self):
+        # a shell without the user's service manager (an agent's, su, ssh without a login): systemctl --user can't
+        # be asked — "unknown", not "not running", while the daemon answers on its socket; a manager that answers
+        # and has no service — "not running"
+        out = io.StringIO()
+        with redirect_stdout(out), mock.patch.object(S, "service", lambda lbl: (None, None)), \
+                mock.patch.object(S.SVC, "problem", lambda: "no user session bus (systemctl --user)"), \
+                mock.patch.object(S, "sock_ok", lambda: True):
+            pultctl.cmd_status()
+            report = "\n".join(S.report_lines())
+        self.assertIn("unknown — no user session bus (systemctl --user)", out.getvalue())
+        self.assertNotIn("not running", out.getvalue())
+        self.assertIn("service: unknown — no user session bus (systemctl --user) (", report)
+        self.assertIn("socket answers", report)
+        out = io.StringIO()
+        with redirect_stdout(out), mock.patch.object(S, "service", lambda lbl: (None, None)), \
+                mock.patch.object(S, "sock_ok", lambda: False):
+            pultctl.cmd_status()
+            report = "\n".join(S.report_lines())
+        self.assertIn("not running (", out.getvalue())
+        self.assertIn("service: not running (", report)
+
     @unittest.skipIf(WIN, "a shell script stands in for Python here")
     def test_environment_check(self):
         # the daemon can't say its environment is broken — it doesn't start — so `pult status` does (0.18.5)
