@@ -4,6 +4,15 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.67 — 2026-11-13
+
+- **What holds an install, by name, and Stop from the phone.** Settings → Pult and its parts lists what a restart would cut
+  off with what each does and since when — a turn's minutes, a background command by its name (the first, and how many
+  more); a tap opens the task, or the sheet of its background tasks. That sheet has **Stop** for a task Pult runs: Claude
+  Code's own stop, asked first — the process goes at once and Claude starts no turn because of it. "Install once they're
+  free" held by background tasks alone says so in General after 30 minutes and again at 2 hours, with "Stop them and
+  install" and "Keep waiting"; a running turn is waited for quietly, as before.
+
 ## 0.18.66 — 2026-11-12
 
 - **The app server's updater says what git said.** A failed git command there is reported with its name, its exit

@@ -35,6 +35,10 @@ ANNOUNCE_EVERY = 600     # s; the relay's server is reminded of the release this
 # the server's updater failed for a reason of the moment: it tries again on the next reminder, nobody is told
 SRV_TRANSIENT = ("network", "incomplete", "pip", "no_mac_before", "git", "no_git", "no_mac_retry")
 SRV_KEYS = ("state", "tag", "commit", "have", "from", "step", "why", "detail", "back", "back_ok", "ts")   # relay.STATUS_KEYS
+# s that background tasks alone — no turn, no queue — hold "Install once they're free" before a word in General, the
+# second after the first (Q185, as unanswered questions are called about again: REMIND_AT). A hung waiter held it
+# for good and said nothing (2026-11-11)
+BG_HOLD_AT = (30 * 60, 2 * 3600)
 # the models each Claude Code version names (Q173): its menu's rows from the answer to initialize
 CC_MODELS_KEEP = 6           # versions whose list is kept
 CC_MODELS_FRESH = 24 * 3600  # s; a list read again after this — the server adds rows (Fable 5.2 came to older versions so)
@@ -164,6 +168,8 @@ def npm_latest(proxy=None, url=NPM_LATEST):
 class Parts:
     """Parts and updates — a mixin of pultd.Pult: self is the daemon, self.D its module."""
 
+    _bg_hold = None     # "Install once they're free" held by background tasks alone: {since, told, ids} (bg_hold_tick)
+
     # ----- updating Pult from its folder (stage U) -----
 
     @property
@@ -220,7 +226,9 @@ class Parts:
             st = U.read(U.STATUS, {}) or {}
             return dict(v, state="fail", why=st.get("why"), detail=st.get("detail"), back=bool(st.get("back")),
                         back_ok=st.get("back_ok", True))
-        busy = [{"project": b["project"], "title": b["title"], "turn": b["turn"], "n": b["n"]} for b in self.busy_report()]
+        # each with what it is and since when, its background tasks by name — a row the app can open (the task, or the
+        # sheet of what runs in the background with Stop)
+        busy = [{k: b.get(k) for k in ("sid", "project", "title", "turn", "n", "since", "bgs")} for b in self.busy_report()]
         return dict(v, busy=busy, state="wait" if self.upd_wait else "busy" if busy else "ready")
 
     async def update_row(self):
@@ -322,6 +330,72 @@ class Parts:
             elif v["state"] not in ("wait", "run"):
                 self.upd_wait = None             # nothing to install any more (installed from the terminal, say)
                 self.emit_update()
+            else:
+                await self.bg_hold_tick(v)
+        else:
+            self._bg_hold = None
+
+    async def bg_hold_tick(self, v, now=None):
+        """"Install once they're free" held by background tasks alone — no turn running, nothing queued: at each of
+        BG_HOLD_AT a word in General, what holds it, by name and since when, with "Stop them and install" and "Keep
+        waiting" (Q185). A turn is work and is waited for quietly; a hung waiter would hold the install for good."""
+        now = now or time.time()
+        rows = v.get("busy") or []
+        held = [r for r in rows if not r.get("turn") and r.get("bgs")]
+        if v.get("state") != "wait" or not rows or len(held) != len(rows):
+            self._bg_hold = None
+            return
+        h = self._bg_hold = self._bg_hold or {"since": now, "told": 0, "ids": []}
+        due = sum(1 for s in BG_HOLD_AT if now - h["since"] >= s)
+        if due <= h["told"]:
+            return
+        h["told"] = due
+        tasks = [(r, b) for r in held for b in r["bgs"]]
+        h["ids"] = [(r["sid"], b["id"]) for r, b in tasks if b.get("stop")]
+        dur = lambda ts: R.human_dur(now - ts) if ts else "?"
+        where = lambda r: R.esc(r.get("project") or r.get("title") or "")
+        if len(tasks) == 1:
+            r, b = tasks[0]
+            text = self.t("upd.bghold.one", v=R.esc(str(v.get("next"))), wait=dur(self.upd_wait or h["since"]), project=where(r),
+                          what=R.esc(b.get("what") or ""), dur=dur(b.get("since")))
+        else:
+            text = self.t("upd.bghold.many", v=R.esc(str(v.get("next"))), wait=dur(self.upd_wait or h["since"]), list=", ".join(
+                self.t("upd.bghold.item", what=R.esc(b.get("what") or ""), project=where(r), dur=dur(b.get("since")))
+                for r, b in tasks[:5]))
+        keep = {"text": self.t("btn.bghold.keep"), "callback_data": "u:keep"}
+        buttons = [[{"text": self.t("btn.bghold.stop"), "callback_data": "u:stop"}, keep]] if h["ids"] else [[keep]]
+        await self.send(None, text, notify=True, prio=1, buttons=buttons)
+        log("update: %s waits on background tasks alone for %d min (%d of them) — told in General"
+            % (v.get("next"), (now - h["since"]) // 60, len(tasks)))
+
+    async def on_bg_hold(self, data, cm):
+        """A button under that word: "u:stop" — each task it named that still runs is stopped (stop_task, as the app's
+        Stop) and the install goes with the next look (update_tick), or after a turn begun meanwhile; "u:keep" — only
+        marked, the next word comes at BG_HOLD_AT. → the note Telegram shows."""
+        if not self.upd_wait:
+            self.mark_choice(cm, data, self.t("mark.bghold.none"))
+            return self.t("note.bghold.none")
+        if data == "u:keep":
+            self.mark_choice(cm, data)
+            return self.t("note.bghold.keep")
+        ids, stopped = (self._bg_hold or {}).get("ids") or [], 0
+        for sid, tid in ids:
+            if not self.bg_stoppable(sid, tid):
+                continue                          # ended by itself meanwhile, or its session closed
+            try:
+                await self.driven[sid].client.stop_task(tid)
+                stopped += 1
+                log("update: stopped the background task %s of %s — the button in General" % (tid, sid[:8]))
+            except Exception as e:
+                log("update: the background task %s of %s not stopped: %r" % (tid, sid[:8], e))
+        for sid, tid in ids:
+            await self.bg_gone(sid, tid)
+        v = await self.update_view(0)
+        turn = next((r for r in v.get("busy") or [] if r.get("turn")), None)
+        self.mark_choice(cm, data, self.t("mark.bghold.stopped", n=stopped))
+        if turn:
+            return self.t("note.bghold.turn", n=stopped, project=turn.get("project") or turn.get("title") or "")
+        return self.t("note.bghold.stopped", n=stopped)
 
     # ----- the relay's server follows this computer; releases from GitHub (stage U3) -----
 

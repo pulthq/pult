@@ -8,7 +8,8 @@ A new session from "Telegram" → permission via a button → question via butto
 continuing the same session; the models its Claude Code named at start-up kept for the menus, and a version's list read
 with no request to a model (Q173); a fork of a session "open on the Mac";
 a background command — "in the background" in the result, the load view finds its process, a turn when it ends,
-the next prompt with its own result; that result is the owner's move on Home — opened, too — until "Got it".
+the next prompt with its own result; that result is the owner's move on Home — opened, too — until "Got it"; another
+background command stopped from the app (Q185) — the process gone, no turn of its own.
 With Telegram as a pager: a task from the app makes no turn or result message; its question is paged once.
 A message from the app mid-turn reaches Claude in that turn, the app shows it as written mid-turn, its ticks say read.
 Stop from the app closes the interrupted turn, though Claude Code sends no Stop hook for it.
@@ -33,7 +34,7 @@ E2E_CLAUDE=<a Claude Code program, say the one VS Code downloaded>: every sessio
 Pult's own copy of it, as on a computer where it passed the check's app step (stage A2), other vendors' on the one the SDK
 carries; unset — all on the one the SDK carries.
 """
-import asyncio, json, os, shutil, sys, tempfile, time, urllib.parse
+import asyncio, json, os, shutil, subprocess, sys, tempfile, time, urllib.parse
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parent.parent / "src"
@@ -280,6 +281,27 @@ async def main():
     llm4 = (await p.row_stats(sid4))[1]
     log("модель в строке:", llm4)
     assert llm4 and str(llm4.get("model")).startswith("claude-") and "vendor" not in llm4, "the row doesn't say Claude's model"
+    # 4a. Stop from the app (Q185): a background command of a session Pult runs — the sheet offers Stop, the install's
+    #     list names the command; Stop is Claude Code's own stop_task: the process goes, Claude starts no turn for it
+    mark3 = len(calls)
+    await p.continue_session(sid4, "Call the Bash tool with run_in_background set to true and command `sleep 301; echo "
+                             "not-stopped`. Then reply with one word: STARTED. Don't wait for it.", None, None)
+    await until(lambda: done(mark3), what="итог запуска фоновой команды")
+    await until(lambda: p.driven[sid4].bg and any(b.get("type") == "shell" for b in p.live[sid4].bg), what="фоновая команда в списке")
+    tid = next(b["id"] for b in p.live[sid4].bg if b.get("type") == "shell")
+    ld = await p.api_load(sid=sid4)
+    row = next(r for r in p.busy_report() if r["sid"] == sid4)
+    log("остановить из приложения:", [(x["what"], x.get("stop")) for x in ld["tasks"]], "· в списке установки:", row["bgs"])
+    assert any(x.get("stop") for x in ld["tasks"]) and row["bgs"] and row["bgs"][0]["stop"], "Stop isn't offered"
+    t_stop = time.time()
+    ld = await p.api_bg_stop(sid4, tid)
+    log("остановлено за %.1f с · в фоне осталось: %s" % (time.time() - t_stop, ld["tasks"]))
+    assert not ld["tasks"] and tid not in p.driven[sid4].bg, "the stopped task is still listed"
+    await asyncio.sleep(6)
+    assert not p.live[sid4].turn and len(done(mark3)) == 1, "Claude started a turn of its own after the stop"
+    assert not subprocess.run(["pgrep", "-f", "sleep 301"], capture_output=True, text=True).stdout.split(), \
+        "the stopped command's process is still there"
+    await p.api_seen(sid4)
     # 4b. a helper in the background (Q128): listed while the turn runs, with its model; the sheet tells its steps from its
     #     own record; after the turn its steps are its own — no turn starts until its end's note (they used to start one)
     sid7 = "aaaaaaaa-0000-4000-8000-000000000007"

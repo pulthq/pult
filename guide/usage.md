@@ -85,7 +85,10 @@ phone — on Claude's models or another vendor's, and another model can check wh
   checked on your computer before the tabs move to it; "Check new Claude Code versions" turns that off. When a session
   from the app works on it too, new and continued tasks from the app start on it — instead of the Claude Code built
   into Pult, which only a Pult release moves; "A fresh Claude Code for the app" turns that off. Tasks on other vendors'
-  models and on your own stay on the built-in one. The same row says which Claude Code is out.
+  models and on your own stay on the built-in one. The same row says which Claude Code is out. When a restart would
+  cut something off, the list says what each task does and since when — a turn's minutes, a background command by its
+  name; a tap opens the task, or the sheet of its background tasks. "Install once they're free" waits for them; held by
+  background tasks alone for 30 minutes (and again at 2 hours), it says so in General, with "Stop them and install".
 
 ## Who does the task, who checks it
 
@@ -159,7 +162,8 @@ and another check it — from the phone.
 - **In the background**: by "working…" in a session, and on its card in Running now, — how many helpers (the subagents
   Claude starts) and commands run in the background, from the moment Claude starts them, not only after its turn. A
   tap lists each: a helper's type, its model, how long it runs, its steps and tokens so far and what it does now (from
-  its own record); a command with its processor and memory.
+  its own record); a command with its processor and memory. In a task Pult runs, **Stop** ends one (it asks first):
+  Claude Code's own stop, and Claude starts no turn because of it.
 - **A screenshot by ⌘V**: in What to do, in a session's message field and in a new project's first task, ⌘V (Ctrl+V
   on Windows and Linux) with a picture on the clipboard attaches it the way Picture does — take one straight to the
   clipboard with ⌃⇧⌘4 on a Mac. A file dragged onto the field comes in too; words on the clipboard stay words, even

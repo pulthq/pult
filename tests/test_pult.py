@@ -8256,6 +8256,93 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.spawned, [])
         self.p.driven.clear()
 
+    async def test_update_held_by_background_tasks(self):
+        # Q185: the list of what holds an install says what each does and since when — a background task by its name,
+        # and whether the app may stop it (a session Pult runs, whose Claude Code reports the task); Stop is Claude
+        # Code's own stop_task (tests/probe_bgstop.py, 2.1.322). Background tasks alone holding "Install once they're
+        # free" 30 min and 2 h → a word in General each time, with "Stop them and install" and "Keep waiting"; a turn
+        # is work, waited for quietly (2026-11-11: two hung waiters would have held it for good, and nothing said so)
+        self.upd_reset(self.READY)
+        self.addCleanup(self.p.driven.clear)
+        lv = self.p.live_of(SID, PKEY)
+        t0 = time.time() - 3 * 3600
+        lv.bg = [{"id": "b1", "type": "shell", "status": "running", "description": "Ждёт, пока закончится выгрузка",
+                  "command": "until ! pgrep -f export.py; do sleep 5; done"}]
+        lv.bg_seen = {"b1": t0}
+        dr = types.SimpleNamespace(busy=False, running=False, queued=None, bg={"b1"}, q=asyncio.Queue())
+
+        async def stop_task(tid):                    # Claude Code reports it at once (background_tasks_changed)
+            dr.bg.discard(tid)
+            lv.bg = [b for b in lv.bg if b["id"] != tid]
+        dr.client = types.SimpleNamespace(stop_task=mock.AsyncMock(side_effect=stop_task))
+        self.p.driven[SID] = dr
+        v = await self.p.api_update()
+        row = v["busy"][0]
+        self.assertEqual((v["state"], row["sid"], row["project"], row["turn"], row["since"]), ("busy", SID, "proj", False, None))
+        self.assertEqual([(b["id"], b["what"], b["since"], b["stop"]) for b in row["bgs"]],
+                         [("b1", "Ждёт, пока закончится выгрузка", t0, True)])
+        self.assertFalse(self.p.bg_stoppable("not-pults", "b1"))        # a tab's task: VS Code's process
+        self.assertFalse(self.p.bg_stoppable(SID, "b9"))                 # not among those Claude Code reports
+        # waiting on it: 29 minutes say nothing, at 30 — one word with both buttons, at 2 h — the second, then quiet
+        await self.p.api_update_wait()
+        v = await self.p.api_update()
+        start = time.time()
+        hold = lambda: [d for d in self.fake.of("sendMessage") if "Держит только" in d.get("text", "")]
+        for m in (0, 29):
+            await self.p.bg_hold_tick(v, now=start + m * 60)
+        await asyncio.sleep(0.1)
+        self.assertEqual(hold(), [])
+        for m in (30, 31):
+            await self.p.bg_hold_tick(v, now=start + m * 60)
+        await until(lambda: len(hold()) == 1)
+        told = hold()[0]
+        self.assertIn("Поставлю 9.9, когда освободятся", told["text"])
+        self.assertIn("«Ждёт, пока закончится выгрузка», идёт 3 ч", told["text"])
+        kb = json.loads(told["reply_markup"])["inline_keyboard"]
+        self.assertEqual([(b["text"], b["callback_data"]) for b in kb[0]],
+                         [("Остановить и поставить", "u:stop"), ("Ждать дальше", "u:keep")])
+        for m in (120, 180):
+            await self.p.bg_hold_tick(v, now=start + m * 60)
+        await until(lambda: len(hold()) == 2)
+        await asyncio.sleep(0.1)
+        self.assertEqual(len(hold()), 2)
+        # a turn in the list: work — no word, and the count starts again
+        await self.p.bg_hold_tick(dict(v, busy=[dict(row, turn=True)]), now=start + 4 * 3600)
+        self.assertIsNone(self.p._bg_hold)
+        await self.p.bg_hold_tick(v, now=start + 5 * 3600)
+        self.assertEqual((self.p._bg_hold["told"], self.p._bg_hold["ids"]), (0, []))
+        await self.p.bg_hold_tick(v, now=start + 5 * 3600 + 30 * 60)
+        await until(lambda: len(hold()) == 3)
+        # "Keep waiting": marked, nothing stopped; "Stop them and install": the task stopped, the install goes next look
+        msg = {"message_id": 777, "text": "Поставлю 9.9", "reply_markup": {"inline_keyboard": kb}}
+        await self.p.on_callback({"id": "c1", "from": {"id": OWNER}, "data": "u:keep", "message": msg})
+        self.assertEqual(self.fake.of("answerCallbackQuery")[-1]["text"], "Жду дальше.")
+        dr.client.stop_task.assert_not_awaited()
+        await self.p.on_callback({"id": "c2", "from": {"id": OWNER}, "data": "u:stop", "message": dict(msg, message_id=778)})
+        dr.client.stop_task.assert_awaited_once_with("b1")
+        self.assertEqual(self.fake.of("answerCallbackQuery")[-1]["text"], "Остановлено: 1. Поставлю через несколько секунд.")
+        await until(lambda: any("остановлено: 1" in d.get("text", "") for d in self.fake.of("editMessageText")))
+        await self.p.update_tick()
+        self.assertEqual(self.spawned, [("c" * 40, "app_wait")])
+        # the install went: a button left on the old word says so
+        await self.p.on_callback({"id": "c3", "from": {"id": OWNER}, "data": "u:stop", "message": dict(msg, message_id=779)})
+        self.assertEqual(self.fake.of("answerCallbackQuery")[-1]["text"], "Установку уже не жду.")
+        # Stop from the app's sheet: only a task Pult may stop; the list comes back without it
+        lv.bg = [{"id": "b2", "type": "shell", "status": "running", "description": "Сервер разработки", "command": "npm run dev"}]
+        lv.bg_seen = {"b2": t0}
+        dr.bg = {"b2"}
+        dr.client.stop_task.reset_mock()
+        with self.assertRaises(ValueError) as e:
+            await self.p.api_bg_stop(SID, "b9")
+        self.assertIn("уже не идёт", str(e.exception))
+        self.p._procs = (time.monotonic() + 1e6, (fprocs(), {"cores": 8, "cpu": 40.0, "mem_total": 16 << 30,
+                                                            "mem_used": 8 << 30, "load": 3.0}))
+        self.p._agents = (time.monotonic() + 1e6, [{"sessionId": SID, "pid": 100, "cwd": "/Users/x/proj"}])
+        self.assertEqual([(x["what"], x["stop"]) for x in (await self.p.api_load(sid=SID))["tasks"]], [("Сервер разработки", True)])
+        d = await self.p.api_bg_stop(SID, "b2")
+        dr.client.stop_task.assert_awaited_once_with("b2")
+        self.assertEqual(d["tasks"], [])
+
     async def test_update_failed_told_once(self):
         # the old version is back: it says so in General, once (Q51: success says nothing)
         self.upd_reset(self.READY)

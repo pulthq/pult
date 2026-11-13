@@ -163,6 +163,31 @@ async def main():
                         who = await js("document.querySelectorAll('.upd-who').length")
                         verdict("busy: what a restart would cut off", who == 2 and "Перезапуск оборвёт 2" in text
                                 and "Не тронет вкладки" in text, who)
+                        # Q185: each says what it does and since when; the background one opens the sheet, Stop there
+                        # asks first, and the list has one row less
+                        rows = [r.replace("\u00a0", " ") for r in            # a duration is kept on one line (nb)
+                                await js("[...document.querySelectorAll('.upd-who')].map((r) => r.textContent)")]
+                        verdict("busy: a turn's minutes, a background task by its name and time",
+                                "идёт ход · 4 мин" in rows[0] and "в фоне: «Выгрузка заявок в CRM» · 25 мин" in rows[1], rows)
+                        await js("window.__said = []; window.confirm = (s) => (window.__said.push(String(s)), true);"
+                                 " const w = window.Telegram && window.Telegram.WebApp;"
+                                 " if (w) w.showConfirm = (s, cb) => (window.__said.push(String(s)), cb(true));")
+                        await js("document.querySelectorAll('button.upd-who')[1].click()")
+                        sheet = await until("document.querySelector('.card.pick .bgs-stop')")
+                        sheet_text = (await js("document.querySelector('.card.pick') && document.querySelector('.card.pick').textContent")
+                                      or "").replace("\u00a0", " ")
+                        verdict("busy: the background row opens the sheet with Stop", sheet and "В фоне" in sheet_text
+                                and "Выгрузка заявок в CRM" in sheet_text and "25 мин" in sheet_text, sheet_text[:120])
+                        await shot("settings-busy-bg-sheet")
+                        await js("document.querySelector('.card.pick .bgs-stop').click()")
+                        gone = await until("document.querySelector('.card.pick') && document.querySelector('.card.pick').textContent.includes('ничего не идёт')")
+                        said = await js("window.__said")
+                        verdict("busy: Stop asks first, then the task goes", gone and said and "Остановить «Выгрузка заявок в CRM»?" in said[0], said)
+                        await js("document.querySelector('.card.pick .x').click()")
+                        verdict("busy: the list has one row less", await until(
+                            "document.querySelectorAll('.upd-who').length === 1 && %s.textContent.includes('Перезапуск оборвёт 1')" % card))
+                        await shot("settings-busy-bg-stopped")
+                        text = await js(card + ".textContent")
                         verdict("busy: once they're free → waiting", await tap("когда освободятся")
                                 and await until(card + ".className.includes('upd-s-wait')"))
                         await shot("settings-busy-tapped")

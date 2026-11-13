@@ -1,18 +1,39 @@
 // Pult app — an update in words: Home's line and the install block of Settings → Pult and its parts.
 // Moved from app.js as it was (review 2026-10-27, 6.4).
 import { api, useLive } from "../core/conn.js";
-import { go } from "../core/nav.js";
+import { go, useOverlay } from "../core/nav.js";
 import { alertBox, haptic } from "../core/tg.js";
 import { noteUpd, phoneOld, useServed } from "../core/update.js";
-import { t } from "../i18n.js";
+import { q, t } from "../i18n.js";
 import { html, useEffect, useState } from "../vendor/htm-preact-3.1.1.js";
-import { ago, ic } from "./kit.js";
+import { ago, dur, ic, nb, useNow } from "./kit.js";
+import { BgSheet } from "./load.js";
 
 
 const updSpin = html`<span class="upd-spin" aria-hidden="true"></span>`;
 const tOr = (k, other) => { const v = t(k); return v === k ? other : v; };     // a code the app has no words for: as is
 const updWhy = (w) => tOr("upd.why." + w, w || "?");
-const updWho = (b, i) => html`<div class="upd-who" key=${i}>${b.turn ? html`<span class="st st-work"></span>` : html`<span class="st-ic">${ic("bg", 15)}</span>`}<span>${b.project ? html`<b>${b.project}</b>${b.title && b.title !== b.project ? " · " + b.title : ""}` : b.title} <span class="dim">— ${[b.turn ? t("upd.busy.turn") : "", b.n ? t("upd.busy.bg", { n: b.n }) : ""].filter(Boolean).join(", ")}</span></span></div>`;
+// a row of what a restart would cut off: what it does and since when — a turn's minutes, a background task by its name
+// (the first, and how many more); a computer before 0.18.67 sends neither, and the row says it as before. A tap opens
+// the task — or, when only background tasks hold it, the sheet of them with Stop (Q185)
+function whoWhat(b, now) {
+  const g = b.bgs || [];
+  const turn = b.turn ? (b.since ? t("upd.busy.turn.for", { dur: nb(dur(now - b.since)) }) : t("upd.busy.turn")) : "";
+  const bg = g.length ? t("upd.busy.bg.one", { what: q(g[0].what), dur: g[0].since ? nb(dur(now - g[0].since)) : "…" })
+      + (g.length > 1 ? " " + t("upd.busy.bg.more", { n: g.length - 1 }) : "")
+    : b.n ? t("upd.busy.bg", { n: b.n }) : "";
+  return [turn, bg].filter(Boolean).join(", ");
+}
+function UpdWho({ b, now, onBg }) {
+  const icon = b.turn ? html`<span class="st st-work"></span>` : html`<span class="st-ic">${ic("bg", 15)}</span>`;
+  const name = b.project ? html`<b>${b.project}</b>${b.title && b.title !== b.project ? " · " + b.title : ""}` : b.title;
+  const open = !b.sid ? null : !b.turn && (b.bgs || []).length ? () => onBg(b.sid) : () => go("#/s/" + b.sid);
+  if (!b.since && !b.bgs) {                    // an older computer: the line as it was
+    return html`<div class="upd-who">${icon}<span>${name} <span class="dim">— ${whoWhat(b, now)}</span></span></div>`;
+  }
+  const body = html`${icon}<span class="upd-who-t">${name}<span class="dim upd-who-s">${whoWhat(b, now)}</span></span>${open ? html`<span class="upd-who-c">${ic("chev", 15)}</span>` : ""}`;
+  return open ? html`<button class="upd-who tap" onClick=${open}>${body}</button>` : html`<div class="upd-who">${body}</div>`;
+}
 
 // Home: a line under the strip only while there is something to do or to know; a tap — Settings. The computer's own
 // install states first; then what can be done from here (the computer, this phone's copy) and what doesn't work
@@ -50,6 +71,11 @@ function UpdRow({ u }) {
 // the computer's row in the parts table (row: the version and "up to date" are in the row already)
 function UpdBody({ v, set, row }) {
   const [busy, setBusy] = useState(false);
+  const now = useNow(15000);
+  const [bgFor, setBgFor] = useState(null);
+  const [openBg, closeBg] = useOverlay(!!bgFor, (x) => { if (!x) setBgFor(null); });
+  const onBg = (sid) => { setBgFor(sid); openBg(); };
+  const who = (b, i) => html`<${UpdWho} key=${i} b=${b} now=${now} onBg=${onBg}/>`;
   const act = async (op) => {
     setBusy(true);
     try { const r = await api(op); set(r); haptic("success"); }
@@ -77,12 +103,12 @@ function UpdBody({ v, set, row }) {
       <div class="dim upd-note">${t("upd.go.about")}</div>${v.srv ? html`<div class="dim upd-note">${t("upd.go.srv")}</div>` : ""}`,
     busy: html`${head("", t("upd.ready", { v: v.next }), html`<span class="chip warn">${t("upd.busy.chip")}</span>`)}
       <div class="dim">${t("upd.have", { v: v.have })}</div>${news}
-      <div class="upd-k attn">${t("upd.busy.cut", { n: busyList.length })}</div>${busyList.map(updWho)}
+      <div class="upd-k attn">${t("upd.busy.cut", { n: busyList.length })}</div>${busyList.map(who)}
       <div class="dim upd-note">${t("upd.busy.safe")}</div>
       <button class="btn wide" disabled=${busy} onClick=${() => act("update_wait")}>${t("upd.wait.go")}</button>
       <div class="dim upd-note">${t("upd.wait.idle")}</div>`,
     wait: html`${head(html`<span class="upd-attn">${ic("auto", 17)}</span>`, t("upd.wait", { v: v.next }), html`<span class="chip warn">${t("upd.wait.chip")}</span>`)}
-      ${busyList.length ? html`<div class="upd-k">${t("upd.wait.left", { n: busyList.length })}</div>${busyList.map(updWho)}` : html`<div class="dim upd-note">${t("upd.wait.none")}</div>`}
+      ${busyList.length ? html`<div class="upd-k">${t("upd.wait.left", { n: busyList.length })}</div>${busyList.map(who)}` : html`<div class="dim upd-note">${t("upd.wait.none")}</div>`}
       <div class="dim upd-note">${t("upd.wait.about")}</div>
       <button class="btn ghost wide" disabled=${busy} onClick=${() => act("update_cancel")}>${t("upd.cancel")}</button>`,
     run: html`${head(updSpin, t("upd.run", { v: v.next }), "")}
@@ -100,7 +126,8 @@ function UpdBody({ v, set, row }) {
     na: html`${head("", t("upd.ok", { v: v.have }), "")}<div class="dim">${t("upd.na." + (v.why === "windows" ? "windows" : "norepo"))}</div>`,
   }[v.state] || "";
   const hist = v.hist || [];
-  return html`${row && v.state === "ok" ? (v.dir ? html`<div class="dim">${t("upd.ok.from", { dir: v.dir, commit: v.commit })}</div>` : "") : body}
+  return html`${bgFor && html`<${BgSheet} sid=${bgFor} fixed=${true} onClose=${closeBg}/>`}
+    ${row && v.state === "ok" ? (v.dir ? html`<div class="dim">${t("upd.ok.from", { dir: v.dir, commit: v.commit })}</div>` : "") : body}
     ${hist.length ? html`<details class="upd-hist"><summary>${t("upd.hist", { n: hist.length })}</summary>
       ${hist.map((x, i) => html`<div class="login" key=${i}><span class=${x.ok ? "ok" : "bad"}>${ic(x.ok ? "check" : "x", 14)} ${ago(x.ts)}</span>
         <span class="dim">${x.ok ? [x.from, x.to].filter(Boolean).join(" → ") : t(x.from && x.from !== x.to ? "upd.hist.failed" : "upd.hist.kept", { to: x.to, from: x.from })} · ${tOr("upd.how." + x.how, x.how)}</span></div>`)}</details>` : ""}`;

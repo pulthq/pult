@@ -550,6 +550,24 @@ S = {
                             "Поставь, когда освободятся."},
     "upd.cant.spawn": {"en": "Couldn't start the installer. Install from the terminal: bash install.sh",
                        "ru": "Не запустился установщик. Поставь из терминала: bash install.sh"},
+    # "Install once they're free" held by background tasks alone (Parts.bg_hold_tick, Q185); Stop from the app
+    "upd.bghold.one": {"en": "⏳ <b>Installing {v} once they're free</b> — waiting {wait}. Only a background task holds it, in "
+                             "{project}: “{what}”, running {dur}.",
+                       "ru": "⏳ <b>Поставлю {v}, когда освободятся</b>, — жду {wait}. Держит только фоновая задача в {project}: "
+                             "«{what}», идёт {dur}."},
+    "upd.bghold.many": {"en": "⏳ <b>Installing {v} once they're free</b> — waiting {wait}. Only background tasks hold it: {list}.",
+                        "ru": "⏳ <b>Поставлю {v}, когда освободятся</b>, — жду {wait}. Держат только фоновые задачи: {list}."},
+    "upd.bghold.item": {"en": "“{what}” in {project}, {dur}", "ru": "«{what}» в {project}, {dur}"},
+    "btn.bghold.stop": {"en": "Stop them and install", "ru": "Остановить и поставить"},
+    "btn.bghold.keep": {"en": "Keep waiting", "ru": "Ждать дальше"},
+    "note.bghold.stopped": {"en": "Stopped: {n}. Installing in a few seconds.", "ru": "Остановлено: {n}. Поставлю через несколько секунд."},
+    "note.bghold.turn": {"en": "Stopped: {n}. A turn runs in {project} — installing once it ends.",
+                         "ru": "Остановлено: {n}. Идёт ход в {project} — поставлю, когда он закончится."},
+    "note.bghold.keep": {"en": "Waiting on.", "ru": "Жду дальше."},
+    "note.bghold.none": {"en": "Not waiting to install any more.", "ru": "Установку уже не жду."},
+    "mark.bghold.stopped": {"en": "stopped: {n}", "ru": "остановлено: {n}"},
+    "mark.bghold.none": {"en": "not waiting any more", "ru": "уже не жду"},
+    "bgs.stop.gone": {"en": "This background task isn't running any more.", "ru": "Эта фоновая задача уже не идёт."},
     "upd.failed": {"en": "⚠️ <b>Pult {to} didn't come up</b> — {back} is back and works as before.\nWhy: {why}.\n"
                          "Details — in the app: Settings → Pult.",
                    "ru": "⚠️ <b>Пульт {to} не поднялся</b> — вернул {back}, всё работает как прежде.\nПричина: {why}.\n"

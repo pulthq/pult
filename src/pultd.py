@@ -103,7 +103,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.66"
+VERSION = "0.18.67"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -2322,6 +2322,8 @@ class Pult(Api, Parts):
                 note = self.t("note.resume", hm=time.strftime("%H:%M", time.localtime(at)))
             except ValueError as e:
                 note = str(e)
+        elif data in ("u:stop", "u:keep"):          # background tasks alone hold the install (Parts.bg_hold_tick)
+            note = await self.on_bg_hold(data, cq.get("message"))
         elif data.startswith(("s:", "f:", "o:", "t:")):
             cm = cq.get("message") or {}
             note = await self.on_offer(data, cm.get("message_thread_id") if cm.get("is_topic_message") else 0, cm)
@@ -3381,6 +3383,13 @@ class Pult(Api, Parts):
         seen = [lv.bg_seen.get(b.get("id")) for b in lv.bg]
         return min([s for s in seen if s], default=None)
 
+    def bg_stoppable(self, sid, tid):
+        """Whether the app may stop this background task: a session Pult runs (a tab's process is VS Code's, not Pult's
+        to stop), its process still up, the task among those its Claude Code reports running (Driven.bg)."""
+        d = self.driven.get(sid)
+        c = getattr(d, "client", None)
+        return bool(tid and c is not None and hasattr(c, "stop_task") and tid in (getattr(d, "bg", None) or ()))
+
     def queued(self, sid):
         """Since when the session's message waits in the queue (Driven.slot), or None."""
         dr = self.driven.get(sid)
@@ -3923,8 +3932,15 @@ class Pult(Api, Parts):
             n = max(len(d.bg), len(bg))
             turn = d.busy or not d.q.empty()
             if turn or n:
+                # since when: the turn, or the message waiting for a place; each background task by its name, since Pult
+                # first saw it, and whether the app may stop it (bg_stoppable) — the install's list says what it waits
+                # for, not "in the background: 2" (2026-11-11: two waiters that found themselves would have held it)
+                since = (lv.turn.started if lv and lv.turn else getattr(d, "queued", None)) if turn else None
+                bgs = [{"id": b.get("id"), "what": R.short(b.get("description") or b.get("command") or self.t("task.default"), 80),
+                        "since": lv.bg_seen.get(b.get("id")), "stop": self.bg_stoppable(sid, b.get("id"))} for b in (lv.bg if lv else [])]
                 out.append({"sid": sid, "title": self.title(lv) if lv else sid[:8],
-                            "project": self.name_of(lv.pkey) if lv else "", "turn": turn, "bg": bg, "n": n})
+                            "project": self.name_of(lv.pkey) if lv else "", "turn": turn, "bg": bg, "n": n,
+                            "since": since, "bgs": bgs})
         for sid in list(self.second_tasks):           # a second opinion: Codex is the daemon's child too (stage M)
             lv = self.live.get(sid) or self.stub(sid)
             out.append({"sid": sid, "title": self.t("second.busy", title=lv.title or self.title(lv),

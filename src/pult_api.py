@@ -475,8 +475,41 @@ class Api:
                 # a helper: what it has done so far, from its own record (Q128 б)
                 path = os.path.join(os.path.splitext(lv.transcript)[0], "subagents", "agent-%s.jsonl" % b["id"])
                 story = await asyncio.to_thread(self.helpers().story, path, lambda n, i: R.tool_step(n, i, lv.cwd))
-            tasks.append(L.task(procs, row and row["pid"], kids, mac["cores"], b, lv.bg_seen.get(b.get("id")), used, story))
+            tasks.append(dict(L.task(procs, row and row["pid"], kids, mac["cores"], b, lv.bg_seen.get(b.get("id")), used, story),
+                              stop=self.bg_stoppable(sid, b.get("id"))))
         return dict(out, session=row, tasks=tasks)
+
+    async def api_bg_stop(self, sid, id):
+        """Stop in the sheet of what runs in the background: one background task of a session Pult runs, by its id, with
+        Claude Code's own stop_task — the process goes in 0.6 s and Claude starts no turn of its own for it
+        (tests/probe_bgstop.py, 2.1.322). A tab's tasks are VS Code's process, not Pult's to stop. → the session's load
+        view, fresh: its list loses the task as the SDK reports it (Driven.read, background_tasks_changed)."""
+        sid, tid = str(sid), str(id)
+        if not self.bg_stoppable(sid, tid):
+            raise ValueError(self.t("bgs.stop.gone"))
+        lv = self.live.get(sid)
+        what = next((b.get("description") or b.get("command") for b in (lv.bg if lv else []) if b.get("id") == tid), None)
+        try:
+            await self.driven[sid].client.stop_task(tid)
+        except Exception as e:                   # its process ended just now: nothing left to stop
+            log("app: the background task %s of %s not stopped: %r" % (tid, sid[:8], e))
+            raise ValueError(self.t("bgs.stop.gone"))
+        log("app: stopped the background task %s of %s — %s" % (tid, sid[:8], R.short(what or "?", 60)))
+        await self.bg_gone(sid, tid)
+        self.emit_update()                       # the install's list loses it too, without waiting for its next look
+        return await self.api_load(sid)
+
+    async def bg_gone(self, sid, tid, wait=2.0):
+        """After a stop: until the session's Claude Code reports the task gone (at once on 2.1.322), at most `wait` s —
+        so the list the app gets back no longer has it. → whether it went."""
+        end = time.monotonic() + wait
+        while True:
+            d = self.driven.get(sid)
+            if not d or tid not in (getattr(d, "bg", None) or ()):
+                return True
+            if time.monotonic() >= end:
+                return False
+            await asyncio.sleep(0.1)
 
     def helpers(self):
         """The helpers' own records, each read on from where it stopped (pult_load.HelperLogs): one for the daemon."""
