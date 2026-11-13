@@ -2,6 +2,7 @@
 // Moved from app.js as it was (review 2026-10-27, 6.4).
 import { api, useLive } from "../core/conn.js";
 import { go } from "../core/nav.js";
+import { alertBox, confirmBox, haptic } from "../core/tg.js";
 import { plural, q, t } from "../i18n.js";
 import { html, useState } from "../vendor/htm-preact-3.1.1.js";
 import { About, Loading, ago, bytes, dur, hhmm, ic, keyTap, kilo, level, lowBatt, machine, modelName, nb, num, pct, toDate, useNow } from "./kit.js";
@@ -87,8 +88,18 @@ function Load({ embedded }) {
 const TASK_TYPES = { shell: "bgs.shell", monitor: "bgs.monitor", subagent: "bgs.subagent", workflow: "bgs.workflow" };
 function BgSheet({ sid, onClose, fixed }) {
   const now = useNow(5000);
-  const [d, err] = useLive(() => api("load", { sid }), [sid], (m) => !m.sid || m.sid === sid, 5000);
+  const [d, err, set] = useLive(() => api("load", { sid }), [sid], (m) => !m.sid || m.sid === sid, 5000);
   const more = () => { onClose(); setTimeout(() => go("#/load"), 60); };
+  // Stop: a task of a session Pult runs (the computer says which: stop) — asked first, then Claude Code's own stop_task;
+  // the list comes back without it (Q185)
+  const [stopping, setStopping] = useState("");
+  const stop = async (x) => {
+    if (!(await confirmBox(t("bgs.stop.ask", { what: q(x.what) })))) return;
+    setStopping(x.id);
+    try { set(await api("bg_stop", { sid, id: x.id })); haptic("success"); }
+    catch (e) { alertBox(e.message); }
+    setStopping("");
+  };
   const one = (x) => html`<div class="task" key=${x.id}>
     <div class="item-h"><b>${x.what}</b><span class="chip">${t(TASK_TYPES[x.type] || "bgs.shell")}${x.agent ? " · " + x.agent : ""}</span></div>
     ${x.cmd && html`<pre class="cmdline">${x.cmd}</pre>`}
@@ -105,7 +116,8 @@ function BgSheet({ sid, onClose, fixed }) {
           <span>${t("bgs.cpu")}</span><b>${pct(x.cpu)}${x.cores >= 0.1 ? html` <span class="dim">· ≈ ${coresText(x.cores)}</span>` : ""}</b>
           ${x.cpu_time != null && html`<span>${t("bgs.cputime")}</span><b>${dur(x.cpu_time)}</b>`}
           <span>${t("bgs.mem")}</span><b>${bytes(x.mem)}${x.peak ? html` <span class="dim">· ${t("bgs.peak", { mem: bytes(x.peak) })}</span>` : ""}</b>
-        </div>`}</div>`;
+        </div>`}
+    ${x.stop && html`<button class="btn danger wide bgs-stop" disabled=${!!stopping} onClick=${() => stop(x)}>${stopping === x.id ? t("bgs.stopping") : t("bgs.stop")}</button>`}</div>`;
   return html`<div class="backdrop" onClick=${onClose}></div><div class=${"card pick tall" + (fixed ? " fixed" : "")}>
     <div class="q-t pick-h"><span>${ic("bg", 17)} ${t("bgs.title")}</span><button class="x" aria-label=${t("close")} onClick=${onClose}>${ic("x", 18)}</button></div>
     ${!d ? html`<div class="dim">${err || t("loading")}</div>` : !d.ok ? html`<div class="dim">${t("load.none")}</div>` : html`

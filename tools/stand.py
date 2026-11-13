@@ -903,10 +903,28 @@ async def main():
                 asyncio.run_coroutine_threadsafe(comes_back(), loop)
                 return True
             U.spawn = restart_spawn
-        cut = [{"sid": T.SID, "title": D["title"], "project": "acme-shop", "turn": True, "bg": [], "n": 0},
-               {"sid": SID3, "title": D["bg_run"], "project": "support-desk", "turn": False, "bg": [D["bg_run"]], "n": 1}]
+        # what a restart would cut off: the shop's turn for four minutes, and the support desk's export in the
+        # background for 25 minutes (its made-up process below) — the one the app may stop (Q185). Stop here only
+        # lets it go from the session's list and this one; the real stop_task is in tests/test_pult.py and
+        # tests/probe_bgstop.py
+        cut = [{"sid": T.SID, "title": D["title"], "project": "acme-shop", "turn": True, "bg": [], "n": 0,
+                "since": time.time() - 245, "bgs": []},
+               {"sid": SID2, "title": D["tickets"], "project": "support-desk", "turn": False, "bg": [D["bg_run"]], "n": 1,
+                "since": None, "bgs": [{"id": "b2", "what": D["bg_run"], "since": time.time() - 1500, "stop": True}]}]
         if upd in ("busy", "wait"):
             p.busy_report = lambda: cut[:2 if upd == "busy" else 1]
+            p.bg_stoppable = lambda sid, tid: (sid, tid) == (SID2, "b2") and any(r["sid"] == SID2 for r in cut)
+
+            async def stand_bg_stop(sid, id):
+                if not p.bg_stoppable(sid, id):
+                    raise ValueError(p.t("bgs.stop.gone"))
+                lv2 = p.live.get(SID2)
+                if lv2:
+                    lv2.bg = [b for b in lv2.bg if b.get("id") != id]
+                cut[:] = [r for r in cut if r["sid"] != SID2]
+                p.emit_update()
+                return await p.api_load(sid)
+            p.api_bg_stop = stand_bg_stop
         if upd == "wait":
             p.upd_wait = time.time()
         if upd == "run":
@@ -1180,6 +1198,8 @@ async def main():
     await T.run_hook(ev("Stop", SID2, cwd=DESK, last_assistant_message=D["tickets_done"],
                         background_tasks=[{"id": "b2", "type": "shell", "status": "running", "description": D["bg_run"],
                                            "command": D["bg_cmd"]}]))
+    if upd in ("busy", "wait") and SID2 in p.live:     # the sheet says the same time as the install's list (Q185)
+        p.live[SID2].bg_seen["b2"] = cut[1]["bgs"][0]["since"]
     await asyncio.sleep(0.3)
     await T.run_hook(ev("PermissionRequest", SID2, cwd=DESK, tool_name="AskUserQuestion", tool_input=q), wait=False)
     await p.on_run({"op": "start", "id": "j1", "cmd": "python train.py --epochs 40", "cwd": SHOP, "pid": os.getpid()})
