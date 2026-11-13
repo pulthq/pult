@@ -7,7 +7,7 @@ import { alertBox, confirmBox, haptic, tick } from "../core/tg.js";
 import { OWN_V, checkServed, noteUpd, phoneOld, served, useServed } from "../core/update.js";
 import { locale, plural, t } from "../i18n.js";
 import { html, useEffect, useState } from "../vendor/htm-preact-3.1.1.js";
-import { About, ChoicePick, Loading, MODES, ModePick, ago, choiceText, dur, hhmm, ic, machine, num, plainField, toDate } from "../ui/kit.js";
+import { About, ChoicePick, Loading, MODES, ModePick, ago, bytes, choiceText, dur, hhmm, ic, machine, num, plainField, toDate } from "../ui/kit.js";
 import { UpdBody, UpdCard, tOr } from "../ui/upd.js";
 
 
@@ -418,10 +418,41 @@ function PartsSum({ v }) {
   const late = d.rows.filter((r) => r.st === "warn" || r.st === "bad").length + (OWN_V && served.v && phoneOld() ? 1 : 0);
   return late ? html`<span class="set-late">${t("set.sum.parts.late", { v, n: late })}</span>` : t("set.sum.parts", { v });
 }
-// Settings (review 2026-11-11, UX11; the owner's yes — Q181): a menu of five screens, each with an address of its own —
-// #/settings/<name>: calls, models, voice, parts, safe. It was one scroll of nearly five phone screens — Pult's
-// upkeep on top, the language in the middle, the vendors' keys at the very bottom — and nothing could lead into it
-const SETS = ["calls", "models", "voice", "parts", "safe"];
+// Settings → Search (stage И, Q187): the search in what was said and in the documents — on or off (off removes the
+// index), what the index holds, when it last went through, "Build again". The computer keeps it, and only the owner
+// reads what it finds
+function SearchSet({ on, onSet }) {
+  const [d, err, set] = useLive(() => api("search"), [on], () => false, 15000, "search");
+  const [busy, setBusy] = useState(false);
+  const flip = async () => {
+    if (on && !(await confirmBox(t("search.off.ask")))) return;
+    setBusy(true);
+    try { const p = await api("prefs", { search: !on }); onSet(p.search); haptic("success"); }
+    catch (e) { alertBox(e.message); }
+    setBusy(false);
+  };
+  const again = async () => {
+    if (!(await confirmBox(t("search.rebuild.ask")))) return;
+    setBusy(true);
+    try { set(await api("search_rebuild")); haptic("success"); } catch (e) { alertBox(e.message); }
+    setBusy(false);
+  };
+  if (d && !d.can) return html`<div class="list"><div class="item static"><div>${t("search.none")}</div></div></div>`;
+  return html`<div class="list"><div class="item sw-row">
+      <button class="sw-h" role="switch" aria-checked=${!!on} disabled=${busy} onClick=${flip}><b>${t("search.sw")}</b><span class=${"sw" + (on ? " on" : "")}></span></button>
+      <div class="dim">${t("search.short")}</div><${About} text=${t("search.about")} label=${t("more")}/></div></div>
+    ${on && html`<h3>${t("search.index")}</h3><div class="list"><div class="item static search-st">
+      ${!d ? html`<div class="dim">${err || t("loading")}</div>` : html`
+      <div>${d.ready ? t("search.has", { tasks: d.tasks, tw: plural(d.tasks, "task"), docs: d.docs, dw: plural(d.docs, "doc") }) : t("search.building")}</div>
+      <div class="dim">${[d.last ? t("search.last", { ago: ago(d.last) }) : "", d.size ? bytes(d.size) : "", d.running ? "" : t("search.stopped")].filter(Boolean).join(" · ")}</div>
+      <button class="link" disabled=${busy} onClick=${again}>${t("search.rebuild")}</button>`}</div></div>`}`;
+}
+
+// Settings (review 2026-11-11, UX11; the owner's yes — Q181): a menu of screens, each with an address of its own —
+// #/settings/<name>: calls, models, search (stage И), voice, parts, safe. It was one scroll of nearly five phone
+// screens — Pult's upkeep on top, the language in the middle, the vendors' keys at the very bottom — and nothing
+// could lead into it
+const SETS = ["calls", "models", "search", "voice", "parts", "safe"];
 function Settings({ at }) {
   const [d, err, set] = useLive(() => api("settings"), [], () => false, 30000, "settings");
   const [key, setKey] = useState("");
@@ -522,7 +553,9 @@ function Settings({ at }) {
         <button class="btn" disabled=${words === null || words.trim() === d.stt.words || kbusy} onClick=${saveWords}>${t("voice.save")}</button></div>
     </div>` : ""}</div>`;
   const safeS = html`<${Logins}/>`;
-  const body = { calls: callsS, models: modelsS, voice: voiceS, parts: partsS, safe: safeS };
+  // a computer before stage И has no Search: its row isn't there
+  const searchS = "search" in p ? html`<${SearchSet} on=${p.search} onSet=${(v) => set(Object.assign({}, d, { prefs: Object.assign({}, d.prefs, { search: v }) }))}/>` : "";
+  const body = { calls: callsS, models: modelsS, search: searchS, voice: voiceS, parts: partsS, safe: safeS };
   if (SETS.includes(at)) return html`<div class="set-sub" data-set=${at}><h2>${t("set." + at)}</h2>${body[at]}</div>`;
   // the menu: a row each, under its name — what is set there now
   const q = isArr(p.quiet) ? hours(p.quiet[0], p.quiet[1]) : null;
@@ -533,10 +566,11 @@ function Settings({ at }) {
     voice: [p.lang === "ru" ? "Русский" : "English", t(d.stt && d.stt.on ? "set.sum.voice.on" : "set.sum.voice.off")].join(" · "),
     parts: html`<${PartsSum} v=${d.version}/>`,
     safe: t("set.sum.safe"),
+    search: t(p.search ? "set.sum.search.on" : "set.sum.search.off"),
   };
-  const ICN = { calls: "bell", models: "spark", voice: "mic", parts: "server", safe: "shield" };
+  const ICN = { calls: "bell", models: "spark", search: "search", voice: "mic", parts: "server", safe: "shield" };
   return html`<div class="set-menu"><h2>${t("settings")}</h2>
-    <div class="list">${SETS.map((k) => html`<a class="item set-row" key=${k} data-set=${k} href=${"#/settings/" + k}>
+    <div class="list">${SETS.filter((k) => k !== "search" || "search" in p).map((k) => html`<a class="item set-row" key=${k} data-set=${k} href=${"#/settings/" + k}>
       <span class="set-ic">${ic(ICN[k], 21)}</span><span class="set-x"><b>${t("set." + k)}</b><span class="dim">${sum[k]}</span></span>${ic("chev", 18)}</a>`)}</div>
   </div>`;
 }

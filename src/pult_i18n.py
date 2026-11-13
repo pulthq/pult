@@ -453,6 +453,7 @@ S = {
     "note.resume": {"en": "Will continue at {hm}", "ru": "Продолжу в {hm}"},
     "err.no_reset": {"en": "Don't know when the limit resets — open Resources in the app",
                      "ru": "Не знаю, когда сброс лимита — открой «Ресурсы» в приложении"},
+    "search.err.off": {"en": "Search is off: turn it on in Settings → Search.", "ru": "Поиск выключен: включи его в «Настройки → Поиск»."},
     "card.st.work": {"en": "⏳ at work: {n}", "ru": "⏳ в работе: {n}"},
     "card.st.mine": {"en": "🟠 waiting for you: {n}, since {hm}", "ru": "🟠 ждут тебя: {n}, с {hm}"},
     "card.st.quiet": {"en": "✔️ nothing waits for you", "ru": "✔️ ничего не ждёт"},

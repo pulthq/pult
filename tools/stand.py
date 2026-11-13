@@ -19,6 +19,8 @@ itself for 4 s, then nothing newer (tools/update_check.py); STAND_PORT=<port> ru
 machine's made-up battery (a laptop on it at 76 % unless set; none — a desktop or a server) and its name, "MacBook Pro". STAND_TICKS=<s> opens the first session in a tab that reads each message <s> s
 later, as Claude Code does at its turn's next step — a message with "#gone" is dropped instead (tools/ticks_check.py).
 STAND_FILES=1 gives the shop a real folder with made-up files and ends the chat with links to them (tools/fileview_check.py).
+STAND_SEARCH=1 (stage И): search over everything — the shop's older long task with a word said in its middle, the same word
+in the task that waits for you and in a document; the index built at once; SETS — Settings → Search (tools/said_check.py).
 Settings' table of Pult's parts and Home's line always run on made-up facts — all fresh; STAND_PARTS=now|lag|bad|public:
 all as in main with a new Claude Code downloaded; several parts behind (with STAND_UPD=ready for the computer); hooks
 missing and tabs on an unverified Claude Code; someone with a clone of the public repository after a `git pull` (no
@@ -739,6 +741,60 @@ SECOND_MORE = {
     "en": "\n\n- [P3] The shortest query is one letter — {cwd}/search/consts.py:1-1\n  MIN_QUERY stays 1: raise it to 3 with the fix above.",
     "ru": "\n\n- [P3] Самый короткий запрос — одна буква — {cwd}/search/consts.py:1-1\n  MIN_QUERY остался 1: поднимите до 3 вместе с правкой выше.",
 }
+
+
+# STAND_SEARCH=1 (stage И, Q187): search over everything — an older task of the shop's, long, where the word was said in
+# its middle by the owner and by Claude, the steps after it long enough for the chat to come in two chunks below; the
+# same word in the owner's message in the task that waits for you, and in a document of the shop's folder. The index is
+# built here at once (the daemon's child does it on a real computer)
+SEARCH = {
+    "en": {"word": "revision", "ask": "Speed up the catalogue pages",
+           "me": "After the import, check the catalogue revision in the cache keys",
+           "ai": "Cache keys now carry the catalogue revision, so a price change flushes them at once.",
+           "doc": "# Cache\n\nKeys carry the catalogue revision: a price change flushes them.\n",
+           "filler": "Looked at the page timings, step %d.", "late": "Step %d of the load test: "},
+    "ru": {"word": "ревизию", "ask": "Ускорь страницы каталога",
+           "me": "После импорта проверь ревизию каталога в ключах кэша",
+           "ai": "Ключи кэша теперь несут ревизию каталога — смена цены сбрасывает их сразу.",
+           "doc": "# Кэш\n\nКлючи несут ревизию каталога: смена цены их сбрасывает.\n",
+           "filler": "Посмотрел время страниц, шаг %d.", "late": "Шаг %d нагрузочной проверки: "},
+}
+SIDS = "5eae5eae-0000-4000-8000-000000000001"
+
+
+async def stand_search(p, store, d):
+    import pult_index as IX
+    S = SEARCH[LANG]
+    root = shop_files()
+    store.set_topic(T.PKEY, str(root), "acme-shop", 77)
+    (root / "docs" / "cache.md").write_text(S["doc"], encoding="utf-8")
+    rows = [line("user", S["ask"], ago=5 * 86400)]
+    for n in range(30):
+        rows.append(aline(S["filler"] % (n + 1), "f%d" % n, 300, ago=5 * 86400 - 60 * n))
+    rows += [line("user", S["me"], ago=4 * 86400), aline(S["ai"], "hit", 400, ago=4 * 86400 - 30)]
+    # after it, long replies: the chat below the place comes in two chunks (1.5 MB each, pult_web.PAGE)
+    rows += [aline(S["late"] % (n + 1) + "lorem ipsum " * 6000, "l%d" % n, 900, ago=4 * 86400 - 600 - 60 * n) for n in range(30)]
+    (d / (SIDS + ".jsonl")).write_text("\n".join(rows) + "\n")
+    with (d / (SID4 + ".jsonl")).open("a") as f:
+        f.write(line("user", S["me"], ago=3600) + "\n")
+    p.search.write_what(await p.search_what())
+
+    def build():
+        ix = IX.Indexer(pultd.HOME)
+        ix.round(docs=True)
+        IX.meta_put(ix.db, "first_done", time.time())
+        IX.meta_put(ix.db, "last", time.time())
+        ix.db.commit()
+        ix.db.close()
+    build()
+    rebuild = p.api_search_rebuild
+
+    async def again():                                   # no child process on the stand: "Build again" builds here
+        await rebuild()
+        build()
+        return await p.api_search()
+    p.api_search_rebuild = again
+    return [SIDS, SID4]
 
 
 async def main():
@@ -1559,6 +1615,12 @@ async def main():
     if os.environ.get("STAND_CLREVIEW") == "1":            # stage M, M4.2: Codex's project and task, Claude reads it
         store.put("proj.model", dict(store.get("proj.model") or {}, **{PKEY2: "codex"}))
         codex_task(p, store)
+    if os.environ.get("STAND_SEARCH") == "1":             # stage И: what was said and the documents, found
+        sids = await stand_search(p, store, d)
+        print("SEARCHWORD", SEARCH[LANG]["word"], flush=True)
+        print("SEARCHSID", sids[0], flush=True)
+        print("SETS http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
+              (PORT, urllib.parse.quote(init("settings_search"))), flush=True)
     print("LOAD http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %
           (PORT, urllib.parse.quote(init("load"))), flush=True)
     print("SETTINGS http://127.0.0.1:%d/pult/#tgWebAppData=%s&tgWebAppVersion=8.0&tgWebAppPlatform=android" %

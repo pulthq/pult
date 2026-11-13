@@ -109,6 +109,9 @@ async def main():
             await cmd("Page.navigate", url="about:blank")
             await cmd("Page.navigate", url=sess)
             await until("!!(%s)" % got, 150)
+            # the chat is still on its way to the bottom: the finger comes after — a tap during it missed the button 6
+            # times of 8 on a clean main (2026-11-13), the step below has waited so since it was written
+            await asyncio.sleep(0.8)
             await tap(got)
             verdict("«Got it» there turns into a quiet tick", await until("!(%s) && !!document.querySelector('.card.outcome .foot .dim')" % got, 50),
                     await js("(document.querySelector('.card.outcome .foot') || {}).innerText"))

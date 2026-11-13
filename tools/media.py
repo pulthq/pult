@@ -8,7 +8,7 @@
   media/glance.{en,ru}[.dark].png   the whole of Pult in one look: its three sides — an app inside Telegram, any agent
                                     and model, models that work together — four tiles each
   media/steps.{en,ru}[.dark].png    how it works in three steps
-  media/f-<name>.{en,ru}[.dark].png one phone screen per feature: home, who, local, second, session, tags, pace,
+  media/f-<name>.{en,ru}[.dark].png one phone screen per feature: home, who, local, second, session, tags, search, pace,
                                     files, newproject, parts (each from its stand — STANDS; MEDIA_PORT=<port> moves them all,
                                     beside a stand someone else runs)
   media/social.png                  1280×640, the link preview: GitHub takes it only in the repository's settings
@@ -35,8 +35,12 @@ TO_BOTTOM = "window.scrollTo(0, document.documentElement.scrollHeight)"
 # (the tap waits for the screen, not for a fixed time: a slow load left the picture "Loading…" — 2026-11-11)
 WHO = ("location.hash = '#/ps/-Users-x-blog'; (function go() { const b = document.querySelector('.psets .ps-model');"
        " if (b) b.click(); else setTimeout(go, 100); })()")
+# Projects' search with a word said only inside tasks (stage И): typed in the stand's own language
+FIND = ("(function go() { const el = document.querySelector('.find-f input'); if (!el) return setTimeout(go, 100);"
+        " Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el,"
+        " document.documentElement.lang === 'ru' ? 'ревизию' : 'revision'); el.dispatchEvent(new Event('input', { bubbles: true })); })()")
 # what has to be on the screen when the picture is taken, by the picture's name: nothing still loading — and the model sheet
-DONE = {"who": "!!document.querySelector('.card.pick')"}
+DONE = {"who": "!!document.querySelector('.card.pick')", "search": "document.querySelectorAll('.said').length >= 3"}
 # the third tab of Resources — the local model's server: its disk, its card and the models by their weights
 LOCAL = ("[...document.querySelectorAll('.subtabs button')].find((b) => /^(Local model|Своя модель)$/.test(b.textContent.trim())).click()")
 # the first picture asks Codex; the second (the dark one) finds its card already there, kept till Reviewed
@@ -49,6 +53,7 @@ FEATURES = [
     ("second", "SESS4", 760, SECOND, "second", 14),
     ("session", "SESS4", 760, TO_BOTTOM, "main", 1),
     ("tags", "PROJT", 760, "", "tags", 1),
+    ("search", "PROJECTS", 760, FIND, "search", 2),
     ("pace", "USAGE", 700, "document.querySelector('.spend-seg button').click()", "main", 1),
     ("files", "SESS4", 700, "document.querySelector('.tfline').click()", "main", 1),
     ("newproject", "NEWPROJ", 640, "", "main", 1),
@@ -61,7 +66,8 @@ PORT = int(os.environ.get("MEDIA_PORT") or 18097)
 STANDS = {"main": (str(PORT), {}), "tags": (str(PORT + 2), {"STAND_TAGS": "1", "STAND_PARTS": "now"}),
           "vendors": (str(PORT + 4), {"STAND_VENDORS": "1", "STAND_HOMES": "1"}),
           "second": (str(PORT + 6), {"STAND_SECOND": "allowed"}),
-          "local": (str(PORT + 8), {"STAND_LOCAL": "on", "STAND_LOCAL_MANY": "1", "STAND_LOCAL_SRV": "1", "STAND_HOMES": "1"})}
+          "local": (str(PORT + 8), {"STAND_LOCAL": "on", "STAND_LOCAL_MANY": "1", "STAND_LOCAL_SRV": "1", "STAND_HOMES": "1"}),
+          "search": (str(PORT + 10), {"STAND_SEARCH": "1"})}
 
 STEPS = {
     "en": [("Give the task to any model", "from the phone, or as usual in VS Code or a terminal: Pult picks up every session"),

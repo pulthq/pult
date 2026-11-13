@@ -57,7 +57,7 @@ function App() {
     tg.BackButton.onClick(back);
     return () => tg.BackButton.offClick(back);
   }, [r.name, r.id]);
-  const screen = r.name === "s" ? html`<${Session} sid=${r.id}/>`
+  const screen = r.name === "s" ? html`<${Session} sid=${r.id} at=${r.q.get("at")} hq=${r.q.get("q")}/>`
     : r.name === "f" ? html`<${TurnFilesScreen} sid=${r.id} turn=${r.q.get("t")}/>`
     : r.name === "c" ? html`<${ChangesScreen} key=${r.id} sid=${r.id}/>`
     : r.name === "p" ? html`<${Project} key=${r.id + "?" + (r.q.get("tag") || "") + "/" + (r.q.get("topic") || "")} pkey=${r.id} tag=${r.q.get("tag")} topic=${r.q.get("topic")}/>`

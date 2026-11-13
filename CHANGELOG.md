@@ -4,6 +4,21 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.68 — 2026-11-13
+
+- **Search over everything.** The search on Projects, and on a project's screen, now also reads what was said — your
+  messages and the models' replies in every task of every project (Claude Code's, the VS Code tabs' and the terminal's
+  too; other vendors'; the Codex tasks Pult runs) — and the projects' documents (`.md`, `.txt`, `.html`). Places come
+  grouped by task, the newest first, the words marked; **Only my words** narrows to what you wrote. A place opens its
+  task right there — the message marked, the earlier ones above, the rest coming as you scroll down, **To the end** for
+  the task's end; a document opens on the line with the word. The index is kept by a child process of the daemon below
+  everything else (macOS's background band, "below normal" on Windows, `nice` on Linux), in its own SQLite database
+  with FTS5 trigrams: it reads only what is new, skips what commands printed and files that look like keys, cleans
+  secrets out before writing, and gives its memory back after a big pass. On a Mac with about 250 tasks and 2,500
+  documents the first pass took about 90 s and 0.2 GB of disk. **Settings → Search** turns it off (the index is
+  removed) and builds it again. It needs FTS5 with trigrams in Python's SQLite (3.34 or newer); without it tasks are
+  found by their titles, as before.
+
 ## 0.18.67 — 2026-11-13
 
 - **What holds an install, by name, and Stop from the phone.** Settings → Pult and its parts lists what a restart would cut
