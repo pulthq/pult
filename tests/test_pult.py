@@ -10636,6 +10636,7 @@ class IndexTest(unittest.TestCase):
         c.close()
         IX.Indexer(self.home).db.close()
         self.assertEqual(IX.state(db)["places"], 0)
+        ix.db.close()                     # Windows removes no file still open (the daemon removes it once the child is gone)
         IX.remove(self.home)
         self.assertFalse(db.exists())
 
