@@ -43,8 +43,9 @@ PAGE = 1536 * 1024             # transcript bytes read at once for a chat chunk
 # what the app may count on: "once" — a request with a key is done once (Web.done_once); "waiting" — what waits for
 # the owner's move can be asked for (api_waiting); "find" — tasks can be searched and a project's earlier ones asked
 # for in pages (api_find, api_project's `earlier`); "changes" — what a task changed can be asked for, and one file's
-# change line by line (api_changes, api_diff)
-CAPS = ("once", "waiting", "find", "changes", "unseen", "picks")
+# change line by line (api_changes, api_diff); "said" — the search looks in what was said and in the documents, a
+# session opens at a place (api_find's said and docs, api_session's at and fwd, api_file by pkey; stage И)
+CAPS = ("once", "waiting", "find", "changes", "unseen", "picks", "said")
 ONCE_KEEP = 600                # s: how long a keyed request's answer is kept for its repeat
 ONCE_MAX = 300                 # keyed requests remembered at most
 # An older chunk (and the chat's first) is filled by what the chat shows, not by bytes: on real transcripts 1.5 MB of
@@ -364,6 +365,12 @@ def _transcript_chunk(path, before, after, cwd, page):
     if isinstance(got, dict):
         return got
     data, start, end = got
+    items = _transcript_items(data, cwd)
+    return {"items": items, "before": (start if start > 0 else None) if after is None else None, "end": end}
+
+
+def _transcript_items(data, cwd):
+    """Whole lines of a Claude Code transcript → the chat's items."""
     items, tools = [], {}
     for line in data.split(b"\n"):
         if not line.strip():
@@ -430,7 +437,7 @@ def _transcript_chunk(path, before, after, cwd, page):
                      "input": _short(json.dumps(inp, ensure_ascii=False, indent=1), IO_MAX)}
                 tools[b.get("id")] = t
                 items.append(t)
-    return {"items": items, "before": (start if start > 0 else None) if after is None else None, "end": end}
+    return items
 
 
 # ---------- a task Codex does (stage M, step M4.1): its history from its own file ----------
@@ -526,6 +533,12 @@ def _codex_chunk(path, before, after, cwd, page):
     if isinstance(got, dict):
         return got
     data, start, end = got
+    items = _codex_items(data, cwd)
+    return {"items": items, "before": (start if start > 0 else None) if after is None else None, "end": end}
+
+
+def _codex_items(data, cwd):
+    """Whole lines of a Codex task's history → the chat's items."""
     cwd = os.path.realpath(cwd) if cwd else cwd        # Codex names files by the folder's real path (/private/var/…)
     items, tools, turn = [], {}, None         # turn: the owner's messages in the turn that runs (None — none runs)
     for line in data.split(b"\n"):
@@ -571,7 +584,79 @@ def _codex_chunk(path, before, after, cwd, page):
                 t.update(ok=True, out=_short(_CX_HEAD.sub("", text).strip(), IO_MAX))
     for it in items:
         it.pop("raw", None)
-    return {"items": items, "before": (start if start > 0 else None) if after is None else None, "end": end}
+    return items
+
+
+# ---------- a place the search found (stage И): the chat opened there, and on from it ----------
+
+def _line_end(path, at):
+    """The byte after the line that begins at `at`, its newline counted — None with no whole line there."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(int(at))
+            pos = int(at)
+            while pos - int(at) <= LINE_MAX:
+                buf = f.read(1024 * 1024)
+                if not buf:
+                    return None
+                i = buf.find(b"\n")
+                if i >= 0:
+                    return pos + i + 1
+                pos += len(buf)
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def forward_page(path, start, cwd=None, codex=False, page=PAGE, want=PAGE_MSGS):
+    """The chunk after byte `start`, whole lines only, growing like an older one until it has `want` messages.
+    → {"items", "end": where the next one begins, "tail": nothing whole after it — the chat is at its end}."""
+    parse = _codex_items if codex else _transcript_items
+    top = page * PAGE_GROW
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return {"items": [], "end": int(start), "tail": True}
+    start = min(int(start), size)
+    while True:
+        with open(path, "rb") as f:
+            f.seek(start)
+            data = f.read(page)
+        last = data.rfind(b"\n")
+        if last < 0 and len(data) >= page:            # one record longer than the chunk: that record alone
+            stop = _line_end(path, start)
+            if stop is None:
+                return {"items": [], "end": start, "tail": True}
+            with open(path, "rb") as f:
+                f.seek(start)
+                data = f.read(stop - start)
+            last = len(data) - 1
+        end = start + last + 1
+        items = parse(data[:last + 1], cwd) if last >= 0 else []
+        with open(path, "rb") as f:                    # an unfinished line after it doesn't count
+            f.seek(end)
+            tail = b"\n" not in f.read(page)
+        if tail or _said(items) >= want or page >= top:
+            return {"items": items, "end": end, "tail": tail}
+        page = min(page * 2, top)
+
+
+def page_at(path, at, cwd=None, codex=False):
+    """The chat around a place the search found: the chunk that ends with the place's own line (older ones above it
+    come as usual), and the chunk after it; the place's own words are marked `hit`. → {"items", "before", "end",
+    "tail"} as forward_page, or None when no line begins there (the file was written anew)."""
+    end = _line_end(path, at)
+    if end is None:
+        return None
+    old = _filled(_codex_chunk if codex else _transcript_chunk, path, end, None, cwd, PAGE, PAGE_MSGS)
+    if not isinstance(old.get("items"), list):
+        return None
+    for it in reversed(old["items"]):
+        if it.get("k") in ("user", "text"):
+            it["hit"] = True
+            break
+    new = forward_page(path, end, cwd, codex)
+    return {"items": old["items"] + new["items"], "before": old.get("before"), "end": new["end"], "tail": new["tail"]}
 
 
 def _cx_said(kind, what, p):

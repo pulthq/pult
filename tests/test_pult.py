@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -42,6 +43,7 @@ import pult_vendors as V  # noqa: E402
 import pult_brief as B  # noqa: E402
 import pult_driven  # noqa: E402
 import pult_hook  # noqa: E402
+import pult_index as IX  # noqa: E402
 import pult_i18n as I  # noqa: E402
 import pult_load as L  # noqa: E402
 import pult_new as N  # noqa: E402
@@ -2246,18 +2248,22 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.p.prefs(), {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": None, "pace": 90,
                                           "model": None, "effort": None, "gh": True, "vcheck": True, "hashtags": True,
                                           "ccfresh": True, "digest": None, "quiet": None, "page_delay": 5, "remind": True,
-                                          "machine": None, "mode_until": None})
+                                          "machine": None, "mode_until": None, "search": True})
         self.p.env["PULT_FORCE_AWAY"] = "0"                                           # you are at the Mac
         self.assertFalse(await self.p.loud())
         self.assertTrue(await self.p.loud(driven=True))                     # auto: a session from Telegram — with sound
         res = await self.p.api_prefs(mode="phone", vehi="да", lang="xx", brief="да", evil=True, pace="90", gh="off",
-                                     hashtags="yes", ccfresh="on", mode_until=1)    # garbage is rejected
+                                     hashtags="yes", ccfresh="on", mode_until=1, search="no")    # garbage is rejected
         # … and how long "Computer" holds is not the app's to say (mode_until)
         self.assertEqual(res, {"vehi": True, "mode": "phone", "lang": None, "brief": False, "pager": None, "pace": 90,
                                "model": None, "effort": None, "gh": True, "vcheck": True, "hashtags": True,
                                "ccfresh": True, "digest": None, "quiet": None, "page_delay": 5, "remind": True,
-                               "machine": None, "mode_until": None})
+                               "machine": None, "mode_until": None, "search": True})
         self.assertFalse((await self.p.api_prefs(ccfresh=False))["ccfresh"])        # stage A2: the app on the SDK's own
+        self.assertFalse((await self.p.api_prefs(search=False))["search"])          # stage И: the search's index off
+        self.assertTrue(self.p.search_kick.is_set())                                # … and the watch told at once
+        self.p.search_kick.clear()
+        await self.p.api_prefs(search=True)
         await self.p.api_prefs(ccfresh=True)
         self.assertFalse((await self.p.api_prefs(hashtags=False))["hashtags"])      # stage T, T3: no hashtags under results
         await self.p.api_prefs(hashtags=True)
@@ -6373,6 +6379,103 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((len(got["rows"]), got["more"]), (self.p.FIND_MAX, True))
         self.assertIn("find", PW.CAPS)
 
+    async def test_find_said(self):
+        """Search over everything, step И1 (Q187): what was said and the documents, from the index the child keeps —
+        grouped by task, the owner's words alone when asked, a hidden project out; a found place opens the chat
+        there, the rest of it comes in chunks after; a document opens by its project, without a session."""
+        if not IX.has_fts():
+            self.skipTest("this Python's SQLite has no FTS5 with trigrams")
+        pkey, sid, sid2 = "-Users-x-search", "aaaaaaaa-0000-0000-0000-000000000001", "aaaaaaaa-0000-0000-0000-000000000002"
+        root = TMP / "searchproj"
+        (root / "docs").mkdir(parents=True, exist_ok=True)
+        (root / "docs" / "notes.md").write_text("# Заметки\n\nMemoryMax ставим через drop-in.\n", encoding="utf-8")
+        self.store.set_topic(pkey, str(root), "searchproj", 77)
+        tdir = pultd.CLAUDE_PROJECTS / pkey
+        tdir.mkdir(parents=True, exist_ok=True)
+        line = lambda kind, text, ts: json.dumps({"type": kind, "timestamp": ts, "message": {"role": kind, "content": text if kind == "user" else [{"type": "text", "text": text}]}}, ensure_ascii=False) + "\n"
+        words = [line("user", "Сообщение %d о погоде" % n, "2026-11-10T09:%02d:00Z" % n) for n in range(30)]
+        words += [line("user", "Поставь MemoryMax на гейтвей", "2026-11-10T10:00:00Z"),
+                  line("assistant", "Повесил MemoryMax=1200M отдельным drop-in файлом.", "2026-11-10T10:00:05Z")]
+        words += [line("assistant", "Ответ %d после" % n, "2026-11-10T11:%02d:00Z" % n) for n in range(30)]
+        (tdir / (sid + ".jsonl")).write_text("".join(words), encoding="utf-8")
+        (tdir / (sid2 + ".jsonl")).write_text(line("assistant", "Тут тоже про memorymax", "2026-11-09T10:00:00Z"), encoding="utf-8")
+
+        async def index():
+            return [{"sid": sid, "pkey": pkey, "title": "Обновление сервера", "first": "", "last": time.time()}]
+        self.p.task_index = index
+        what = await self.p.search_what()
+        self.assertIn({"pkey": pkey, "path": str(root)}, what["projects"])
+        self.assertEqual(what["roots"][0], str(pultd.CLAUDE_PROJECTS))
+        self.p.search.write_what(what)
+        self.assertEqual(os.stat(pultd.HOME / IX.WHAT_NAME).st_mode & 0o777, 0o600) if os.name == "posix" else None
+        IX.Indexer(pultd.HOME).round(docs=True)
+        got = await self.p.api_find("memorymax")
+        self.assertEqual(got["rows"], [])                                            # no title has it
+        self.assertEqual([(g["sid"], g["n"], g["who"]) for g in got["said"]], [(sid, 2, "Claude"), (sid2, 1, "Claude")])
+        g = got["said"][0]
+        self.assertEqual((g["project"], g["title"]), ("searchproj", "Обновление сервера"))
+        self.assertEqual([x["me"] for x in g["places"]], [False, True])               # the newest first
+        self.assertIn("MemoryMax=1200M", g["places"][0]["snip"])
+        self.assertEqual(got["said"][1]["title"], "—")                                # a task Pult knows nothing of
+        self.assertEqual(got["docs"], [{"pkey": pkey, "project": "searchproj", "p": "docs/notes.md", "n": 1,
+                                        "places": [{"line": 3, "ts": got["docs"][0]["places"][0]["ts"], "snip": "…MemoryMax ставим через drop-in."}]}])
+        self.assertTrue(got["index"]["ready"] is False and got["index"]["last"] is None)   # the child keeps those
+        self.assertEqual([len(g["places"]) for g in (await self.p.api_find("memorymax", mine=True))["said"]], [1])
+        self.store.set_hide(pkey, True)
+        self.assertEqual((await self.p.api_find("memorymax"))["said"], [])
+        self.assertEqual(len((await self.p.api_find("memorymax", pkey=pkey))["said"]), 2)
+        self.store.set_hide(pkey, False)
+        # the chat opened at a place: the page ends with its line — the place marked — and the next one goes on
+        at = g["places"][1]["at"]
+        page = (await self.p.api_session(sid, at=at))["page"]
+        hit = [i for i in page["items"] if i.get("hit")]
+        self.assertEqual([(i["k"], i["text"]) for i in hit], [("user", "Поставь MemoryMax на гейтвей")])
+        self.assertEqual(page["items"][-1]["text"], "Ответ 29 после")                 # small: all of it in one go
+        self.assertTrue(page["tail"])
+        self.assertEqual(page["end"], (tdir / (sid + ".jsonl")).stat().st_size)
+        self.assertIsNone(page["before"])
+        # in chunks: the page after a place, as big as asked, until the chat's end
+        path = str(tdir / (sid + ".jsonl"))
+        nxt = PW.forward_page(path, at, page=400, want=3)
+        self.assertFalse(nxt["tail"])
+        self.assertEqual(nxt["items"][0]["text"], "Поставь MemoryMax на гейтвей")
+        n, end = 0, at
+        while True:
+            part = (await self.p.api_session(sid, fwd=end))["page"]
+            n += len(part["items"])
+            end = part["end"]
+            if part["tail"]:
+                break
+        self.assertEqual((n, end), (32, os.path.getsize(path)))
+        with open(path, "a", encoding="utf-8") as f:                                   # a line being written: not the chat's yet
+            f.write('{"type": "assistant", "message": {"content": [{"type": "text", "text": "пол')
+        last = PW.forward_page(path, end)
+        self.assertEqual((last["items"], last["end"], last["tail"]), ([], end, True))
+        # a place no longer there: the chat as usual
+        self.assertIsNone(PW.page_at(path, os.path.getsize(path) - 3))
+        gone = (await self.p.api_session(sid, at=10 ** 9))["page"]
+        self.assertTrue(gone["items"] and gone["tail"])                             # … at its end, nothing below to read
+        # a found document opens by its project, the session's rules kept
+        f = await self.p.api_file(pkey=pkey, p="docs/notes.md")
+        self.assertEqual((f["p"], f["kind"]), ("docs/notes.md", "md"))
+        with self.assertRaises(ValueError):
+            await self.p.api_file(pkey=pkey, p="../../etc/passwd")
+        with self.assertRaises(ValueError):
+            await self.p.api_file(pkey="-Users-x-nowhere", p="a.md")
+        with self.assertRaises(ValueError):                                       # a key is no way to any folder
+            await self.p.api_file(pkey="-", p="etc/hosts")
+        with self.assertRaises(ValueError):
+            await self.p.api_file(pkey=PKEY, p="README.md")                         # a project the search doesn't read
+        # Settings → Search; off — no search in what was said, the index removed by the watch
+        st = await self.p.api_search()
+        self.assertEqual((st["on"], st["can"], st["running"], st["places"], st["tasks"], st["docs"]), (True, True, False, 64, 2, 1))
+        await self.p.api_prefs(search=False)
+        self.assertEqual((await self.p.api_find("memorymax"))["index"], {"off": True})
+        with self.assertRaises(ValueError):
+            await self.p.api_search_rebuild()
+        await self.p.api_prefs(search=True)
+        self.assertIn("said", PW.CAPS)
+
     async def test_silent_turn(self):
         """A turn with no step and no word for 15 minutes is "silent" for the app — unless a tool is still out, a
         background task runs or the owner is asked; and when Claude Code itself calls the session idle, the turn's end
@@ -10352,6 +10455,223 @@ class TabCheckTest(unittest.IsolatedAsyncioTestCase):
         with mock.patch("urllib.request.build_opener", lambda h: types.SimpleNamespace(
                 open=lambda url, timeout: Answer(b'{"version": "<b>2.1.319</b>"}'))):
             self.assertIsNone(P.npm_latest())
+
+
+class IndexTest(unittest.TestCase):
+    """Search over everything, step И1 (Q187): what a transcript and a document say, secrets out, the index read again
+    only where it grew, the answer grouped by task — and the child process that keeps it, ending with the daemon."""
+
+    def setUp(self):
+        if not IX.has_fts():
+            self.skipTest("this Python's SQLite has no FTS5 with trigrams")
+        self.home = Path(tempfile.mkdtemp(prefix="pult-index-", dir=TMP))
+        self.proj = self.home / "work" / "proj"
+        self.proj.mkdir(parents=True)
+        self.roots = self.home / "projects"
+        self.pkey = "-work-proj"
+        (self.roots / self.pkey).mkdir(parents=True)
+
+    @staticmethod
+    def line(**kw):
+        return (json.dumps(kw, ensure_ascii=False) + "\n").encode()
+
+    def chat(self, sid="11111111-2222-3333-4444-555555555555"):
+        L = self.line
+        rows = [
+            L(type="user", timestamp="2026-11-10T10:00:00Z", message={"role": "user", "content": "Поставь MemoryMax на гейтвей"}),
+            L(type="user", isMeta=True, timestamp="2026-11-10T10:00:01Z", message={"role": "user", "content": "Caveat: MemoryMax meta"}),
+            L(type="assistant", timestamp="2026-11-10T10:00:02Z", message={"role": "assistant", "content": [
+                {"type": "text", "text": "Повесил `MemoryMax=1200M` отдельным drop-in файлом. Ещё — MemoryHigh."},
+                {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "echo MemoryMax"}}]}),
+            L(type="user", timestamp="2026-11-10T10:00:03Z", message={"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "MemoryMax printed by a step"}]}),
+            L(type="assistant", isSidechain=True, timestamp="2026-11-10T10:00:04Z", message={"role": "assistant", "content": [
+                {"type": "text", "text": "a subagent says MemoryMax"}]}),
+            L(type="user", isCompactSummary=True, timestamp="2026-11-10T10:00:05Z", message={"role": "user", "content": "summary with MemoryMax"}),
+            L(type="user", timestamp="2026-11-10T10:00:06Z", message={"role": "user", "content": "<command-name>/model</command-name> MemoryMax"}),
+            L(type="user", timestamp="2026-11-10T10:00:07Z", message={"role": "user", "content": [
+                {"type": "text", "text": "<system-reminder>MemoryMax in a reminder</system-reminder>а ключ sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123 не свети"}]}),
+            L(type="attachment", timestamp="2026-11-10T10:00:08Z", attachment={"type": "queued_command", "prompt": "и ещё про swap"}),
+            L(type="user", timestamp="2026-11-10T10:00:09Z", message={"role": "user", "content":
+                "<task-notification><task-id>b1</task-id><status>completed</status><summary>MemoryMax job</summary></task-notification>"}),
+        ]
+        f = self.roots / self.pkey / (sid + ".jsonl")
+        f.write_bytes(b"".join(rows))
+        return f
+
+    def test_what_a_transcript_says(self):
+        f = self.chat()
+        data = f.read_bytes()
+        got, nxt = IX.chat_places(str(f), 0, IX.cc_said)
+        self.assertEqual(nxt, len(data))
+        self.assertEqual([(w, t) for _, w, _, t in got], [
+            ("me", "Поставь MemoryMax на гейтвей"),
+            ("ai", "Повесил `MemoryMax=1200M` отдельным drop-in файлом. Ещё — MemoryHigh."),
+            ("me", "а ключ [secret] не свети"),
+            ("me", "и ещё про swap")])
+        for at, _, ts, _ in got:                       # each place is where its line begins: the app opens the task there
+            self.assertTrue(data[at:].startswith(b'{"type": "'))
+            self.assertTrue(ts and ts > 1.7e9)
+        # a line not finished yet waits for the next round
+        with open(f, "ab") as h:
+            h.write(b'{"type": "user", "message": {"content": "half')
+        self.assertEqual(IX.chat_places(str(f), nxt, IX.cc_said), ([], nxt))
+
+    def test_codex_words(self):
+        L = self.line
+        f = self.home / "rollout-2026-11-10T10-00-00-x.jsonl"
+        f.write_bytes(b"".join([
+            L(type="event_msg", timestamp="2026-11-10T10:00:00Z", payload={"type": "user_message", "message": "найди certbot"}),
+            L(type="response_item", timestamp="2026-11-10T10:00:01Z", payload={"type": "message", "role": "user", "content": [{"type": "input_text", "text": "найди certbot"}]}),
+            L(type="event_msg", timestamp="2026-11-10T10:00:02Z", payload={"type": "agent_message", "message": "certbot стоит"}),
+            L(type="event_msg", timestamp="2026-11-10T10:00:03Z", payload={"type": "agent_message", "message": "certbot стоит"}),
+            L(type="event_msg", timestamp="2026-11-10T10:00:04Z", payload={"type": "item_completed", "item": {"type": "AgentMessage", "content": [{"type": "Text", "text": "и обновлён"}]}})]))
+        got, _ = IX.chat_places(str(f), 0, IX.cx_said)
+        self.assertEqual([(w, t) for _, w, _, t in got], [("me", "найди certbot"), ("ai", "certbot стоит"), ("ai", "и обновлён")])
+
+    def test_secrets_out(self):
+        cases = {"ghp_" + "a" * 36: "[secret]", "github_pat_" + "b" * 40: "[secret]",
+                 "1234567890:" + "A" * 35: "[secret]", "https://user:hunter22@host/x": "https://user:[secret]@host/x",
+                 "password = s3cr3tvalue": "password = [secret]", "пароль: длинныйпароль": "пароль: [secret]",
+                 "gsk_" + "c" * 30: "[secret]", "the token count": "the token count"}
+        for text, want in cases.items():
+            self.assertEqual(IX.unsecret(text), want, text)
+        key = "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----"
+        self.assertEqual(IX.unsecret("x " + key + " y"), "x [secret] y")
+
+    def test_documents(self):
+        page = ("<html><head><style>\n.memorymax { color: red }\n</style>\n<script>var memorymax = 1;\n</script></head>\n"
+                "<body><h1>Гейтвей &amp; память</h1>\n<p class=\"a\nb\">MemoryMax=1.5G</p>\n<svg><text>memorymax</text></svg>\n</body></html>\n")
+        lines = IX.html_lines(page)
+        self.assertEqual(lines[5], "Гейтвей & память")
+        self.assertEqual(lines[7], "MemoryMax=1.5G")
+        self.assertFalse(any("color" in x or "var " in x or "memorymax" == x for x in lines))
+        (self.proj / "page.html").write_text(page, encoding="utf-8")
+        md = "\n".join("строка %d про swap" % i for i in range(1, 300))
+        (self.proj / "notes.md").write_text(md, encoding="utf-8")
+        got = IX.doc_places(str(self.proj / "notes.md"))
+        self.assertGreater(len(got), 3)
+        self.assertEqual(got[0][0], 1)
+        self.assertTrue(got[1][2] > 0 and got[1][1] == "doc")
+        self.assertTrue(got[1][3].startswith("строка %d " % got[1][0]))      # a place's number is its first line
+        (self.proj / "blob.txt").write_bytes(b"MemoryMax\x00\x01")
+        self.assertEqual(IX.doc_places(str(self.proj / "blob.txt")), [])
+        for d in ("node_modules", ".hidden", ".git", "x.egg-info"):
+            (self.proj / d).mkdir()
+            (self.proj / d / "x.md").write_text("MemoryMax", encoding="utf-8")
+        for name in ("api_token.md", "my_secret_notes.md"):                   # Telegram's rule: names like keys
+            (self.proj / name).write_text("MemoryMax", encoding="utf-8")
+        (self.proj / "big.md").write_bytes(b"x" * (IX.DOC_MAX + 1))
+        names = sorted(os.path.relpath(p, self.proj) for p, _, _ in IX.project_docs(str(self.proj)))
+        self.assertEqual(names, ["blob.txt", "notes.md", "page.html"])
+
+    def what(self, **extra):
+        w = {"roots": [str(self.roots)], "projects": [{"pkey": self.pkey, "path": str(self.proj)}], "codex": []}
+        w.update(extra)
+        (self.home / IX.WHAT_NAME).write_text(json.dumps(w), encoding="utf-8")
+
+    def test_index_rounds_and_find(self):
+        f = self.chat()
+        (self.proj / "README.md").write_text("# Проект\n\nПамять гейтвея: MemoryMax и swap.\n", encoding="utf-8")
+        self.what()
+        ix = IX.Indexer(self.home)
+        added, dropped = ix.round(docs=True)
+        self.assertEqual((added, dropped), (5, 0))
+        db = self.home / IX.DB_NAME
+        r = IX.find(db, "memorymax")
+        self.assertEqual(len(r["tasks"]), 1)
+        t = r["tasks"][0]
+        self.assertEqual((t["sid"], t["pkey"], t["kind"], t["n"]), (f.stem, self.pkey, "cc", 2))
+        self.assertEqual([p["who"] for p in t["places"]], ["ai", "me"])         # the newest first
+        self.assertIn("MemoryMax=1200M", t["places"][0]["snip"])
+        self.assertNotIn("`", t["places"][0]["snip"])
+        self.assertEqual(r["docs"][0]["path"], str(self.proj / "README.md"))
+        self.assertEqual(r["docs"][0]["places"][0]["at"], 3)                          # the line with the word, not the place's first
+        self.assertEqual(t["title"], "Поставь MemoryMax на гейтвей")                  # no name yet: its first prompt
+        # ё and е are one letter for the search; a word under three letters isn't looked for
+        self.assertEqual(IX.find(db, "еще memoryhigh")["tasks"][0]["n"], 1)
+        self.assertIsNone(IX.find(db, "на"))
+        self.assertEqual(IX.find(db, "memorymax", mine=True)["tasks"][0]["n"], 1)
+        self.assertEqual(IX.find(db, "memorymax", pkey="-other")["tasks"], [])
+        # what was cleaned out isn't there to be found, not in the index nor in the words kept
+        self.assertEqual(IX.find(db, "sk-ant-api03")["tasks"], [])
+        self.assertEqual(IX.find(db, "secret")["tasks"][0]["places"][0]["snip"], "а ключ [secret] не свети")
+        # the next round reads only what is new
+        self.assertEqual(ix.round(docs=True), (0, 0))
+        with open(f, "ab") as h:
+            h.write(self.line(type="assistant", timestamp="2026-11-11T10:00:00Z", message={"role": "assistant", "content": [
+                {"type": "text", "text": "MemoryMax снят"}]}))
+        self.assertEqual(ix.round(docs=False), (1, 0))
+        self.assertEqual(IX.find(db, "memorymax")["tasks"][0]["n"], 3)
+        # the task's name as its file has it: Claude Code's, then the owner's own — that one wins for good
+        with open(f, "ab") as h:
+            h.write(self.line(type="ai-title", aiTitle="Память гейтвея", sessionId=f.stem))
+        ix.round(docs=False)
+        self.assertEqual(IX.find(db, "memorymax")["tasks"][0]["title"], "Память гейтвея")
+        with open(f, "ab") as h:
+            h.write(self.line(type="custom-title", customTitle="Гейтвей: лимиты", sessionId=f.stem))
+            h.write(self.line(type="ai-title", aiTitle="Другое имя", sessionId=f.stem))
+        ix.round(docs=False)
+        self.assertEqual(IX.find(db, "memorymax")["tasks"][0]["title"], "Гейтвей: лимиты")
+        # a document changed is read again; a transcript written anew too; a file gone is forgotten
+        (self.proj / "README.md").write_text("Только swap.\n", encoding="utf-8")
+        os.utime(self.proj / "README.md", (time.time() + 5, time.time() + 5))
+        self.assertEqual(ix.round(docs=True), (1, 1))
+        self.assertEqual(IX.find(db, "memorymax")["docs"], [])
+        f.write_bytes(self.line(type="user", timestamp="2026-11-12T10:00:00Z", message={"role": "user", "content": "новый swap"}))
+        self.assertEqual(ix.round(docs=False), (1, 5))
+        f.unlink()
+        self.assertEqual(ix.round(docs=False), (0, 1))
+        st = IX.state(db)
+        self.assertEqual((st["places"], st["tasks"], st["docs"]), (1, 0, 1))
+        self.assertGreater(st["size"], 0)
+        # a project no longer named: its files go with it
+        self.what(projects=[])
+        os.utime(self.home / IX.WHAT_NAME, (time.time() + 5, time.time() + 5))
+        self.assertEqual(ix.round(docs=True), (0, 1))
+        # an index of another schema is built anew, not read wrong
+        c = sqlite3.connect(str(db))
+        c.execute("PRAGMA user_version=0")
+        c.commit()
+        c.close()
+        IX.Indexer(self.home).db.close()
+        self.assertEqual(IX.state(db)["places"], 0)
+        IX.remove(self.home)
+        self.assertFalse(db.exists())
+
+    def test_snippet(self):
+        text = "начало " + "слово " * 60 + "здесь ГЕЙТВЕЙ ёлка " + "хвост " * 60
+        s = IX.snippet(text, ["гейтвей"])
+        self.assertIn("ГЕЙТВЕЙ", s)
+        self.assertTrue(s.startswith("…") and s.endswith("…"))
+        self.assertLess(len(s), 260)
+        self.assertIn("ёлка", IX.snippet(text, ["елка"]))
+        self.assertEqual(IX.snippet("коротко про swap", ["swap"]), "коротко про swap")
+        self.assertEqual(IX.snippet("# Кэш\nКлючи несут ревизию\nдальше", ["ревизию"]), "…Ключи несут ревизию дальше")
+
+    def test_the_child_process(self):
+        self.chat()
+        self.what()
+        env = dict(os.environ, PULT_HOME=str(self.home))
+        p = subprocess.Popen([sys.executable, str(HERE / "pult_index.py"), "serve"], stdin=subprocess.PIPE,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env)
+        try:
+            deadline = time.time() + 30
+            while time.time() < deadline and not IX.state(self.home / IX.DB_NAME)["ready"]:
+                time.sleep(0.2)
+            st = IX.state(self.home / IX.DB_NAME)
+            self.assertTrue(st["ready"])
+            self.assertEqual(st["places"], 4)
+            if os.name == "posix":
+                self.assertEqual(os.stat(self.home / IX.DB_NAME).st_mode & 0o777, 0o600)
+            p.stdin.close()                              # the daemon gone: its child goes too
+            self.assertEqual(p.wait(10), 0)
+            self.assertIn(b"the first round: 4 places in 1 files", p.stderr.read())
+        finally:
+            if p.poll() is None:
+                p.kill()
+                p.wait()
+            p.stderr.close()
 
 
 if __name__ == "__main__":

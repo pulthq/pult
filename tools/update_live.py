@@ -96,7 +96,10 @@ async def main(keep):
         os.chmod(T / "env", 0o600)
         subprocess.run(["git", "clone", "-q", "--branch", git(REPO, "rev-parse", "--abbrev-ref", "HEAD"), str(REPO), str(repo)], check=True)
         home.mkdir()
-        subprocess.run([sys.executable, "-c", "import pult_setup as S; S.sput(chat=-1001)"], cwd=repo / "src", env=env, check=True)
+        # the search's indexer off: the service reads the real ~/.claude/projects, and would index every one of the owner's
+        # transcripts into this folder for the five minutes it runs (stage И)
+        subprocess.run([sys.executable, "-c", "import pult_setup as S; S.sput(chat=-1001, prefs={'search': False})"],
+                       cwd=repo / "src", env=env, check=True)
 
         # 1. install.sh, as the owner does
         p = subprocess.run(["bash", str(repo / "install.sh")], env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True)

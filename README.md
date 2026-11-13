@@ -128,6 +128,15 @@ tap the tags to correct them, and your corrections teach Claude. In Telegram the
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="media/f-tags.en.dark.png"><img src="media/f-tags.en.png" width="330" alt="A project in the app: its sections on top with how many tasks in each, a task that waits for you with its tags and ready replies, the tasks running"></picture></p>
 
+### Find anything that was said
+
+The search on Projects reads what was said, not only the titles: your messages, the models' replies and the projects'
+documents, in every task of every project — the VS Code tabs' and the terminal's too. A place it found opens the task
+right there, the word marked; **Only my words** finds what you wrote. The index stays on this computer and only you
+read what it finds — no model sees it.
+
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="media/f-search.en.dark.png"><img src="media/f-search.en.png" width="330" alt="Projects in the app, searching for a word: no title has it, but it was said in two tasks — your message in one, Claude's reply in the other, the word marked — and it is in a document of the project"></picture></p>
+
 ### Your plan's pace
 
 Each limit against the even pace, with a forecast: on pace, under or over — and when it would run out.

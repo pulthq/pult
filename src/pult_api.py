@@ -31,6 +31,7 @@ from pult_driven import MAX_RUNNING   # turns at once — pult_driven's
 import pult_files as F
 import pult_hook
 import pult_i18n as I
+import pult_index as IX
 import pult_load as L
 import pult_new as N
 import pult_os
@@ -667,13 +668,15 @@ class Api:
         self._task_index = (time.monotonic(), rows)
         return rows
 
-    async def api_find(self, q, pkey=None):
+    async def api_find(self, q, pkey=None, mine=False):
         """A search of tasks (review 2026-11-11, UX4; Q180): every word of q in the task's title, or among its tags, or
         in its first request — in that order of worth; in one project (pkey) or in all that aren't hidden. → {rows:
-        [{sid, pkey, project, title, last, tags, by: "title"|"tag"|"ask", ask, state}], more}."""
+        [{sid, pkey, project, title, last, tags, by: "title"|"tag"|"ask", ask, state}], more} — and what was said
+        and the documents (stage И, find_said): said, docs, said_more, index."""
         words = [w for w in str(q or "").lower().split() if len(w) > 1][:8]
         if not words:
             return {"rows": [], "more": False}
+        t0 = time.monotonic()
         hides = {} if pkey else self.store.hides()
         tagged, out, more = {}, [], False
         for r in await self.task_index():
@@ -696,8 +699,85 @@ class Api:
                         "title": R.short(r["title"] or r["first"] or "—", 80), "last": r["last"], "tags": tags, "by": by,
                         "ask": R.short(R.prompt_text(r["first"]), 140) if by == "ask" else "", "state": state})
         out.sort(key=lambda r: ({"title": 0, "tag": 1, "ask": 2}[r["by"]], -r["last"]))
-        log("app: search — %d word(s), %d found%s" % (len(words), len(out), " in one project" if pkey else ""))
-        return {"rows": out, "more": more}
+        said = await self.find_said(q, pkey, bool(mine), hides)
+        log("app: search — %d word(s), %d found%s%s, %d ms" % (
+            len(words), len(out), " in one project" if pkey else "",
+            "; said: %d place(s) in %d task(s), %d document(s)" % (sum(g["n"] for g in said["said"]), len(said["said"]), len(said["docs"]))
+            if said.get("said") is not None else "", (time.monotonic() - t0) * 1000))
+        return dict(said, rows=out, more=more)
+
+    SAID_TASKS = 40          # tasks with places a search shows at most
+    SAID_DOCS = 20           # documents
+
+    def find_state(self, sid):
+        """A found task's state for its line: ask — a question waits, work — a turn runs, you — your move."""
+        lv, rec = self.live.get(sid), self.attn.rec.get(sid)
+        return "ask" if lv and any(not x.fut.done() for x in lv.pending.values()) else "work" if lv and lv.turn else \
+            "you" if A.waiting(rec) else None
+
+    def who_said(self, kind, sid):
+        """Whose words a task's places are, besides the owner's: Claude, Codex or the vendor's model."""
+        vid = self.store.vendor_of(sid)
+        if kind == "cx" or vid == "codex":
+            return "Codex"
+        p = self.vendor_profiles().get(vid) if vid else None
+        return (p.get("short") or p["name"]) if p else "Claude"
+
+    async def find_said(self, q, pkey, mine, hides):
+        """The search in what the owner and the models said and in the projects' documents (stage И, step И1; Q187):
+        the index pult_index keeps. → {said: [{sid, pkey, project, title, who, n, state, places: [{at, me, ts,
+        snip}]}], docs: [{pkey, project, p, n, places: [{line, ts, snip}]}], said_more, index: {ready, last}} — said
+        None with Search off (index: {off}) or without the index's SQLite (index: {none})."""
+        if not self.prefs()["search"]:
+            return {"said": None, "docs": [], "said_more": False, "index": {"off": True}}
+        if not IX.has_fts():
+            return {"said": None, "docs": [], "said_more": False, "index": {"none": True}}
+        path = self.D.HOME / IX.DB_NAME
+        ready, last = await asyncio.to_thread(IX.ready, path)
+        got = await asyncio.to_thread(IX.find, path, q, pkey, mine) if IX.words_of(q) else None
+        out = {"said": [], "docs": [], "said_more": bool(got and got["more"]), "index": {"ready": ready, "last": last}}
+        if not got:
+            return out
+        titles = {r["sid"]: r for r in await self.task_index()}
+        for g in got["tasks"]:
+            if hides.get(g["pkey"]) or len(out["said"]) >= self.SAID_TASKS:
+                continue
+            r, row = titles.get(g["sid"]), self.store.session(g["sid"])
+            # its name as the board gives it; else as Pult keeps it, else as its own file does (the index read it)
+            title = (r and (r["title"] or R.prompt_text(r["first"]))) or (row and row["title"]) \
+                or (g.get("title") and R.prompt_text(g["title"])) or "—"
+            out["said"].append({"sid": g["sid"], "pkey": g["pkey"], "project": self.name_of(g["pkey"]),
+                                "title": R.short(title, 80), "who": self.who_said(g["kind"], g["sid"]), "n": g["n"],
+                                "state": self.find_state(g["sid"]),
+                                "places": [{"at": x["at"], "me": x["who"] == "me", "ts": x["ts"], "snip": x["snip"]}
+                                           for x in g["places"]]})
+        roots = {x["pkey"]: x["path"] for x in (self.search.what or {}).get("projects") or []}
+        for g in got["docs"]:
+            root = roots.get(g["pkey"])
+            if hides.get(g["pkey"]) or not root or len(out["docs"]) >= self.SAID_DOCS:
+                continue
+            rel = os.path.relpath(g["path"], root).replace(os.sep, "/")
+            if rel.startswith(".."):
+                continue
+            out["docs"].append({"pkey": g["pkey"], "project": self.name_of(g["pkey"]), "p": rel, "n": g["n"],
+                                "places": [{"line": x["at"], "ts": x["ts"], "snip": x["snip"]} for x in g["places"]]})
+        return out
+
+    async def api_search(self):
+        """Settings → Search: whether it is on, what the index holds, when it last went through, whether it runs."""
+        st = await asyncio.to_thread(IX.state, self.D.HOME / IX.DB_NAME)
+        return dict(st, on=self.prefs()["search"], can=IX.has_fts(), running=self.search.alive())
+
+    async def api_search_rebuild(self):
+        """"Build again": the index removed and the indexer started anew — the first round reads everything."""
+        if not self.prefs()["search"]:
+            raise ValueError(self.t("search.err.off"))
+        await self.search.stop()
+        await asyncio.to_thread(IX.remove, self.D.HOME)
+        self.search.next_try = 0
+        self.search_kick.set()
+        log("app: search — the index is built again")
+        return await self.api_search()
 
     async def api_project(self, pkey, earlier=None):
         """A project's screen — its board, large: what waits for the owner (requests to answer here, sessions that
@@ -1143,7 +1223,9 @@ class Api:
 
     # ----- a session: reading, writing, answering, the model, stopping -----
 
-    async def api_session(self, sid, before=None, after=None):
+    async def api_session(self, sid, before=None, after=None, at=None, fwd=None):
+        """A session's screen: its chat page and everything around it. at — a place the search found (stage И): the
+        chat opens there (PW.page_at), fwd — the chunk after that point, on the way down to the chat's end."""
         path, lv = self.transcript_of(sid)
         row = self.store.session(sid)
         lv = lv or self.stub(sid, row["pkey"] if row else Path(path).parent.name)
@@ -1160,7 +1242,15 @@ class Api:
         # a report too (the owner, 2026-10-30: "I want to send every session I start to the checked ones myself";
         # before, a look put a report away, and so did the model's "only a report" — and a task went by unnoticed)
         codex = PW.is_codex(path)
-        page = await asyncio.to_thread(PW.codex_page if codex else PW.transcript_page, path, before, after, lv.cwd)
+        page = None
+        if at is not None:
+            page = await asyncio.to_thread(PW.page_at, path, int(at), lv.cwd, codex)
+        elif fwd is not None:
+            page = await asyncio.to_thread(PW.forward_page, path, int(fwd), lv.cwd, codex)
+        if page is None:                # a place no longer there (the file written anew): the chat as usual
+            page = await asyncio.to_thread(PW.codex_page if codex else PW.transcript_page, path, before, after, lv.cwd)
+            if at is not None or fwd is not None:
+                page = dict(page, tail=True)
         stats = None if codex else await asyncio.to_thread(self.stats.get, path)
         await self.work_ready(sid, path)
         if outcome:
@@ -3023,12 +3113,19 @@ class Api:
                 "prev": r["prev"], "next": r["next"], "project": self.project_label(r["pkey"]),
                 "title": (row["title"] if row else None) or ""}
 
-    async def api_file(self, sid, p="", base=""):
-        """A project's file or folder for the app's screen — a link in Claude's words tapped there (stage F5). p — the
-        path as the link gives it, from the project's folder or, with base, from the folder of the project file whose
-        page the link sits in. The rule is Telegram's: inside the project, nothing like keys or settings. → {p: the path
-        inside the project ("" — its folder), kind: dir | pic | md | html | text | other, and entries | data | text}."""
-        pkey, project = self.session_project(sid) if self.D.SID_RE.fullmatch(sid or "") else (None, None)
+    async def api_file(self, sid="", p="", base="", pkey=None):
+        """A project's file or folder for the app's screen — a link in Claude's words tapped there (stage F5), a
+        document the search found (stage И: by the project, pkey, without a session). p — the path as the link gives
+        it, from the project's folder or, with base, from the folder of the project file whose page the link sits in.
+        The rule is Telegram's: inside the project, nothing like keys or settings. → {p: the path inside the project
+        ("" — its folder), kind: dir | pic | md | html | text | other, and entries | data | text}."""
+        if pkey and not sid:
+            # only a project the search reads — never a folder made out of whatever key came (decode_pkey would find one)
+            roots = {x["pkey"]: x["path"] for x in (self.search.what or {}).get("projects") or []}
+            project = roots.get(pkey) if isinstance(pkey, str) else None
+            project = project if project and os.path.isdir(project) else None
+        else:
+            pkey, project = self.session_project(sid) if self.D.SID_RE.fullmatch(sid or "") else (None, None)
         if not project:
             raise ValueError(self.t("send.err.session"))
         path = F.link_target(project, p, base)
@@ -3348,7 +3445,7 @@ class Api:
     async def api_prefs(self, **kw):
         cur = self.prefs()
         for k, v in kw.items():
-            if k in ("vehi", "brief", "pager", "gh", "vcheck", "hashtags", "ccfresh") and isinstance(v, bool) or k == "mode" and v in self.D.MODES or k == "lang" and v in I.LANGS \
+            if k in ("vehi", "brief", "pager", "gh", "vcheck", "hashtags", "ccfresh", "search") and isinstance(v, bool) or k == "mode" and v in self.D.MODES or k == "lang" and v in I.LANGS \
                     or k == "pace" and v in S.PACES:
                 cur[k] = v
             elif k == "digest" and (v is None or isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 23):
@@ -3366,6 +3463,8 @@ class Api:
                 m, e = self.check_choice(v if k == "model" else None, v if k == "effort" else None)
                 cur[k] = m if k == "model" else e         # "" — back to Claude Code's settings
         self.store.put("prefs", cur)
+        if "search" in kw:
+            self.search_kick.set()                        # the indexer started, or stopped and its index removed
         if "mode" in kw:
             await self.set_mode(cur["mode"])
             cur = self.prefs()                            # with the hour "Computer" holds until

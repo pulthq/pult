@@ -15,6 +15,7 @@ import { Dots, Loading, ModelPick, Sheet, SwipeRow, avatar, bgChip, choiceDone, 
 import { BgSheet, bgCount, bgLine } from "../ui/load.js";
 import { Attach, Pic, Thumbs, Viewer, useAttach, useNoFold } from "../ui/pics.js";
 import { putAway } from "../ui/undo.js";
+import { markHtml, marked } from "../ui/find.js";
 
 
 // consecutive steps — one "N steps" block that expands; Claude's own lines about its progress (what the VS Code
@@ -112,11 +113,12 @@ function CopyRow({ words, rich, what, children }) {
 // one of Claude's messages; a long one that is not the last is folded to a few lines — "Show all" opens it; a slide
 // copies it, folded or not
 const LONG = 900;
-function TextMsg({ i, fold }) {
+function TextMsg({ i, fold, hq }) {
   const [open, setOpen] = useState(false);
   const folded = fold && !open;
-  const h = useMemo(() => md(i.text), [i.text]);     // the screen redraws every second: the words only when they change
-  return html`<${CopyRow} words=${(i.text || "").trim()} rich=${clip} what="msg"><div class="msg"><div class=${"md" + (folded ? " fold" : "")} dangerouslySetInnerHTML=${{ __html: h }}/>
+  // the screen redraws every second: the words only when they change; the place the search found — its words marked
+  const h = useMemo(() => (i.hit && hq ? markHtml(md(i.text), hq) : md(i.text)), [i.text, i.hit, hq]);
+  return html`<${CopyRow} words=${(i.text || "").trim()} rich=${clip} what="msg"><div class=${"msg" + (i.hit ? " hit" : "")}><div class=${"md" + (folded ? " fold" : "")} dangerouslySetInnerHTML=${{ __html: h }}/>
     ${fold ? html`<button class="link more2" onClick=${() => setOpen(!open)}>${t(open ? "msg.less" : "msg.more")}</button>` : ""}
     ${i.att && i.att.length ? html`<div class="atts shown">${i.att.map((a, k) => html`<${Pic} key=${k} a=${a} all=${i.att}/>`)}</div>` : ""}<${At} ts=${i.ts}/></div></${CopyRow}>`;
 }
@@ -229,7 +231,7 @@ function FileView({ job }) {
   const [busy, setBusy] = useState(false);
   const body = useRef(null);
   // a computer before stage F5 doesn't know the request: say what to do, not "no such request"
-  useEffect(() => { api("file", { sid: job.sid, p: path, base: job.base || "" })
+  useEffect(() => { api("file", Object.assign(job.sid ? { sid: job.sid } : { pkey: job.pkey }, { p: path, base: job.base || "" }))
     .then(setD, (e) => setErr(/: file$/.test(e.message) ? t("fv.old") : e.message)); }, []);
   const lines = useMemo(() => {
     if (!d || d.text == null) return null;
@@ -242,7 +244,7 @@ function FileView({ job }) {
     if (el) el.scrollIntoView({ block: "center" });
   }, [d, asText]);
   const close = () => history.back();
-  const openAt = (p) => emit("file", { sid: job.sid, p: lit(p), base: "" });
+  const openAt = (p) => emit("file", { sid: job.sid, pkey: job.pkey, p: lit(p), base: "" });
   const send = async () => {
     setBusy(true);
     try { await api("send_files", { sid: job.sid, paths: [d.p] }); haptic("success"); emit("toast", t("fv.sent")); }
@@ -274,7 +276,7 @@ function FileView({ job }) {
   } else if (d.kind === "other") view = html`<div class="empty">${t("fv.other")}</div>`;
   else if (!d.size) view = html`<div class="empty">${t("fv.empty")}</div>`;
   else if (page && !asText && d.kind === "md") {
-    view = html`<div class="md fv-md" data-sid=${job.sid} data-base=${folderOf(d.p)} dangerouslySetInnerHTML=${{ __html: md(d.text) }}/>`;
+    view = html`<div class="md fv-md" data-sid=${job.sid} data-pkey=${job.pkey} data-base=${folderOf(d.p)} dangerouslySetInnerHTML=${{ __html: md(d.text) }}/>`;
   } else if (page && !asText) {
     // the project's own page, drawn but dead: no script runs in it (no allow-scripts, and the app's own rules hold in it),
     // nothing in it reaches the app or the network
@@ -292,7 +294,7 @@ function FileView({ job }) {
     </div>
     <div ref=${body} class=${"fv-body" + (page && !asText && d.kind === "html" ? " full" : "")}>${view}
       ${d && d.cut && html`<div class="dim small fv-cut">${t("fv.cut", { total: fsize(d.size) })}</div>`}</div>
-    ${d && !isDir && d.size > 0 && html`<div class="fv-bar"><button class="btn wide" disabled=${busy} onClick=${send}>${ic("send", 18)} ${busy ? "…" : t("fv.send")}</button></div>`}
+    ${d && !isDir && d.size > 0 && job.sid && html`<div class="fv-bar"><button class="btn wide" disabled=${busy} onClick=${send}>${ic("send", 18)} ${busy ? "…" : t("fv.send")}</button></div>`}
   </div>`;
 }
 
@@ -396,9 +398,11 @@ function Second({ sid, job, now, onAgain, who }) {
 }
 
 const STOP_ASK = 3000;
-function Session({ sid }) {
+// at — a place the search found (stage И): the chat opens there, the place marked (hq — the words asked for), and the
+// rest of it comes in chunks as you go down (fwd — where the next one begins); at its end — the chat as always
+function Session({ sid, at, hq }) {
   const now = useNow(1000);
-  const [s, setS] = useState({ items: [], before: null, end: null, info: null, err: null });
+  const [s, setS] = useState({ items: [], before: null, end: null, info: null, err: null, fwd: null });
   const ref = useRef(s);
   ref.current = s;
   const bottom = useRef(null);
@@ -443,6 +447,15 @@ function Session({ sid }) {
   const [early, setEarly] = useState(false);
   const earlyRef = useRef(false);
   const loadRef = useRef(null);
+  // and later history, while the chat is opened at a place above its end
+  const [late, setLate] = useState(false);
+  const lateRef = useRef(false);
+  const later = () => {
+    if (lateRef.current || !ref.current.info || ref.current.fwd == null) return;
+    lateRef.current = true;
+    setLate(true);
+    loadRef.current("fwd").finally(() => { lateRef.current = false; setLate(false); });
+  };
   const earlier = () => {
     if (earlyRef.current || !ref.current.info || ref.current.before == null) return;
     earlyRef.current = true;
@@ -488,6 +501,7 @@ function Session({ sid }) {
       if (gap < 120) setUnread(false);
       setFar(gap > window.innerHeight);
       if (window.scrollY < 900) earlier();
+      if (gap < 900) later();
       if (!frame) frame = requestAnimationFrame(findPin);
     };
     addEventListener("scroll", f, { passive: true });
@@ -496,38 +510,46 @@ function Session({ sid }) {
 
   const load = async (mode) => {
     const cur = ref.current;
-    if (mode === "after" && cur.end == null) mode = "full";
+    if (mode === "after" && cur.fwd != null) return;          // opened above the end: what is new waits until it is reached
+    if (mode === "after" && cur.end == null) mode = at && !cur.info ? "at" : "full";
     try {
       const args = { sid };
       if (mode === "after") args.after = cur.end;
       if (mode === "before") args.before = cur.before;
+      if (mode === "at") args.at = +at;
+      if (mode === "fwd") args.fwd = cur.fwd;
       const d = await api("session", args);
       const p = d.page;
       if (mode === "after" && p.reset) return load("full");       // too much new — reload everything
-      const items = mode === "after" ? merge([...cur.items, ...p.items])
+      const items = mode === "after" || mode === "fwd" ? merge([...cur.items, ...p.items])
         : mode === "before" ? merge([...p.items, ...cur.items]) : merge(p.items);
-      const stick = mode !== "before" && (!cur.info || window.innerHeight + window.scrollY > document.body.scrollHeight - 120);
+      const down = mode === "at" || mode === "fwd";           // a chunk after a place: the end not reached until it says so
+      const stick = mode !== "before" && !down && (!cur.info || window.innerHeight + window.scrollY > document.body.scrollHeight - 120);
       // earlier messages go in above: keep the distance to the page's end, so what is on screen doesn't jump
       const fromEnd = document.documentElement.scrollHeight - window.scrollY;
-      setS({ items, before: mode === "after" ? cur.before : p.before, end: mode === "before" ? cur.end : p.end,
-             info: d, err: null });
+      setS({ items, before: mode === "after" || mode === "fwd" ? cur.before : p.before, end: mode === "before" ? cur.end : p.end,
+             info: d, err: null, fwd: mode === "before" ? cur.fwd : down && !p.tail ? p.end : null });
       if (stick) setTimeout(toBottom, 30);
+      // the place in the middle of the screen; gone from the file since (written anew) — the chat's end, as usual
+      else if (mode === "at") setTimeout(() => { const el = document.querySelector(".msg.hit"); if (el) el.scrollIntoView({ block: "center" }); else toBottom(); }, 60);
       else if (mode === "before") setTimeout(() => window.scrollTo(0, document.documentElement.scrollHeight - fromEnd), 0);
       else if (mode === "after" && p.items.some((i) => i.k !== "result")) setUnread(true);
     } catch (e) { setS(Object.assign({}, ref.current, { err: e.message })); }
   };
+  // from a place above the end straight to the end: the chat as always
+  const toEnd = () => load("full").then(() => setTimeout(toBottom, 60));
   loadRef.current = load;
   useEffect(() => {
-    setS({ items: [], before: null, end: null, info: null, err: null });
-    ref.current = { items: [], before: null, end: null, info: null, err: null };
+    setS({ items: [], before: null, end: null, info: null, err: null, fwd: null });
+    ref.current = { items: [], before: null, end: null, info: null, err: null, fwd: null };
     firstOut.current = null;
-    if (conn.ready) load("full");
+    if (conn.ready) load(at ? "at" : "full");
     // a reconnect (Telegram in the background for a minute) brings only what is new: a full load dropped the earlier
     // history read so far, under the finger; "after" falls back to a full load itself when it has to
     const kick = pacer(() => load("after"));
     const offs = [on("ready", kick), on("event", (m) => { if (!m.sid || m.sid === sid) kick(); })];
     return () => { offs.forEach((f) => f()); kick.stop(); };
-  }, [sid]);
+  }, [sid, at]);
 
   // the field fits its words: one line when empty, up to 160 px with a long message
   const fit = () => setTimeout(() => { const el = ta.current; if (el) { el.style.height = "auto"; el.style.height = Math.min(el.scrollHeight, 160) + "px"; } }, 0);
@@ -535,6 +557,7 @@ function Session({ sid }) {
   const sendText = async (fork) => {
     const words = text;
     if (!words.trim() && !a.files.length) return;
+    if (ref.current.fwd != null) await toEnd();       // opened at a place above the end: a message goes at the end
     setBusy(true);
     const key = "l" + Date.now();
     setSending((m) => [...m, { key, text: words.trim(), n: a.files.length, ts: Date.now() / 1000, st: "sending" }]);
@@ -664,10 +687,11 @@ function Session({ sid }) {
       <span class="pin-tx">${pin.text}</span></span></span></button>`}</div>`}
     ${(shown.current = group(s.items)).map((i, n, all) => i.k === "day" ? html`<div class="day" key=${i.key}>${i.label}</div>`
       : i.k === "steps" ? html`<${Steps} key=${i.key} steps=${i.steps}/>`
-      : i.k === "user" ? html`<${CopyRow} key=${i.key} words=${(i.text || "").trim()} rich=${clipPlain} what="mine"><div class="msg me" data-n=${n}>${i.voice ? html`<span class="mic-i">${ic("mic", 14)}</span>` : ""}${i.text}${i.att && i.att.length ? html`<div class="atts">${i.att.map((a, k) => html`<${Pic} key=${k} a=${a} all=${i.att}/>`)}</div>` : ""}<${At} ts=${i.ts} mid=${i.mid} st="read"/></div></${CopyRow}>`
+      : i.k === "user" ? html`<${CopyRow} key=${i.key} words=${(i.text || "").trim()} rich=${clipPlain} what="mine"><div class=${"msg me" + (i.hit ? " hit" : "")} data-n=${n}>${i.voice ? html`<span class="mic-i">${ic("mic", 14)}</span>` : ""}${i.hit && hq ? marked(i.text, hq) : i.text}${i.att && i.att.length ? html`<div class="atts">${i.att.map((a, k) => html`<${Pic} key=${k} a=${a} all=${i.att}/>`)}</div>` : ""}<${At} ts=${i.ts} mid=${i.mid} st="read"/></div></${CopyRow}>`
       : i.k === "note" ? html`<div class="note" key=${i.key}>${i.text}${i.ts ? " · " + hhmm(toDate(i.ts)) : ""}</div>`
       : i.k === "update" ? html`<div class="upd solo" key=${i.key}>${i.text}</div>`
-      : html`<${TextMsg} key=${i.key} i=${i} fold=${i.text.length > LONG && all.slice(n + 1).some((x) => x.k === "text")}/>`)}
+      : html`<${TextMsg} key=${i.key} i=${i} hq=${hq} fold=${!i.hit && i.text.length > LONG && all.slice(n + 1).some((x) => x.k === "text")}/>`)}
+    ${s.fwd != null ? html`<button class="link center later" disabled=${late} onClick=${later}>${t(late ? "later.loading" : "later")}</button>` : html`
     ${onTheWay(s.items, info.out || [], sending).filter((o) => !putBack.includes(o.id)).map((o) => html`<div key=${"o" + (o.id || o.key)} class=${"msg me out " + o.st}
         onClick=${o.st === "gone" ? () => { setText(o.text); fit(); setPutBack((x) => [...x, o.id]); } : null}>${o.voice ? html`<span class="mic-i">${ic("mic", 14)}</span>` : ""}${o.text}${o.att && o.att.length
         ? html`<div class="atts">${o.att.map((x, k) => html`<${Pic} key=${k} a=${x} all=${o.att}/>`)}</div>`
@@ -681,9 +705,10 @@ function Session({ sid }) {
     ${out && lv.state !== "work" && lv.state !== "queue" && !info.pending.length && (outState === "you" || outState === "fail" || out.need || (out.replies && out.replies.length) || out.resume || out.turn_files || out.changes || canSecond)
       && html`<${Outcome} key=${out.ts} sid=${sid} out=${out} state=${outState} now=${now} second=${canSecond ? () => askSecond(sec.fix ? "check" : "") : null} fix=${!!sec.fix} by=${sec.by} ro=${!!info.ro}/>`}
     ${sec && sec.job && html`<${Second} sid=${sid} job=${sec.job} now=${now} who=${vend ? vend.name : "Claude"} onAgain=${() => askSecond(sec.job.kind === "check" ? "check" : "")}/>`}
-    ${pending.map((r) => html`<${Req} key=${r.rid} r=${r} stt=${info.stt} showWhere=${false}/>`)}
+    ${pending.map((r) => html`<${Req} key=${r.rid} r=${r} stt=${info.stt} showWhere=${false}/>`)}`}
     <div ref=${bottom}></div>
-    ${(unread || far) && html`<button class=${"tobottom" + (unread ? " fresh" : "")} aria-label=${t("to.bottom")} onClick=${() => { toBottom(); setUnread(false); }}>${unread ? t("new.msgs") : "↓"}</button>`}
+    ${s.fwd != null ? html`<button class="tobottom toend" aria-label=${t("to.end")} onClick=${toEnd}>↓ ${t("to.end")}</button>`
+      : (unread || far) && html`<button class=${"tobottom" + (unread ? " fresh" : "")} aria-label=${t("to.bottom")} onClick=${() => { toBottom(); setUnread(false); }}>${unread ? t("new.msgs") : "↓"}</button>`}
     <div class="composer" ref=${comp}>
       ${pick && html`<${ModelPick} sid=${sid} choice=${info.choice} now=${info.stats || {}} driven=${lv.driven} tab=${lv.tab} dflt=${info.default} models=${info.cc_models} canModel=${info.switch} canEffort=${info.switch_effort && !vend} vendor=${vend} onClose=${closePick} onDone=${() => load("after")}/>`}
       ${note && html`<${Sheet} title=${info.title} lines=${note} onClose=${closeNote}/>`}

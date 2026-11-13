@@ -25,6 +25,7 @@ CHECKS = {
     "memory": ({"STAND_LANG": "ru", "STAND_MEMORY": "96"}, "out", []),
     "power": ({"STAND_LANG": "ru"}, "out", []),   # 2026-11-12: Home's limit and machine, the battery, the machine's name
     "fileview": ({"STAND_FILES": "1"}, "SESS", []),
+    "said": ({"STAND_SEARCH": "1", "STAND_LANG": "ru"}, "out", []),   # stage И: what was said and the documents, found
     "compose": ({"STAND_LANG": "ru"}, "out", []),
     "newproject": ({"STAND_LANG": "ru"}, "NEWPROJ", []),
     "editor": ({}, "SESS", []),

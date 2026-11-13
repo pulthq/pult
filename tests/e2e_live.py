@@ -14,6 +14,8 @@ With Telegram as a pager: a task from the app makes no turn or result message; i
 A message from the app mid-turn reaches Claude in that turn, the app shows it as written mid-turn, its ticks say read.
 Stop from the app closes the interrupted turn, though Claude Code sends no Stop hook for it.
 A new project "with a description" (stage S): git, its topic by the title, a first turn that writes CLAUDE.md.
+Search over everything (stage И): the daemon's child indexes the run's transcripts, a word of a request is found in what
+was said, the chat opens at it.
 What that task changed is counted from git: the file its Write made is among its own changes and opens line by line (block 5).
 A file made in a session goes to the project's topic with `pult send`, and the turn's outcome lists it (stage F).
 With the model on, a new task gets its section and topic as soon as its request is in, and again with the result (stage T);
@@ -46,6 +48,7 @@ sys.path.insert(0, str(SRC))
 import httpx
 import pult_api
 import pult_driven
+import pult_index as IX
 import pult_parts
 import pultd
 
@@ -178,6 +181,30 @@ async def main():
                         "reply_to_message": {"message_id": row["msg"]}})
     await until(lambda: any(t.startswith("✅") for t in texts(mark)), what="итог продолжения")
     log("продолжение:", [t for t in texts(mark) if t.startswith("✅")][-1])
+
+    # 2a. search over everything (stage И, Q187): the daemon's own child process indexes this run's transcripts (only
+    #     this project's: the owner's are not this check's), a word of the first request is found in what was said,
+    #     and the chat opens at it — the place marked; the child ends when it is told to
+    if IX.has_fts():
+        tp = Path(p.transcript_of(sid)[0])
+        p.search.write_what({"roots": [str(tp.parent.parent)], "projects": [{"pkey": tp.parent.name, "path": str(PROJ)}], "codex": []})
+        await p.search.start()
+        await until(lambda: IX.ready(pultd.HOME / IX.DB_NAME)[0], 60, what="первый проход индекса поиска")
+        got = await p.api_find("favorite color")
+        mine = [g for g in got["said"] if g["sid"] == sid]
+        place = mine and [x for x in mine[0]["places"] if x["me"]][-1]
+        page = (await p.api_session(sid, at=place["at"]))["page"] if place else {"items": []}
+        hit = [i for i in page["items"] if i.get("hit")]
+        st = await p.api_search()
+        log("поиск: «favorite color» — %s; задача: %s мест, первое — твоё: %r; открыта на нём: %s · индекс %d мест, %d КБ" % (
+            [(g["title"][:30], g["n"]) for g in got["said"]], mine and mine[0]["n"], place and place["snip"][:50],
+            bool(hit and "favorite color" in hit[0]["text"]), st["places"], st["size"] // 1024))
+        assert mine and place, "the search didn't find the first request's words"
+        assert hit and "favorite color" in hit[0]["text"], "the chat didn't open at the place found"
+        await p.search.stop()
+        assert not p.search.alive(), "the indexer didn't end when told"
+    else:
+        log("поиск: у этого Python нет FTS5 с триграммами — шаг пропущен")
 
     # Q173: the session's Claude Code named its models at start-up, and Pult kept the list for its menus — free; and a
     # version without one is read without a request to a model (the SDK's own Claude Code here)

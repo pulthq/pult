@@ -469,11 +469,15 @@ await check("where: what is typed and not sent stays by its place — a week, th
 await check("where: a link to a project file opens over the screen; a web link — outside, through Telegram", async () => {
   const files = [];
   const off = C.on("file", (f) => files.push(f));
-  const a = { dataset: { file: "src/x.py" }, closest: (s) => (s === "[data-sid]" ? { dataset: { sid: "S1", base: "docs" } } : null) };
+  const a = { dataset: { file: "src/x.py" }, closest: (s) => (s === "[data-sid],[data-pkey]" ? { dataset: { sid: "S1", base: "docs" } } : null) };
   const click = (target) => { const e = new Event("click", { cancelable: true }); Object.defineProperty(e, "target", { value: target }); doc.dispatchEvent(e); return e; };
   const e1 = click({ closest: (s) => (s === "a[data-file]" ? a : null) });
   assert.deepEqual(files, [{ sid: "S1", p: "src/x.py", base: "docs" }]);
   assert.ok(e1.defaultPrevented);
+  // a document the search found (stage И) has its project, not a session: a link inside it opens by the project
+  const b = { dataset: { file: "img/a.png" }, closest: (s) => (s === "[data-sid],[data-pkey]" ? { dataset: { pkey: "-Users-x-shop", base: "docs" } } : null) };
+  click({ closest: (s) => (s === "a[data-file]" ? b : null) });
+  assert.deepEqual(files[1], { sid: undefined, p: "img/a.png", base: "docs", pkey: "-Users-x-shop" });
   click({ closest: (s) => (s === "a[data-ext]" ? { href: "https://example.org/" } : null) });
   assert.deepEqual(opened, ["https://example.org/"]);
   off();

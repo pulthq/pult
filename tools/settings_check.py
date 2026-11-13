@@ -1,6 +1,6 @@
-"""Settings as a menu of five screens (review 2026-11-11, block 4; the owner's yes — Q181), in headless Chrome over
-DevTools, on the stand, with real taps: Settings opens as five rows — Notifications, Models and keys, Voice and language,
-Pult and its parts, Security — each saying what is set there now; nothing of the old scroll is on it; a row opens its
+"""Settings as a menu of screens (review 2026-11-11, block 4; the owner's yes — Q181; Search since stage И, Q187), in
+headless Chrome over DevTools, on the stand, with real taps: Settings opens as six rows — Notifications, Models and keys,
+Search, Voice and language, Pult and its parts, Security — each saying what is set there now; nothing of the old scroll is on it; a row opens its
 screen at an address of its own, Back returns to the menu; each screen holds its own things and none of another's; a
 link from Telegram opens a screen at once; Home's line about an update leads to Pult's parts, not to the menu; the menu
 says when parts are behind; an unknown name is the menu; nothing runs over the edge at 320 px.
@@ -18,8 +18,8 @@ URLS = _cdp.stand_urls(sys.argv[1], ("HOME", "SETTINGS", "SETP", "SETM", "SETC")
 OUT = sys.argv[2] if len(sys.argv) > 2 else tempfile.mkdtemp(prefix="pult-settings-")
 os.makedirs(OUT, exist_ok=True)
 verdict = _cdp.Verdicts()
-NAMES = [("calls", "Уведомления"), ("models", "Модели и ключи"), ("voice", "Голос и язык"), ("parts", "Пульт и его части"),
-         ("safe", "Безопасность")]
+NAMES = [("calls", "Уведомления"), ("models", "Модели и ключи"), ("search", "Поиск"), ("voice", "Голос и язык"),
+         ("parts", "Пульт и его части"), ("safe", "Безопасность")]
 ROWS = "[...document.querySelectorAll('.set-menu .set-row')]"
 # what a screen holds: the language's two buttons, the table of parts, the vendors' heading, where you are, the logins
 HAS = {"lang": "[...document.querySelectorAll('.seg button')].some((b) => b.textContent === 'Русский')",
@@ -28,8 +28,10 @@ HAS = {"lang": "[...document.querySelectorAll('.seg button')].some((b) => b.text
        "where": "!!document.querySelector('.modes .seg')",
        "logins": "[...document.querySelectorAll('button.link')].some((b) => b.textContent === 'Выйти везде')",
        "log": "!!document.querySelector('details.logbox')",
-       "quiet": "[...document.querySelectorAll('.sw-row b')].some((b) => b.textContent === 'Тихие часы')"}
-OWN = {"calls": ("where", "quiet"), "models": ("vendors",), "voice": ("lang",), "parts": ("table", "log"), "safe": ("logins",)}
+       "quiet": "[...document.querySelectorAll('.sw-row b')].some((b) => b.textContent === 'Тихие часы')",
+       "search": "[...document.querySelectorAll('.sw-row b')].some((b) => b.textContent === 'Поиск по переписке')"}
+OWN = {"calls": ("where", "quiet"), "models": ("vendors",), "search": ("search",), "voice": ("lang",), "parts": ("table", "log"),
+       "safe": ("logins",)}
 
 
 async def fresh(pg, url):
@@ -43,7 +45,7 @@ async def main():
         await fresh(pg, URLS["SETTINGS"])
         verdict("Settings opens as a menu", await pg.until("%s.length > 0" % ROWS, 150))
         rows = await pg.js("%s.map((r) => [r.dataset.set, r.querySelector('b').textContent, r.querySelector('.dim').textContent])" % ROWS)
-        verdict("… five rows, in this order", [r[:2] for r in rows] == [list(n) for n in NAMES], rows)
+        verdict("… six rows, in this order", [r[:2] for r in rows] == [list(n) for n in NAMES], rows)
         verdict("… each says what is set there now", all(r[2].strip() for r in rows), rows)
         said = {r[0]: r[2] for r in rows}
         verdict("… where you are, in Notifications' line", said.get("calls", "").startswith("Авто"), said.get("calls"))
@@ -73,7 +75,7 @@ async def main():
             verdict("«%s»: and nothing of another screen" % name, not others, others)
             await pg.shot(os.path.join(OUT, k + ".png"))
             await pg.js("history.back()")
-            verdict("«%s»: Back — the menu again" % name, await pg.until("location.hash === '#/settings' && %s.length === 5" % ROWS, 100),
+            verdict("«%s»: Back — the menu again" % name, await pg.until("location.hash === '#/settings' && %s.length === 6" % ROWS, 100),
                     await pg.js("location.hash"))
 
         # a link from Telegram opens a screen at once
@@ -95,11 +97,11 @@ async def main():
                 await pg.js("location.hash"))
         # the gear — the menu
         await pg.tap("document.querySelector('a.gear')")
-        verdict("the gear on Home opens the menu", await pg.until("location.hash === '#/settings' && %s.length === 5" % ROWS, 100))
+        verdict("the gear on Home opens the menu", await pg.until("location.hash === '#/settings' && %s.length === 6" % ROWS, 100))
 
         # a name there is no screen for: the menu
         await pg.js("location.hash = '#/settings/nothing'")
-        verdict("an unknown name is the menu", await pg.until("%s.length === 5" % ROWS, 100))
+        verdict("an unknown name is the menu", await pg.until("%s.length === 6" % ROWS, 100))
 
         await pg.cmd("Emulation.setDeviceMetricsOverride", width=320, height=860, deviceScaleFactor=2, mobile=True)
         await asyncio.sleep(0.4)

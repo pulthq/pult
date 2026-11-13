@@ -39,6 +39,7 @@ from pult_driven import MAX_RUNNING, CodexDriven, Driven, Job, Live, Req, Turn  
 from pult_driven import permission_mode
 import pult_files as F
 import pult_i18n as I
+import pult_index as IX
 import pult_load as L
 import pult_new as N
 import pult_os
@@ -103,7 +104,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.67"
+VERSION = "0.18.68"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -123,6 +124,8 @@ PREFS = {"vehi": True, "mode": "auto", "lang": None, "brief": False, "pager": No
          "digest": 9, "quiet": [23, 8], "page_delay": 5, "remind": True,
          # what the app calls this machine (2026-11-12); None — the system's own name (pult_os.machine_name)
          "machine": None,
+         # search over everything (stage И, Q187): the index of what was said and of the projects' documents is kept
+         "search": True,
          # until when "Computer" holds (mode_end) — not the owner's to set
          "mode_until": None}   # owner prefs:
 # milestones, location (auto/mac/phone), language, a model's line for each result, Telegram as a pager (None — on where the
@@ -460,6 +463,8 @@ class Pult(Api, Parts):
         self.changes_tasks = {}        # sid → that count going on
         self.facts_memo = {}           # transcript → when its task began and the files its tools wrote, until it grows
         self._codex = (0.0, None)      # Codex on this computer, as last looked up (pult_api.codex_state)
+        self.search = IX.Runner(HOME, log)   # the search's indexer, a child process (stage И)
+        self.search_kick = asyncio.Event()   # Search turned on or off, built anew: the watch looks at once
 
     # ----- this computer's environment -----
 
@@ -3803,6 +3808,44 @@ class Pult(Api, Parts):
                 % (lv.sid[:8], project, info["seen"]))
         return got
 
+    async def search_what(self):
+        """What the indexer reads (search-what.json): the projects as Pult lists them, the transcripts' homes, the
+        Codex tasks Pult runs — each with its own history file."""
+        known = {r["pkey"]: r["path"] for r in self.store.db.execute("SELECT pkey, path FROM topics") if r["path"]}
+        projects = [{"pkey": k, "path": p} for _, k, p in await asyncio.to_thread(self.list_projects, known)]
+        codex = []
+        for r in self.store.db.execute("SELECT k, v FROM kv WHERE k LIKE 'codex.%'"):
+            sid = r["k"][6:]
+            try:
+                v = json.loads(r["v"])
+            except ValueError:
+                continue
+            if SID_RE.fullmatch(sid) and isinstance(v, dict) and v.get("path"):
+                row = self.store.session(sid)
+                codex.append({"sid": sid, "path": v["path"], "pkey": row["pkey"] if row else None})
+        roots = [str(CLAUDE_PROJECTS)] + [str(d) for d in sorted(HOMES.glob("*/projects"))]
+        return {"roots": roots, "projects": projects, "codex": codex}
+
+    async def search_watch(self):
+        """Search over everything (stage И): with Search on, the indexer runs and is told what to read every minute;
+        off — it is stopped and its index removed. Without FTS5 in this Python's SQLite the search reads titles alone."""
+        if not IX.has_fts():
+            log("search: this Python's SQLite has no FTS5 with trigrams — tasks are found by their titles alone")
+            return
+        while True:
+            if self.prefs()["search"]:
+                self.search.write_what(await self.search_what())
+                await self.search.start()
+            elif self.search.alive() or (HOME / IX.DB_NAME).exists():
+                await self.search.stop()
+                await asyncio.to_thread(IX.remove, HOME)
+                log("search: off — the indexer stopped, its index removed")
+            try:
+                await asyncio.wait_for(self.search_kick.wait(), 60)
+            except asyncio.TimeoutError:
+                pass
+            self.search_kick.clear()
+
     async def usage_watch(self):
         """Limit warnings: at 80 % and 95 %, a message with sound in General, once per window."""
         try:
@@ -4202,7 +4245,7 @@ async def amain():
     jobs = [("the message queue", p.out.run), ("Telegram", p.telegram_start), ("the usage watch", p.usage_watch),
             ("the attention watch", p.attention_watch), ("the update watch", p.update_watch),
             ("the release watch", p.release_watch), ("the outbox watch", p.outbox_watch),
-            ("the look after a restart", p.after_restart)]
+            ("the look after a restart", p.after_restart), ("the search index", p.search_watch)]
     if env.get("PULT_RELAY_URL") and env.get("PULT_RELAY_SECRET"):
         p.web = PW.Web(p, env["PULT_RELAY_URL"], env["PULT_RELAY_SECRET"], token, p.allowed,
                        proxy=env.get("PULT_PROXY") or None, manifest=WEB_MANIFEST)

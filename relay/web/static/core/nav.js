@@ -14,11 +14,13 @@ document.addEventListener("click", (e) => {
   if (a) { e.preventDefault(); tg && tg.openLink ? tg.openLink(a.href) : window.open(a.href, "_blank", "noopener"); }
 });
 // a link to a project file in Claude's words opens it over the screen (stage F5): the session's project, from the
-// chat's address or the card's own; inside a file's page the path counts from that file's folder (data-base)
+// chat's address or the card's own; inside a file's page the path counts from that file's folder (data-base) — and a
+// document the search found has its project instead of a session (data-pkey, stage И)
 const openFile = (a) => {
-  const box = a.closest("[data-sid]");
+  const box = a.closest("[data-sid],[data-pkey]");
   const sid = box ? box.dataset.sid : (/^#\/s\/([0-9a-f-]{36})/.exec(location.hash) || [])[1];
-  if (sid) emit("file", { sid, p: a.dataset.file, base: (box && box.dataset.base) || "" });
+  const pkey = box && box.dataset.pkey;
+  if (sid || pkey) emit("file", Object.assign({ sid, p: a.dataset.file, base: (box && box.dataset.base) || "" }, pkey ? { pkey } : {}));
 };
 document.addEventListener("click", (e) => {
   const a = e.target.closest && e.target.closest("a[data-file]");

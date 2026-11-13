@@ -377,6 +377,18 @@ def _x11_idle_ms():
 
 # ---------- the link between the daemon and the hook, the tab wrapper, the `pult` command ----------
 #
+def background(cmd):
+    """A child that works for a long time and waits for nothing — the search's indexer (stage И): `cmd` and the
+    Popen arguments that start it below everything the owner does. macOS — `taskpolicy -b` (the background band:
+    the CPU's slow cores and throttled disk, and it stays so across exec); Windows — "below normal"; Linux — the child
+    lowers itself (os.nice)."""
+    if sys.platform == "darwin" and os.path.exists("/usr/sbin/taskpolicy"):
+        return ["/usr/sbin/taskpolicy", "-b"] + list(cmd), {}
+    if os.name == "nt":
+        return list(cmd), {"creationflags": getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)}
+    return list(cmd), {}
+
+
 # macOS and Linux: a unix socket, mode 600. Windows (Python has no unix sockets there): 127.0.0.1 and a free port;
 # the link file, where the socket would be, holds {"port", "key", "pid"} — it is in the user's own folder, and the
 # key is the first line of every connection. PULT_LINK=tcp turns the Windows way on elsewhere too (the checks).
