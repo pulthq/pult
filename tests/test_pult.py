@@ -1741,6 +1741,26 @@ class SttTest(unittest.IsolatedAsyncioTestCase):
         }
         for text, want in cases.items():
             self.assertEqual(STT.scrub(text), want, text)
+        # 2026-11-21: a 125-s recording came back with the prompt's last sentence at its end and a credit's name in
+        # its middle; the prompt's sentences go off the end (three words and more), DimaTorzok goes anywhere
+        prompt = I.T("stt.prompt", "ru") + " " + I.T("stt.prompt.words", "ru", words="Орион, Кубер")
+        owner = ("Проходил бы направления в Telegram-боте, вебапе, Номерик до 10, ноль, 100, 100. DimaTorzok Я думаю, "
+                 "что это очень полезно. Коммит, деплой, хук, сессия, вкладка, Пульт.")
+        cases = {
+            owner: ("Проходил бы направления в Telegram-боте, вебапе, Номерик до 10, ноль, 100, 100. Я думаю, что это "
+                    "очень полезно.", ["DimaTorzok", "Коммит, деплой, хук, сессия, вкладка, Пульт."]),
+            "Коммит, деплой, хук, сессия, вкладка, Пульт.": ("", ["Коммит, деплой, хук, сессия, вкладка, Пульт."]),
+            "Готово. Claude, VS Code, Telegram, GitHub. Продолжение следует...":
+                ("Готово.", ["Claude, VS Code, Telegram, GitHub.", "Продолжение следует..."]),
+            "Проверь логи. Ещё слова: Орион, Кубер.": ("Проверь логи.", ["Ещё слова: Орион, Кубер."]),
+            "Сделай коммит, деплой, хук.": ("Сделай коммит, деплой, хук.", []),     # not a sentence of the prompt
+            "Открой вкладку. Пульт.": ("Открой вкладку. Пульт.", []),               # one word said alone stays
+            "Запусти Claude Code": ("Запусти Claude Code", []),
+            "Привет, DimaTorzok, как дела?": ("Привет, как дела?", ["DimaTorzok,"]),
+        }
+        for text, want in cases.items():
+            self.assertEqual(STT.scrub(text, prompt), want, text)
+        self.assertEqual(STT.scrub(owner)[1], ["DimaTorzok"], "without the prompt only the credit goes")
 
     async def test_proxy_fallback(self):
         # the proxy route fails → the direct one answers and stays the first choice afterwards
@@ -5114,6 +5134,18 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError) as cm:
             await self.p.api_stt(base64.b64encode(b"\0" * 30).decode(), "audio/webm")
         self.assertEqual(str(cm.exception), I.T("stt.empty", "ru"))
+        # a piece of a longer recording (the app cuts at pauses, 2026-11-21): no words in it is "" — the others carry
+        # them; its place in the recording goes to the log
+        piece = {"secs": 12.4, "part": 2, "at": 85.3, "peak": -14}
+        with mock.patch.object(pult_api, "log") as lg:
+            self.assertEqual(await self.p.api_stt(base64.b64encode(b"\0" * 30).decode(), "audio/webm", notes=piece),
+                             {"text": ""})
+        self.assertIn("12 s, part 2 from 1:25, loudest -14 dB → no words", lg.call_args.args[0])
+        with mock.patch.object(pult_api, "log") as lg:
+            self.assertEqual(await self.p.api_stt(webm, "audio/webm", notes=piece), {"text": "привет мир"})
+        self.assertIn("part 2 from 1:25", lg.call_args.args[0])
+        self.assertEqual(self.p.stt_notes({"part": 1}), ", part 1")
+        self.assertEqual(self.p.stt_notes({"part": 0, "at": -1}), "")
         with self.assertRaises(ValueError):
             await self.p.api_stt("%%%", "audio/webm")
         self.p.stt = None

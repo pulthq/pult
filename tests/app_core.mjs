@@ -739,14 +739,146 @@ await check("voice: sound but no voice — \"nothing was heard\", nothing sent",
   assert.equal(alerts.at(-1), t("rec.silent"));
   assert.equal(N.holds, 0);
 });
-await check("voice: a recording stops by itself after 5 minutes", async () => {
-  await record(0.05, V.REC_MAX + 1, { stopAt: false });
-  await later(400);
-  const r = asked(ws(), "stt").at(-1);
-  assert.ok(r.args.notes.secs >= V.REC_MAX && r.args.notes.secs < V.REC_MAX + 2, "stopped at " + r.args.notes.secs + " s");
-  tell(ws(), { t: "res", id: r.id, data: { text: "a long one" } });
+await check("voice: where a piece ends — at a pause, a shorter one the longer the piece is; at 28 s whatever comes; silence alone is dropped", async () => {
+  const cases = [
+    [[1.9, 1.9, false], ""], [[2, 2, false], "drop"],                   // no voice yet: a new piece every 2 s
+    [[4, 2.9, true], ""], [[4, 3, true], "cut"],                       // a short piece ends only at a long pause
+    [[8, 1.1, true], ""], [[8, 1.2, true], "cut"],
+    [[15, 0.5, true], ""], [[15, 0.6, true], "cut"],
+    [[25, 0.2, true], ""], [[25, 0.25, true], "cut"],
+    [[V.PIECE_MAX - 0.1, 0, true], ""], [[V.PIECE_MAX, 0, true], "cut"],   // within Whisper's 30-s window
+  ];
+  for (const [a, want] of cases) assert.equal(V.pieceCut(...a), want, JSON.stringify(a));
+});
+// what the computer got for one recording, from the n-th request on
+const pieces = (n) => asked(ws(), "stt").slice(n);
+await check("voice: a long recording goes in pieces cut at pauses — each sent while it records, silence never; the words land together after Stop, in order (2026-11-21: a whole 125-s one came back made up after its 36th second)", async () => {
+  const n = asked(ws(), "stt").length, r0 = recs.length;
+  rec.words = undefined;
+  audio.level = 0.05;
+  const tap = rec.r.toggle();
+  await later(100);
+  await tap;
+  await later(10000);                          // 10 s of speech, then a pause: at 1.2 s of it the piece ends
+  audio.level = 0.001;
+  await later(1500);
+  assert.equal(pieces(n).length, 1, "the first piece went while the recording goes on");
+  const p1 = pieces(n)[0].args.notes;
+  assert.equal(p1.part, 1);
+  assert.equal(p1.at, 0);
+  assert.ok(p1.secs > 10 && p1.secs < 12, "cut at the pause: " + p1.secs);
+  assert.ok(typeof p1.asked === "number" && p1.voice !== null && p1.peak > V.VOICE_DB, "the recording's own figures ride with the first");
+  assert.equal(rec.r.st, "rec");
+  audio.level = 0.05;
+  await later(15000);                          // 15 s more, then a long silence: the second piece ends at 0.6 s of it
+  audio.level = 0.001;
+  await later(9000);
+  assert.equal(pieces(n).length, 2, "9 s of silence went nowhere");
+  const p2 = pieces(n)[1].args.notes;
+  assert.equal(p2.part, 2);
+  assert.ok(p2.at > 11 && p2.at < 12.5 && p2.secs > 15 && p2.secs < V.PIECE_MAX, JSON.stringify(p2));
+  assert.equal(p2.asked, undefined, "the question's time is the recording's, once");
+  assert.ok(recs.length - r0 >= 6, "silence was dropped every 2 s: " + (recs.length - r0) + " recorders");
+  const [a, b] = pieces(n);
+  tell(ws(), { t: "res", id: a.id, data: { text: "One," } });      // the first one's words, while it records
   await later(50);
-  assert.equal(rec.words, "a long one");
+  assert.equal(rec.words, undefined, "they wait for the rest");
+  audio.level = 0.05;
+  await later(6000);
+  rec.r.toggle();
+  await later(400);
+  assert.equal(pieces(n).length, 3, "the last piece goes after Stop");
+  const c = pieces(n)[2];
+  assert.equal(c.args.notes.part, 3);
+  assert.ok(c.args.notes.secs < 9, "it starts at most 2 s before the voice: " + c.args.notes.secs);
+  assert.equal(rec.r.st, "busy");
+  tell(ws(), { t: "res", id: c.id, data: { text: "three." } });
+  await later(50);
+  assert.equal(rec.words, undefined, "nothing lands until every piece is back");
+  assert.equal(N.holds, 1);
+  tell(ws(), { t: "res", id: b.id, data: { text: "two," } });
+  await later(50);
+  assert.equal(rec.words, "One, two, three.", "in the order spoken, whatever order they came back in");
+  assert.equal(rec.r.st, "idle");
+  assert.equal(N.holds, 0);
+});
+await check("voice: a piece the link let down while recording goes once more after Stop", async () => {
+  const n = asked(ws(), "stt").length;
+  rec.words = undefined;
+  audio.level = 0.05;
+  const tap = rec.r.toggle();
+  await later(100);
+  await tap;
+  await later(8000);
+  audio.level = 0.001;
+  await later(1300);                           // the first piece is cut and sent…
+  assert.equal(pieces(n).length, 1);
+  close(ws(), 1006);                           // …and the socket drops before its answer
+  await later(600);
+  await readyOn(ws());
+  audio.level = 0.05;
+  await later(3000);
+  rec.r.toggle();
+  await later(400);
+  const now = asked(ws(), "stt");
+  assert.deepEqual(now.map((r) => r.args.notes.part), [2, 1], "the last piece, then the lost one again");
+  tell(ws(), { t: "res", id: now[0].id, data: { text: "two" } });
+  tell(ws(), { t: "res", id: now[1].id, data: { text: "one" } });
+  await later(50);
+  assert.equal(rec.words, "one two");
+  assert.equal(rec.r.st, "idle");
+});
+await check("voice: a piece the computer couldn't read — the others' words land, and the owner is told a part is missing", async () => {
+  const n = asked(ws(), "stt").length;
+  audio.level = 0.05;
+  const tap = rec.r.toggle();
+  await later(100);
+  await tap;
+  await later(8000);
+  audio.level = 0.001;
+  await later(1300);
+  audio.level = 0.05;
+  await later(3000);
+  rec.r.toggle();
+  await later(400);
+  const [a, b] = pieces(n);
+  assert.equal(pieces(n).length, 2);
+  tell(ws(), { t: "res", id: a.id, error: "no connection to Groq (ReadTimeout)" });
+  tell(ws(), { t: "res", id: b.id, data: { text: "the rest" } });
+  await later(50);
+  assert.equal(rec.words, "the rest");
+  assert.equal(alerts.at(-1), t("rec.part", { err: "no connection to Groq (ReadTimeout)" }));
+  assert.equal(rec.r.st, "idle");
+});
+await check("voice: no words in any piece — \"couldn't make out any words\", the field untouched", async () => {
+  const n = asked(ws(), "stt").length;
+  rec.words = undefined;
+  await record(0.05, 2);
+  tell(ws(), { t: "res", id: pieces(n)[0].id, data: { text: "" } });
+  await later(50);
+  assert.equal(rec.words, undefined);
+  assert.equal(alerts.at(-1), t("rec.none"));
+  assert.equal(rec.r.st, "idle");
+});
+await check("voice: a recording stops by itself after 5 minutes — in pieces of at most 28 s, all of it", async () => {
+  const n = asked(ws(), "stt").length, done = new Set();
+  rec.words = undefined;
+  audio.level = 0.05;
+  const tap = rec.r.toggle();
+  await later(100);
+  await tap;
+  const answer = () => {                       // the computer answers each piece as it comes, as it does in a second
+    for (const r of pieces(n)) if (!done.has(r.id)) { done.add(r.id); tell(ws(), { t: "res", id: r.id, data: { text: "w" + r.args.notes.part } }); }
+  };
+  for (let s = 0; s <= V.REC_MAX; s++) { await later(1000); answer(); }
+  await later(400);
+  answer();
+  await later(50);
+  const all = pieces(n), last = all.at(-1).args.notes;
+  assert.ok(last.at + last.secs >= V.REC_MAX && last.at + last.secs < V.REC_MAX + 2, "stopped at " + (last.at + last.secs) + " s");
+  assert.ok(all.every((r) => r.args.notes.secs <= V.PIECE_MAX + 0.1), "each within Whisper's window: " + all.map((r) => r.args.notes.secs));
+  assert.deepEqual(all.map((r) => r.args.notes.part), all.map((_, i) => i + 1));
+  assert.equal(rec.words, all.map((_, i) => "w" + (i + 1)).join(" "));
   assert.equal(rec.r.st, "idle");
 });
 

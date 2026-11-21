@@ -962,6 +962,8 @@ const S = {
   "rec.empty": { en: "Nothing got recorded", ru: "Ничего не записалось" },
   "rec.wait": { en: "Microphone…", ru: "Микрофон…" },
   "rec.silent": { en: "No voice was heard, so nothing was sent. Speak closer to the phone.", ru: "Голоса не слышно — запись не отправлена. Говори ближе к телефону." },
+  "rec.none": { en: "I couldn't make out any words.", ru: "Не разобрал ни слова." },
+  "rec.part": { en: "Part of the recording wasn't recognized: {err}", ru: "Часть записи не распознана: {err}" },
   "rec.unsupported": { en: "Recording isn't available here — send a voice message in the chat instead.", ru: "Запись здесь недоступна — отправь голосовое в чате." },
   "rec.denied": { en: "No access to the microphone. Allow it for Telegram and try again, or send a voice message in the chat.", ru: "Нет доступа к микрофону. Разреши его Telegram и попробуй снова — или отправь голосовое в чате." },
   "mid.turn": { en: "during the turn · ", ru: "во время хода · " },
