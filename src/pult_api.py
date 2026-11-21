@@ -3260,7 +3260,9 @@ class Api:
 
     async def api_stt(self, data, mime=None, notes=None):
         """A recording from the app → its words (the app puts them into the message field). Nothing is kept. notes —
-        how the recording went, from the app's level meter, for the log: whether the start of the words got lost."""
+        how the recording went, from the app's level meter, for the log: whether the start of the words got lost. With
+        notes["part"] it is one piece of a longer recording (the app cuts at pauses, 2026-11-21): a piece with no words
+        in it — a cough, a breath — is "" rather than an error, the other pieces carry the words."""
         try:
             blob = base64.b64decode(str(data or ""), validate=True)
         except (ValueError, binascii.Error):
@@ -3270,6 +3272,9 @@ class Api:
         try:
             text = await self.hear(blob, mime or "audio/webm")
         except STT.SttError as e:
+            if e.key == "stt.empty" and isinstance(notes, dict) and "part" in notes:
+                log("voice from the app: %d KB%s → no words" % (len(blob) // 1024, self.stt_notes(notes)))
+                return {"text": ""}
             raise ValueError(self.stt_why(e)) from None
         log("voice from the app: %d KB%s → %d characters (%s)" % (len(blob) // 1024, self.stt_notes(notes), len(text),
                                                                   getattr(self.stt, "model", "?")))
@@ -3282,13 +3287,16 @@ class Api:
         asks the owner every time: then the tap's time is the owner's); ready — ms from the microphone given (the tap,
         when it was kept) until sound came; voice — ms from then until the first loud window (0: the
         owner was already speaking, the start may be lost); first — the loudest dB in that first second; peak — the
-        loudest overall."""
+        loudest overall (of the piece, for a piece); part — the piece's number, at — where it starts in the recording, s."""
         if not isinstance(n, dict):
             return ""
         num = lambda k, lo, hi: n.get(k) if isinstance(n.get(k), (int, float)) and lo <= n[k] <= hi else None
         out = []
         if num("secs", 0, 3600) is not None:
             out.append("%.0f s" % n["secs"])
+        if num("part", 1, 10000) is not None:
+            at = num("at", 0, 3600)
+            out.append("part %d" % n["part"] + (" from %d:%02d" % divmod(int(at), 60) if at is not None else ""))
         asked = num("asked", 0, 600000) is not None
         if asked:
             out.append("microphone asked anew: %.1f s" % (n["asked"] / 1000))

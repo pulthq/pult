@@ -8,6 +8,10 @@ file + model + language + prompt + response_format; flac, mp3, mp4, mpeg, mpga, 
 25 MB on the free tier; the minimum billed length is 10 s. Checked on a live key 2026-10-23 (tests/probe_stt.py): the
 prompt is refused above 896 bytes of UTF-8 (the docs say 224 tokens); both models answer in 0.4 s and share the free
 limits; on silence Whisper writes subtitle credits ("Продолжение следует...") and its no_speech_prob doesn't tell.
+Checked 2026-11-21 (fact 5 of the probe): a recording longer than Whisper's 30-s window is read window after window,
+and after a pause of several seconds a window may come back with a few made-up words in place of the speech in it —
+with either model, with the prompt or without; an unclear stretch may also bring back a sentence of the prompt itself.
+So the app sends a long recording in pieces cut at pauses (relay/web/static/core/voice.js), and the words are scrubbed.
 """
 import re
 
@@ -34,14 +38,36 @@ PHANTOM = re.compile(
     r"[\s.!…]*$", re.I)
 
 
-def scrub(text):
-    """Whisper's phantoms off the end of the words → (what is left, [what was cut])."""
-    cut = []
+# a name from those credits — nobody says it to Claude, so it goes wherever it turns up (2026-11-21: in the middle of
+# the words of a long recording, where a window over a pause came back made up)
+CREDIT = re.compile(r"(?:субтитры (?:сделал|делал|создавал|создал|подготовил|подогнал)\w*\s+)?dimatorzok\b[.,!…]*", re.I)
+LAST = re.compile(r"(?:^|(?<=[.!?…]))\s*[^.!?…]+[.!?…]*\s*$")       # the last sentence
+
+
+def words_of(s):
+    """Only the words, lower case, one space apart: 'Коммит, деплой!' → 'коммит деплой'."""
+    return " ".join(re.findall(r"\w+", s.lower().replace("ё", "е")))
+
+
+def scrub(text, prompt=None):
+    """Whisper's phantoms off the words → (what is left, [what was cut]): film credits at the very end, where a
+    pause before "Stop" leaves them; the prompt's own sentences said back at the end — what an unclear stretch makes
+    Whisper do (2026-11-21: "…Коммит, деплой, хук, сессия, вкладка, Пульт." closed a recording); DimaTorzok anywhere.
+    A sentence of the prompt counts from three words: "Пульт." or "Claude Code." said alone stay. What was cut is
+    listed in the order it stood."""
+    cut, tail = [], []
+    for m in reversed(list(CREDIT.finditer(text))):
+        cut.insert(0, m.group().strip())
+        text = (text[:m.start()].rstrip() + " " + text[m.end():].lstrip()).strip()
+    told = " %s " % words_of(prompt or "")
     while True:
         m = PHANTOM.search(text)
         if not m:
-            return text, cut
-        cut.insert(0, m.group().strip())
+            m = LAST.search(text)
+            said = words_of(m.group()) if m else ""
+            if not (said.count(" ") >= 2 and " %s " % said in told):
+                return text, cut + tail
+        tail.insert(0, m.group().strip())
         text = text[:m.start()].rstrip()
 
 

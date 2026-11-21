@@ -4,6 +4,20 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.69 — 2026-11-21
+
+- **Long voice recordings no longer come back made up after the first half-minute.** Groq's Whisper reads a recording
+  30 s at a time, each window after the words of the one before, and after a pause of several seconds a window may come
+  back with a few made-up words in place of its speech — a two-minute dictation came back right for its first 36 s
+  only (reproduced with both models, with Pult's prompt and without). The app now records in pieces cut at pauses — a
+  shorter pause ends a longer piece, 28 s at most — drops stretches of silence instead of sending them, sends each piece
+  while you keep speaking, and puts the words of all of them into the field together after **Stop**, in order; a piece
+  the connection let down on the way is sent once more after **Stop**, and if one still fails, the others' words land and
+  you are told a part is missing. On the computer, a sentence of Pult's own prompt that Whisper says back at the end of
+  the words is cut off, and so is a subtitle credit's name anywhere in them; a piece with no words in it comes back empty
+  rather than as an error, and the log tells which piece of the recording a line is about. Voice messages sent to the
+  chat are still recognized whole.
+
 ## 0.18.68 — 2026-11-13
 
 - **Search over everything.** The search on Projects, and on a project's screen, now also reads what was said — your

@@ -104,7 +104,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.68"
+VERSION = "0.18.69"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -2803,8 +2803,9 @@ class Pult(Api, Parts):
         self.refresh_stt()
         if not self.stt:
             raise STT.SttError("stt.nokey")
-        text = await self.stt.transcribe(blob, kind, language=self.stt_lang(), prompt=self.stt_prompt())
-        text, cut = STT.scrub(text)
+        prompt = self.stt_prompt()
+        text = await self.stt.transcribe(blob, kind, language=self.stt_lang(), prompt=prompt)
+        text, cut = STT.scrub(text, prompt)
         if cut:
             log("voice: Whisper's phantom cut off: %s" % " | ".join(cut))
         if not text:

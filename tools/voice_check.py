@@ -6,9 +6,12 @@ also recognized for real, with Pult's prompt — the first word must survive. Wi
 card on Home: its own answer has the microphone beside it, the words land in its line, Enter sends them as the answer
 (2026-11-04: neither was there; the line is the card's — no Groq then). Once a recording ends the page holds neither its
 microphone nor a running AudioContext — with either, Android keeps the owner's headphones on the call profile (Q155) —
-and a second recording asks anew and gets its sound again.
+and a second recording asks anew and gets its sound again. With `long` — a dictation of ~45 s with pauses of up to 8 s
+(2026-11-21: a whole 125-s recording came back made up after its 36th second): it reaches the computer in pieces while
+it records, cut at pauses, each within Whisper's 30-s window, no piece of silence alone; the words land in the field in
+order; with the key, Groq hears every sentence in the pieces.
   STAND_LANG=ru STAND_STT=/tmp/rec HOLD=300 ~/.local/share/pult/venv/bin/python tools/stand.py > /tmp/stand.out 2>&1 &
-  ~/.local/share/pult/venv/bin/python tools/voice_check.py "$(grep '^SESS ' /tmp/stand.out | cut -d' ' -f2)" /tmp/rec [speech|silence]
+  ~/.local/share/pult/venv/bin/python tools/voice_check.py "$(grep '^SESS ' /tmp/stand.out | cut -d' ' -f2)" /tmp/rec [speech|silence|long]
   ~/.local/share/pult/venv/bin/python tools/voice_check.py "$(grep '^HOME ' /tmp/stand.out | cut -d' ' -f2)" /tmp/rec speech ask
 Exit 1 on a failed check. Needs macOS `say` and ffmpeg for the WAV."""
 import asyncio, json, os, re, subprocess, sys, tempfile
@@ -41,8 +44,32 @@ def verdict(name, ok, *info):
         failures.append(name)
 
 
+# `long`: the sentences, the pause after each (s), the word that shows Groq heard it
+DICTATION = [("Посмотри логи демона на Орионе и найди, почему ночью упала проверка.", 1.0, "логи"),
+             ("Потом поправь тест и сделай коммит с понятным описанием.", 4.0, "коммит"),
+             ("Если тесты зелёные, выложи новую версию на GitHub.", 1.5, "версию"),
+             ("Напиши мне в Телеграм, что именно сломалось и как ты это починил.", 8.0, "сломалось"),
+             ("И ещё добавь в журнал строку о сегодняшней работе.", 30.0, "журнал")]
+
+
 def wav(path):
-    """What the fake microphone plays, looped: 0.25 s of quiet, then the phrase from its first sound, then 2 s of quiet."""
+    """What the fake microphone plays, looped: 0.25 s of quiet, then the phrase from its first sound, then 2 s of quiet;
+    `long` — the dictation, then 30 s of quiet (the loop must not come back within the recording)."""
+    if SOUND == "long":
+        parts = []
+        for i, (text, pause, _) in enumerate(DICTATION):
+            aiff, part = path + ".%d.aiff" % i, path + ".%d.wav" % i
+            subprocess.run(["say", "-v", "Milena", "-o", aiff, text], check=True)
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", aiff, "-af", "aresample=48000,apad=pad_dur=%s" % pause,
+                            "-ac", "1", "-c:a", "pcm_s16le", part], check=True)
+            parts.append(part)
+        with open(path + ".txt", "w") as f:
+            f.write("".join("file '%s'\n" % p for p in parts))
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", path + ".txt", "-f", "lavfi",
+                        "-i", "anoisesrc=c=pink:a=0.0005:d=200", "-filter_complex",
+                        "[0:a]adelay=250:all=1[s];[1:a]aresample=48000[n];[s][n]amix=inputs=2:duration=first:normalize=0",
+                        "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", path], check=True)
+        return
     if SOUND == "silence":
         src = ["-f", "lavfi", "-i", "anoisesrc=c=pink:a=0.0005:d=6"]
     else:
@@ -56,6 +83,24 @@ def seconds(path):
     out = subprocess.run(["ffmpeg", "-i", path, "-f", "null", "-"], capture_output=True, text=True).stderr
     t = re.findall(r"time=(\d+):(\d+):([\d.]+)", out)
     return int(t[-1][0]) * 3600 + int(t[-1][1]) * 60 + float(t[-1][2]) if t else 0
+
+
+def loudest(path):
+    """The loudest sample of a recording, dBFS."""
+    out = subprocess.run(["ffmpeg", "-i", path, "-af", "volumedetect", "-f", "null", "-"], capture_output=True, text=True).stderr
+    m = re.search(r"max_volume: (-?[\d.]+) dB", out)
+    return float(m.group(1)) if m else -200.0
+
+
+def kept(before):
+    """The recordings the computer got since `before`, in the order they came (rec-1, rec-2, … rec-10)."""
+    return sorted((x for x in os.listdir(KEEP) if x not in before), key=lambda x: int(re.sub(r"\D", "", x) or 0))
+
+
+def groq_key():
+    env = os.path.expanduser("~/.config/pult/env")
+    return next((x.split("=", 1)[1].strip().strip('"') for x in open(env) if x.startswith("PULT_STT_KEY=")), None) \
+        if os.path.exists(env) else None
 
 
 async def main():
@@ -128,6 +173,10 @@ async def main():
                 verdict("…and its button waits for words", not await js(shown))
             await js("window.__alerts = []; window.alert = (s) => window.__alerts.push(String(s)); "
                      "const w = window.Telegram && window.Telegram.WebApp; if (w) w.showAlert = (s) => window.__alerts.push(String(s));")
+            if SOUND == "long":
+                await dictate(js, until, tap, mic, before)
+                verdict("no errors in the page", not errors, errors[:3])
+                return
             await tap(mic)
             t0 = asyncio.get_event_loop().time()
             ok = await until("((m) => m.classList.contains('rec') && !m.classList.contains('wait'))(document.querySelector(%r))" % mic, 60, 0.02)
@@ -198,6 +247,43 @@ async def main():
                 print("alerts:", await js("window.__alerts"), "| audio:", await js("(async () => { const c = new AudioContext(); const st = c.state; await c.close(); return st; })()"))
     finally:
         p.terminate()
-    sys.exit(1 if failures else 0)
+
+
+async def dictate(js, until, tap, mic, before):
+    """`long`: the dictation recorded once through, then "Stop"."""
+    took = sum(len(text) / 13 + pause for text, pause, _ in DICTATION[:-1]) + 5      # ~13 characters a second
+    await tap(mic)
+    verdict("the recording starts once sound flows",
+            await until("((m) => m.classList.contains('rec') && !m.classList.contains('wait'))(document.querySelector(%r))" % mic, 60, 0.02))
+    await asyncio.sleep(took)
+    mid = kept(before)
+    verdict("pieces reach the computer while it records", len(mid) >= 2, mid)
+    await tap(mic)
+    verdict("the microphone and the page's sound are let go once it ends", await until(LET_GO, 40, 0.05), await js(HOLDS))
+    ta = "document.querySelector('.ctl textarea, textarea')"
+    await until("/recording \\d+ heard/.test(%s.value)" % ta, 80)
+    new = kept(before)
+    want = " ".join("recording %s heard" % re.sub(r"\D", "", x) for x in new)
+    verdict("the words of every piece land in the field, in order", await until("%s.value.includes(%r)" % (ta, want), 50),
+            await js("%s.value" % ta), "≠" if not await js("%s.value.includes(%r)" % (ta, want)) else "", want)
+    lens = [round(seconds(os.path.join(KEEP, x)), 1) for x in new]
+    verdict("several pieces, each within Whisper's 30-s window", len(new) >= 3 and all(0 < s <= 28.6 for s in lens), lens)
+    loud = [round(loudest(os.path.join(KEEP, x))) for x in new]
+    verdict("no piece of silence alone", all(v > -30 for v in loud), loud)
+    key = groq_key()
+    if key:
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+        import pult_stt as STT, pult_i18n as I
+        prompt = I.T("stt.prompt", "ru")
+        words = []
+        for x in new:
+            words.append(STT.scrub(await STT.Stt(key).transcribe(open(os.path.join(KEEP, x), "rb").read(), "audio/webm",
+                                                                  language="ru", prompt=prompt), prompt)[0])
+            await asyncio.sleep(1)
+        said = " ".join(words)
+        lost = [w for _, _, w in DICTATION if w not in said.lower()]
+        verdict("Groq hears every sentence in the pieces", not lost, lost, repr(said))
+
 
 asyncio.run(main())
+sys.exit(1 if failures else 0)
