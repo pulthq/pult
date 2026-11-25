@@ -41,6 +41,7 @@ import re
 import secrets
 import shutil
 import signal
+import socketserver
 import subprocess
 import sys
 import threading
@@ -1142,6 +1143,15 @@ class Handler(BaseHTTPRequestHandler):
             self.reply_json(500, {"error": "The gateway broke: %r" % e, "why": "other"})
 
 
+class Server(ThreadingHTTPServer):
+    """HTTPServer names itself by a reverse lookup of its address (socket.getfqdn) — on some machines that alone takes
+    tens of seconds (GitHub's macOS runners, 2026-11-25); the name is never used here."""
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 sets = {}
 
 
@@ -1158,7 +1168,7 @@ def main():
     STATE.mkdir(parents=True, exist_ok=True)
     for f in models_root().glob("*/*.part"):          # a download cut by a restart stays a piece: /pull goes on from it
         say("a piece left from a download: %s/%s (%s)" % (f.parent.name, f.name, gb(f.stat().st_size)))
-    srv = ThreadingHTTPServer((HOST, PORT), Handler)
+    srv = Server((HOST, PORT), Handler)
     srv.daemon_threads = True
     threading.Thread(target=comfy.watch, daemon=True).start()
 

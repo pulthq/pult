@@ -12,6 +12,7 @@ import importlib.util
 import json
 import os
 import socket
+import socketserver
 import subprocess
 import sys
 import tempfile
@@ -32,8 +33,12 @@ OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 # file it names but hasn't, SLOW — two seconds of work. The same graph again but the file's name — from its cache.
 FAKE_COMFY = r'''
 import json, os, signal, struct, sys, threading, time, uuid, zlib
+import socketserver
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
+class Quick(ThreadingHTTPServer):                 # no reverse lookup of its address at the start (see the gateway's Server)
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self); self.server_name, self.server_port = self.server_address[:2]
 a = sys.argv[1:]
 port, base = int(a[a.index("--port") + 1]), a[a.index("--base") + 1]
 if "--crash" in a:
@@ -120,15 +125,24 @@ class H(BaseHTTPRequestHandler):
         self.send(404, {})
 signal.signal(signal.SIGTERM, lambda *x: os._exit(0))
 print("fake ComfyUI on", port, flush=True)
-ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
+Quick(("127.0.0.1", port), H).serve_forever()
 '''
 
 fails = 0
 
 
+class Quick(ThreadingHTTPServer):
+    """No reverse lookup of its address at the start: HTTPServer's own does one (socket.getfqdn), and on GitHub's macOS
+    runners that took long enough for the gateway not to come up in time (2026-11-25)."""
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 def check(name, cond):
     global fails
-    print(("ok   " if cond else "FAIL ") + name)
+    print(("ok   " if cond else "FAIL ") + name, flush=True)      # each line with its own time in CI's log
     fails += 0 if cond else 1
 
 
@@ -256,7 +270,7 @@ class Hub(BaseHTTPRequestHandler):
 
 
 HF_PORT = free_port()
-threading.Thread(target=ThreadingHTTPServer(("127.0.0.1", HF_PORT), Hub).serve_forever, daemon=True).start()
+threading.Thread(target=Quick(("127.0.0.1", HF_PORT), Hub).serve_forever, daemon=True).start()
 
 # ---- the stand-in Ollama and nvidia-smi
 ollama_models = ["qwen9b-32k:latest"]
@@ -290,7 +304,7 @@ class Ollama(BaseHTTPRequestHandler):
 
 
 OLLAMA_PORT = free_port()
-threading.Thread(target=ThreadingHTTPServer(("127.0.0.1", OLLAMA_PORT), Ollama).serve_forever, daemon=True).start()
+threading.Thread(target=Quick(("127.0.0.1", OLLAMA_PORT), Ollama).serve_forever, daemon=True).start()
 (TMP / "fake_comfy.py").write_text(FAKE_COMFY)
 VRAM = TMP / "vram.txt"
 VRAM.write_text("600, 16376\n")
@@ -316,7 +330,7 @@ def start_gate(name, comfy_extra="", **over):
     (base / "app" / "comfyui_version.py").write_text('__version__ = "0.44.0"\n')
     log = open(base / "gate.out", "w")
     p = subprocess.Popen([sys.executable, "-I", str(GATE)], env=env, stdout=log, stderr=subprocess.STDOUT)
-    ok = wait(lambda: call(gport, "/health", timeout=2)[0] == 200 if p.poll() is None else True, 10)
+    ok = wait(lambda: call(gport, "/health", timeout=2)[0] == 200 if p.poll() is None else True, 30)
     if not ok or p.poll() is not None:
         print((base / "gate.out").read_text())
         raise SystemExit("comfy_gate.py didn't come up")
