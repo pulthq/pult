@@ -10,6 +10,7 @@ import { Home } from "./screens/home.js";
 import { NewProject, NewTask, Project, Projects } from "./screens/projects.js";
 import { ProjectSettings } from "./screens/projset.js";
 import { LocalModel, LocalPanel } from "./screens/local.js";
+import { ComfyPanel } from "./screens/comfy.js";
 import { Resources } from "./screens/resources.js";
 import { ChangesScreen, DiffHost } from "./screens/changes.js";
 import { FileHost, Session, TurnFilesScreen } from "./screens/session.js";
@@ -69,13 +70,14 @@ function App() {
     : r.name === "usage" ? html`<${Resources}/>`
     : r.name === "load" ? html`<${Load}/>`
     : r.name === "local" ? html`<${LocalPanel}/>`
+    : r.name === "comfy" ? html`<${ComfyPanel}/>`
     : r.name === "lm" ? html`<${LocalModel} key=${r.id} name=${r.id}/>`
     : r.name === "settings" ? html`<${Settings} key=${r.id || ""} at=${r.id}/>`
     : html`<${Home}/>`;
   // Home's tab carries how many tasks wait for your move — seen from every screen with the tabs (UX1)
   // a screen under a tab keeps the tab lit: a project, its settings and tags — Projects; the load and one's own
   // model — Resources; Settings — Home, whose gear leads there (review 2026-11-11, UX17)
-  const under = { p: "projects", ps: "projects", tags: "projects", newproject: "projects", load: "usage", local: "usage", lm: "usage", settings: "home" }[r.name] || r.name;
+  const under = { p: "projects", ps: "projects", tags: "projects", newproject: "projects", load: "usage", local: "usage", comfy: "usage", lm: "usage", settings: "home" }[r.name] || r.name;
   const tab = (name, h, label, icon) => html`<a class=${(under === name ? "on" : "") + (name === "new" ? " new" : "")} href=${h}><span class="ti">${ic(icon, 22)}${name === "home" ? html`<${WaitBadge}/>` : ""}</span><span class="tl">${label}</span></a>`;
   return html`<${Banner}/><${MemoryStatus}/><main class=${r.name === "s" ? "with-composer" : ""}>${screen}</main>
     ${r.name !== "s" && html`<nav class="tabs">${tab("home", "#/", t("tab.home"), "home")}${tab("projects", "#/projects", t("tab.projects"), "folder")}${tab("usage", "#/usage", t("tab.res"), "gauge")}${tab("new", ["p", "tags", "ps"].includes(r.name) && r.id ? "#/new?pkey=" + encodeURIComponent(r.id) : "#/new", t("tab.new"), "plus")}</nav>`}

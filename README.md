@@ -103,6 +103,11 @@ the model itself, with a way back to how it was.
 
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="media/f-local.en.dark.png"><img src="media/f-local.en.png" width="330" alt="Resources in the app, the Local model tab: the server's disk — 150 GB free, the models' 17.9 GB and the room for new ones with 60 GB kept free — its graphics card with no model loaded yet, and the models by their weights: gemma4:12b with its 32k copy that adds 0 GB, then qwen3.5:9b"></picture></p>
 
+With ComfyUI on that computer too, a small gateway beside it (`deploy/comfy-gate/`) gives Resources a ComfyUI tab:
+pictures and music — Z-Image-Turbo, FLUX.2 klein, ACE-Step 1.5 for songs — downloaded from a verified list with each
+file's checksum checked, removed, made the main one, tried on the spot; before any download, the disk keeps its reserve
+and all models together stay within the server's cap.
+
 ### Another model checks it
 
 Under an outcome, **Second opinion · Codex**: OpenAI's agent, on your ChatGPT subscription, reads what the task

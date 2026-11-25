@@ -12,6 +12,7 @@ import { BgSheet, bgCount, bgLine, memPct } from "../ui/load.js";
 import { isAway, putAway, useAway } from "../ui/undo.js";
 import { UpdRow } from "../ui/upd.js";
 import { PullRow } from "./local.js";
+import { GenRow } from "./comfy.js";
 import { openRes } from "./resources.js";
 
 // The top of Home (2026-11-12, the owner's answers to the slides): the plan's limit apart from the machine — the limit
@@ -274,6 +275,7 @@ function Home() {
     <${Top} load=${d.load} power=${d.power} usagePct=${d.usage_pct} usageTop=${d.usage_top}/>
     <${UpdRow} u=${d.update}/>
     <${PullRow} p=${d.pull}/>
+    <${GenRow} p=${d.gen}/>
     ${nRun > 0 && html`<section class="zone-run"><h3>${dot("work")}${t("home.running", { n: nRun - nQueue })}${nQueue ? " · " + t("home.queued", { n: nQueue }) : ""}</h3><div class="list">
       ${running.map((r) => html`<${RunRow} key=${r.sid} r=${r} now=${now} onBg=${onBg} onTags=${onTags}/>`)}
       ${jobsOn.map((j) => html`<${Job} key=${j.id} j=${j} now=${now} row=${true}/>`)}</div></section>`}

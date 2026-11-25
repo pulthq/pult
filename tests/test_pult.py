@@ -39,6 +39,7 @@ import pult_api  # noqa: E402
 import pult_attn as A  # noqa: E402
 import pult_changes as CH  # noqa: E402
 import pult_codex as CX  # noqa: E402
+import pult_comfy as C  # noqa: E402
 import pult_vendors as V  # noqa: E402
 import pult_brief as B  # noqa: E402
 import pult_driven  # noqa: E402
@@ -61,6 +62,10 @@ import pultd  # noqa: E402
 # The checks run at any hour, on computers in any time zone: no quiet hours and no day's summary unless a check asks for
 # them — a call "with sound" would be silent on a runner whose clock says night (review 2026-11-11, block 2)
 pultd.PREFS.update(quiet=None, digest=None)
+# The gateway beside ComfyUI is looked for at the local model's host, port 8190 — here that is the owner's own tunnel to
+# his server. The checks never reach it: the port is one nothing listens on, and a check that wants a gateway patches
+# pult_comfy's calls (stage M, step 6.7)
+C.GATE_PORT = (lambda s: (s.bind(("127.0.0.1", 0)), s.getsockname()[1], s.close())[1])(__import__("socket").socket())
 sys.path.insert(1, str(Path(__file__).resolve().parent))
 import fake_codex  # noqa: E402  (a stand-in for Codex's program: stage M)
 
@@ -3907,6 +3912,193 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             d = await self.p.api_local_panel()
         self.assertIn("никто не отвечает", d["down"])
         self.assertTrue(d["fams"])
+
+    async def test_comfy_panel(self):
+        # ComfyUI's models (stage M, step 6.7; Q188, 2026-11-25): the gateway's list as the tab shows it — what is on the
+        # disk, what each set needs and frees, the room against the disk's reserve and the server's cap of all models
+        # (Ollama's counted as its panel counts them); a download the gateway does itself, watched for the tab and Home;
+        # a removal, the main set, ComfyUI let go and off; a trial in the background and its file for the app; the cap
+        # in the local model's own download too
+        G = 1000 ** 3
+        one = lambda name, w, size: {"name": name, "ctx": None, "tools": True, "size": size, "params": "9B", "max": 262144, "w": w}  # noqa: E731
+        found = {"version": "0.40.14", "models": [one("gemma4:12b", "g" * 12, int(8.02 * G)), one("gemma4-32k", "g" * 12, int(8.02 * G)),
+                                                   one("qwen3.5:9b", "q" * 12, int(6.55 * G)), one("eriktonon/gemma4-uncensored:12b", "u" * 12, int(7.5 * G)),
+                                                   one("qwen3.5:4b", "s" * 12, int(3.43 * G))]}
+        ollama = int(8.02 * G) + int(6.55 * G) + int(7.5 * G) + int(3.43 * G)     # 25.5 GB: each family's weights once
+        info = {"name": "homelab", "disk": {"label": "C:", "total": 2047 * G, "free": 141 * G},
+                "gpu": {"name": "RTX", "total": 16376 * 2 ** 20, "used": 1042 * 2 ** 20}}
+
+        async def now(url, transport=None):
+            return {"version": "0.40.14", "tags": [{"name": m["name"], "size": m["size"], "digest": m["w"]} for m in found["models"]],
+                    "ps": [], "info": info}
+
+        def fl(folder, name, size, have, shared=()):
+            return {"folder": folder, "name": name, "size": size, "have": have, "part": 0, "shared": list(shared)}
+        zi = {"id": "z-image-turbo", "kind": "image", "name": "Z-Image-Turbo", "license": "Apache-2.0", "steps": 9, "vram_gb": 11.5,
+              "does": ["draw"], "files": [fl("diffusion_models", "z.safetensors", int(12.31 * G), True),
+                                          fl("text_encoders", "q.safetensors", int(5.63 * G), True, ["flux2-klein-4b"])],
+              "size": int(17.94 * G), "ready": True, "need": 0, "frees": int(12.31 * G)}
+        fk = {"id": "flux2-klein-4b", "kind": "image", "name": "FLUX.2 klein 4B", "license": "Apache-2.0", "steps": 4, "vram_gb": 8.4,
+              "does": ["draw", "edit"], "tried": False, "files": [fl("diffusion_models", "f.safetensors", int(4.07 * G), False),
+                                                                  fl("text_encoders", "q.safetensors", int(5.63 * G), True, ["z-image-turbo"])],
+              "size": int(9.7 * G), "ready": False, "need": int(4.07 * G), "frees": 0}
+        ac = {"id": "ace-step-1.5-turbo", "kind": "audio", "name": "ACE-Step 1.5 Turbo", "license": "MIT", "steps": 8, "vram_gb": 10,
+              "does": ["song", "instrumental"], "langs": 50, "tried": False,
+              "files": [fl("diffusion_models", "a.safetensors", int(10.03 * G), False)], "size": int(10.03 * G), "ready": False,
+              "need": int(10.03 * G), "frees": 0}
+        gate = {"v": 2, "comfy": {"version": "0.44.0", "state": "stopped", "loaded": False, "idle_s": None, "stop_after_s": 600},
+                "sets": [zi, fk, ac], "main": {"image": "z-image-turbo", "audio": None}, "pull": None, "job": None,
+                "bytes": {"comfy": int(18.3 * G), "also": int(8.7 * G), "other": 0},
+                "disk": {"label": "C:", "free": 141 * G, "total": 2047 * G}, "keep": 60 * G, "cap": 65 * G}
+        calls = []
+
+        async def models(url, transport=None):
+            calls.append(("models", url))
+            return C.clean(json.loads(json.dumps(gate)))
+
+        async def post(url, path, body=None, transport=None):
+            calls.append((path, body))
+            if path == "/pull":
+                gate["pull"] = {"id": body["id"], "name": "ACE-Step 1.5 Turbo", "total": int(10.03 * G), "done": 0, "rate": 0,
+                                "since": int(time.time()), "file": None, "phase": "download", "end": None, "err": None,
+                                "why": None, "stopped": False, "run": True}
+                return {"ok": True, "pull": gate["pull"]}
+            if path == "/remove":
+                return {"ok": True, "freed": int(4.07 * G), "files": ["f.safetensors"]}
+            return {"ok": True, "stopped": True}
+
+        # no gateway at all: no tab; the first gateway — a tab that says to install the new one
+        with mock.patch.object(C, "models", mock.AsyncMock(side_effect=C.GateError("net", "ConnectError"))):
+            self.assertEqual(await self.p.api_comfy_panel(peek=True), {"set": False})
+        with mock.patch.object(C, "models", mock.AsyncMock(side_effect=C.GateError("old", ""))), mock.patch.object(V, "local_now", now):
+            self.assertEqual(await self.p.api_comfy_panel(peek=True), {"set": True})
+            d = await self.p.api_comfy_panel()
+            self.assertEqual((d["old"], "первый шлюз" in d["down"]), (True, True))
+        with mock.patch.object(V, "check_local", mock.AsyncMock(side_effect=lambda *a, **k: found)), \
+                mock.patch.object(V, "local_now", now), mock.patch.object(C, "models", models), mock.patch.object(C, "post", post):
+            await self.p.api_vendor_local("http://127.0.0.1:11434")
+            d = await self.p.api_comfy_panel()
+            self.assertEqual(calls[-1], ("models", "http://127.0.0.1:%d" % C.GATE_PORT))      # beside the local model's server
+            self.assertEqual((d["down"], d["ollama"], d["total"], d["name"], d["gpu"]["used"]),
+                             ("", ollama, int(18.3 * G) + int(8.7 * G) + ollama, "homelab", 1042 * 2 ** 20))
+            self.assertEqual([(s["id"], s["ready"], s["tried"]) for s in d["sets"]],
+                             [("z-image-turbo", True, True), ("flux2-klein-4b", False, False), ("ace-step-1.5-turbo", False, False)])
+            ra, rf = d["sets"][2]["room"], d["sets"][1]["room"]
+            self.assertEqual((ra["total"], ra["cap_ok"], ra["after"], ra["disk_ok"], ra["ok"]),
+                             (int(18.3 * G) + int(8.7 * G) + ollama + int(10.03 * G), True, 141 * G - int(10.03 * G), True, True))
+            self.assertTrue(rf["ok"])
+            self.assertIsNone(d["sets"][0]["room"])                       # on the disk already
+            # the look, then the download; the watcher follows it for the tab and Home
+            look = (await self.p.api_comfy_pull("ace-step-1.5-turbo"))["look"]
+            self.assertEqual((look["name"], look["need"], look["ok"], look["vram"], look["card"]),
+                             ("ACE-Step 1.5 Turbo", int(10.03 * G), True, 10, 16376 * 2 ** 20))
+            with mock.patch.object(V, "PULL_STEP", 0.01):
+                d = await self.p.api_comfy_pull("ace-step-1.5-turbo", go=True)
+                self.assertEqual(calls[-2], ("/pull", {"id": "ace-step-1.5-turbo", "ollama": ollama}))
+                self.assertTrue(d["pull"]["run"])
+                self.assertEqual((await self.p.api_overview())["gen"]["id"], "ace-step-1.5-turbo")     # Home's line
+                with self.assertRaises(ValueError) as e:                  # one at a time
+                    await self.p.api_comfy_pull("flux2-klein-4b", go=True)
+                self.assertIn("по одной за раз", str(e.exception))
+                gate["pull"].update(done=int(10.03 * G), run=False, end=int(time.time()), phase="done")
+                ac.update(ready=True, need=0, frees=int(10.03 * G))
+                gate["bytes"]["comfy"] += int(10.03 * G)
+                for _ in range(100):
+                    await asyncio.sleep(0.02)
+                    if self.p.comfy_task.done():
+                        break
+                self.assertTrue(self.p.comfy_task.done())
+                self.assertEqual((self.p.comfy_home()["run"], self.p.comfy_home()["phase"]), (False, "done"))
+            # now FLUX.2 klein would pass the cap: 66.9 of 65 GB — no download, and why
+            d = await self.p.api_comfy_panel()
+            rf = d["sets"][1]["room"]
+            self.assertEqual((rf["cap_ok"], rf["ok"], rf["disk_ok"]), (False, False, True))
+            with self.assertRaises(ValueError) as e:
+                await self.p.api_comfy_pull("flux2-klein-4b", go=True)
+            self.assertIn("превысили бы потолок", str(e.exception))
+            with self.assertRaises(ValueError) as e:
+                await self.p.api_comfy_pull("z-image-turbo")
+            self.assertIn("уже есть", str(e.exception))
+            # the cap in the local model's own download (the owner's rule: before any download, Ollama's too)
+            with mock.patch.object(V, "pull_size", mock.AsyncMock(return_value=int(9.1 * G))):
+                look = (await self.p.api_local_pull("qwen3.5:14b"))["look"]
+                self.assertEqual((look["ok"], look["cap"]["ok"], look["cap"]["cap"]), (True, False, 65 * G))
+                with self.assertRaises(ValueError) as e:
+                    await self.p.api_local_pull("qwen3.5:14b", go=True)
+                self.assertIn("больше потолка сервера 65 ГБ", str(e.exception))
+            # removal, the main set, the card let go, ComfyUI off — the gateway's, with the words of each
+            r = await self.p.api_comfy_remove("flux2-klein-4b")
+            self.assertEqual((calls[-2], r["words"]), (("/remove", {"id": "flux2-klein-4b"}), "Удалено — на диске освободилось 4,1 ГБ."))
+            await self.p.api_comfy_main("ace-step-1.5-turbo")
+            self.assertEqual(calls[-2], ("/main", {"id": "ace-step-1.5-turbo"}))
+            r = await self.p.api_comfy_free()
+            self.assertEqual((calls[-2][0], r["words"]), ("/free", "ComfyUI освободил видеопамять."))
+            r = await self.p.api_comfy_off()
+            self.assertEqual((calls[-2][0], r["words"]), ("/stop", "ComfyUI выключен — видеокарта свободна."))
+            # the gateway says no: its word in the owner's words
+            with mock.patch.object(C, "post", mock.AsyncMock(side_effect=C.GateError("busy", "A job runs now"))):
+                with self.assertRaises(ValueError) as e:
+                    await self.p.api_comfy_remove("z-image-turbo")
+                self.assertIn("ComfyUI сейчас занят", str(e.exception))
+            # a trial: in the background, its time and its file for the app
+            hold = asyncio.Event()
+
+            async def job(url, kind, model, transport=None):
+                await hold.wait()
+                return b"ID3fake-song", {"seed": "381", "secs": 41.5, "start": 30.2, "cached": False}
+            with mock.patch.object(C, "job", job):
+                with self.assertRaises(ValueError) as e:
+                    await self.p.api_comfy_try("flux2-klein-4b")         # not on the disk
+                self.assertIn("не целиком", str(e.exception))
+                d = await self.p.api_comfy_try("ace-step-1.5-turbo")
+                self.assertEqual((d["trial"]["kind"], d["trial"]["run"], d["trial"]["end"]), ("audio", True, None))
+                with self.assertRaises(ValueError):                       # one at a time, and no removal meanwhile
+                    await self.p.api_comfy_try("z-image-turbo")
+                with self.assertRaises(ValueError) as e:
+                    await self.p.api_comfy_remove("ace-step-1.5-turbo")
+                self.assertIn("занят", str(e.exception))
+                hold.set()
+                await self.p.comfy_try_task
+                t = await self.p.api_comfy_trial()
+                self.assertEqual((t["mime"], base64.b64decode(t["data"]), t["trial"]["secs"], t["trial"]["run"], t["trial"]["err"]),
+                                 ("audio/mpeg", b"ID3fake-song", 41.5, False, None))
+            with mock.patch.object(C, "job", mock.AsyncMock(side_effect=C.GateError("card", "busy"))):
+                await self.p.api_comfy_try("z-image-turbo")
+                await self.p.comfy_try_task
+                self.assertIn("Видеокарта занята", self.p.comfy_trial_view()["err"])
+            with self.assertRaises(ValueError) as e:                      # a failed trial leaves no file
+                await self.p.api_comfy_trial()
+            self.assertIn("Пробы ещё не было", str(e.exception))
+        # the gateway was there and now doesn't answer: the local model's download says the cap isn't known
+        with mock.patch.object(V, "local_now", now), mock.patch.object(C, "models", mock.AsyncMock(side_effect=C.GateError("net", "x"))), \
+                mock.patch.object(V, "pull_size", mock.AsyncMock(return_value=int(9.1 * G))):
+            look = (await self.p.api_local_pull("qwen3.5:14b"))["look"]
+            self.assertEqual((look["ok"], look["cap"]), (True, {"unknown": True}))
+            d = await self.p.api_comfy_panel()
+            self.assertIn("не отвечает", d["down"])
+
+    def test_comfy_reading(self):
+        # what Pult takes from the gateway's answer: only what it should be (pult_comfy.clean), and the room's sums
+        G = 1000 ** 3
+        m = C.clean({"v": 2, "sets": [{"id": "ok-1", "kind": "audio", "name": "A", "files": [{"folder": "vae", "name": "v.safetensors",
+                                                                                               "size": 5, "have": True, "shared": ["x", "BAD ID"]}],
+                                        "ready": True, "does": ["song", "<b>"], "vram_gb": True},
+                                       {"id": "../etc", "kind": "image"}, {"id": "x", "kind": "video"}, "junk"],
+                     "pull": {"id": "ok-1", "done": -5, "run": "yes"}, "bytes": {"comfy": 3 * G}, "disk": {"free": 70 * G, "total": 100 * G},
+                     "keep": 60 * G, "cap": 0, "main": {"image": 5, "audio": "ok-1"}})
+        self.assertEqual([s["id"] for s in m["sets"]], ["ok-1"])
+        s = m["sets"][0]
+        self.assertEqual((s["files"][0]["shared"], s["does"], s["vram_gb"], s["size"], s["tried"]), (["x"], ["song"], None, 5, True))
+        self.assertEqual((m["pull"]["done"], m["pull"]["run"], m["cap"], m["main"]), (0, False, None, {"image": None, "audio": "ok-1"}))
+        r = C.room(m, 20 * G, 5 * G)
+        self.assertEqual((r["after"], r["disk_ok"], r["cap"], r["cap_ok"], r["total"], r["ok"]), (65 * G, True, None, True, 28 * G, True))
+        r = C.room(m, 20 * G, 11 * G)
+        self.assertEqual((r["disk_ok"], r["ok"]), (False, False))         # 59 GB would stay, 60 are kept
+        for bad in ({}, {"v": 2}, {"sets": []}, None):
+            with self.assertRaises(ValueError):
+                C.clean(bad)
+        self.assertEqual((C.gate_url("http://127.0.0.1:11434/"), C.gate_url("http://localhost:11434"), C.gate_url("http://10.0.0.5:11434")),
+                         ("http://127.0.0.1:%d" % C.GATE_PORT, "http://localhost:%d" % C.GATE_PORT, None))
 
     async def test_model_tune(self):
         # a model's settings (stage M, step 6.5; Q170 (a), Q171 — all): its system prompt, context and sampling as its

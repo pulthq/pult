@@ -27,6 +27,7 @@ from pathlib import Path
 import pult_attn as A
 import pult_changes as CH
 import pult_codex as CX
+import pult_comfy as C
 from pult_driven import MAX_RUNNING   # turns at once — pult_driven's
 import pult_files as F
 import pult_hook
@@ -112,7 +113,8 @@ class Api:
                 "live": [self.live_item(self.live[s]) for s in shown if s in self.live],
                 "pending": pending, "open": opened, "recent": list(self.recent),
                 "jobs": [self.job_item(j) for j in self.jobs.values()] + [self.job_item(j) for j in self.jobs_done],
-                "update": await self.update_row(), "pull": self.local_pull_view(), **await self.board(agents)}
+                "update": await self.update_row(), "pull": self.local_pull_view(), "gen": self.comfy_home(),
+                **await self.board(agents)}
 
     async def api_seen(self, sid):
         """"Got it" on a card of "Your move": the outcome is seen without opening the session."""
@@ -2355,17 +2357,34 @@ class Api:
         after = disk["free"] - size if disk else None
         keep = V.reserve(disk["total"] if disk else None)
         look = {"model": model, "size": size, "after": after, "reserve": keep, "need": V.vram_need(size),
-                "card": gpu["total"] if gpu else None, "ok": after is None or after >= keep}
+                "card": gpu["total"] if gpu else None, "ok": after is None or after >= keep,
+                "cap": await self.models_cap(now, size)}
         if not go:
             return {"look": look}
         if not look["ok"]:                       # the app hides the button; a word from an older app says why
             raise ValueError(self.t("local.err.room", gb=self.gb(max(0, after)), keep=self.gb(keep)))
+        if look["cap"] and look["cap"].get("ok") is False:
+            raise ValueError(self.t("local.err.cap", total=self.gb(look["cap"]["total"]), cap=self.gb(look["cap"]["cap"])))
         self.local_pull = {"model": model, "total": size, "done": 0, "rate": 0, "since": time.time(), "status": "", "err": None,
                            "stopped": False, "end": None}
         self.local_task = asyncio.ensure_future(self.local_pulling(url, model))
         log("local model: %s downloads to the server (%s bytes)" % (model, size))
         self.changed()
         return {"pull": self.local_pull_view()}
+
+    async def models_cap(self, now, size):
+        """The server's cap of all models together (the owner's rule, 2026-11-25: "65 GB for Ollama, ~/llm/models and
+        ComfyUI together"), as its gateway beside ComfyUI knows it: what all of them would take after this download.
+        → {"cap", "total", "ok"}; {"unknown": True} — a gateway was there, and now it doesn't answer; None — no cap."""
+        url = self.comfy_url()
+        if not url:
+            return None
+        try:
+            m = await C.models(url)
+        except C.GateError as e:
+            return {"unknown": True} if e.kind == "net" and self.store.get("comfy.seen") else None
+        r = C.room(m, self.local_bytes(now), size)
+        return {"cap": r["cap"], "total": r["total"], "ok": r["cap_ok"]} if r["cap"] else None
 
     async def local_pulling(self, url, model):
         pl, mark = self.local_pull, {"t": 0.0, "done": 0, "at": time.time()}
@@ -2402,6 +2421,250 @@ class Api:
             task.cancel()
             await asyncio.sleep(0.2)
         return await self.api_local_panel()
+
+    # ---------- ComfyUI's models (stage M, step 6.7; Q188, 2026-11-25) ----------
+    # Resources → ComfyUI: the gateway beside ComfyUI (pult_comfy; deploy/comfy-gate/) says which sets of its verified
+    # list are on the server's disk; a download from that list — the gateway's own, Pult only watches it; a removal;
+    # the main set of each kind; a trial picture or song with its time. The card — the reader beside Ollama the local
+    # model's tab reads; the cap counts Ollama's models too. Nothing here starts ComfyUI but a trial.
+
+    def comfy_url(self):
+        return C.gate_url(self.vendor_profiles()[V.LOCAL]["url"])
+
+    def local_bytes(self, now=None):
+        """Ollama's models on the server's disk as the local model's panel counts them: each family's weights once."""
+        models = self.local_found().get("models") or []
+        tags = (now or {}).get("tags") or []
+        if models:
+            sizes = {x["name"]: x["size"] for x in tags if x.get("size")}
+            return sum(f["size"] for f in V.families([dict(m, size=sizes.get(m["name"]) or m.get("size")) for m in models]))
+        return sum({x.get("digest"): x.get("size") or 0 for x in tags}.values())
+
+    def comfy_err(self, e):
+        """The gateway's word → the owner's words."""
+        if e.kind in ("net", "old", "proto"):
+            return self.t("comfy.down." + e.kind, why=e.text[:200])
+        key = "comfy.err." + e.kind
+        return self.t(key) if key in I.S else self.t("comfy.err.other", why=e.text[:300] or e.kind)
+
+    def comfy_home(self):
+        """Home's line while the gateway downloads (as the local model's): the last state its watcher saw."""
+        pl = getattr(self, "comfy_pull", None)
+        return dict(pl) if pl else None
+
+    async def api_comfy_panel(self, peek=False):
+        """The ComfyUI tab: the gateway's list — each set, whole on the disk or not, what it needs and frees — the main
+        one of each kind, ComfyUI's state, the download and the trial; the room — the disk and its reserve, all models
+        together and the server's cap (Ollama's counted as its panel counts them); the card — the reader beside Ollama.
+        peek — only whether there is a gateway (Resources' tabs). → {…}; "down" — the words why there is no list."""
+        url = self.comfy_url()
+        if peek:
+            if not url:
+                return {"set": False}
+            try:
+                await C.models(url)
+            except C.GateError as e:
+                return {"set": e.kind == "old"}
+            return {"set": True}
+        now = None
+        try:
+            now = await V.local_now(self.vendor_profiles()[V.LOCAL]["url"])
+        except V.VendorError:
+            pass
+        info = (now or {}).get("info") or {}
+        out = {"url": url, "down": "", "old": False, "name": info.get("name"), "gpu": info.get("gpu"),
+               "ollama": self.local_bytes(now), "trial": self.comfy_trial_view()}
+        if not url:
+            return dict(out, down=self.t("comfy.down.url"))
+        try:
+            m = await C.models(url)
+        except C.GateError as e:
+            return dict(out, down=self.comfy_err(e), old=e.kind == "old")
+        self.store.put("comfy.seen", time.time())
+        self.comfy_pull = m["pull"]
+        if m["pull"] and m["pull"]["run"]:
+            self.comfy_watch(url)
+        total = m["bytes"]["comfy"] + m["bytes"]["also"] + out["ollama"]
+        here = set(self.store.get("comfy.tried") or [])     # sets a trial worked on, here: the list's "not tried" is old
+        for s in m["sets"]:
+            s["room"] = C.room(m, out["ollama"], s["need"]) if not s["ready"] else None
+            s["tried"] = s["tried"] or s["id"] in here
+        return dict(out, **m, total=total)
+
+    async def api_comfy_pull(self, id, go=False):
+        """A set from the gateway's list onto the server (the tab's "Download"). First the look — what comes, the room
+        after it, the card it wants; go — the download itself: the gateway's own, in the background; Pult watches it."""
+        url, m = await self.comfy_list()
+        s = next((x for x in m["sets"] if x["id"] == id), None)
+        if not s:
+            raise ValueError(self.t("comfy.err.nosuch"))
+        if s["ready"]:
+            raise ValueError(self.t("comfy.err.have", name=s["name"]))
+        if m["pull"] and m["pull"]["run"]:
+            raise ValueError(self.t("comfy.err.pulling", name=m["pull"]["name"]))
+        now = None
+        try:
+            now = await V.local_now(self.vendor_profiles()[V.LOCAL]["url"])
+        except V.VendorError:
+            pass
+        ollama = self.local_bytes(now)
+        room = C.room(m, ollama, s["need"])
+        if not go:
+            return {"look": dict(room, id=s["id"], name=s["name"], need=s["need"], size=s["size"], vram=s["vram_gb"],
+                                 card=((((now or {}).get("info") or {}).get("gpu")) or {}).get("total"))}
+        if not room["ok"]:                     # the app hides the button; a word from an older app says why
+            raise ValueError(self.t("comfy.err.cap" if room["disk_ok"] else "comfy.err.room"))
+        try:
+            got = await C.post(url, "/pull", {"id": s["id"], "ollama": ollama})
+        except C.GateError as e:
+            raise ValueError(self.comfy_err(e)) from None
+        self.comfy_pull = got.get("pull")
+        log("comfy: %s downloads to the server (%s bytes to come)" % (s["id"], s["need"]))
+        self.comfy_watch(url)
+        self.changed()
+        return await self.api_comfy_panel()
+
+    async def comfy_list(self):
+        url = self.comfy_url()
+        if not url:
+            raise ValueError(self.t("comfy.down.url"))
+        try:
+            return url, await C.models(url)
+        except C.GateError as e:
+            raise ValueError(self.comfy_err(e)) from None
+
+    async def comfy_post(self, path, body=None):
+        url, _ = await self.comfy_list()
+        try:
+            return await C.post(url, path, body)
+        except C.GateError as e:
+            raise ValueError(self.comfy_err(e)) from None
+
+    async def api_comfy_pull_stop(self):
+        await self.comfy_post("/pull/stop")
+        log("comfy: the download stopped by the owner")
+        return await self.api_comfy_panel()
+
+    async def api_comfy_remove(self, id):
+        """A set's files off the server's disk (the tab's "Remove", asked first): a file another set has stays; never
+        under a job or a download — the gateway says no then."""
+        t = getattr(self, "comfy_try_task", None)
+        if t and not t.done():
+            raise ValueError(self.t("comfy.err.busy"))
+        got = await self.comfy_post("/remove", {"id": id})
+        log("comfy: %s removed from the server (%s bytes back)" % (id, got.get("freed")))
+        return dict(await self.api_comfy_panel(), words=self.t("comfy.removed", gb=self.gb(got.get("freed") or 0)))
+
+    async def api_comfy_main(self, id):
+        """The set a picture or a song gets when nothing names one — the gateway keeps it: its own clients too."""
+        await self.comfy_post("/main", {"id": id})
+        log("comfy: %s is the main one of its kind" % id)
+        return await self.api_comfy_panel()
+
+    async def api_comfy_free(self):
+        await self.comfy_post("/free")
+        log("comfy: ComfyUI let go of the card")
+        return dict(await self.api_comfy_panel(), words=self.t("comfy.freed"))
+
+    async def api_comfy_off(self):
+        got = await self.comfy_post("/stop")
+        log("comfy: ComfyUI stopped by the owner" if got.get("stopped") else "comfy: ComfyUI was off already")
+        return dict(await self.api_comfy_panel(), words=self.t("comfy.off" if got.get("stopped") else "comfy.off.was"))
+
+    async def comfy_resume(self):
+        """Once at the start: a download the gateway went on with while Pult restarted — Home's line and the tab's
+        progress again. Only where a gateway was seen: no request to an address nothing ever answered."""
+        url = self.comfy_url()
+        if not url or not self.store.get("comfy.seen"):
+            return
+        try:
+            m = await C.models(url)
+        except C.GateError:
+            return
+        self.comfy_pull = m["pull"]
+        if m["pull"] and m["pull"]["run"]:
+            log("comfy: the gateway downloads %s — watching it again" % m["pull"]["id"])
+            self.comfy_watch(url)
+
+    def comfy_watch(self, url):
+        """While the gateway downloads, every few seconds: its progress for the tab and Home's line."""
+        t = getattr(self, "comfy_task", None)
+        if t and not t.done():
+            return
+        self.comfy_task = asyncio.ensure_future(self.comfy_watching(url))
+
+    async def comfy_watching(self, url):
+        quiet = 0
+        while True:
+            await asyncio.sleep(V.PULL_STEP)
+            try:
+                m = await C.models(url)
+            except C.GateError:
+                quiet += 1
+                if quiet >= 12:                      # a minute without the gateway: the tab's next look picks it up
+                    break
+                continue
+            quiet = 0
+            self.comfy_pull = m["pull"]
+            if self.web:
+                self.web.emit("comfy")
+            p = m["pull"] or {}
+            if not p.get("run"):
+                log("comfy: the download of %s %s" % (p.get("id"), "failed — " + (p.get("err") or "")[:120] if p.get("err")
+                                                     else "stopped" if p.get("stopped") else "is on the server"))
+                self.changed()
+                break
+
+    def comfy_trial_view(self):
+        t = getattr(self, "comfy_try", None)
+        if not t:
+            return None
+        task = getattr(self, "comfy_try_task", None)
+        return dict(t, run=bool(task and not task.done()))
+
+    async def api_comfy_try(self, id):
+        """"Try" on a set's card: the trial picture or song, made on the server — ComfyUI started if it isn't, which
+        takes a minute. In the background: the app's call waits 30 s at most; the tab shows the time as it goes."""
+        task = getattr(self, "comfy_try_task", None)
+        if task and not task.done():
+            raise ValueError(self.t("comfy.err.busy"))
+        url, m = await self.comfy_list()
+        s = next((x for x in m["sets"] if x["id"] == id), None)
+        if not s:
+            raise ValueError(self.t("comfy.err.nosuch"))
+        if not s["ready"]:
+            raise ValueError(self.t("comfy.err.notready"))
+        self.comfy_try = {"id": s["id"], "name": s["name"], "kind": s["kind"], "since": time.time(), "end": None,
+                          "err": None, "secs": None, "start": None, "seed": None}
+        self.comfy_blob = None
+        self.comfy_try_task = asyncio.ensure_future(self.comfy_trying(url, s))
+        log("comfy: a trial %s on %s" % (s["kind"], s["id"]))
+        return await self.api_comfy_panel()
+
+    async def comfy_trying(self, url, s):
+        tr = self.comfy_try
+        try:
+            blob, facts = await C.job(url, s["kind"], s["id"])
+            self.comfy_blob = (C.MIME[s["kind"]], blob)
+            tr.update(facts, end=time.time())
+            self.store.put("comfy.tried", sorted(set(self.store.get("comfy.tried") or []) | {s["id"]}))
+            log("comfy: the trial on %s came in %.1f s (%d bytes%s)" % (s["id"], facts["secs"], len(blob),
+                                                                        ", starting ComfyUI %.1f s" % facts["start"] if facts["start"] else ""))
+        except C.GateError as e:
+            tr.update(err=self.comfy_err(e), end=time.time())
+            log("comfy: the trial on %s failed — %s %s" % (s["id"], e.kind, e.text[:160]))
+        except Exception as e:                        # never a task that dies without a word
+            tr.update(err=self.t("comfy.err.other", why=type(e).__name__), end=time.time())
+            log("comfy: the trial on %s broke — %r" % (s["id"], e))
+        if self.web:
+            self.web.emit("comfy")
+
+    async def api_comfy_trial(self):
+        """The last trial's picture or song for the tab (base64: it must fit the relay's frame — JOB_MAX)."""
+        got = getattr(self, "comfy_blob", None)
+        if not got:
+            raise ValueError(self.t("comfy.err.notrial"))
+        return {"mime": got[0], "data": base64.b64encode(got[1]).decode(), "trial": self.comfy_trial_view()}
 
     def vendor_row(self, vid):
         return next((r for r in self.vendors_list() if r["id"] == vid), None)

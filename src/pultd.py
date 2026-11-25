@@ -104,7 +104,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.69"
+VERSION = "0.18.70"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -4246,7 +4246,8 @@ async def amain():
     jobs = [("the message queue", p.out.run), ("Telegram", p.telegram_start), ("the usage watch", p.usage_watch),
             ("the attention watch", p.attention_watch), ("the update watch", p.update_watch),
             ("the release watch", p.release_watch), ("the outbox watch", p.outbox_watch),
-            ("the look after a restart", p.after_restart), ("the search index", p.search_watch)]
+            ("the look after a restart", p.after_restart), ("the search index", p.search_watch),
+            ("ComfyUI's download after a restart", p.comfy_resume)]
     if env.get("PULT_RELAY_URL") and env.get("PULT_RELAY_SECRET"):
         p.web = PW.Web(p, env["PULT_RELAY_URL"], env["PULT_RELAY_SECRET"], token, p.allowed,
                        proxy=env.get("PULT_PROXY") or None, manifest=WEB_MANIFEST)

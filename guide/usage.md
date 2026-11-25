@@ -153,6 +153,19 @@ and another check it — from the phone.
   the model to load). A new task gets the system prompt; one begun keeps the one it began with. The context doesn't
   change while a task runs on the model. Thinking can't be turned off from here: Claude Code never asks for no
   thinking, and Ollama has a model that can think do so. Free, but weaker and slower than Claude.
+- **Pictures and music on your own server — ComfyUI's models**: with ComfyUI on the computer with the graphics card,
+  put the gateway in `deploy/comfy-gate/` beside it (`sudo bash deploy/comfy-gate/install.sh --user NAME`, where NAME
+  owns ComfyUI's folders; `--cap 65` keeps all models together — ComfyUI's, Ollama's and `--also` folders' — within 65 GB,
+  `--keep 60` keeps 60 GB of the disk free) and forward its port, 127.0.0.1:8190, the way Ollama's goes. Resources then
+  has a **ComfyUI** tab: the sets of the gateway's verified list — pictures (Z-Image-Turbo, FLUX.2 klein 4B) and music
+  (ACE-Step 1.5 Turbo: songs with words and instrumentals) — which are on the disk, what each would bring and what
+  removing it frees; the disk and the card; ComfyUI's state. **Download** in a set's card: the gateway takes its files
+  from Hugging Face itself, checks each one's sha256, and goes on from where a stop or a broken connection left it — Pult
+  only shows how far it got, here and on Home; the disk's reserve and the cap are checked before (in Local model too).
+  The star — the main model of its kind; **Try** — a trial picture or a 20-second tune, played in the card with its
+  time. ComfyUI itself runs only while there is work: it starts with a job, frees the card after two minutes of quiet
+  and stops after ten. The gateway runs no command, installs no ComfyUI extension and takes no file outside its list;
+  a set new in the list reaches the server when the gateway is installed again.
 - **Which model did what**: every card names its model — in Running now at the right of its top line ("Opus 5.5",
   "DeepSeek · v4-pro"), on a finished task's card at its foot across from Reviewed, on a question or a permission
   before how long it waits, on a finished task's row at the right end of its second line; in a session, by the field.
