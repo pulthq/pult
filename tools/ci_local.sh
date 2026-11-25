@@ -30,8 +30,15 @@ for t in test_pult test_setup test_web test_relay; do
     fail=1
   fi
 done
+if out=$(run python deploy/comfy-gate/test_gate.py 2>&1); then
+  printf '%-11s %s\n' test_gate "$(echo "$out" | tail -1)"
+else
+  printf '%-11s FAILED\n' test_gate
+  echo "$out" | grep -v '^ok' | tail -30
+  fail=1
+fi
 run ruff check --no-cache . || fail=1
-run shellcheck install.sh deploy/relay/install.sh deploy/ollama-info/install.sh src/pult-tab.sh tools/ci_local.sh && echo "shellcheck: clean" || fail=1
+run shellcheck install.sh deploy/relay/install.sh deploy/ollama-info/install.sh deploy/comfy-gate/install.sh src/pult-tab.sh tools/ci_local.sh && echo "shellcheck: clean" || fail=1
 run python tools/consistency.py || fail=1
 [ "$fail" = 0 ] && echo "all as on CI" || echo "something fails — see above"
 exit "$fail"

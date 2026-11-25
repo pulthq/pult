@@ -8,6 +8,7 @@ import { html, useEffect, useRef, useState } from "../vendor/htm-preact-3.1.1.js
 import { About, Loading, ago, dur, hhmm, hue, kilo, level, machine, nb, num, pct, resetText, toDate, useNow } from "../ui/kit.js";
 import { Load } from "../ui/load.js";
 import { LocalPanel } from "./local.js";
+import { ComfyPanel } from "./comfy.js";
 
 
 // ---------- Resources: how the plan's limits are spent (stage R) ----------
@@ -217,8 +218,9 @@ function Spend() {
 }
 
 // Resources: can I keep working — the plan's limits, or the computer's load; two sections, not five screens of one
-// the local model's panel is a third tab while there is one (stage M, step 6.4; a computer from before it has no answer)
-const RES = ["lim", "pc", "llm"];
+// the local model's panel is a third tab while there is one (stage M, step 6.4; a computer from before it has no answer);
+// ComfyUI's models — a fourth, while its gateway answers there (step 6.7)
+const RES = ["lim", "pc", "llm", "gen"];
 const resStore = {
   get() { try { const k = sessionStorage.getItem("pult.res"); return RES.includes(k) ? k : "lim"; } catch (e) { return "lim"; } },
   set(k) { try { sessionStorage.setItem("pult.res", k); } catch (e) {} },
@@ -230,13 +232,15 @@ const resName = (k) => (k === "pc" && machine.get()) || t("res." + k);
 function Resources() {
   const [sec, setSec] = useState(resStore.get);
   const [pk] = useLive(() => api("local_panel", { peek: true }), [], () => false, 600000);
+  const [pg] = useLive(() => api("comfy_panel", { peek: true }), [], () => false, 600000);
   const pick = (k) => { setSec(k); resStore.set(k); };
-  const tabs = RES.filter((k) => k !== "llm" || (pk && pk.set));
+  const tabs = RES.filter((k) => (k !== "llm" || (pk && pk.set)) && (k !== "gen" || (pg && pg.set)));
   const cur = tabs.includes(sec) ? sec : "lim";
   return html`<div><h2>${t("res.title")}</h2>
     <div class="subtabs" role="tablist">${tabs.map((k) => html`<button key=${k} role="tab" aria-selected=${cur === k} class=${cur === k ? "on" : ""}
       onClick=${() => pick(k)}>${resName(k)}</button>`)}</div>
-    ${cur === "pc" ? html`<${Load} embedded=${true}/>` : cur === "llm" ? html`<${LocalPanel} embedded=${true}/>` : html`<${Spend}/>`}
+    ${cur === "pc" ? html`<${Load} embedded=${true}/>` : cur === "llm" ? html`<${LocalPanel} embedded=${true}/>`
+      : cur === "gen" ? html`<${ComfyPanel} embedded=${true}/>` : html`<${Spend}/>`}
   </div>`;
 }
 

@@ -239,6 +239,7 @@ flowchart LR
 | `src/pult_codex.py` | a second opinion from Codex: finds Codex and checks its version against its own protocol schema, gathers what the task was (your words, Claude's report, the files, the commit it began on), runs one read-only review over Codex's `app-server` protocol and reads its findings |
 | `src/pult_changes.py` | what a task changed, read from git and never written: the files that differ from the commit the folder stood at when the task began — committed since or not, new ones too — the task's own first, and one file's change line by line; nothing that looks like keys is shown |
 | `src/pult_vendors.py` | other vendors' models inside Claude Code: each vendor's profile (address, models by role, compaction window, advice, price), a session's environment — never without the owner's key — and the key's check |
+| `src/pult_comfy.py` | the ComfyUI tab's side of the gateway beside ComfyUI: its list read as far as it is what it should be, a download, a removal, the main set, a trial; the room — the disk's reserve and the server's cap of all models together |
 | `src/pult_web.py` | the connection to the relay, login checks, transcripts for the app |
 | `src/pult_render.py`, `src/pult_i18n.py` | what messages look like; every visible string in English and Russian |
 | `src/pult_attn.py`, `src/pult_brief.py` | "whose move": each session's outcome; an optional one-line summary by a small model |
@@ -254,6 +255,7 @@ flowchart LR
 | `relay/relay.py`, `relay/web/` | the relay and the Mini App (Preact + htm, no build step) |
 | `deploy/relay/` | the relay on your server: `install.sh`, its systemd units, `update.py` — the updater that takes the computer's release from GitHub |
 | `deploy/ollama-info/` | a small reader beside Ollama for the Local model tab: the server's disk and graphics card as one JSON per request, a systemd socket on 127.0.0.1:11436 (Ollama tells neither); forward its port the way Ollama's goes |
+| `deploy/comfy-gate/` | the gateway beside ComfyUI on the computer with the graphics card (127.0.0.1:8190, through the same tunnel): the verified sets of models (`sets.json` — files on Hugging Face by commit with their sha256, workflows of ComfyUI's own nodes), a download it does itself, removal, the main set, a picture (`/image`) or a song (`/audio`); ComfyUI only while there is work; the disk's reserve and the cap of all models; `install.sh` — a systemd service, `test_gate.py` — its checks on stand-ins |
 
 ## Where things live
 

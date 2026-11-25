@@ -871,10 +871,13 @@ h3 .chev { vertical-align: -2px; }
 .seg button .ic { vertical-align: -3px; margin-right: 2px; }
 .x .ic { vertical-align: middle; }
 /* Resources: two sections under the title, underlined; the inner week / window switch stays a segmented one */
-.subtabs { display: flex; gap: 22px; margin: 2px 2px 12px; border-bottom: 1px solid var(--line); }
-.subtabs button { background: none; border: 0; padding: 8px 0 9px; font-size: var(--fs-body); font-weight: 600; color: var(--muted); cursor: pointer;
-  border-bottom: 2.5px solid transparent; margin-bottom: -1px; }
-.subtabs button.on { color: var(--ink); border-bottom-color: var(--accent); }
+/* four tabs on a narrow phone (ComfyUI's, step 6.7) slide sideways rather than wrap: the lines are drawn inside */
+.subtabs { display: flex; gap: clamp(12px, 3.5vw, 22px); margin: 2px 2px 12px; box-shadow: inset 0 -1px 0 var(--line); overflow-x: auto;
+  scrollbar-width: none; }
+.subtabs::-webkit-scrollbar { display: none; }
+.subtabs button { flex: none; white-space: nowrap; background: none; border: 0; padding: 8px 0 9px; font-size: var(--fs-body); font-weight: 600;
+  color: var(--muted); cursor: pointer; }
+.subtabs button.on { color: var(--ink); box-shadow: inset 0 -2.5px 0 var(--accent); }
 .res-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin: 12px 2px 0; font-size: var(--fs-sec); }
 .res-foot .link { padding: 0; font-weight: 600; }
 .about-b { display: inline-flex; align-items: center; gap: 6px; background: none; border: 0; padding: 10px 2px 4px; color: var(--link); font-size: var(--fs-sec); cursor: pointer; }
@@ -1266,6 +1269,25 @@ button.tagc { border: 0; font-family: inherit; cursor: pointer; }
   border-top: 1px solid var(--line); color: var(--link, var(--accent)); text-decoration: none; font-weight: 600; }
 .lp-bar.thin { height: 5px; margin: 6px 0 2px; }
 .lp-home { margin-top: 8px; }
+
+/* ComfyUI's models (stage M, step 6.7): Resources → ComfyUI — the local model's tab's parts, two more colours */
+.lp-bar i.g, .lp-lg i.g { background: var(--c3); }
+.lp-bar i.a, .lp-lg i.a { background: var(--c4); }
+.cf h3.lp-mh { margin-top: 18px; }
+.cf-row { padding-left: 10px; }
+.cf-k { flex: none; display: grid; place-items: center; width: 26px; color: var(--muted); }
+.cf-row.on .cf-k { color: var(--c3); }
+.cf-legend { margin-top: 10px; }
+.cf-sheet .sheet-p .ic { vertical-align: -2px; }
+.cf-words { margin-top: 8px; }
+.cf-trial { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.cf-pic { width: 100%; border-radius: 12px; display: block; background: var(--code); aspect-ratio: 1; object-fit: cover; }
+.cf-audio { width: 100%; }
+.cf-end { margin: 10px 2px 0; }
+.cf-last { margin: 8px 2px 0; padding: 0; }
+.cf-how { margin: 12px 2px 4px; }
+.cf-cmd { margin: 6px 0 0; padding: 10px 12px; border-radius: 10px; background: var(--code); font-size: var(--fs-cap); white-space: pre;
+  overflow-x: auto; user-select: all; }
 
 /* a model's settings (stage M, step 6.5): Resources → Local model → a model → Settings */
 .lm { padding-bottom: 24px; }

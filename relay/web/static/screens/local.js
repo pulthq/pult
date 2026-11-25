@@ -122,7 +122,9 @@ function Pull({ d, busy, setBusy, onPanel }) {
       ${look.after != null ? html`<div class=${look.ok ? "" : "warn"}>${t(look.ok ? "lp.pull.after" : "lp.pull.after.no", { gb: gb(Math.max(0, look.after)), keep: gb(look.reserve) })}</div>`
         : html`<div class="warn">${t("lp.pull.blind")}</div>`}
       ${look.card && html`<div class=${look.need <= look.card ? "" : "warn"}>${t(look.need <= look.card ? "lp.pull.fits" : "lp.pull.nofit", { need: gib(look.need), card: gib(look.card) })}</div>`}
-      <button class="btn wide" disabled=${!look.ok || !!busy} onClick=${() => ask(true)}>${t("lp.pull.go", { gb: gb(look.size) })}</button></div>`}
+      ${look.cap && (look.cap.unknown ? html`<div class="warn">${t("lp.pull.cap.unknown")}</div>`
+        : html`<div class=${look.cap.ok ? "" : "warn"}>${t(look.cap.ok ? "lp.pull.cap" : "lp.pull.cap.no", { a: gb(look.cap.total), cap: gb(look.cap.cap) })}</div>`)}
+      <button class="btn wide" disabled=${!look.ok || (look.cap && look.cap.ok === false) || !!busy} onClick=${() => ask(true)}>${t("lp.pull.go", { gb: gb(look.size) })}</button></div>`}
     <div class="dim small">${t("lp.pull.about")}</div></div>`;
 }
 
@@ -281,4 +283,4 @@ function PullRow({ p }) {
       ${p.run && html`<span class="lp-bar thin"><i class="m" style=${"width:" + pc(p.done, p.total) + "%"}></i></span>`}</span>${ic("chev", 16)}</button>`;
 }
 
-export { LocalModel, LocalPanel, PullRow };
+export { Bar, Leg, LocalModel, LocalPanel, PullRow, gb, gib };

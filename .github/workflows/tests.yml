@@ -22,7 +22,7 @@ jobs:
         run: ruff check .
       - name: Shell scripts (shellcheck)
         if: success() || failure()
-        run: shellcheck install.sh deploy/relay/install.sh deploy/ollama-info/install.sh src/pult-tab.sh tools/ci_local.sh
+        run: shellcheck install.sh deploy/relay/install.sh deploy/ollama-info/install.sh deploy/comfy-gate/install.sh src/pult-tab.sh tools/ci_local.sh
       - name: Version, changelog, tag and requirements agree
         if: success() || failure()
         run: python tools/consistency.py
@@ -53,6 +53,9 @@ jobs:
       - name: Relay
         if: success() || failure()          # every check runs, whatever failed before
         run: python tests/test_relay.py
+      - name: The gateway beside ComfyUI (stand-ins for ComfyUI, Ollama and Hugging Face)
+        if: (success() || failure()) && runner.os != 'Windows'      # it runs on Linux servers only
+        run: python deploy/comfy-gate/test_gate.py
       - name: Shell scripts parse
         if: (success() || failure()) && runner.os != 'Windows'
         run: bash -n install.sh && bash -n deploy/relay/install.sh && sh -n src/pult-tab.sh

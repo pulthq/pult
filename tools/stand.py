@@ -63,6 +63,11 @@ gemma4-32k in memory four more minutes; none — no reader there. A download com
 (stage M, step 6.5): its /api/show as the owner's server answered for these models (their PARAMETERs, make and the
 weights' sampling; gemma4-32k's system prompt is made up); saving writes into the stand-in, the first change keeping the
 model as it was, "Back" brings it back (tools/tune_check.py).
+STAND_COMFY=1|run|full|old|down with STAND_LOCAL=on STAND_LOCAL_SRV=1 (stage M, step 6.7 — Resources → ComfyUI): the
+gateway beside ComfyUI, a stand-in with its real list (deploy/comfy-gate/sets.json) as the owner's server had it on
+2026-11-25 — Z-Image-Turbo on the disk, 8.7 GB of other models, C: 141 GB free, 60 GB kept, the cap 65 GB; run — ACE-Step
+downloading at 40 %; full — other models 25 GB: past the cap; old — the first gateway; down — nothing answers. A download
+comes in 30 steps of STAND_PULL_S, a trial in 3 s — a picture of bands, a tune of sine notes (tools/comfy_check.py).
 STAND_LOCAL=1 (stage M, step 6): one's own model through Ollama, off — its check answers at http://127.0.0.1:11434 as Ollama
 0.40.14 did (gemma4-32k with a 32K context; two models without one), any other address doesn't; =on — checked and on, the
 session that waits for you ran on it; =down — on, but the server doesn't answer: a new task on it is refused
@@ -260,6 +265,142 @@ def png_sample(w=320, h=200):
         return struct.pack(">I", len(b)) + t + b + struct.pack(">I", zlib.crc32(t + b) & 0xffffffff)
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + \
         chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+
+
+def wav_sample(secs=20, rate=16000):
+    """A made-up tune for the trial song: a slow arpeggio of soft sine notes, no real music."""
+    import math, struct
+    notes, n = (261.6, 329.6, 392.0, 523.3, 392.0, 329.6), int(secs * rate)
+    beat, out = rate // 2, bytearray()
+    for i in range(n):
+        f, k = notes[(i // beat) % len(notes)], i % beat
+        out += struct.pack("<h", int(9000 * math.sin(2 * math.pi * f * i / rate) * min(1, k / 400) * (1 - k / beat) ** 2))
+    return b"RIFF" + struct.pack("<I", 36 + len(out)) + b"WAVEfmt " + struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16) + \
+        b"data" + struct.pack("<I", len(out)) + bytes(out)
+
+
+async def stand_comfy(p, store):
+    """The gateway beside ComfyUI (stage M, step 6.7) as the owner's server had it on 2026-11-25: its verified list
+    (deploy/comfy-gate/sets.json), Z-Image-Turbo on the disk, 8.7 GB of other models, C: 141 GB free of 2 TB, 60 GB kept,
+    the cap 65 GB. STAND_COMFY=1 — so; run — ACE-Step downloading, 40 %; full — the other models 25 GB: past the cap;
+    old — the first gateway, without models; down — nothing answers. A download comes in 30 steps of STAND_PULL_S
+    (1.5 s); a trial — in 3 s: a picture of colour bands, a tune of sine notes."""
+    import pult_comfy as C
+    G, mode = 1000 ** 3, os.environ["STAND_COMFY"]
+    lst = json.loads((REPO / "deploy/comfy-gate/sets.json").read_text())["sets"]
+    have = {(f["folder"], f["name"]) for s in lst if s["id"] == "z-image-turbo" for f in s["files"]}
+    gs = {"main": {"image": "z-image-turbo"}, "state": "stopped", "loaded": False, "pull": None, "job": None,
+          "also": int((25 if mode == "full" else 8.7) * G), "free": 141 * G, "parts": {}}
+
+    def files_of(s):
+        return [{"folder": f["folder"], "name": f["name"], "size": f["size"], "have": (f["folder"], f["name"]) in have,
+                 "part": gs["parts"].get((f["folder"], f["name"]), 0),
+                 "shared": [x["id"] for x in lst if x["id"] != s["id"] and any((g["folder"], g["name"]) == (f["folder"], f["name"]) for g in x["files"])]}
+                for f in s["files"]]
+
+    def answer():
+        sets, seen = [], {}
+        for s in lst:
+            fs = files_of(s)
+            ready = all(f["have"] for f in fs)
+            mine = {(f["folder"], f["name"]) for f in s["files"]}       # another set keeps a shared file when a file
+            held = lambda x: any((f["folder"], f["name"]) in have and (f["folder"], f["name"]) not in mine for f in x["files"])  # noqa: E731
+            frees = sum(f["size"] for f in fs if f["have"] and not any(x["id"] in f["shared"] and held(x) for x in lst))
+            sets.append(dict({k: v for k, v in s.items() if k not in ("files", "graph", "defaults")}, files=fs,
+                             size=sum(f["size"] for f in fs), ready=ready, frees=frees,
+                             need=sum(f["size"] - f["part"] for f in fs if not f["have"])))
+            for f in fs:
+                if f["have"]:
+                    seen[(f["folder"], f["name"])] = f["size"]
+        comfy = sum(seen.values()) + sum(gs["parts"].values())
+        main = {k: (gs["main"].get(k) if any(x["id"] == gs["main"].get(k) and x["ready"] for x in sets)
+                    else next((x["id"] for x in sets if x["kind"] == k and x["ready"]), None)) for k in ("image", "audio")}
+        return C.clean({"v": 2, "comfy": {"version": "0.44.0", "state": gs["state"], "loaded": gs["loaded"], "stop_after_s": 600},
+                        "sets": sets, "main": main, "pull": gs["pull"], "job": gs["job"],
+                        "bytes": {"comfy": comfy, "also": gs["also"], "other": 0},
+                        "disk": {"label": "C:", "free": gs["free"] - comfy + int(18.28 * G), "total": 2047249215488},
+                        "keep": 60 * G, "cap": 65 * G})
+
+    async def pulling(s):
+        todo = [f for f in s["files"] if (f["folder"], f["name"]) not in have]
+        total = sum(f["size"] for f in todo)
+        start = int(total * 0.4) if mode == "run" else 0
+        for i in range(31):
+            done = start + (total - start) * i // 30
+            gs["pull"].update(done=done, rate=int(18.8 * 1000 ** 2), phase="check" if i == 30 else "download")
+            left = done
+            for f in todo:
+                gs["parts"][(f["folder"], f["name"])] = max(0, min(f["size"], left))
+                left -= f["size"]
+            p.web and p.web.emit("comfy")
+            if gs["pull"].get("stopped"):
+                return
+            await asyncio.sleep(float(os.environ.get("STAND_PULL_S") or 1.5))
+        for f in todo:
+            gs["parts"].pop((f["folder"], f["name"]), None)
+            have.add((f["folder"], f["name"]))
+        gs["pull"].update(run=False, end=int(time.time()), rate=0, phase="done")
+
+    def pull(sid):
+        s = next(x for x in lst if x["id"] == sid)
+        gs["pull"] = {"id": sid, "name": s["name"], "total": sum(f["size"] for f in s["files"] if (f["folder"], f["name"]) not in have),
+                      "done": 0, "rate": 0, "since": int(time.time()), "phase": "download", "end": None, "err": None, "why": None,
+                      "stopped": False, "run": True}
+        gs["task"] = asyncio.ensure_future(pulling(s))
+
+    async def stand_models(url, transport=None):
+        if mode == "old":
+            raise C.GateError("old", "")
+        if mode == "down":
+            raise C.GateError("net", "ConnectError")
+        return answer()
+
+    async def stand_post(url, path, body=None, transport=None):
+        await asyncio.sleep(0.3)
+        body = body or {}
+        if path == "/pull":
+            pull(body["id"])
+            return {"ok": True, "pull": gs["pull"]}
+        if path == "/pull/stop":
+            gs["pull"].update(stopped=True, run=False, end=int(time.time()), rate=0)
+            return {"ok": True, "stopped": True}
+        if path == "/remove":
+            s = next(x for x in lst if x["id"] == body["id"])
+            mine = {(f["folder"], f["name"]) for f in s["files"]}       # of its own there, as the gateway counts
+            kept = {(f["folder"], f["name"]) for x in lst if x["id"] != s["id"] and any((g["folder"], g["name"]) in have
+                    and (g["folder"], g["name"]) not in mine for g in x["files"]) for f in x["files"]}
+            gone = sum(f["size"] for f in files_of(s) if f["have"] and (f["folder"], f["name"]) not in kept)
+            for f in files_of(s):
+                if (f["folder"], f["name"]) not in kept:
+                    have.discard((f["folder"], f["name"]))
+            return {"ok": True, "freed": gone}
+        if path == "/main":
+            kind = next(x["kind"] for x in lst if x["id"] == body["id"])
+            gs["main"][kind] = body["id"]
+            return {"ok": True}
+        if path == "/free":
+            gs["loaded"] = False
+            return {"ok": True, "freed": True}
+        if path == "/stop":
+            was = gs["state"] == "running"
+            gs.update(state="stopped", loaded=False)
+            return {"ok": True, "stopped": was}
+        return {"ok": True}
+
+    async def stand_job(url, kind, model, transport=None):
+        cold = gs["state"] != "running"
+        gs["job"] = {"kind": kind, "model": model, "since": int(time.time())}
+        await asyncio.sleep(3)
+        gs.update(state="running", loaded=True, job=None)
+        blob = png_sample(512, 512) if kind == "image" else wav_sample()
+        return blob, {"seed": "381", "secs": (4.1 if kind == "image" else 38.6) + (31.0 if cold else 0), "start": 31.0 if cold else 0.0,
+                      "cached": False}
+    C.models, C.post, C.job = stand_models, stand_post, stand_job
+    C.MIME["audio"] = "audio/wav"                     # the stand's tune is a WAV, not an MP3
+    if mode == "run":                                 # the computer restarted while the server downloads: it looks again
+        pull("ace-step-1.5-turbo")
+        store.put("comfy.seen", time.time())
+        await p.comfy_resume()
 
 
 def ev(name, sid, cwd=SHOP, **kw):
@@ -1473,6 +1614,14 @@ async def main():
             store.put("vendors.conf", conf)
             store.set_vendor(SID4, "local")
             p.set_choice(SID4, "gemma4-32k")
+    if os.environ.get("STAND_COMFY"):                 # stage M, step 6.7: the gateway beside ComfyUI, a stand-in
+        await stand_comfy(p, store)
+    elif not os.environ.get("STAND_LOCAL"):
+        import pult_vendors as V
+
+        async def no_server(url, transport=None):     # the ComfyUI tab reads the reader beside Ollama: never this
+            raise V.VendorError("net", "ConnectError")  # computer's own tunnel, whatever answers there
+        V.local_now = no_server
     store.touch_session(SID5, PKEY2, path=DESK, title=D["s5_title"])
     if os.environ.get("STAND_VENDORS") == "1" or os.environ.get("STAND_REPORT") == "1":   # its chat: the ask, the report
         fl = json.loads(aline(D["s5_line"] + ".", "s5", 900, ago=600))

@@ -16,7 +16,8 @@
 - Optional, for Codex's tasks and a second opinion: Codex signed in with ChatGPT — ChatGPT for Mac carries it, or the `codex` command.
 - Optional, for other vendors' models: a key of DeepSeek, GLM (Z.ai) or Kimi (Moonshot AI); for a model of your own —
   [Ollama](https://ollama.com) with a model that can use tools, its context set to 16K or more (`PARAMETER num_ctx`) — and,
-  for its disk and card in the app, the small reader in `deploy/ollama-info/` beside it.
+  for its disk and card in the app, the small reader in `deploy/ollama-info/` beside it; for pictures and music on that
+  computer, ComfyUI with the gateway in `deploy/comfy-gate/` beside it.
 
 ## Install
 

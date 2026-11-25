@@ -61,6 +61,11 @@ CHECKS = {
                    "out", ["busy"]),                                          # … a model in the card's memory
     "tune": ({"STAND_LOCAL": "on", "STAND_LOCAL_MANY": "1", "STAND_LOCAL_SRV": "1", "STAND_HOMES": "1", "STAND_LANG": "ru"},
              "out", []),                                                      # stage M, step 6.5: a model's settings
+    "comfy": (dict({"STAND_LOCAL": "on", "STAND_LOCAL_MANY": "1", "STAND_LOCAL_SRV": "1", "STAND_LANG": "ru", "STAND_COMFY": "1"}, STAND_PULL_S="0.1"), "out", []),   # stage M, step 6.7: ComfyUI's models
+    "comfy-full": ({"STAND_LOCAL": "on", "STAND_LOCAL_MANY": "1", "STAND_LOCAL_SRV": "1", "STAND_LANG": "ru", "STAND_COMFY": "full"}, "out", ["full"]),          # … past the server's cap, here and in Local model
+    "comfy-old": ({"STAND_LOCAL": "on", "STAND_LOCAL_MANY": "1", "STAND_LOCAL_SRV": "1", "STAND_LANG": "ru", "STAND_COMFY": "old"}, "out", ["old"]),             # … the first gateway
+    "comfy-down": ({"STAND_LOCAL": "on", "STAND_LOCAL_MANY": "1", "STAND_LOCAL_SRV": "1", "STAND_LANG": "ru", "STAND_COMFY": "down"}, "out", ["down"]),          # … no gateway: no tab
+    "comfy-run": ({"STAND_LOCAL": "on", "STAND_LOCAL_MANY": "1", "STAND_LOCAL_SRV": "1", "STAND_LANG": "ru", "STAND_COMFY": "run"}, "out", ["run"]),             # … a download picked up after a restart
     "gotit": ({"STAND_REPORT": "1", "STAND_LANG": "ru"}, "out", []),   # every finished task waits for "Got it" (2026-10-30)
     "states": ({"STAND_TAGS": "1", "STAND_ASK2": "1", "STAND_LANG": "ru"}, "out", []),   # a task's state in colour (Q110–Q112)
     "worktime": ({"STAND_VENDORS": "1", "STAND_HOMES": "1", "STAND_REPORT": "1", "STAND_LANG": "ru"}, "out", []),   # one clock per task (Q117)

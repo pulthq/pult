@@ -4,6 +4,26 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.70 — 2026-11-25
+
+- **ComfyUI's models from the phone — pictures and music.** Resources gets a fourth tab, **ComfyUI**, while a gateway
+  beside ComfyUI answers on the server with the graphics card (`deploy/comfy-gate/`, installed there with one command,
+  reached through the same tunnel as Ollama). It lists the sets of the gateway's verified list — Z-Image-Turbo and
+  FLUX.2 klein 4B for pictures, ACE-Step 1.5 Turbo for songs with words and instrumentals — which are on the disk, what
+  each would bring and what removing it frees (a file two sets share stays while one of them is there); the disk with
+  Ollama's, ComfyUI's and other models apart, the card, ComfyUI's state. **Download** — the gateway takes the set's files
+  from Hugging Face itself, pinned to a commit, checks each one's sha256 before anything uses it, goes on from where a
+  broken connection or a stop left it, and keeps going when the computer or the tunnel restarts; its progress shows in
+  the tab and on Home. Before any download — here and in **Local model** too — the disk keeps its reserve free and all
+  models together stay within the server's own cap (`install.sh --cap`). The star makes a set the main one of its kind —
+  the one a picture or a song gets when none is named; **Try** makes a trial picture or a 20-second tune on the server
+  and plays it in the set's card, with its time; ComfyUI's hold on the card's memory can be let go, or ComfyUI
+  turned off, right there. The gateway grew from the drawing gateway of an earlier setup and answers its requests as before; new: `GET
+  /models`, `POST /pull`, `/pull/stop`, `/remove`, `/main`, `/free`, `/audio` (ACE-Step 1.5: style, lyrics, 10–600 s,
+  bpm, language → MP3), a model's choice in `/image`. It runs nothing anyone sends — no command, no ComfyUI extension, no
+  file outside its list, no path outside the models' folders — and its workflows use only ComfyUI's own nodes, checked
+  when it starts. Its own tests (`deploy/comfy-gate/test_gate.py`) run on CI on Linux and macOS.
+
 ## 0.18.69 — 2026-11-21
 
 - **Long voice recordings no longer come back made up after the first half-minute.** Groq's Whisper reads a recording
