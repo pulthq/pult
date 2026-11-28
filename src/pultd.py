@@ -104,7 +104,7 @@ UPLOAD_MAX = 6 * 1024 * 1024    # bytes of one picture sent from the app (the ap
 UPLOADS_MAX = 3                 # pictures per message
 ALBUM_WAIT = 2.0                # s after an album's last file: Telegram sends its files as separate messages
 STT_DROP = 300                  # s: a replaced speech client closes this much later — a recording on its way finishes first
-VERSION = "0.18.70"
+VERSION = "0.18.71"
 LOG_FILE = Path(os.environ.get("PULT_LOG") or pult_os.LOG_DIR / "pult.log").expanduser()
 SETTINGS = Path("~/.claude/settings.json").expanduser()
 TAB_CONF = Path("~/.config/pult/tab.json").expanduser()          # tab wrapper: folders and verified versions
@@ -1802,13 +1802,18 @@ class Pult(Api, Parts):
                 return
             BRIEF_DIR.mkdir(parents=True, exist_ok=True)
             tags = await self.tag_ctx(lv, since)
-            b = await B.brief(R.prompt_text(prompt) if prompt else None, text, bg, self.lang(), BRIEF_DIR, tags=tags)
+            b = await B.brief(R.prompt_text(prompt) if prompt else None, text, bg, self.lang(), BRIEF_DIR, tags=tags,
+                              done=self.t("brief.done"))
             if b is None:
                 log("brief %s: no answer from the model — the first sentence stays" % lv.sid[:8])
                 return
             if tags is not None and b.get("tags"):
                 self.tags_set(lv, b["tags"])
-            if self.attn.briefed(lv.sid, ts, b, waits):
+            r = self.attn.briefed(lv.sid, ts, b, waits)
+            if r:
+                if r["you"]:            # for the journal, beside "ready replies …: tapped / own words": what was asked
+                    log("brief %s: waits for %s; ready replies: %d" % (lv.sid[:8], "+".join(b.get("kinds") or []) or "?",
+                                                                      len(r["replies"])))
                 self.changed(lv.sid)
 
     # ----- task tags (stage T): a section of the project and a topic in it; the model keeps them, the owner corrects -----

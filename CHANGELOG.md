@@ -4,6 +4,32 @@ Versions 0.x come before the first public release. Newest first.
 
 ## Unreleased
 
+## 0.18.71 — 2026-11-28
+
+- **A part that is behind says how it catches up.** In "Pult and its parts", the App and Relay rows of a folder that
+  makes its own releases said "deploy the app again… `install.sh` after `git pull`" even when the app's server takes
+  releases from GitHub by itself. Such a row now says the change comes with the next release, after Install on the
+  computer, and that nothing is to be deployed there by hand.
+- **The "needed" line and the ready replies come from one list.** At a turn's end the small model now lists everything
+  the agent waits for — each item a decision, a thing to do by hand, the owner's own words, or a list to take several
+  from — and Pult makes both from that list by rule. The line names every item, numbered when there are several; the
+  ready replies answer the decisions, all of them at once; under a thing to do by hand there is one reply, **Done**;
+  where only the owner's words, a photo or a pick from a list can answer, there are no buttons. Before, the line and
+  the buttons were written apart and could disagree: a line about two things over buttons for one of them, buttons
+  under "send me a photo". The daemon's log says what was asked (`brief …: waits for choice+step; ready replies: 2`),
+  and `tools/ask_stats.py` counts it.
+- **A decision at a turn's end — as a card.** The paragraph Pult gives every session now asks the agent to end a turn
+  that needs the owner's decision with a question card rather than a question in its last message — always so when
+  there are several decisions at once: a card holds two questions and ticks several steps of a list, which one-tap
+  buttons under the text can't. An offer of more work stays in the text.
+- **A reload button when the app doesn't start.** If the app hasn't started 12 s after opening — a request for one of
+  its files never completes, as on a network that holds some connections — a round ↻ button shows under the "…"
+  instead of an endless wait. It reloads the page and keeps the login; it needs no script and no words, so it works
+  when nothing else has loaded.
+- **The ComfyUI tab stays while the server sleeps.** Once its gateway has answered on this computer, the tab keeps its
+  place in Resources when the computer with the card is off or the tunnel is down, and says so — as Local model's does;
+  before, it vanished until the gateway answered again.
+
 ## 0.18.70 — 2026-11-25
 
 - **ComfyUI's models from the phone — pictures and music.** Resources gets a fourth tab, **ComfyUI**, while a gateway

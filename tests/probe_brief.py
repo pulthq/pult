@@ -1,6 +1,7 @@
 """Probe: what it costs to have a small model read a turn's result (stage V, "whose move"). Claude Code + Agent SDK.
 
-At the end of a turn Pult wants one plain line about the outcome and an answer to "does Claude wait for the owner?".
+At the end of a turn Pult wants one plain line about the outcome and an answer to "does Claude wait for the owner?" —
+and for what: the list the "needed" line and the ready replies are made from (pult_brief.gate).
 This probe runs the same request Pult would: haiku through the owner's subscription, no tools, no settings, Pult's
 own short system prompt in place of Claude Code's, JSON by schema, no transcript left behind. For each sample it
 prints the answer, the wall time, the claude process's peak memory and the tokens; then checks that no session file
@@ -13,6 +14,7 @@ from claude_agent_sdk import ResultMessage, query
 SRC = Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC))
 import pult_brief as B  # noqa: E402
+import pult_i18n as I  # noqa: E402
 
 LANG = sys.argv[1] if len(sys.argv) > 1 else "ru"
 CWD = Path(tempfile.mkdtemp(prefix="pult-brief-"))
@@ -30,7 +32,7 @@ SAMPLES = [
      [], False),
     ("put the Groq key in place",
      "I couldn't write the key to ~/.config/pult/env — the auto-mode classifier blocks writes to secret stores. "
-     "Run this in Terminal (the key is not printed): `pult stt`. The daemon picks it up by itself.", [], True),
+     "Run this in Terminal (the key is not printed): `pult stt`. The daemon picks it up by itself.", [], True, "done"),
     ("выложи 0.9.17",                                       # a yes/no question: ready replies expected
      "Собрал выпуск 0.9.17, проверки в чистом окружении зелёные. Выкладывать на GitHub? Нужно твоё «да».", [], True, "some"),
     # ready replies are answers, not how the owner will answer (2026-10-28: «Опишу текстом» / «Пришлю скриншоты»
@@ -49,7 +51,27 @@ SAMPLES = [
     ("что дальше?",                                         # Claude's advice goes first
      "Два пути. А — чинить сейчас, в этой сессии: контекст свежий, рекомендую. Б — записать передачу и начать "
      "новую сессию. Как делаем?", [], True, "first:А"),
+    # the buttons come from the list of what Claude waits for, by rule (pult_brief.gate; the owner, 2026-11-27: "the
+    # choices aren't always consistent, sometimes I can't make a full choice"). A thing done by hand — the one reply
+    # "Done", also when the script itself asks something in the Terminal on the way
+    ("поставь обновление",
+     "Скрипт готов, сам я его запустить не могу. Запусти в Терминале: `bash install.sh`. Он закончит словом «готово». "
+     "Потом напиши мне «готово», я проверю.", [], True, "done"),
+    ("обнови сертификат",
+     "Терминал открыт: нажми Enter. В конце скрипт спросит, когда перезапускать службу: Enter — ночью в 04:30, «д» — "
+     "сейчас. Когда закончится, напиши «готово», я проверю результат.", [], True, "done"),
+    # a decision beside a thing only the owner's words can answer: the replies are the decision's, the question
+    # stands in the "needed" line (all or nothing took away replies the owner had tapped — pult_brief.gate)
+    ("включи ночной перезапуск",
+     "Перезапуск один, на пару секунд, поставлю его на 04:30. Включить? И ещё: в таблице «Кто есть кто» нет двух "
+     "новых учёток, anna и boris. Кто это? Допишу.", [], True, "some"),
+    # a list to take any number from: one tap can't tick three of five — Claude asks such things as a card
+    ("что ещё сделать для надёжности?",
+     "Что можно сделать, в любом сочетании: 1. Поднять порог ограничителя запросов — пять минут, без риска. "
+     "2. Сторож на компьютере, проверка связи раз в 10 минут. 3. Трафик через туннель — при сломанном туннеле не "
+     "обновить подписку. 4. Второй адрес для сайтов — нужна покупка. Что из этого делаем?", [], True, "none"),
 ]
+DONE = I.T("brief.done", LANG)
 
 
 def peak_rss(stop, out):
@@ -87,8 +109,9 @@ async def main():
     tot_in = tot_out = 0
     for prompt, reply, bg, want, *rep in SAMPLES:
         res, secs, peak = await one(prompt, reply, bg)
-        brief = B.parse(res)
-        # the ready replies wanted: "none", "some", "first:<its start>", "all" — each answers every question asked
+        brief = B.parse(res, False, DONE)
+        # the ready replies wanted: "none", "some", "first:<its start>", "all" — each answers every question asked,
+        # "done" — the one reply under a thing to do by hand
         rep = rep[0] if rep else None
         u = res.usage or {}
         tin = (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0)
@@ -96,8 +119,8 @@ async def main():
         tot_in, tot_out = tot_in + tin, tot_out + tout
         got = (brief or {}).get("replies") or []
         ok = brief is not None and (want is None or brief["you"] == want) and (
-            rep is None or (rep == "none" and not got) or (rep == "some" and got)
-            or (rep == "all" and (not got or all(any(w in x.lower() for w in ("оба", "обе", "всё", "все ", " и ", ",", "both", "all", " and "))
+            rep is None or (rep == "none" and not got) or (rep == "some" and got) or (rep == "done" and got == [DONE])
+            or (rep == "all" and (not got or all(any(w in x.lower() for w in ("оба", "обе", "всё", "все ", " и ", ",", "both", "all", " and ", "объясни", "explain"))
                                                  for x in got)))
             or (rep.startswith("first:") and got and got[0].startswith(rep[6:])))
         print("%s %.1f s · peak %d MB · in %d (cache read %d) · out %d · $%.4f" % (

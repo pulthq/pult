@@ -126,7 +126,7 @@ function PartMore({ r, set, b }) {
     if (!r.commit) return html`<div class="dim">${t("pt.why." + r.why, { b })}</div>${auto}`;
     return html`<div class="dim">${t("pt." + r.k + ".from", { commit: r.commit, d: ddmm(r.have) })}</div>
       ${r.n ? html`<div class="dim upd-note">${t("pt.lag", { n: commits(r.n), since: ddmm(r.since), b })}</div>${newsList(r.news)}
-      ${r.auto === undefined ? who("server", t("pt.web.who")) : ""}` : ""}${auto}`;
+      ${r.auto === undefined ? (r.rel ? who("auto", t("pt.web.rel")) : who("server", t("pt.web.who"))) : ""}` : ""}${auto}`;
   }
   if (r.k === "phone") {
     if (r.st === "ok") return html`<div class="dim">${t("pt.phone.same")}</div>`;

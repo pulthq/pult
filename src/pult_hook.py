@@ -26,7 +26,7 @@ EVENTS = ["SessionStart", "UserPromptSubmit", "PostToolUse", "PostToolUseFailure
           "Stop", "StopFailure", "SessionEnd", "PermissionRequest"]     # StopFailure: an API error ended the turn
 WAIT_TIMEOUT = 6 * 3600 + 60             # wait up to 6 h for a Telegram answer; the Mac dialog stays open meanwhile
 # what a session learns at its start (and again after a resume or a compaction) while Pult runs: how to hand the owner
-# a file (stage F), and how to ask so the phone can tick several answers. SessionStart's additionalContext reaches the
+# a file (stage F), when to ask as a card and how, so the phone can tick several answers. SessionStart's additionalContext reaches the
 # model — probe tests/probe_sessionctx.py, 2.1.300/2.1.301; what the asking sentence changes — tests/probe_multiselect.py
 FILES_NOTE = ("Pult, a Telegram remote for Claude Code, runs on this computer. When the owner asks for a file, or the task "
               "is to hand them one, send it to their phone with `pult send <file>... [-m \"caption\"]`: it arrives in this "
@@ -35,8 +35,22 @@ FILES_NOTE = ("Pult, a Telegram remote for Claude Code, runs on this computer. W
 # Claude rarely sets multiSelect and glues combinations into single options instead ("only A" / "A and B"): 2 of 76
 # questions on the owner's computer had ticks, 2026-10-15…26 (tools/ask_stats.py) — the phone shows ticks and "Done"
 # only when the question asks for them. And the owner taps: the 4 of 123 questions they answered in their own words,
-# 2026-10-15…28, each wanted "yes, but…" — in a new session, research first — and no option said it
-ASK_NOTE = ("The owner often answers your questions from the phone. In AskUserQuestion, when the options are not "
+# 2026-10-15…28, each wanted "yes, but…" — in a new session, research first — and no option said it.
+# A turn that ends on a question in its text gets ready replies from a small model (pult_brief): a few one-tap
+# buttons. They fit a plain yes or an option Claude named, and can't fit several decisions at once: of 61 outcomes
+# the owner answered in their own words, 2026-10-30…11-27, 9 were two questions, a part of a list or "yes, but…"
+# ("the choices aren't always consistent, sometimes I can't make a full choice"). Only Claude knows what goes with
+# what, so a decision is asked as a card — several at once always. A sentence about several decisions only ("more
+# than one — ask with AskUserQuestion", three wordings) moved single questions from cards to the text in the probe,
+# 14 of 14, and cards are what the owner taps (119 of 123) — so it speaks of any decision. An offer of more work
+# stays in the text: a card keeps the turn open — a place among the turns at once, and an install waits for it.
+# What the sentence changes — tests/probe_askcard.py
+ASK_NOTE = ("The owner often answers your questions from the phone. When your turn ends on a decision that is "
+            "theirs — a choice, a yes or no, an approval; not an offer of more work they may ignore — ask it with "
+            "AskUserQuestion after your report rather than in the text of your message, and always so when it is "
+            "more than one decision at once (two separate questions, or steps you listed of which they may take "
+            "several): under a question in the text the phone can only offer a few one-tap replies, and one tap "
+            "can't answer two things or take several steps. In AskUserQuestion, when the options are not "
             "mutually exclusive (steps to take, places to deploy to, things to include), set multiSelect: true and make "
             "each option one action, instead of options that combine them (\"A and B\", \"only A\"). Make each option "
             "an answer they can tap as it is; when a natural answer is \"yes, but…\" (later, in a new session, after a "

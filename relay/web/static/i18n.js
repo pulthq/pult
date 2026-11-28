@@ -142,6 +142,9 @@ const S = {
   "pt.relay.from": { en: "The relay running is of commit {commit}, {d}.", ru: "Работает посредник из коммита {commit} от {d}." },
   "pt.web.who": { en: "To bring it up to date: deploy the app again, the way the app's server was set up — on it, sudo bash deploy/relay/install.sh after git pull.",
     ru: "Обновить: выложить приложение заново тем же способом, каким ставил сервер приложения, — на нём sudo bash deploy/relay/install.sh после git pull." },
+  // the folder releases are made in, and a server that takes releases itself: nothing to deploy by hand
+  "pt.web.rel": { en: "It comes with the next release: the app's server takes releases from GitHub by itself, after Install on the computer — nothing to deploy there by hand.",
+    ru: "Придёт со следующим выпуском: сервер приложения сам берёт выпуски с GitHub вслед за «Поставить» на компьютере — руками туда выкладывать не нужно." },
   "pt.phone.same": { en: "This window runs the copy the app's server hands out.", ru: "Открыта та же копия, что отдаёт сервер приложения." },
   "pt.phone.unknown": { en: "Couldn't ask the app's server which copy it hands out.", ru: "Не смог спросить сервер приложения, какую копию он отдаёт." },
   "pt.phone.diff": { en: "This copy is of {mine}; the app's server hands out one of {srv}.", ru: "Эта копия от {mine}, сервер приложения отдаёт от {srv}." },

@@ -21,7 +21,7 @@ later, as Claude Code does at its turn's next step — a message with "#gone" is
 STAND_FILES=1 gives the shop a real folder with made-up files and ends the chat with links to them (tools/fileview_check.py).
 STAND_SEARCH=1 (stage И): search over everything — the shop's older long task with a word said in its middle, the same word
 in the task that waits for you and in a document; the index built at once; SETS — Settings → Search (tools/said_check.py).
-Settings' table of Pult's parts and Home's line always run on made-up facts — all fresh; STAND_PARTS=now|lag|bad|public:
+Settings' table of Pult's parts and Home's line always run on made-up facts — all fresh; STAND_PARTS=now|lag|lag_rel|bad|public:
 all as in main with a new Claude Code downloaded; several parts behind (with STAND_UPD=ready for the computer); hooks
 missing and tabs on an unverified Claude Code; someone with a clone of the public repository after a `git pull` (no
 release row, no tab wrapper; STAND_UPD=ready) (tools/parts_check.py); STAND_PARTS=auto|auto_run|auto_fail — that clone
@@ -1213,8 +1213,16 @@ async def main():
             "bad": {"git": {"mac": lag(0, 0, []), "web": None, "web_told": True, "relay": None,
                             "gh": {"last": pultd.VERSION, "date": time.strftime("%Y-%m-%d"), "waiting": 0}},
                     "tabs": [True] * 3 + [None], "missing": ["StopFailure", "PreCompact"], "cc": (["2.1.301", "2.1.310"], ["2.1.301"], "2.1.310")},
-        }[parts]
+        }
+        facts["lag_rel"] = facts["lag"]       # the same folder behind, and its server takes releases itself (below)
+        facts = facts[parts]
         g = dict(facts["git"], repo=str(Path.home() / "pult"), head=sha("a41c9e2"), branch="main", release=clone)
+        if parts == "lag_rel":
+            p.srv = {"can": ["want"], "upd": None}
+
+            async def stand_said_rel(msg):          # the stand's own relay has no updater: its hello must not count
+                return None
+            p.relay_said = stand_said_rel
         if clone:                     # stage U3: the relay's server says whether it has the updater, and its report
             own = {"deploy/relay/update.py": sha("ab12cd3")}           # the updater the release has, and the server too —
             g["srv_files"] = own                                       # unless the facts say otherwise (auto_self)

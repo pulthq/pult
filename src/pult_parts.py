@@ -735,6 +735,11 @@ class Parts:
                                 row["srv"]["self"] = stale
                                 if row["st"] == "ok":
                                     row["st"] = "warn"
+                elif auto:
+                    # the developer's own folder, and the server has the updater: what is only in this folder reaches
+                    # the server with the next release, by itself — nothing to deploy there by hand (the owner,
+                    # 2026-11-28, under "deploy the app again… install.sh after git pull": "what is this lag?")
+                    row["rel"] = True
                 rows.append(row)
         tabs, cc = f["tabs"], f["cc"]
         if tabs or cc["wrapped"]:

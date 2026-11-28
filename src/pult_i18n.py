@@ -414,6 +414,8 @@ S = {
                      "ru": "Пульт перезапустился, пока шёл этот ход, — сделанное видно в переписке. "
                            "Напиши, чтобы продолжить."},
     "lost.go_on": {"en": "Go on", "ru": "Продолжай"},
+    # the ready reply under a thing only the owner can do by hand: one tap says it is done (pult_brief.gate)
+    "brief.done": {"en": "Done", "ru": "Готово"},
     "fail.silent": {"en": "the turn ended without a word", "ru": "ход кончился без итога"},
     "lost.silent": {"en": "The turn's end never reached Pult, and the session has nothing more to say — what it had done "
                           "is in the chat. Send a message to go on.",

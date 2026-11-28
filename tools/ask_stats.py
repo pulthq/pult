@@ -4,7 +4,9 @@ into options instead ("only A" / "A + B" / "both" — a rough rule: "A and B" sl
 gets in; --list shows them). Pult's SessionStart paragraph asks for ticks where options combine (0.18.3,
 pult_hook.ASK_NOTE); this counts whether it took. And whether the buttons fit: answers in the owner's own words instead
 of a button (2026-10-15…28: 4 of 123, each a "yes, but…" — the paragraph asks for those since 2026-10-28), and the
-ready replies under a "your move" — tapped or not, from the daemon's journal (written since the same day).
+ready replies under a "your move" — tapped or not, from the daemon's journal (written since the same day). And what
+Claude waited for in the turns that ended on a question in the text — several decisions at once there mean the
+paragraph's "ask as a card" didn't take (journal lines "brief …: waits for …", since 2026-11-27).
 Read-only; probes and Pult's tests (temporary folders) are left out.
   ~/.local/share/pult/venv/bin/python tools/ask_stats.py [--since 2026-10-27] [--until 2026-11-03] [--list]
 """
@@ -16,6 +18,9 @@ GLUE = re.compile(r"\+|\b(только|оба|обе|ещё и|то же|only|bo
 ADVICE = re.compile(r"\s*\((recommended|рекомендую)\)", re.I)
 JOURNAL = os.path.expanduser("~/Library/Logs/pult.log")
 READY = re.compile(r"^(\d{4}-\d\d-\d\d) [\d:]+ ready replies \w+: (tapped|own words)")
+# what Claude waited for at a turn's end, as the small model listed it (pult_brief, since 2026-11-27): its kinds and
+# how many ready replies stood under it
+WAITS = re.compile(r"^(\d{4}-\d\d-\d\d) [\d:]+ brief \w+: waits for ([\w+?]+); ready replies: (\d+)")
 
 
 def questions(since, until):
@@ -98,6 +103,27 @@ def ready(since, until):
     return n
 
 
+def waits(since, until):
+    """What Claude waited for in the turns that ended on the owner's move, from the journal: how many asked several
+    things at once in the text (those are for a card — pult_hook.ASK_NOTE), how many a decision, a thing to do by hand
+    ("Done"), the owner's own words or a list to take from (no button)."""
+    n = collections.Counter()
+    try:
+        with open(JOURNAL, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                m = WAITS.match(line)
+                if m and not (since and m.group(1) < since) and not (until and m.group(1) >= until):
+                    kinds = m.group(2).split("+")
+                    n["all"] += 1
+                    n["several"] += len(kinds) > 1
+                    n["decisions"] += kinds.count("choice") > 1
+                    n["choice" if "choice" in kinds else "step" if set(kinds) == {"step"} else "none"] += 1
+                    n["buttons"] += int(m.group(3)) > 0
+    except OSError:
+        pass
+    return n
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--since", help="YYYY-MM-DD (UTC), from this day on")
@@ -124,6 +150,11 @@ def main():
     r = ready(a.since, a.until)
     if r:
         print("ready replies (journal): tapped %d, own words instead %d" % (r["tapped"], r["own words"]))
+    w = waits(a.since, a.until)
+    if w:
+        print("turns that ended on a question in the text (journal): %d — several things at once %d (several decisions "
+              "%d); with a decision %d, only to do by hand %d, only own words or a list %d; with ready replies %d" % (
+                  w["all"], w["several"], w["decisions"], w["choice"], w["step"], w["none"], w["buttons"]))
     if a.list:
         for ts, proj, q in glued:
             print("\n%s %s  %s" % (ts[:16].replace("T", " "), proj, q.get("question", "")[:160]))
