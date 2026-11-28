@@ -23,6 +23,7 @@ PY = sys.executable
 # its own arguments after that. None: the check raises the stands it needs itself
 CHECKS = {
     "memory": ({"STAND_LANG": "ru", "STAND_MEMORY": "96"}, "out", []),
+    "boot": ({}, "out", []),   # 2026-11-27: a module that never comes — a reload button after 12 s, never on a normal start
     "power": ({"STAND_LANG": "ru"}, "out", []),   # 2026-11-12: Home's limit and machine, the battery, the machine's name
     "fileview": ({"STAND_FILES": "1"}, "SESS", []),
     "said": ({"STAND_SEARCH": "1", "STAND_LANG": "ru"}, "out", []),   # stage И: what was said and the documents, found

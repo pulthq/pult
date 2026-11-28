@@ -7,9 +7,21 @@
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <link rel="stylesheet" href="/pult/static/app.css?v={{v}}">
 <script type="importmap">{{importmap}}</script>
+<style>
+/* The app hasn't started in 12 s — a module request that never completes (2026-11-27: a network held some connections
+   for minutes) leaves the import graph unfinished and the screen an endless "…". Then a reload button shows. It needs
+   no script (the page's CSP runs none inline) and no words (the dictionaries load as modules too); the app's first
+   render replaces it, and it stays hidden once <main> is there. A reload keeps the login: Telegram's script restores
+   its parameters from sessionStorage. */
+pult-boot { display: block; text-align: center; visibility: hidden; animation: pult-boot 0s 12s forwards; }
+pult-boot a { display: inline-block; width: 56px; height: 56px; border-radius: 50%; font: 30px/56px system-ui, sans-serif;
+  text-decoration: none; color: var(--tg-theme-button-text-color, #fff); background: var(--tg-theme-button-color, #2481cc); }
+@keyframes pult-boot { to { visibility: visible; } }
+#app:has(> main) > pult-boot { display: none; }
+</style>
 </head>
 <body>
-<div id="app"><div class="empty">…</div></div>
+<div id="app"><div class="empty">…</div><pult-boot><a href="">↻</a></pult-boot></div>
 <script type="module" src="/pult/static/app.js?v={{v}}"></script>
 </body>
 </html>

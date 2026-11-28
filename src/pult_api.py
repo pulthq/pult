@@ -2464,7 +2464,10 @@ class Api:
             try:
                 await C.models(url)
             except C.GateError as e:
-                return {"set": e.kind == "old"}
+                # a gateway seen here before keeps its tab while it is silent — the computer asleep, the tunnel down —
+                # and the tab says so, as Local model's does; one never seen gets no tab
+                return {"set": e.kind == "old" or (e.kind == "net" and bool(self.store.get("comfy.seen")))}
+            self.store.put("comfy.seen", time.time())
             return {"set": True}
         now = None
         try:

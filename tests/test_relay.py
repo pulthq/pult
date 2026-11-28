@@ -120,6 +120,22 @@ class RelayTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("unsafe-eval", policy)
         self.assertNotIn("wss://", relay.csp(raw, "evil.example\r\nX: y"))   # a strange Host header adds nothing
 
+    async def test_page_boot_fallback(self):
+        # a module request that never completes (2026-11-27) left the screen an endless "…": after 12 s a reload button
+        # shows instead. It works with nothing else loaded — no script (the CSP runs none inline), no words (the
+        # dictionaries are modules too) — and goes once the app has drawn its <main>
+        import re
+        async with self.http.get(self.url("/pult/")) as r:
+            page = await r.text()
+        inside = page.split('<div id="app">')[1].split("</div>\n")[0]
+        self.assertEqual(inside, '<div class="empty">…</div><pult-boot><a href="">↻</a></pult-boot>')
+        style = page.split("<style>")[1].split("</style>")[0]
+        self.assertIn("visibility: hidden; animation: pult-boot 0s 12s forwards;", style)
+        self.assertIn("@keyframes pult-boot { to { visibility: visible; } }", style)
+        self.assertIn("#app:has(> main) > pult-boot { display: none; }", style)
+        for tag in re.findall(r"<script\b[^>]*>", page):                      # files or the import map, nothing inline
+            self.assertTrue(' src="' in tag or 'type="importmap"' in tag, tag)
+
     async def test_strangers(self):
         # a stranger learns nothing about why; only the owner's own week-old window is told to reopen
         ws, m = await self.phone(init_data(tamper=True))

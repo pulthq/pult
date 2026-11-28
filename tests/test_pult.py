@@ -1421,10 +1421,10 @@ class AttnTest(unittest.TestCase):
 
     def test_brief_parse(self):
         res = types.SimpleNamespace(is_error=False, structured_output={"line": "  Готово:  всё  ", "you": False, "need": "x"})
-        self.assertEqual(B.parse(res), {"line": "Готово: всё", "you": False, "need": "", "replies": []})
+        self.assertEqual(B.parse(res), {"line": "Готово: всё", "you": False, "need": "", "replies": [], "kinds": []})
         res = types.SimpleNamespace(is_error=False, structured_output=None,
                                     result='Вот: {"line": "Нужен ключ", "you": true, "need": "pult stt"}')
-        self.assertEqual(B.parse(res), {"line": "Нужен ключ", "you": True, "need": "pult stt", "replies": []})
+        self.assertEqual(B.parse(res), {"line": "Нужен ключ", "you": True, "need": "pult stt", "replies": [], "kinds": []})
         for bad in (None, types.SimpleNamespace(is_error=True), types.SimpleNamespace(is_error=False, structured_output={"line": "", "you": True}),
                     types.SimpleNamespace(is_error=False, structured_output={"line": "a", "you": "да"}, result="")):
             self.assertIsNone(B.parse(bad))
@@ -1446,7 +1446,39 @@ class AttnTest(unittest.TestCase):
         self.assertEqual(B.parse(res)["replies"], ["А — в памяти", "Б — " + "в" * 35 + "…", "В"])   # clipped, no repeats, three
         res.structured_output["you"] = False
         self.assertEqual(B.parse(res)["replies"], [])                     # only when Claude waits for the owner
+        # what Claude waits for comes as a list, and the "needed" line and the buttons are made from it by rule (the
+        # owner, 2026-11-27: "the choices aren't always consistent, sometimes I can't make a full choice")
+        def out(asks, replies=("Да, оба", "Нет"), **kw):
+            return B.parse(types.SimpleNamespace(is_error=False, structured_output={
+                "line": "Итог", "you": True, "asks": [{"what": x[0], "kind": x[1]} if isinstance(x, tuple) else x for x in asks],
+                "replies": list(replies)}), **kw)
+        b = out([("Решить, выпускать ли 0.9.17", "choice")])
+        self.assertEqual((b["need"], b["replies"], b["kinds"]), ("Решить, выпускать ли 0.9.17", ["Да, оба", "Нет"], ["choice"]))
+        b = out([("Решить, запускать ли миграцию.", "choice"), ("Решить, удалять ли старую таблицу", "choice")])
+        self.assertEqual(b["need"], "1) Решить, запускать ли миграцию; 2) Решить, удалять ли старую таблицу")   # numbered: two things
+        self.assertEqual(b["replies"], ["Да, оба", "Нет"])               # the model's: each answers both
+        b = out([("Запустить скрипт в Терминале", "step"), ("Решить, выкладывать ли", "choice")])
+        self.assertEqual(b["replies"], ["Да, оба", "Нет"])               # a thing to do beside a decision: the decision's
+        for kind in ("own", "pick"):
+            b = out([("Решить, выкладывать ли", "choice"), ("Прислать фото микросхемы", kind)], done="Готово")
+            self.assertEqual((b["replies"], b["kinds"]), (["Да, оба", "Нет"], ["choice", kind]))   # the decision's; the rest — in the line
+            self.assertEqual(b["need"], "1) Решить, выкладывать ли; 2) Прислать фото микросхемы")
+            # nothing to decide by a tap: no buttons, whatever the model gave — alone or beside a thing to do by hand
+            self.assertEqual(out([("Прислать фото микросхемы", kind)], done="Готово")["replies"], [])
+            self.assertEqual(out([("Запустить скрипт", "step"), ("Прислать фото микросхемы", kind)], done="Готово")["replies"], [])
+        b = out([("Запустить скрипт в Терминале", "step"), ("Нажать «Поставить»", "step")], done="Готово")
+        self.assertEqual(b["replies"], ["Готово"])                        # only things to do by hand: the one reply
+        self.assertEqual(out([("Запустить скрипт", "step")])["replies"], [])            # no word for it — no button
+        b = out([("Решить, выкладывать ли", "choice"), ("Решить, выкладывать ли", "choice"), ("x", "what?"), ("", "own"), "мусор"])
+        self.assertEqual((b["need"], b["kinds"]), ("Решить, выкладывать ли", ["choice"]))       # repeats and broken entries dropped
+        self.assertEqual(len(out([("Шаг %d" % i, "step") for i in range(9)])["kinds"]), B.ASKS)
+        self.assertLessEqual(len(out([("ш" * 200, "step")] * 1 + [("щ" * 200, "step")])["need"]), B.NEED_MAX)
+        res.structured_output.update(you=False, asks=[{"what": "Решить", "kind": "choice"}])
+        self.assertEqual((B.parse(res)["need"], B.parse(res)["kinds"]), ("", []))       # Claude doesn't wait: no list
+        self.assertEqual(I.T("brief.done", "ru"), "Готово")
         o = B.options("ru", TMP)
+        self.assertEqual(o.output_format["schema"]["required"], ["line", "you", "asks", "replies"])
+        self.assertEqual(o.output_format["schema"]["properties"]["asks"]["items"]["properties"]["kind"]["enum"], list(B.KINDS))
         self.assertEqual((o.model, o.tools, o.setting_sources), ("haiku", [], []))
         self.assertIn("Russian", o.system_prompt)
         self.assertIn("no-session-persistence", o.extra_args)
@@ -2977,6 +3009,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx["hookEventName"], "SessionStart")
         self.assertIn("pult send", ctx["additionalContext"])
         self.assertIn("multiSelect: true", ctx["additionalContext"])      # ticks on the phone where options combine
+        self.assertIn("more than one decision at once", ctx["additionalContext"])   # a decision — a card, not the text
         self.assertEqual(await run_hook(ev("SessionStart", source="startup"), extra_env={"PULT_SOCK": str(TMP / "нет.sock")}), "")
         self.assertEqual(await run_hook(ev("Stop"), extra_env={"PULT_SOCK": os.environ["PULT_SOCK"]}), "")
 
@@ -4076,6 +4109,8 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((look["ok"], look["cap"]), (True, {"unknown": True}))
             d = await self.p.api_comfy_panel()
             self.assertIn("не отвечает", d["down"])
+            # and its tab stays — seen before, silent now: the tab says why, as Local model's does (2026-11-25, atlas asleep)
+            self.assertEqual(await self.p.api_comfy_panel(peek=True), {"set": True})
 
     def test_comfy_reading(self):
         # what Pult takes from the gateway's answer: only what it should be (pult_comfy.clean), and the room's sums
@@ -4355,7 +4390,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await self.p.api_prefs(brief=True)
         asked = []
 
-        async def fake_brief(prompt, reply, bg, lang, cwd, tags=None):
+        async def fake_brief(prompt, reply, bg, lang, cwd, tags=None, done=""):
             asked.append(("brief", prompt))
             return {"line": "Отчёт", "you": False, "need": ""}
 
@@ -5883,15 +5918,15 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await self.p.api_prefs(brief=True)
         asked = []
 
-        async def fake_brief(prompt, reply, bg, lang, cwd, tags=None):
-            asked.append((prompt, lang))
+        async def fake_brief(prompt, reply, bg, lang, cwd, tags=None, done=""):
+            asked.append((prompt, lang, done))
             return {"line": "Отчёт собран, всё зелёное", "you": False, "need": ""}
         with mock.patch.object(pultd.B, "brief", fake_brief):
             await run_hook(ev("UserPromptSubmit", prompt="Проверь"))
             await run_hook(ev("Stop", last_assistant_message="Проверил: все тесты зелёные, можно выкладывать?",
                               background_tasks=[]))                                  # the build is over
             await until(lambda: self.p.attn.rec[SID].get("model"))
-        self.assertEqual(asked, [("Проверь", "ru")])
+        self.assertEqual(asked, [("Проверь", "ru", "Готово")])          # and the word for "done by hand", in the owner's language
         ov = await self.p.api_overview()
         self.assertEqual([(r["state"], r["line"], r["model"]) for r in ov["mine"]], [("you", "Отчёт собран, всё зелёное", True)])
         self.assertEqual((ov["board"][0]["rows"], self.p.attn.rec[SID]["you"]), ([], False))     # not on the board; no call
@@ -5986,7 +6021,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         # the result line's call brings the tags too: taken for the model's task, ignored for the owner's
         seen = {}
 
-        async def fake_brief(prompt, reply, bg, lang, cwd, tags=None):
+        async def fake_brief(prompt, reply, bg, lang, cwd, tags=None, done=""):
             seen[tags is not None] = tags
             return {"line": "Готово", "you": False, "need": "", "tags": {"sec": "Корпус", "topic": "Крепления"}}
         with mock.patch.object(pultd.B, "brief", fake_brief):
@@ -6364,7 +6399,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         Path(TP).write_text(tline("user", "Сделай кэш") + "\n" + tline("assistant", "Два варианта. Какой?") + "\n")
         await self.p.api_prefs(brief=True)
 
-        async def fake_brief(prompt, reply, bg, lang, cwd, tags=None):
+        async def fake_brief(prompt, reply, bg, lang, cwd, tags=None, done=""):
             return {"line": "Два варианта кэша", "you": True, "need": "Выбери А или Б", "replies": ["А", "Б"]}
         with mock.patch.object(pultd.B, "brief", fake_brief):
             await run_hook(ev("UserPromptSubmit", prompt="Сделай кэш"))
@@ -6422,7 +6457,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await self.p.api_prefs(brief=True)
         go, answers = asyncio.Event(), []
 
-        async def fake_brief(prompt, reply, bg, lang, cwd, tags=None):
+        async def fake_brief(prompt, reply, bg, lang, cwd, tags=None, done=""):
             await go.wait()
             return answers.pop(0)
         cases = [{"line": "Нужно повернуть стакан", "you": True, "need": "Повернуть стакан на 120°", "replies": []},
@@ -6459,7 +6494,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         Path(TP).write_text(tline("user", "Сделай кэш") + "\n")
         await self.p.api_prefs(brief=True)
 
-        async def fake_brief(prompt, reply, bg, lang, cwd, tags=None):
+        async def fake_brief(prompt, reply, bg, lang, cwd, tags=None, done=""):
             return {"line": "Два варианта кэша", "you": True, "need": "Выбери А или Б", "replies": ["А — память", "Б — SQLite"]}
         with mock.patch.object(pultd.B, "brief", fake_brief):
             await run_hook(ev("UserPromptSubmit", prompt="Сделай кэш"))
@@ -9024,6 +9059,13 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
              "hooks": list(pult_hook.EVENTS), "cc": dict(self.PARTS_CC), "srv": {"can": [], "upd": None}}
         rows = {r["k"]: r for r in self.p.parts_rows(f)}
         self.assertEqual((rows["web"]["auto"], "srv" in rows["web"]), (False, False))       # no updater: how to have it
+        # the developer's own folder: no word of "itself after the computer" — but a server that has the updater takes
+        # the next release itself, and the row says so instead of "deploy again by hand" (the owner, 2026-11-28)
+        own = dict(f, git=dict(self.PARTS_GIT, release=False))
+        rows = {r["k"]: r for r in self.p.parts_rows(own)}
+        self.assertEqual([("auto" in rows[k], "rel" in rows[k]) for k in ("web", "relay")], [(False, False)] * 2)
+        rows = {r["k"]: r for r in self.p.parts_rows(dict(own, srv={"can": ["want"], "upd": None}))}
+        self.assertEqual([("auto" in rows[k], rows[k].get("rel")) for k in ("web", "relay")], [(False, True)] * 2)
         f["srv"] = {"can": ["want"], "upd": {"state": "run", "step": "fetch", "tag": "v9.1.0", "have": "v9.0.0", "ts": 1}}
         rows = {r["k"]: r for r in self.p.parts_rows(f)}
         self.assertEqual((rows["relay"]["auto"], rows["relay"]["st"], rows["relay"]["srv"]["step"]), (True, "warn", "fetch"))

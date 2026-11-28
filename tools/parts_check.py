@@ -1,7 +1,7 @@
 """Every part of Pult in one table (stage U2), in headless Chrome over DevTools, on the stand, with real taps. A stand
 for each set of made-up facts (STAND_PARTS): all as in main with a new Claude Code downloaded — "worth a look", no
 line on Home; several parts behind — the computer's row open with Install, the app's row with what's new and who
-deploys it, the tabs and the hooks, Home's line; things that don't work — Home's line in red, "not from main",
+deploys it (the next release, when the server takes releases itself), the tabs and the hooks, Home's line; things that don't work — Home's line in red, "not from main",
 "unknown"; someone with a clone of the public repository — no release row, no tabs row, no words for the owner alone,
 how to have the server update itself; that clone with the server's updater (stage U3) — the server took the release,
 is taking it (Home's line), didn't take it (why, what runs); the switch for GitHub. Then this phone's copy: the server
@@ -325,6 +325,18 @@ async def main():
                 proc.wait()
 
             # 6. English: no key left as a key
+            # the developer's own folder behind, its server with the updater: the app's row promises the next release
+            # instead of "deploy again… install.sh after git pull" (the owner, 2026-11-28: "what is this lag?")
+            proc, urls = stand("lag_rel", upd="ready")
+            try:
+                verdict("lag_rel: the table", await settings(urls))
+                text = await more("web") if await tap_row("web") else ""
+                verdict("lag_rel: the app — with the next release, nothing by hand", await chip("web") == "−3 коммита"
+                        and "следующим выпуском" in text and "install.sh" not in text, text[-170:])
+                await shot("lag-rel")
+            finally:
+                _cdp.stop(proc)
+                proc.wait()
             proc, urls = stand("lag", lang="en", upd="ready")
             try:
                 verdict("en: the table", await settings(urls))
